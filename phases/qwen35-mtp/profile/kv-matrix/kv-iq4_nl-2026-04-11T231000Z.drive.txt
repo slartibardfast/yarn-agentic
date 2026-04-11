@@ -1,0 +1,74 @@
+[1/3] seed=42 wall=8.1s prompt=222tok@288.3tps predict=256tok@35.4tps draft_n=153 accepted=103
+[2/3] seed=43 wall=8.2s prompt=222tok@292.6tps predict=256tok@35.4tps draft_n=160 accepted=95
+[3/3] seed=44 wall=8.1s prompt=222tok@292.6tps predict=256tok@35.5tps draft_n=150 accepted=105
+{
+  "label": "kv-iq4_nl",
+  "server_url": "http://127.0.0.1:9099",
+  "prompt_path": "/home/llm/yarn-agentic/phases/qwen35-mtp/profile/fixed_prompt.txt",
+  "n_runs": 3,
+  "n_predict": 256,
+  "base_seed": 42,
+  "runs": [
+    {
+      "seed": 42,
+      "wall_s": 8.078,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 770.117,
+        "prompt_per_token_ms": 3.4689954954954954,
+        "prompt_per_second": 288.2678865678851,
+        "predicted_n": 256,
+        "predicted_ms": 7240.874,
+        "predicted_per_token_ms": 28.2846640625,
+        "predicted_per_second": 35.35484804734898,
+        "draft_n": 153,
+        "draft_n_accepted": 103
+      },
+      "content_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client A (summarisation job)\n[14:28:05] INFO: Request received from client B (summarisa"
+    },
+    {
+      "seed": 43,
+      "wall_s": 8.153,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 758.833,
+        "prompt_per_token_ms": 3.4181666666666666,
+        "prompt_per_second": 292.55448827344094,
+        "predicted_n": 256,
+        "predicted_ms": 7228.183,
+        "predicted_per_token_ms": 28.23508984375,
+        "predicted_per_second": 35.4169228974972,
+        "draft_n": 160,
+        "draft_n_accepted": 95
+      },
+      "content_head": "</think>\n\n1. **Detection**: At approximately 14:30, the primary inference endpoint began returning HTTP 503 (Service Unavailable) responses. The oncall engineer observed the error rate spike and the p"
+    },
+    {
+      "seed": 44,
+      "wall_s": 8.144,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 758.822,
+        "prompt_per_token_ms": 3.418117117117117,
+        "prompt_per_second": 292.55872918813634,
+        "predicted_n": 256,
+        "predicted_ms": 7220.456,
+        "predicted_per_token_ms": 28.20490625,
+        "predicted_per_second": 35.45482445984021,
+        "draft_n": 150,
+        "draft_n_accepted": 105
+      },
+      "content_head": "</think>\n\n1. **Detection**: At approximately 14:30, the primary inference endpoint began returning HTTP 503 (Service Unavailable) responses for roughly eight minutes. The oncall engineer detected the "
+    }
+  ],
+  "aggregate": {
+    "prompt_per_second_median": 292.554,
+    "predicted_per_second_median": 35.417,
+    "mtp_draft_n_total": 463,
+    "mtp_draft_n_accepted_total": 303,
+    "mtp_acceptance_rate": 0.6544
+  }
+}

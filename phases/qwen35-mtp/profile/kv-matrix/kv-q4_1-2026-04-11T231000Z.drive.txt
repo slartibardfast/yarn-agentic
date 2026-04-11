@@ -1,0 +1,74 @@
+[1/3] seed=42 wall=8.0s prompt=222tok@288.4tps predict=256tok@35.7tps draft_n=150 accepted=105
+[2/3] seed=43 wall=8.1s prompt=222tok@292.2tps predict=256tok@35.6tps draft_n=156 accepted=100
+[3/3] seed=44 wall=8.1s prompt=222tok@291.8tps predict=256tok@35.7tps draft_n=158 accepted=97
+{
+  "label": "kv-q4_1",
+  "server_url": "http://127.0.0.1:9099",
+  "prompt_path": "/home/llm/yarn-agentic/phases/qwen35-mtp/profile/fixed_prompt.txt",
+  "n_runs": 3,
+  "n_predict": 256,
+  "base_seed": 42,
+  "runs": [
+    {
+      "seed": 42,
+      "wall_s": 8.03,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 769.802,
+        "prompt_per_token_ms": 3.4675765765765765,
+        "prompt_per_second": 288.3858446717467,
+        "predicted_n": 256,
+        "predicted_ms": 7165.697,
+        "predicted_per_token_ms": 27.99100390625,
+        "predicted_per_second": 35.72576401151207,
+        "draft_n": 150,
+        "draft_n_accepted": 105
+      },
+      "content_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client A (summarisation job)\n[14:28:05] INFO: Request received from client B (summarisa"
+    },
+    {
+      "seed": 43,
+      "wall_s": 8.078,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 759.831,
+        "prompt_per_token_ms": 3.4226621621621622,
+        "prompt_per_second": 292.1702325911946,
+        "predicted_n": 256,
+        "predicted_ms": 7181.572,
+        "predicted_per_token_ms": 28.053015625,
+        "predicted_per_second": 35.64679153812006,
+        "draft_n": 156,
+        "draft_n_accepted": 100
+      },
+      "content_head": "</think>\n\n1. **Detection**: At approximately 14:30, the primary inference endpoint began returning HTTP 503 (Service Unavailable) responses for roughly eight minutes. The oncall engineer detected the "
+    },
+    {
+      "seed": 44,
+      "wall_s": 8.098,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 760.772,
+        "prompt_per_token_ms": 3.4269009009009013,
+        "prompt_per_second": 291.8088468029843,
+        "predicted_n": 256,
+        "predicted_ms": 7172.898,
+        "predicted_per_token_ms": 28.0191328125,
+        "predicted_per_second": 35.689898281001625,
+        "draft_n": 158,
+        "draft_n_accepted": 97
+      },
+      "content_head": "</think>\n\n1. **Detection**: At 14:30, the primary inference endpoint began returning 503 responses for approximately eight minutes. The oncall engineer detected the outage via automated monitoring ale"
+    }
+  ],
+  "aggregate": {
+    "prompt_per_second_median": 291.809,
+    "predicted_per_second_median": 35.69,
+    "mtp_draft_n_total": 464,
+    "mtp_draft_n_accepted_total": 302,
+    "mtp_acceptance_rate": 0.6509
+  }
+}

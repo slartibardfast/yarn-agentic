@@ -1,0 +1,77 @@
+{
+  "label": "qwen35-9b-q4km-vega-natural",
+  "server_url": "http://127.0.0.1:9099",
+  "timestamp_utc": "2026-04-11T225930Z",
+  "rows": [
+    {
+      "target_tokens": 256,
+      "actual_prompt_tokens": 184,
+      "wall_s": 4.314,
+      "prompt_ms": 600.536,
+      "prompt_per_second": 306.3929556263072,
+      "predicted_n": 128,
+      "predicted_ms": 3368.481,
+      "predicted_per_second": 37.99932373078548,
+      "draft_n": 67,
+      "draft_n_accepted": 60,
+      "acceptance_rate": 0.8955,
+      "content_head": ". In the Soviet Union, the same transition happened on a delay of roughly five years. In the Soviet Union, the same transition happened on a delay of "
+    },
+    {
+      "target_tokens": 512,
+      "actual_prompt_tokens": 365,
+      "wall_s": 4.543,
+      "prompt_ms": 1084.315,
+      "prompt_per_second": 336.6180491831248,
+      "predicted_n": 128,
+      "predicted_ms": 3401.966,
+      "predicted_per_second": 37.62530254564567,
+      "draft_n": 79,
+      "draft_n_accepted": 49,
+      "acceptance_rate": 0.6203,
+      "content_head": "-ric sense. A fab that had been set up to produce a particular 4K DRAM would continue producing it long after the rest of the world had moved on to 16"
+    },
+    {
+      "target_tokens": 1024,
+      "actual_prompt_tokens": 746,
+      "wall_s": 5.627,
+      "prompt_ms": 2144.715,
+      "prompt_per_second": 347.83176319464354,
+      "predicted_n": 128,
+      "predicted_ms": 3397.321,
+      "predicted_per_second": 37.67674588300605,
+      "draft_n": 66,
+      "draft_n_accepted": 61,
+      "acceptance_rate": 0.9242,
+      "content_head": " read a program when the language has a syntax that is not context-free? What does it mean to produce a program when the language has a type system th"
+    },
+    {
+      "target_tokens": 2048,
+      "actual_prompt_tokens": 2844,
+      "wall_s": 11.309,
+      "prompt_ms": 7778.313,
+      "prompt_per_second": 365.63198215345665,
+      "predicted_n": 128,
+      "predicted_ms": 3466.804,
+      "predicted_per_second": 36.92161425912742,
+      "draft_n": 66,
+      "draft_n_accepted": 62,
+      "acceptance_rate": 0.9394,
+      "content_head": "The history of computing hardware in the late twentieth century is often told through the lens of the personal computer, but the real story is one of "
+    },
+    {
+      "target_tokens": 3500,
+      "actual_prompt_tokens": 2844,
+      "wall_s": 11.308,
+      "prompt_ms": 7774.281,
+      "prompt_per_second": 365.8216110274378,
+      "predicted_n": 128,
+      "predicted_ms": 3469.9,
+      "predicted_per_second": 36.88867114326061,
+      "draft_n": 67,
+      "draft_n_accepted": 61,
+      "acceptance_rate": 0.9104,
+      "content_head": "The history of computing hardware in the late twentieth century is often told through the lens of the personal computer, but the real story is one of "
+    }
+  ]
+}

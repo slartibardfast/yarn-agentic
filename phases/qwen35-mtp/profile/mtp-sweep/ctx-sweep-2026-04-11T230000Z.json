@@ -1,0 +1,77 @@
+{
+  "label": "qwen35-9b-q4km-vega",
+  "server_url": "http://127.0.0.1:9099",
+  "timestamp_utc": "2026-04-11T225707Z",
+  "rows": [
+    {
+      "target_tokens": 256,
+      "actual_prompt_tokens": 222,
+      "wall_s": 4.035,
+      "prompt_ms": 755.235,
+      "prompt_per_second": 293.94824127589425,
+      "predicted_n": 121,
+      "predicted_ms": 3243.319,
+      "predicted_per_second": 37.30746189320261,
+      "draft_n": 72,
+      "draft_n_accepted": 48,
+      "acceptance_rate": 0.6667,
+      "content_head": "Here are the logs from the inference endpoint:\n```\n[14:29:55] INFO: Request received from client A\n[114:30:12] INFO: Request received from client B\n[1"
+    },
+    {
+      "target_tokens": 1024,
+      "actual_prompt_tokens": 888,
+      "wall_s": 5.991,
+      "prompt_ms": 2499.369,
+      "prompt_per_second": 355.2896751139988,
+      "predicted_n": 128,
+      "predicted_ms": 3405.709,
+      "predicted_per_second": 37.58395094824602,
+      "draft_n": 66,
+      "draft_n_accepted": 61,
+      "acceptance_rate": 0.9242,
+      "content_head": "You are a senior infrastructure engineer at a small startup. The team has been running a llama.cpp server on an old AMD Vega 64 graphics card via the "
+    },
+    {
+      "target_tokens": 2048,
+      "actual_prompt_tokens": 1554,
+      "wall_s": 7.906,
+      "prompt_ms": 4403.369,
+      "prompt_per_second": 352.9116001861302,
+      "predicted_n": 128,
+      "predicted_ms": 3415.066,
+      "predicted_per_second": 37.480974013386565,
+      "draft_n": 65,
+      "draft_n_accepted": 62,
+      "acceptance_rate": 0.9538,
+      "content_head": "You are a senior infrastructure engineer at a small startup. The team has been running a llama.cpp server on an old AMD Vega 64 graphics card via the "
+    },
+    {
+      "target_tokens": 4096,
+      "actual_prompt_tokens": 3108,
+      "wall_s": 12.027,
+      "prompt_ms": 8491.629,
+      "prompt_per_second": 366.00751163292693,
+      "predicted_n": 128,
+      "predicted_ms": 3443.822,
+      "predicted_per_second": 37.16800694112529,
+      "draft_n": 65,
+      "draft_n_accepted": 62,
+      "acceptance_rate": 0.9538,
+      "content_head": "You are a senior infrastructure engineer at a small startup. The team has been running a llama.cpp server on an old AMD Vega 64 graphics card via the "
+    },
+    {
+      "target_tokens": 6144,
+      "actual_prompt_tokens": 4440,
+      "wall_s": 15.765,
+      "prompt_ms": 12197.632,
+      "prompt_per_second": 364.0050790186161,
+      "predicted_n": 128,
+      "predicted_ms": 3471.486,
+      "predicted_per_second": 36.871818005315305,
+      "draft_n": 65,
+      "draft_n_accepted": 62,
+      "acceptance_rate": 0.9538,
+      "content_head": "You are a senior infrastructure engineer at a small startup. The team has been running a llama.cpp server on an old AMD Vega 64 graphics card via the "
+    }
+  ]
+}

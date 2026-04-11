@@ -1,0 +1,533 @@
+{
+  "ts": "2026-04-11T231000Z",
+  "rows": [
+    {
+      "v_type": "f16",
+      "k_name": "f16",
+      "k_size_mib": 72.0,
+      "v_name": "f16",
+      "v_size_mib": 72.0,
+      "graph_splits": 1,
+      "prompt_t_s_median": 292.561,
+      "predict_t_s_median": 35.956,
+      "mtp_acceptance_rate": 0.6991,
+      "fingerprint_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client ",
+      "fingerprint_diff_vs_f16_pct": 0.0,
+      "perf_total_ms": 21653.0,
+      "top_ops": [
+        {
+          "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=1228",
+          "share_pct": 19.89,
+          "total_ms": 4306.67
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+          "share_pct": 15.06,
+          "total_ms": 3260.43
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), RMS_NORM_MUL RMS_NORM(409",
+          "share_pct": 8.29,
+          "total_ms": 1794.15
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, SCALE, GET_ROWS, GET_ROW",
+          "share_pct": 8.16,
+          "total_ms": 1767.16
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q6_K m=4096 n=1 k=12288",
+          "share_pct": 7.53,
+          "total_ms": 1629.71
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q4_K m=4096 n=1 k=12288",
+          "share_pct": 5.11,
+          "total_ms": 1107.45
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=32 n=1 k=4096, SILU, MUL_MAT_VEC q4_K m=4",
+          "share_pct": 3.67,
+          "total_ms": 795.2
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 ",
+          "share_pct": 3.34,
+          "total_ms": 722.33
+        },
+        {
+          "op": "MUL_MAT q4_K m=12288 n=218 k=4096, MUL_MAT q4_K m=12288 n=21",
+          "share_pct": 3.15,
+          "total_ms": 681.23
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096, SCALE",
+          "share_pct": 2.67,
+          "total_ms": 578.23
+        }
+      ]
+    },
+    {
+      "v_type": "q4_0",
+      "k_name": "f16",
+      "k_size_mib": 72.0,
+      "v_name": "q4_0",
+      "v_size_mib": 20.25,
+      "graph_splits": 1,
+      "prompt_t_s_median": 291.63,
+      "predict_t_s_median": 35.631,
+      "mtp_acceptance_rate": 0.6674,
+      "fingerprint_head": "The incident summary should be formatted as a single paragraph with five numbered items.\n\n1. Detection: At 14:30, the on",
+      "fingerprint_diff_vs_f16_pct": 97.5,
+      "perf_total_ms": 20945.3,
+      "top_ops": [
+        {
+          "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=1228",
+          "share_pct": 19.62,
+          "total_ms": 4110.44
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+          "share_pct": 14.87,
+          "total_ms": 3114.27
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), RMS_NORM_MUL RMS_NORM(409",
+          "share_pct": 8.14,
+          "total_ms": 1704.12
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, SCALE, GET_ROWS, GET_ROW",
+          "share_pct": 7.98,
+          "total_ms": 1671.8
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q6_K m=4096 n=1 k=12288",
+          "share_pct": 7.42,
+          "total_ms": 1554.81
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q4_K m=4096 n=1 k=12288",
+          "share_pct": 5.04,
+          "total_ms": 1056.55
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=32 n=1 k=4096, SILU, MUL_MAT_VEC q4_K m=4",
+          "share_pct": 3.63,
+          "total_ms": 759.71
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 ",
+          "share_pct": 3.29,
+          "total_ms": 689.69
+        },
+        {
+          "op": "MUL_MAT q4_K m=12288 n=218 k=4096, MUL_MAT q4_K m=12288 n=21",
+          "share_pct": 3.26,
+          "total_ms": 683.67
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096, SCALE",
+          "share_pct": 2.63,
+          "total_ms": 551.79
+        }
+      ]
+    },
+    {
+      "v_type": "q4_1",
+      "k_name": "f16",
+      "k_size_mib": 72.0,
+      "v_name": "q4_1",
+      "v_size_mib": 22.5,
+      "graph_splits": 1,
+      "prompt_t_s_median": 291.809,
+      "predict_t_s_median": 35.69,
+      "mtp_acceptance_rate": 0.6509,
+      "fingerprint_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client ",
+      "fingerprint_diff_vs_f16_pct": 0.0,
+      "perf_total_ms": 22225.9,
+      "top_ops": [
+        {
+          "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=1228",
+          "share_pct": 19.75,
+          "total_ms": 4389.11
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+          "share_pct": 14.95,
+          "total_ms": 3323.8
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), RMS_NORM_MUL RMS_NORM(409",
+          "share_pct": 8.18,
+          "total_ms": 1817.62
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, SCALE, GET_ROWS, GET_ROW",
+          "share_pct": 8.03,
+          "total_ms": 1785.29
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q6_K m=4096 n=1 k=12288",
+          "share_pct": 7.48,
+          "total_ms": 1661.81
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q4_K m=4096 n=1 k=12288",
+          "share_pct": 5.08,
+          "total_ms": 1128.57
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=32 n=1 k=4096, SILU, MUL_MAT_VEC q4_K m=4",
+          "share_pct": 3.65,
+          "total_ms": 811.72
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 ",
+          "share_pct": 3.31,
+          "total_ms": 736.44
+        },
+        {
+          "op": "MUL_MAT q4_K m=12288 n=218 k=4096, MUL_MAT q4_K m=12288 n=21",
+          "share_pct": 3.08,
+          "total_ms": 683.75
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096, SCALE",
+          "share_pct": 2.65,
+          "total_ms": 589.44
+        }
+      ]
+    },
+    {
+      "v_type": "q5_0",
+      "k_name": "f16",
+      "k_size_mib": 72.0,
+      "v_name": "q5_0",
+      "v_size_mib": 24.75,
+      "graph_splits": 1,
+      "prompt_t_s_median": 291.783,
+      "predict_t_s_median": 35.569,
+      "mtp_acceptance_rate": 0.7007,
+      "fingerprint_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client ",
+      "fingerprint_diff_vs_f16_pct": 0.0,
+      "perf_total_ms": 22242.9,
+      "top_ops": [
+        {
+          "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=1228",
+          "share_pct": 19.74,
+          "total_ms": 4390.01
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+          "share_pct": 14.94,
+          "total_ms": 3323.44
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), RMS_NORM_MUL RMS_NORM(409",
+          "share_pct": 8.16,
+          "total_ms": 1814.88
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, SCALE, GET_ROWS, GET_ROW",
+          "share_pct": 8.02,
+          "total_ms": 1784.93
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q6_K m=4096 n=1 k=12288",
+          "share_pct": 7.47,
+          "total_ms": 1661.02
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q4_K m=4096 n=1 k=12288",
+          "share_pct": 5.07,
+          "total_ms": 1128.23
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=32 n=1 k=4096, SILU, MUL_MAT_VEC q4_K m=4",
+          "share_pct": 3.65,
+          "total_ms": 811.6
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 ",
+          "share_pct": 3.31,
+          "total_ms": 736.18
+        },
+        {
+          "op": "MUL_MAT q4_K m=12288 n=218 k=4096, MUL_MAT q4_K m=12288 n=21",
+          "share_pct": 3.08,
+          "total_ms": 684.43
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096, SCALE",
+          "share_pct": 2.65,
+          "total_ms": 589.16
+        }
+      ]
+    },
+    {
+      "v_type": "q5_1",
+      "k_name": "f16",
+      "k_size_mib": 72.0,
+      "v_name": "q5_1",
+      "v_size_mib": 27.0,
+      "graph_splits": 1,
+      "prompt_t_s_median": 292.115,
+      "predict_t_s_median": 35.595,
+      "mtp_acceptance_rate": 0.6537,
+      "fingerprint_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client ",
+      "fingerprint_diff_vs_f16_pct": 0.0,
+      "perf_total_ms": 22168.6,
+      "top_ops": [
+        {
+          "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=1228",
+          "share_pct": 19.74,
+          "total_ms": 4376.16
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+          "share_pct": 14.95,
+          "total_ms": 3313.95
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), RMS_NORM_MUL RMS_NORM(409",
+          "share_pct": 8.16,
+          "total_ms": 1809.87
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, SCALE, GET_ROWS, GET_ROW",
+          "share_pct": 8.03,
+          "total_ms": 1779.93
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q6_K m=4096 n=1 k=12288",
+          "share_pct": 7.47,
+          "total_ms": 1656.7
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q4_K m=4096 n=1 k=12288",
+          "share_pct": 5.08,
+          "total_ms": 1125.4
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=32 n=1 k=4096, SILU, MUL_MAT_VEC q4_K m=4",
+          "share_pct": 3.65,
+          "total_ms": 808.78
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 ",
+          "share_pct": 3.31,
+          "total_ms": 734.13
+        },
+        {
+          "op": "MUL_MAT q4_K m=12288 n=218 k=4096, MUL_MAT q4_K m=12288 n=21",
+          "share_pct": 3.09,
+          "total_ms": 684.03
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096, SCALE",
+          "share_pct": 2.65,
+          "total_ms": 587.53
+        }
+      ]
+    },
+    {
+      "v_type": "q8_0",
+      "k_name": "f16",
+      "k_size_mib": 72.0,
+      "v_name": "q8_0",
+      "v_size_mib": 38.25,
+      "graph_splits": 1,
+      "prompt_t_s_median": 291.403,
+      "predict_t_s_median": 35.599,
+      "mtp_acceptance_rate": 0.682,
+      "fingerprint_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client ",
+      "fingerprint_diff_vs_f16_pct": 0.0,
+      "perf_total_ms": 22186.1,
+      "top_ops": [
+        {
+          "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=1228",
+          "share_pct": 19.76,
+          "total_ms": 4384.01
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+          "share_pct": 14.98,
+          "total_ms": 3323.23
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), RMS_NORM_MUL RMS_NORM(409",
+          "share_pct": 8.18,
+          "total_ms": 1814.8
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, SCALE, GET_ROWS, GET_ROW",
+          "share_pct": 8.04,
+          "total_ms": 1784.64
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q6_K m=4096 n=1 k=12288",
+          "share_pct": 7.48,
+          "total_ms": 1659.98
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q4_K m=4096 n=1 k=12288",
+          "share_pct": 5.09,
+          "total_ms": 1128.19
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=32 n=1 k=4096, SILU, MUL_MAT_VEC q4_K m=4",
+          "share_pct": 3.65,
+          "total_ms": 810.81
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 ",
+          "share_pct": 3.32,
+          "total_ms": 736.16
+        },
+        {
+          "op": "MUL_MAT q4_K m=12288 n=218 k=4096, MUL_MAT q4_K m=12288 n=21",
+          "share_pct": 3.08,
+          "total_ms": 682.71
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096, SCALE",
+          "share_pct": 2.65,
+          "total_ms": 588.68
+        }
+      ]
+    },
+    {
+      "v_type": "iq4_nl",
+      "k_name": "f16",
+      "k_size_mib": 72.0,
+      "v_name": "iq4_nl",
+      "v_size_mib": 20.25,
+      "graph_splits": 1,
+      "prompt_t_s_median": 292.554,
+      "predict_t_s_median": 35.417,
+      "mtp_acceptance_rate": 0.6544,
+      "fingerprint_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client ",
+      "fingerprint_diff_vs_f16_pct": 0.0,
+      "perf_total_ms": 22366.6,
+      "top_ops": [
+        {
+          "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=1228",
+          "share_pct": 19.6,
+          "total_ms": 4384.94
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+          "share_pct": 14.86,
+          "total_ms": 3324.53
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), RMS_NORM_MUL RMS_NORM(409",
+          "share_pct": 8.09,
+          "total_ms": 1810.14
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, SCALE, GET_ROWS, GET_ROW",
+          "share_pct": 7.97,
+          "total_ms": 1782.8
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q6_K m=4096 n=1 k=12288",
+          "share_pct": 7.42,
+          "total_ms": 1659.45
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q4_K m=4096 n=1 k=12288",
+          "share_pct": 5.04,
+          "total_ms": 1127.79
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=32 n=1 k=4096, SILU, MUL_MAT_VEC q4_K m=4",
+          "share_pct": 3.62,
+          "total_ms": 810.05
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 ",
+          "share_pct": 3.29,
+          "total_ms": 735.72
+        },
+        {
+          "op": "MUL_MAT q4_K m=12288 n=218 k=4096, MUL_MAT q4_K m=12288 n=21",
+          "share_pct": 3.05,
+          "total_ms": 682.03
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096, SCALE",
+          "share_pct": 2.63,
+          "total_ms": 588.78
+        }
+      ]
+    },
+    {
+      "v_type": "tq_v_4b",
+      "k_name": "f16",
+      "k_size_mib": 72.0,
+      "v_name": "tq_v_4b",
+      "v_size_mib": 18.56,
+      "graph_splits": 1,
+      "prompt_t_s_median": 292.953,
+      "predict_t_s_median": 35.571,
+      "mtp_acceptance_rate": 0.6747,
+      "fingerprint_head": "Here are the logs from the llama-server process during the outage:\n[14:28:00] INFO: Request received from client A (summ",
+      "fingerprint_diff_vs_f16_pct": 44.17,
+      "perf_total_ms": 22223.0,
+      "top_ops": [
+        {
+          "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=1228",
+          "share_pct": 19.73,
+          "total_ms": 4384.97
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+          "share_pct": 14.95,
+          "total_ms": 3323.06
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), RMS_NORM_MUL RMS_NORM(409",
+          "share_pct": 8.16,
+          "total_ms": 1813.83
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, SCALE, GET_ROWS, GET_ROW",
+          "share_pct": 8.03,
+          "total_ms": 1784.4
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q6_K m=4096 n=1 k=12288",
+          "share_pct": 7.47,
+          "total_ms": 1660.13
+        },
+        {
+          "op": "MUL_MAT_ADD MUL_MAT_VEC q4_K m=4096 n=1 k=12288",
+          "share_pct": 5.08,
+          "total_ms": 1128.18
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=32 n=1 k=4096, SILU, MUL_MAT_VEC q4_K m=4",
+          "share_pct": 3.65,
+          "total_ms": 810.5
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 ",
+          "share_pct": 3.31,
+          "total_ms": 736.07
+        },
+        {
+          "op": "MUL_MAT q4_K m=12288 n=218 k=4096, MUL_MAT q4_K m=12288 n=21",
+          "share_pct": 3.08,
+          "total_ms": 684.01
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096, SCALE",
+          "share_pct": 2.65,
+          "total_ms": 588.73
+        }
+      ]
+    }
+  ]
+}
