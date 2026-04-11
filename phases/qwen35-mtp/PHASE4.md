@@ -212,30 +212,53 @@ When `--cache-type-v tq_v_4b` is used, K stays F16 by default, so `op->src[1]->t
 
 Result: **`graph splits = 19`** on Qwen3.5-9B (9 attention layers + sync overhead), and flash attention runs on CPU for every attention block. The memory savings are real, but so is the throughput cost — you trade 53 MiB of V cache for a ~19× jump in splits.
 
-### Why this isn't resolvable without more restructuring
+### Resolution — mixed K/V flash-attn (commit `71ba1ed4a`)
 
-The Vulkan flash-attention shader family uses a **single `A_TYPE` define per compiled variant**. One shader binary handles one K/V type combination. To support mixed K/V types (say F16 K + TQ_V_4B V), you'd need either:
+Instead of deferring, the mixed-K/V limitation turned out to be addressable with a targeted refactor. The key insight: the cross-product blowup only matters if *every* combination must ship, but the runtime only actually needs `(F16, F16)` and `(F16, TQ_V_4B)` for the `--cache-type-v tq_v_4b` path. One extra shader variant, gated by an opt-in override, is enough.
 
-- **Per-(K_type, V_type) shader variants.** Cross-product blowup: 9 scalar-supported K types × 9 V types = 81 variants, plus ×2 for fp32acc/f16acc = 162. Most combinations aren't practically useful, but shader-gen + runtime pipeline tables get noisy fast.
-- **Bindless-style runtime dispatch.** Read K and V via separate `DEQUANTFUNC_K` / `DEQUANTFUNC_V` defines in a single shader, or use Vulkan shader function pointers. The existing `flash_attn_base.glsl` is structured around one `dequantize4` per shader variant — would need a significant refactor.
-- **Split the attention into K-attention + V-weighted-sum as separate kernels.** Goes backwards on fusion and would re-introduce splits in a different way.
+**`flash_attn_base.glsl` refactor.** Previously the shared header defined a single `BLOCK_SIZE`, `BLOCK_BYTE_SIZE`, `A_TYPE_PACKED16`, and `dequantize4(ib, iqs, a_offset, binding_idx)` function that handled both K and V via the runtime `binding_idx` parameter. The refactor adds:
 
-None of these are session-sized, and the practical payoff is questionable for Vega 64 (where 53 MiB at `n_ctx=4096` isn't transformative anyway). The real benefit of TQ_V_4B shows at long contexts with larger models on more constrained GPUs, where **both** K and V quantisation matter — and that unlocks the trivial case `k->type == v->type` because both would be TQ_KV_* types from the TurboQuant family. The polaris branch has `TQ_KV_1B` for K that I spotted earlier in `ggml-turbo-quant.h` but it's not exposed via `--cache-type-k`, so can't be tested today.
+- `KV_SPLIT_PATH` detection — any `DATA_K_*` or `DATA_V_*` define activates the independent-type path.
+- Under the split path: explicit K-side bindings (`K_BLOCK_SIZE`, `K_BLOCK_BYTE_SIZE`, `K_PACKED16_TQ` / etc., `dequantize4_k()`) and V-side bindings (`V_BLOCK_SIZE`, `V_BLOCK_BYTE_SIZE`, `V_PACKED16_TQ`, `dequantize4_v()`).
+- Under the legacy path (when no `DATA_K_*` / `DATA_V_*` is set): `K_BLOCK_SIZE`, `V_BLOCK_SIZE`, `K_BLOCK_BYTE_SIZE`, `V_BLOCK_BYTE_SIZE` are aliased to the existing `BLOCK_SIZE` / `BLOCK_BYTE_SIZE`, and `dequantize4_k()` / `dequantize4_v()` are defined as thin wrappers that forward to the existing `dequantize4()` function.
 
-### Current practical state
+This means `flash_attn_cm1.comp` and `flash_attn_cm2.comp` — which still use the single-type API — are completely unaffected. Only `flash_attn.comp` is refactored to use the new `K_*` / `V_*` macros at all five dequant sites (three K, two V) plus the K/V offset calculations.
 
-- `--flash-attn on --cache-type-v tq_v_4b` **runs without crashing**, the V cache **does** shrink to 18.56 MiB at `n_ctx=4096`, but flash attention runs on CPU because of the `k->type != v->type` mismatch. Net effect: memory-for-throughput trade.
-- `--flash-attn on --cache-type-k q4_0 --cache-type-v q4_0` (matching types — not this phase's target) runs entirely on Vulkan via the existing Q4_0 flash attention path.
-- A hypothetical `--cache-type-k tq_kv_1b --cache-type-v tq_v_4b` (the paired-cache flavour the polaris branch hints at) would still fail the `k->type != v->type` check until the mixed-type support lands.
+**New shader variant.** `vulkan-shaders-gen.cpp` registers `flash_attn_f32_f16_k_f16_v_tq_v_4b` with `{DATA_K_F16=1, DATA_V_TQ_V_4B=1}`. This compiles four SPV variants (fp16/fp32 × f16acc/f32acc) exactly like the single-type path. Since `DATA_K_F16` only sets `K_BLOCK_SIZE=1` (no extra K binding — flash_attn.comp already declares raw f16 K bindings unconditionally), the K side uses the raw f16 load path while the V side uses the dedicated TQ_V_4B dequant.
+
+**Runtime wiring.** `ggml-vulkan.cpp` adds:
+
+- A dedicated pipeline map `pipeline_flash_attn_f32_f16_k_f16_v_tq_v_4b` alongside the existing `pipeline_flash_attn_f32_f16[GGML_TYPE_COUNT]` array (the existing map is keyed on `k->type` only, which can't represent the mixed case).
+- A new `CREATE_FA_FOR_MAP` helper macro (the existing `CREATE_FA` macro was refactored to delegate through it, preserving its interface) with a single call that iterates the mixed map.
+- A loosening of the `k->type != v->type` rejection in `supports_op`: the specific `(F16, TQ_V_4B)` pair is now accepted on the scalar path (`coopmat2` still rejects, since no coopmat2 variant was compiled).
+- A nested-lookup in `ggml_vk_flash_attn`: when `k->type == F16 && v->type == TQ_V_4B`, route to the mixed pipeline map instead of the type-indexed array.
+
+### Verification
+
+Running `--flash-attn on --cache-type-v tq_v_4b` on Qwen3.5-9B + q4km:
+
+```
+llama_context: flash_attn    = enabled
+llama_kv_cache: size =   90.56 MiB (  4096 cells,   9 layers,  1/1 seqs), K (f16):   72.00 MiB, V (tq_v_4b):   18.56 MiB
+sched_reserve: graph splits = 1
+```
+
+`graph splits = 1` — down from **19** before this refactor, matching the default Track 1 baseline (the single split is the empty CPU graph-entry sync, present in all post-Track-1 runs). End-to-end inference verified via `POST /completion`:
+
+```
+prompt: "The capital of France is"
+content: " Paris.\nThe capital of France is"
+tokens_predicted: 8, predicted_per_second: 57.86
+draft_n: 4, draft_n_accepted: 4
+```
+
+Correct output, MTP speculative decoding working, V cache savings realised, flash attention running entirely on Vulkan.
 
 ### What Track 3 delivers in summary
 
-- Full type-level integration of `GGML_TYPE_TQ_V_4B` into the Vulkan backend: types.glsl, dequant funcs, copy shaders, get_rows, set_rows, standalone dequant, **and** flash-attention shader variant.
-- `--cache-type-v tq_v_4b` works end-to-end when `--flash-attn on` is set. Memory savings are real.
-- Flash-attention on Vulkan with TQ_V_4B only takes the Vulkan path when `k->type` also matches; otherwise falls back to CPU.
-- The mixed-K/V-type support needed for practical TQ_V_4B deployment is explicitly deferred.
-
-## Track 4 (optional fusion work) — deliberately skipped
+- Full type-level integration of `GGML_TYPE_TQ_V_4B` into the Vulkan backend: types.glsl, dequant funcs, copy shaders, get_rows, set_rows, standalone dequant, **and** two flash-attention shader variants (single-type and the mixed F16+TQ_V_4B combo).
+- `--cache-type-v tq_v_4b --flash-attn on` runs entirely on Vulkan with `graph splits = 1` and ~53 MiB of V-cache savings at `n_ctx=4096` (scaling linearly with context).
+- The mixed-K/V-type infrastructure is reusable: adding more `DATA_K_*` / `DATA_V_*` combinations (e.g. a future `TQ_KV_1B` K cache paired with `TQ_V_4B` V) is now a matter of extending the `flash_attn_base.glsl` KV_SPLIT_PATH block and registering another shader variant.
 
 ## Track 4 (optional fusion work) — deliberately skipped
 
@@ -271,9 +294,22 @@ Track 3 (commit `c91e18741`):
 - `ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp` — explicit registrations
 - `ggml/src/ggml-vulkan/ggml-vulkan.cpp` — pipeline creation + supports_op cases
 
+Track 3 follow-up #1 (commit `b93c3a142`):
+
+- `ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl` — `block_tq_v_4b_packed16` dequant path (initial single-type variant)
+- `ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp` — `flash_attn_f32_f16_tq_v_4b` variant registration
+- `ggml/src/ggml-vulkan/ggml-vulkan.cpp` — CREATE_FA entries + supports_op FLASH_ATTN_EXT allowlist
+
+Track 3 follow-up #2 — mixed K/V (commit `71ba1ed4a`):
+
+- `ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl` — KV_SPLIT_PATH overlay introducing independent `K_BLOCK_SIZE` / `V_BLOCK_SIZE` / `dequantize4_k` / `dequantize4_v`; legacy `DATA_A_*` path aliased to wrappers for backward compat with cm1/cm2
+- `ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp` — five dequant sites refactored to use the new K/V-specific macros (3 K, 2 V), plus K/V offset calculation split
+- `ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp` — `flash_attn_f32_f16_k_f16_v_tq_v_4b` variant with `DATA_K_F16 + DATA_V_TQ_V_4B` defines
+- `ggml/src/ggml-vulkan/ggml-vulkan.cpp` — `pipeline_flash_attn_f32_f16_k_f16_v_tq_v_4b` map, `CREATE_FA_FOR_MAP` macro refactor, loosened `k->type != v->type` check in `supports_op`, mixed-map routing in `ggml_vk_flash_attn`
+
 ## Reproduction
 
-From `slartibardfast/llama.cpp:vulkan-phase4` (tip: `c91e18741`):
+From `slartibardfast/llama.cpp:vulkan-phase4` (tip: `71ba1ed4a`):
 
 ```bash
 git fetch origin vulkan-phase4
@@ -287,16 +323,25 @@ GGML_SCHED_DEBUG=1 GGML_VK_VISIBLE_DEVICES=1 ./build-vk/bin/llama-server \
   --host 127.0.0.1 --port 9099 --no-warmup -v 2>&1 | grep 'graph splits'
 # Expected: graph splits = 1
 
-# Re-run the §9 equivalence check
+# Confirm splits = 1 AND V cache quantised (--flash-attn required with --cache-type-v)
+GGML_SCHED_DEBUG=1 GGML_VK_VISIBLE_DEVICES=1 ./build-vk/bin/llama-server \
+  -m ~/models/Qwen3.5-9B-mtp-q4km.gguf \
+  -c 4096 -ngl 99 -np 1 -fa on --cache-type-v tq_v_4b \
+  --host 127.0.0.1 --port 9099 --no-warmup -v 2>&1 | grep -E 'graph splits|V \(tq_v_4b\)'
+# Expected:
+#   V (tq_v_4b):   18.56 MiB
+#   graph splits = 1
+
+# Re-run the §9 equivalence check (f16 V cache, default)
 /tmp/qwen35-phase9.sh
 # Expected: TOKENS: BYTE-IDENTICAL ✓; acceptance 77.78%; spec & non-spec ~38.5 t/s
 ```
 
 ## What's deferred to future phases
 
-- **Flash-attention TQ_V_4B integration.** The scaffolding is in place; the last mile is wiring TQ_V_4B into the flash-attention shader family and extending `supports_op`. This unlocks the real VRAM-saving value of `--cache-type-v tq_v_4b` (~1.7 GiB at `n_ctx=16384`).
 - **MUL_MAT TQ_V_4B.** Needed if we ever want quantised V outside the flash-attention path. Not a priority given that flash attention is already mandatory for quantised V in llama.cpp.
-- **Upstreaming.** The Track 1 change is a meaningful improvement that isn't tied to the polaris branch's specifics — it'd be a reasonable candidate PR against `ggml-org/llama.cpp` if we wanted to upstream it. The `dev_input` routing is MTP-specific, but the `buffer_from_host_ptr` cap flip + alignment handling + loader fallback is general.
+- **Additional K/V mixed-type combinations.** The `KV_SPLIT_PATH` infrastructure in `flash_attn_base.glsl` makes adding new combos (e.g. `TQ_KV_1B` K + `TQ_V_4B` V once the polaris branch exposes TQ_KV_1B via `--cache-type-k`) a matter of extending two `#if` blocks and registering one more shader variant.
+- **Upstreaming.** The Track 1 change and the mixed-K/V refactor are both meaningful improvements that aren't tied to the polaris branch's specifics — they'd be reasonable candidate PRs against `ggml-org/llama.cpp` if we wanted to upstream them. The `dev_input` routing is MTP-specific, but the `buffer_from_host_ptr` cap flip + alignment handling + loader fallback and the `flash_attn_base.glsl` KV split are general.
 - **The fused `ARGMAX_GET_ROWS` kernel from Track 2.** Useful if someone wants to shave ~2 dispatch-launches per forward, but not a splits-reduction any more. Design is in the plan file.
 - **The 4-op `mul_mat_add_rms_norm_mul` fusion from Track 4.** Requires a row-oriented matmul shader. Interesting as a research direction but not session-sized.
 
@@ -305,6 +350,8 @@ GGML_SCHED_DEBUG=1 GGML_VK_VISIBLE_DEVICES=1 ./build-vk/bin/llama-server \
 ```
 422c6cb7b vulkan/llama: enable VK_EXT_external_memory_host + route MTP input to GPU
 c91e18741 vulkan: scaffold TurboQuant V 4-bit (TQ_V_4B) type support
+b93c3a142 vulkan: add flash_attn TQ_V_4B variant (scalar path only)
+71ba1ed4a vulkan: support mixed K=F16 + V=TQ_V_4B flash attention
 ```
 
-Both on `github.com/slartibardfast/llama.cpp` branch `vulkan-phase4`. No upstream PR opened.
+All on `github.com/slartibardfast/llama.cpp` branch `vulkan-phase4`. No upstream PR opened.
