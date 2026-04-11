@@ -1,0 +1,4 @@
+{"kind": "positive", "query": "I'm not sure if Saturn has 82 or 83 moons — can you check?", "expected_name": "search_web", "expected_args": {"query": "how many moons does Saturn have"}}
+{"kind": "negative", "query": "Define 'photosynthesis' in one sentence."}
+{"kind": "negative", "query": "Do a web search."}
+{"kind": "negative", "query": "Tell me a joke about programmers."}

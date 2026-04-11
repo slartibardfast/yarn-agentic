@@ -1,0 +1,4 @@
+{"kind": "positive", "query": "Could you dump the JSON `{\"status\": \"ok\", \"count\": 42}` into /tmp/state.json?", "expected_name": "write_file", "expected_args": {"path": "/tmp/state.json", "contents": "{\"status\": \"ok\", \"count\": 42}"}}
+{"kind": "negative", "query": "Write a short essay on the history of Unix."}
+{"kind": "negative", "query": "Can you put this somewhere?"}
+{"kind": "negative", "query": "What are the best practices for configuration file naming?"}

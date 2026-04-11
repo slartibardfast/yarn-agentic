@@ -1,0 +1,5 @@
+{"kind": "positive", "query": "Shoot a quick email over to our accountant at finance@acme.co — subject line should be 'Q3 numbers ready', and tell them: The Q3 numbers are ready for review.", "expected_name": "send_email", "expected_args": {"to": "finance@acme.co", "subject": "Q3 numbers ready", "body": "The Q3 numbers are ready for review."}}
+{"kind": "negative", "query": "Draft an email to Bob." }
+{"kind": "negative", "query": "Can you email Alice about the meeting tomorrow?"}
+{"kind": "negative", "query": "What makes a good subject line for a business email?"}
+{"kind": "negative", "query": "I want to send my friend Jim a note but I don't remember his address."}

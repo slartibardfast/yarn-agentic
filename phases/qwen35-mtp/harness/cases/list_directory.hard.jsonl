@@ -1,0 +1,4 @@
+{"kind": "positive", "query": "What's sitting in my home directory? I'm llm.", "expected_name": "list_directory", "expected_args": {"path": "/home/llm"}}
+{"kind": "negative", "query": "How does the find command differ from ls?"}
+{"kind": "negative", "query": "List three of your favourite foods."}
+{"kind": "negative", "query": "What's in the box?"}

@@ -1,0 +1,4 @@
+{"kind": "positive", "query": "Start a 1.5 minute countdown.", "expected_name": "set_timer", "expected_args": {"seconds": 90}}
+{"kind": "negative", "query": "How do timers work on Android?"}
+{"kind": "negative", "query": "Set a timer."}
+{"kind": "negative", "query": "Is a pomodoro timer useful for studying?"}

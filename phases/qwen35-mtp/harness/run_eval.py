@@ -47,17 +47,26 @@ def load_schemas(schemas_dir):
 
 
 def load_cases(cases_dir):
-    """Load every *.jsonl under cases_dir. Each file's stem is the schema_name."""
+    """Load every *.jsonl under cases_dir.
+
+    Files named `<schema>.jsonl` or `<schema>.<tag>.jsonl` both belong to the
+    schema `<schema>`. The optional `<tag>` allows a single schema to have
+    multiple case files (e.g. `get_weather.jsonl` + `get_weather.hard.jsonl`).
+    A case may also override the schema association by setting a `schema`
+    field in the JSON record.
+    """
     cases = []
     for path in sorted(cases_dir.glob("*.jsonl")):
-        schema_name = path.stem
+        # Filename schema: <schema>[.tag].jsonl — the schema is everything
+        # before the first dot.
+        schema_name = path.name.split(".", 1)[0]
         with open(path) as f:
             for line_num, raw in enumerate(f, 1):
                 line = raw.strip()
                 if not line:
                     continue
                 case = json.loads(line)
-                case["schema_name"] = schema_name
+                case.setdefault("schema_name", case.pop("schema", schema_name))
                 case["source"] = f"{path.name}:{line_num}"
                 cases.append(case)
     return cases

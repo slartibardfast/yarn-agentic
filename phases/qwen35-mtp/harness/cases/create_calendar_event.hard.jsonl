@@ -1,0 +1,4 @@
+{"kind": "positive", "query": "Block off two hours on my calendar next Monday at 3 PM for 'Code review'. Today is 2026-04-11.", "expected_name": "create_calendar_event", "expected_args": {"title": "Code review", "start": "2026-04-13T15:00:00", "duration_minutes": 120}}
+{"kind": "negative", "query": "Add an event."}
+{"kind": "negative", "query": "What's the best way to structure weekly team meetings?"}
+{"kind": "negative", "query": "Schedule something for next week."}

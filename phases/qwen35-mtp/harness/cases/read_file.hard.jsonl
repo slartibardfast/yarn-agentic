@@ -1,0 +1,4 @@
+{"kind": "positive", "query": "Could you pull up the contents of my gitconfig? It's in ~/.gitconfig.", "expected_name": "read_file", "expected_args": {"path": "~/.gitconfig"}}
+{"kind": "negative", "query": "Explain what /etc/passwd is used for."}
+{"kind": "negative", "query": "Read me a bedtime story."}
+{"kind": "negative", "query": "What's a good name for a README file?"}

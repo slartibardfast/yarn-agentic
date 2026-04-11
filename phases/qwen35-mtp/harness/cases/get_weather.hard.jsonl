@@ -1,0 +1,6 @@
+{"kind": "positive", "query": "I just landed at LAX and I'm curious what the weather is like here.", "expected_name": "get_weather", "expected_args": {"city": "Los Angeles"}}
+{"kind": "positive", "query": "Is it raining in the Big Apple right now?", "expected_name": "get_weather", "expected_args": {"city": "New York"}}
+{"kind": "negative", "query": "Tell me about Paris, France — its history and culture."}
+{"kind": "negative", "query": "I need driving directions from Berlin to Munich."}
+{"kind": "negative", "query": "What's the capital city of Kazakhstan?"}
+{"kind": "negative", "query": "Weather."}
