@@ -1,0 +1,1552 @@
+{
+  "model_label": "hermes-3-llama31-8b-q4km",
+  "strategy": "hermes",
+  "server_url": "http://127.0.0.1:9099",
+  "seed": 42,
+  "temperature": 0.0,
+  "timestamp_utc": "2026-04-11T220945Z",
+  "n_cases": 92,
+  "cases": [
+    {
+      "case_source": "create_calendar_event.hard.jsonl:1",
+      "kind": "positive",
+      "query": "Block off two hours on my calendar next Monday at 3 PM for 'Code review'. Today is 2026-04-11.",
+      "expected_name": "create_calendar_event",
+      "parsed": {
+        "name": "create_calendar_event",
+        "args": {
+          "title": "Code review",
+          "start": "2026-04-12T15:30:00",
+          "duration_minutes": 120
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 1.495,
+      "error": null
+    },
+    {
+      "case_source": "create_calendar_event.hard.jsonl:2",
+      "kind": "negative",
+      "query": "Add an event.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.582,
+      "error": null
+    },
+    {
+      "case_source": "create_calendar_event.hard.jsonl:3",
+      "kind": "negative",
+      "query": "What's the best way to structure weekly team meetings?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 4.616,
+      "error": null
+    },
+    {
+      "case_source": "create_calendar_event.hard.jsonl:4",
+      "kind": "negative",
+      "query": "Schedule something for next week.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.638,
+      "error": null
+    },
+    {
+      "case_source": "create_calendar_event.jsonl:1",
+      "kind": "positive",
+      "query": "Put 'Dentist appointment' on my calendar for 2026-04-15T09:30:00.",
+      "expected_name": "create_calendar_event",
+      "parsed": {
+        "name": "create_calendar_event",
+        "args": {
+          "title": "Dentist appointment",
+          "start": "2026-04-15T09:30:00"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.838,
+      "error": null
+    },
+    {
+      "case_source": "create_calendar_event.jsonl:2",
+      "kind": "positive",
+      "query": "Schedule 'Team standup' on 2026-04-12T10:00:00 for 15 minutes.",
+      "expected_name": "create_calendar_event",
+      "parsed": {
+        "name": "create_calendar_event",
+        "args": {
+          "title": "Team standup",
+          "start": "2026-04-12T10:00:00",
+          "duration_minutes": 15
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.945,
+      "error": null
+    },
+    {
+      "case_source": "create_calendar_event.jsonl:3",
+      "kind": "positive",
+      "query": "Book a calendar slot titled 'Lunch with Sam' at 2026-04-14T12:30:00 for 90 minutes.",
+      "expected_name": "create_calendar_event",
+      "parsed": {
+        "name": "create_calendar_event",
+        "args": {
+          "title": "Lunch with Sam",
+          "start": "2026-04-14T12:30:00",
+          "duration_minutes": 90
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.982,
+      "error": null
+    },
+    {
+      "case_source": "create_calendar_event.jsonl:4",
+      "kind": "positive",
+      "query": "Add 'Quarterly review' to my calendar starting 2026-04-20T14:00:00.",
+      "expected_name": "create_calendar_event",
+      "parsed": {
+        "name": "create_calendar_event",
+        "args": {
+          "title": "Quarterly review",
+          "start": "2026-04-20T14:00:00"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.82,
+      "error": null
+    },
+    {
+      "case_source": "create_calendar_event.jsonl:5",
+      "kind": "positive",
+      "query": "Create a calendar event 'Yoga class' for 2026-04-13T18:00:00, duration 45 minutes.",
+      "expected_name": "create_calendar_event",
+      "parsed": {
+        "name": "create_calendar_event",
+        "args": {
+          "title": "Yoga class",
+          "start": "2026-04-13T18:00:00",
+          "duration_minutes": 45
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.964,
+      "error": null
+    },
+    {
+      "case_source": "create_calendar_event.jsonl:6",
+      "kind": "negative",
+      "query": "What time zone does Google Calendar default to?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.427,
+      "error": null
+    },
+    {
+      "case_source": "create_calendar_event.jsonl:7",
+      "kind": "negative",
+      "query": "Schedule something for me sometime.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.76,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.hard.jsonl:1",
+      "kind": "positive",
+      "query": "I just landed at LAX and I'm curious what the weather is like here.",
+      "expected_name": "get_weather",
+      "parsed": {
+        "name": "get_weather",
+        "args": {
+          "city": "Los Angeles",
+          "units": "imperial"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.929,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.hard.jsonl:2",
+      "kind": "positive",
+      "query": "Is it raining in the Big Apple right now?",
+      "expected_name": "get_weather",
+      "parsed": {
+        "name": "get_weather",
+        "args": {
+          "city": "New York",
+          "units": "metric"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.586,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.hard.jsonl:3",
+      "kind": "negative",
+      "query": "Tell me about Paris, France \u2014 its history and culture.",
+      "expected_name": null,
+      "parsed": {
+        "name": "get_city_info",
+        "args": {
+          "city": "Paris",
+          "country": "France"
+        }
+      },
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": false,
+      "elapsed_s": 0.586,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.hard.jsonl:4",
+      "kind": "negative",
+      "query": "I need driving directions from Berlin to Munich.",
+      "expected_name": null,
+      "parsed": {
+        "name": "get_directions",
+        "args": {
+          "origin": "Berlin",
+          "destination": "Munich"
+        }
+      },
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": false,
+      "elapsed_s": 0.62,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.hard.jsonl:5",
+      "kind": "negative",
+      "query": "What's the capital city of Kazakhstan?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.303,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.hard.jsonl:6",
+      "kind": "negative",
+      "query": "Weather.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.464,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.jsonl:1",
+      "kind": "positive",
+      "query": "What's the weather in Paris?",
+      "expected_name": "get_weather",
+      "parsed": {
+        "name": "get_weather",
+        "args": {
+          "city": "Paris"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.461,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.jsonl:2",
+      "kind": "positive",
+      "query": "How hot is Tokyo right now in Fahrenheit?",
+      "expected_name": "get_weather",
+      "parsed": {
+        "name": "get_weather",
+        "args": {
+          "city": "Tokyo",
+          "units": "imperial"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.603,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.jsonl:3",
+      "kind": "positive",
+      "query": "Give me the current temperature in Berlin.",
+      "expected_name": "get_weather",
+      "parsed": {
+        "name": "get_weather",
+        "args": {
+          "city": "Berlin"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.461,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.jsonl:4",
+      "kind": "positive",
+      "query": "I'm visiting New York City tomorrow. What's the forecast?",
+      "expected_name": "get_weather",
+      "parsed": {
+        "name": "get_weather",
+        "args": {
+          "city": "New York City",
+          "units": "metric"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.603,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.jsonl:5",
+      "kind": "positive",
+      "query": "Can you pull up the weather report for San Francisco please?",
+      "expected_name": "get_weather",
+      "parsed": {
+        "name": "get_weather",
+        "args": {
+          "city": "San Francisco"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.481,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.jsonl:6",
+      "kind": "negative",
+      "query": "What is seven times eight?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.302,
+      "error": null
+    },
+    {
+      "case_source": "get_weather.jsonl:7",
+      "kind": "negative",
+      "query": "Hello, how are you today?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.427,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.hard.jsonl:1",
+      "kind": "positive",
+      "query": "What's sitting in my home directory? I'm llm.",
+      "expected_name": "list_directory",
+      "parsed": {
+        "name": "list_directory",
+        "args": {
+          "path": "/home/llm"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.81,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.hard.jsonl:2",
+      "kind": "negative",
+      "query": "How does the find command differ from ls?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 3.108,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.hard.jsonl:3",
+      "kind": "negative",
+      "query": "List three of your favourite foods.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.352,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.hard.jsonl:4",
+      "kind": "negative",
+      "query": "What's in the box?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.875,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.jsonl:1",
+      "kind": "positive",
+      "query": "List the files in /etc.",
+      "expected_name": "list_directory",
+      "parsed": {
+        "name": "list_directory",
+        "args": {
+          "path": "/etc"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.456,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.jsonl:2",
+      "kind": "positive",
+      "query": "What's in the home directory /home/llm?",
+      "expected_name": "list_directory",
+      "parsed": {
+        "name": "list_directory",
+        "args": {
+          "path": "/home/llm"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.513,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.jsonl:3",
+      "kind": "positive",
+      "query": "Show me the contents of the current directory.",
+      "expected_name": "list_directory",
+      "parsed": {
+        "name": "list_directory",
+        "args": {}
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.388,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.jsonl:4",
+      "kind": "positive",
+      "query": "Can you list /var/log for me?",
+      "expected_name": "list_directory",
+      "parsed": {
+        "name": "list_directory",
+        "args": {
+          "path": "/var/log"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.476,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.jsonl:5",
+      "kind": "positive",
+      "query": "List files under ./src please.",
+      "expected_name": "list_directory",
+      "parsed": {
+        "name": "list_directory",
+        "args": {
+          "path": "./src"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.456,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.jsonl:6",
+      "kind": "negative",
+      "query": "What's the difference between ls and ls -la?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 2.92,
+      "error": null
+    },
+    {
+      "case_source": "list_directory.jsonl:7",
+      "kind": "negative",
+      "query": "Can you recommend a good book about Unix?",
+      "expected_name": null,
+      "parsed": {
+        "name": "list_directory",
+        "args": {
+          "path": "/usr/share/doc"
+        }
+      },
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": false,
+      "elapsed_s": 0.493,
+      "error": null
+    },
+    {
+      "case_source": "read_file.hard.jsonl:1",
+      "kind": "positive",
+      "query": "Could you pull up the contents of my gitconfig? It's in ~/.gitconfig.",
+      "expected_name": "read_file",
+      "parsed": {
+        "name": "read_file",
+        "args": {
+          "path": "~/.gitconfig"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.787,
+      "error": null
+    },
+    {
+      "case_source": "read_file.hard.jsonl:2",
+      "kind": "negative",
+      "query": "Explain what /etc/passwd is used for.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 3.272,
+      "error": null
+    },
+    {
+      "case_source": "read_file.hard.jsonl:3",
+      "kind": "negative",
+      "query": "Read me a bedtime story.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 4.606,
+      "error": null
+    },
+    {
+      "case_source": "read_file.hard.jsonl:4",
+      "kind": "negative",
+      "query": "What's a good name for a README file?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.881,
+      "error": null
+    },
+    {
+      "case_source": "read_file.jsonl:1",
+      "kind": "positive",
+      "query": "Please read the file /etc/hostname and show me the contents.",
+      "expected_name": "read_file",
+      "parsed": {
+        "name": "read_file",
+        "args": {
+          "path": "/etc/hostname"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.495,
+      "error": null
+    },
+    {
+      "case_source": "read_file.jsonl:2",
+      "kind": "positive",
+      "query": "Can you open /home/llm/notes.md for me?",
+      "expected_name": "read_file",
+      "parsed": {
+        "name": "read_file",
+        "args": {
+          "path": "/home/llm/notes.md"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.564,
+      "error": null
+    },
+    {
+      "case_source": "read_file.jsonl:3",
+      "kind": "positive",
+      "query": "Read back ./config.yaml please.",
+      "expected_name": "read_file",
+      "parsed": {
+        "name": "read_file",
+        "args": {
+          "path": "./config.yaml"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.474,
+      "error": null
+    },
+    {
+      "case_source": "read_file.jsonl:4",
+      "kind": "positive",
+      "query": "What's in the file at /var/log/syslog?",
+      "expected_name": "read_file",
+      "parsed": {
+        "name": "read_file",
+        "args": {
+          "path": "/var/log/syslog"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.511,
+      "error": null
+    },
+    {
+      "case_source": "read_file.jsonl:5",
+      "kind": "positive",
+      "query": "Show me the contents of README.md in this directory.",
+      "expected_name": "read_file",
+      "parsed": {
+        "name": "read_file",
+        "args": {
+          "path": "README.md"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.475,
+      "error": null
+    },
+    {
+      "case_source": "read_file.jsonl:6",
+      "kind": "negative",
+      "query": "Explain what a symbolic link is on Linux.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 1.809,
+      "error": null
+    },
+    {
+      "case_source": "read_file.jsonl:7",
+      "kind": "negative",
+      "query": "Thanks for your help earlier today.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.474,
+      "error": null
+    },
+    {
+      "case_source": "search_web.hard.jsonl:1",
+      "kind": "positive",
+      "query": "I'm not sure if Saturn has 82 or 83 moons \u2014 can you check?",
+      "expected_name": "search_web",
+      "parsed": {
+        "name": "search_web",
+        "args": {
+          "query": "number of moons in Saturn",
+          "max_results": 1
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 1.069,
+      "error": null
+    },
+    {
+      "case_source": "search_web.hard.jsonl:2",
+      "kind": "negative",
+      "query": "Define 'photosynthesis' in one sentence.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.532,
+      "error": null
+    },
+    {
+      "case_source": "search_web.hard.jsonl:3",
+      "kind": "negative",
+      "query": "Do a web search.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.32,
+      "error": null
+    },
+    {
+      "case_source": "search_web.hard.jsonl:4",
+      "kind": "negative",
+      "query": "Tell me a joke about programmers.",
+      "expected_name": null,
+      "parsed": {
+        "name": "get_joke",
+        "args": {
+          "category": "programming"
+        }
+      },
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": false,
+      "elapsed_s": 0.48,
+      "error": null
+    },
+    {
+      "case_source": "search_web.jsonl:1",
+      "kind": "positive",
+      "query": "Search the web for recent news about quantum computing breakthroughs.",
+      "expected_name": "search_web",
+      "parsed": {
+        "name": "search_web",
+        "args": {
+          "query": "recent quantum computing breakthroughs",
+          "max_results": 5
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.655,
+      "error": null
+    },
+    {
+      "case_source": "search_web.jsonl:2",
+      "kind": "positive",
+      "query": "Can you look up who won the 2025 Nobel Prize in Physics?",
+      "expected_name": "search_web",
+      "parsed": {
+        "name": "search_web",
+        "args": {
+          "query": "2025 Nobel Prize in Physics winner",
+          "max_results": 1
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.692,
+      "error": null
+    },
+    {
+      "case_source": "search_web.jsonl:3",
+      "kind": "positive",
+      "query": "Find me the top 3 results for 'best rust web frameworks 2026'.",
+      "expected_name": "search_web",
+      "parsed": {
+        "name": "search_web",
+        "args": {
+          "query": "best rust web frameworks 2026",
+          "max_results": 3
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.694,
+      "error": null
+    },
+    {
+      "case_source": "search_web.jsonl:4",
+      "kind": "positive",
+      "query": "What are the current ticket prices for the Louvre museum? Please search online.",
+      "expected_name": "search_web",
+      "parsed": {
+        "name": "search_web",
+        "args": {
+          "query": "Louvre museum ticket prices",
+          "max_results": 1
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.66,
+      "error": null
+    },
+    {
+      "case_source": "search_web.jsonl:5",
+      "kind": "positive",
+      "query": "I need ten web search results about treating rose black spot.",
+      "expected_name": "search_web",
+      "parsed": {
+        "name": "search_web",
+        "args": {
+          "query": "treating rose black spot",
+          "max_results": 10
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.659,
+      "error": null
+    },
+    {
+      "case_source": "search_web.jsonl:6",
+      "kind": "negative",
+      "query": "What does the word 'ephemeral' mean?",
+      "expected_name": null,
+      "parsed": {
+        "name": "search_web",
+        "args": {
+          "query": "definition of ephemeral",
+          "max_results": 1
+        }
+      },
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": false,
+      "elapsed_s": 0.64,
+      "error": null
+    },
+    {
+      "case_source": "search_web.jsonl:7",
+      "kind": "negative",
+      "query": "Write me a short poem about autumn leaves.",
+      "expected_name": null,
+      "parsed": {
+        "name": "generate_poem",
+        "args": {
+          "subject": "autumn leaves",
+          "length": "short",
+          "style": "nature"
+        }
+      },
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": false,
+      "elapsed_s": 0.726,
+      "error": null
+    },
+    {
+      "case_source": "send_email.hard.jsonl:1",
+      "kind": "positive",
+      "query": "Shoot a quick email over to our accountant at finance@acme.co \u2014 subject line should be 'Q3 numbers ready', and tell them: The Q3 numbers are ready for review.",
+      "expected_name": "send_email",
+      "parsed": {
+        "name": "send_email",
+        "args": {
+          "to": "finance@acme.co",
+          "subject": "Q3 numbers ready",
+          "body": "The Q3 numbers are ready for review."
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 1.368,
+      "error": null
+    },
+    {
+      "case_source": "send_email.hard.jsonl:2",
+      "kind": "negative",
+      "query": "Draft an email to Bob.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.533,
+      "error": null
+    },
+    {
+      "case_source": "send_email.hard.jsonl:3",
+      "kind": "negative",
+      "query": "Can you email Alice about the meeting tomorrow?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.567,
+      "error": null
+    },
+    {
+      "case_source": "send_email.hard.jsonl:4",
+      "kind": "negative",
+      "query": "What makes a good subject line for a business email?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 1.552,
+      "error": null
+    },
+    {
+      "case_source": "send_email.hard.jsonl:5",
+      "kind": "negative",
+      "query": "I want to send my friend Jim a note but I don't remember his address.",
+      "expected_name": null,
+      "parsed": {
+        "name": "send_email",
+        "args": {
+          "to": "jim@example.com",
+          "subject": "Reminder: Email Address",
+          "body": "Hi Jim, I hope this email finds you well. I wanted to remind you that I don't have your email address on hand. Could you please send it to me so I can reach out to you more easily in the future? Looking forward to hearing from you soon. Best regards, [Your Name]"
+        }
+      },
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": false,
+      "elapsed_s": 1.855,
+      "error": null
+    },
+    {
+      "case_source": "send_email.jsonl:1",
+      "kind": "positive",
+      "query": "Send an email to alice@example.com with subject 'Meeting tomorrow' and body 'Hi Alice, let us meet at 10am.'",
+      "expected_name": "send_email",
+      "parsed": {
+        "name": "send_email",
+        "args": {
+          "to": "alice@example.com",
+          "subject": "Meeting tomorrow",
+          "body": "Hi Alice, let us meet at 10am."
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.915,
+      "error": null
+    },
+    {
+      "case_source": "send_email.jsonl:2",
+      "kind": "positive",
+      "query": "Email bob@work.net with subject 'Report attached' and body 'Please find the Q2 report attached.'",
+      "expected_name": "send_email",
+      "parsed": {
+        "name": "send_email",
+        "args": {
+          "to": "bob@work.net",
+          "subject": "Report attached",
+          "body": "Please find the Q2 report attached."
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.87,
+      "error": null
+    },
+    {
+      "case_source": "send_email.jsonl:3",
+      "kind": "positive",
+      "query": "Send a message to carol@example.org. Subject: Welcome. Body: Welcome to the team!",
+      "expected_name": "send_email",
+      "parsed": {
+        "name": "send_email",
+        "args": {
+          "to": "carol@example.org",
+          "subject": "Welcome",
+          "body": "Welcome to the team!"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.8,
+      "error": null
+    },
+    {
+      "case_source": "send_email.jsonl:4",
+      "kind": "positive",
+      "query": "Please email dave@foo.com, subject 'Ping', body 'just checking in'.",
+      "expected_name": "send_email",
+      "parsed": {
+        "name": "send_email",
+        "args": {
+          "to": "dave@foo.com",
+          "subject": "Ping",
+          "body": "just checking in"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.783,
+      "error": null
+    },
+    {
+      "case_source": "send_email.jsonl:5",
+      "kind": "positive",
+      "query": "Draft and send: to eve@bar.co, subject 'Budget approval', body 'The budget has been approved.'",
+      "expected_name": "send_email",
+      "parsed": {
+        "name": "send_email",
+        "args": {
+          "to": "eve@bar.co",
+          "subject": "Budget approval",
+          "body": "The budget has been approved."
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.838,
+      "error": null
+    },
+    {
+      "case_source": "send_email.jsonl:6",
+      "kind": "negative",
+      "query": "Explain how SMTP works.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 4.61,
+      "error": null
+    },
+    {
+      "case_source": "send_email.jsonl:7",
+      "kind": "negative",
+      "query": "Send an email.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.716,
+      "error": null
+    },
+    {
+      "case_source": "send_email.jsonl:8",
+      "kind": "negative",
+      "query": "What is the standard port number for IMAP?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.708,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.hard.jsonl:1",
+      "kind": "positive",
+      "query": "Start a 1.5 minute countdown.",
+      "expected_name": "set_timer",
+      "parsed": {
+        "name": "set_timer",
+        "args": {
+          "seconds": 90
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.759,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.hard.jsonl:2",
+      "kind": "negative",
+      "query": "How do timers work on Android?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 4.601,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.hard.jsonl:3",
+      "kind": "negative",
+      "query": "Set a timer.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.426,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.hard.jsonl:4",
+      "kind": "negative",
+      "query": "Is a pomodoro timer useful for studying?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.999,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.jsonl:1",
+      "kind": "positive",
+      "query": "Set a timer for 300 seconds.",
+      "expected_name": "set_timer",
+      "parsed": {
+        "name": "set_timer",
+        "args": {
+          "seconds": 300
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.457,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.jsonl:2",
+      "kind": "positive",
+      "query": "Start a 5-minute timer please.",
+      "expected_name": "set_timer",
+      "parsed": {
+        "name": "set_timer",
+        "args": {
+          "seconds": 300
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.457,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.jsonl:3",
+      "kind": "positive",
+      "query": "Count down from 60 seconds.",
+      "expected_name": "set_timer",
+      "parsed": {
+        "name": "set_timer",
+        "args": {
+          "seconds": 60
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.457,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.jsonl:4",
+      "kind": "positive",
+      "query": "I need a timer for 2 minutes.",
+      "expected_name": "set_timer",
+      "parsed": {
+        "name": "set_timer",
+        "args": {
+          "seconds": 120
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.456,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.jsonl:5",
+      "kind": "positive",
+      "query": "Set a ten-second timer.",
+      "expected_name": "set_timer",
+      "parsed": {
+        "name": "set_timer",
+        "args": {
+          "seconds": 10
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.457,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.jsonl:6",
+      "kind": "negative",
+      "query": "What is a good duration for a pomodoro break?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.37,
+      "error": null
+    },
+    {
+      "case_source": "set_timer.jsonl:7",
+      "kind": "negative",
+      "query": "Nice to meet you.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.387,
+      "error": null
+    },
+    {
+      "case_source": "write_file.hard.jsonl:1",
+      "kind": "positive",
+      "query": "Could you dump the JSON `{\"status\": \"ok\", \"count\": 42}` into /tmp/state.json?",
+      "expected_name": "write_file",
+      "parsed": {
+        "name": "write_file",
+        "args": {
+          "path": "/tmp/state.json",
+          "contents": "{\"status\": \"ok\", \"count\": 42}"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 1.193,
+      "error": null
+    },
+    {
+      "case_source": "write_file.hard.jsonl:2",
+      "kind": "negative",
+      "query": "Write a short essay on the history of Unix.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 4.608,
+      "error": null
+    },
+    {
+      "case_source": "write_file.hard.jsonl:3",
+      "kind": "negative",
+      "query": "Can you put this somewhere?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.801,
+      "error": null
+    },
+    {
+      "case_source": "write_file.hard.jsonl:4",
+      "kind": "negative",
+      "query": "What are the best practices for configuration file naming?",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 4.611,
+      "error": null
+    },
+    {
+      "case_source": "write_file.jsonl:1",
+      "kind": "positive",
+      "query": "Write the text 'hello world' into a file at /tmp/greeting.txt.",
+      "expected_name": "write_file",
+      "parsed": {
+        "name": "write_file",
+        "args": {
+          "path": "/tmp/greeting.txt",
+          "contents": "hello world"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.77,
+      "error": null
+    },
+    {
+      "case_source": "write_file.jsonl:2",
+      "kind": "positive",
+      "query": "Save the line 'export PATH=/usr/local/bin:$PATH' to ~/.bashrc_extra for me.",
+      "expected_name": "write_file",
+      "parsed": {
+        "name": "write_file",
+        "args": {
+          "path": "~/.bashrc_extra",
+          "contents": "export PATH=/usr/local/bin:$PATH"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.748,
+      "error": null
+    },
+    {
+      "case_source": "write_file.jsonl:3",
+      "kind": "positive",
+      "query": "Create a file at ./notes/today.md containing the text 'TODO: call the dentist'.",
+      "expected_name": "write_file",
+      "parsed": {
+        "name": "write_file",
+        "args": {
+          "path": "./notes/today.md",
+          "contents": "TODO: call the dentist"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.695,
+      "error": null
+    },
+    {
+      "case_source": "write_file.jsonl:4",
+      "kind": "positive",
+      "query": "Please put the single word 'ok' into the file /tmp/status.",
+      "expected_name": "write_file",
+      "parsed": {
+        "name": "write_file",
+        "args": {
+          "path": "/tmp/status",
+          "contents": "ok"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.588,
+      "error": null
+    },
+    {
+      "case_source": "write_file.jsonl:5",
+      "kind": "positive",
+      "query": "Write 'version: 1\\nname: test' into /tmp/cfg.yaml.",
+      "expected_name": "write_file",
+      "parsed": {
+        "name": "write_file",
+        "args": {
+          "path": "/tmp/cfg.yaml",
+          "contents": "version: 1\nname: test"
+        }
+      },
+      "function_selection": true,
+      "required_arg_presence": true,
+      "arg_type_correctness": true,
+      "abstention": null,
+      "elapsed_s": 0.746,
+      "error": null
+    },
+    {
+      "case_source": "write_file.jsonl:6",
+      "kind": "negative",
+      "query": "Explain the difference between binary and text files.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 2.005,
+      "error": null
+    },
+    {
+      "case_source": "write_file.jsonl:7",
+      "kind": "negative",
+      "query": "Save this for me.",
+      "expected_name": null,
+      "parsed": null,
+      "function_selection": null,
+      "required_arg_presence": null,
+      "arg_type_correctness": null,
+      "abstention": true,
+      "elapsed_s": 0.512,
+      "error": null
+    }
+  ],
+  "totals": {
+    "function_selection": {
+      "passed": 49,
+      "total": 49,
+      "rate": 1.0
+    },
+    "required_arg_presence": {
+      "passed": 49,
+      "total": 49,
+      "rate": 1.0
+    },
+    "arg_type_correctness": {
+      "passed": 49,
+      "total": 49,
+      "rate": 1.0
+    },
+    "abstention": {
+      "passed": 36,
+      "total": 43,
+      "rate": 0.8372
+    }
+  }
+}

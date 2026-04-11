@@ -24,6 +24,7 @@ No external dependencies beyond the stdlib.
 import argparse
 import json
 import pathlib
+import re
 import sys
 import time
 import urllib.request
@@ -84,17 +85,7 @@ def build_tool(schema):
     }
 
 
-def post_chat_completion(server_url, messages, tools, seed, temperature, n_predict):
-    """POST /v1/chat/completions. Returns the decoded JSON response."""
-    url = server_url.rstrip("/") + "/v1/chat/completions"
-    payload = {
-        "messages": messages,
-        "tools": tools,
-        "tool_choice": "auto",
-        "temperature": temperature,
-        "seed": seed,
-        "max_tokens": n_predict,
-    }
+def _http_post(url, payload):
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"}
@@ -103,8 +94,59 @@ def post_chat_completion(server_url, messages, tools, seed, temperature, n_predi
         return json.loads(resp.read())
 
 
-def parse_tool_call(response):
-    """Extract (name, args_dict) or None from a chat completion response."""
+# ---------- Prompt / parsing strategies ----------
+#
+# A strategy is a pair (build_request, parse_response). Different models need
+# different tool-calling conventions:
+#
+# - `openai`: server handles the chat template (via `--jinja`) and tool
+#   injection; response arrives with a `tool_calls` field. Works for any
+#   model whose chat_template already knows about tools (Qwen3.5, Qwen3,
+#   Mistral v0.3, llama-3.1-instruct-tools, etc.).
+#
+# - `hermes`: Nous Research format — the tools are embedded in the system
+#   prompt inside <tools></tools> XML tags, and the model is told to emit
+#   calls inside <tool_call>...</tool_call> tags. We parse the raw content
+#   text for the first <tool_call> block. Used for Hermes-3 and anything
+#   trained on Nous's function-calling data. See
+#   https://github.com/NousResearch/Hermes-Function-Calling.
+
+
+HERMES_SYSTEM_PROMPT = """You are a function-calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Do not make assumptions about what values to plug into functions. Here are the available tools:
+<tools>
+{tools_json}
+</tools>
+
+For each function call return a JSON object with function name and arguments within <tool_call></tool_call> XML tags as follows:
+<tool_call>
+{{"name": <function-name>, "arguments": <args-json-object>}}
+</tool_call>
+
+If the user query does not require any tool, answer in plain text without emitting a <tool_call> block."""
+
+
+def build_request_openai(server_url, schema, query, seed, temperature, n_predict):
+    """OpenAI tools-field request. Returns (url, payload)."""
+    url = server_url.rstrip("/") + "/v1/chat/completions"
+    payload = {
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant that can call tools when the user's request requires one. If no tool fits, answer in plain text instead of calling a tool.",
+            },
+            {"role": "user", "content": query},
+        ],
+        "tools": [build_tool(schema)],
+        "tool_choice": "auto",
+        "temperature": temperature,
+        "seed": seed,
+        "max_tokens": n_predict,
+    }
+    return url, payload
+
+
+def parse_response_openai(response):
+    """OpenAI-style: inspect choices[0].message.tool_calls."""
     try:
         message = response["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
@@ -121,6 +163,70 @@ def parse_tool_call(response):
     except json.JSONDecodeError:
         args = None
     return (name, args)
+
+
+def build_request_hermes(server_url, schema, query, seed, temperature, n_predict):
+    """Nous Hermes format — inject schema into system prompt, parse <tool_call>."""
+    url = server_url.rstrip("/") + "/v1/chat/completions"
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": schema["name"],
+            "description": schema.get("description", ""),
+            "parameters": schema["parameters"],
+        },
+    }
+    system = HERMES_SYSTEM_PROMPT.format(tools_json=json.dumps(tool_spec))
+    payload = {
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": query},
+        ],
+        "temperature": temperature,
+        "seed": seed,
+        "max_tokens": n_predict,
+    }
+    return url, payload
+
+
+# <tool_call> ... </tool_call> — greedy on the inner body but non-greedy
+# on end tag, to tolerate trailing whitespace. Multiline.
+_HERMES_TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL
+)
+
+
+def parse_response_hermes(response):
+    """Hermes: look at content text for the first <tool_call> JSON block."""
+    try:
+        message = response["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    content = message.get("content") or ""
+    match = _HERMES_TOOL_CALL_RE.search(content)
+    if not match:
+        return None
+    blob = match.group(1).strip()
+    # Some models wrap in ```json ... ``` inside the tool_call block.
+    blob = re.sub(r"^```(?:json)?\s*|\s*```$", "", blob, flags=re.MULTILINE)
+    try:
+        parsed = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    name = parsed.get("name")
+    args = parsed.get("arguments") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = None
+    return (name, args)
+
+
+STRATEGIES = {
+    "openai": (build_request_openai, parse_response_openai),
+    "hermes": (build_request_hermes, parse_response_hermes),
+}
 
 
 def _matches_json_type(value, expected):
@@ -234,28 +340,29 @@ def run(args):
         print("No cases selected.", file=sys.stderr)
         return 2
 
+    if args.strategy not in STRATEGIES:
+        print(
+            f"Unknown strategy {args.strategy!r}. Known: {sorted(STRATEGIES)}",
+            file=sys.stderr,
+        )
+        return 2
+    build_request, parse_response = STRATEGIES[args.strategy]
+
     results = []
     for i, case in enumerate(cases, 1):
         schema = schemas[case["schema_name"]]
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant that can call tools when the user's request requires one. If no tool fits, answer in plain text instead of calling a tool.",
-            },
-            {"role": "user", "content": case["query"]},
-        ]
-        tools = [build_tool(schema)]
         t0 = time.time()
         try:
-            response = post_chat_completion(
+            url, payload = build_request(
                 args.server_url,
-                messages,
-                tools,
+                schema,
+                case["query"],
                 seed=args.seed,
                 temperature=args.temperature,
                 n_predict=args.n_predict,
             )
-            parsed = parse_tool_call(response)
+            response = _http_post(url, payload)
+            parsed = parse_response(response)
             error = None
         except Exception as e:  # noqa: BLE001
             response = None
@@ -281,6 +388,7 @@ def run(args):
     out_path = RESULTS_DIR / f"{args.model_label}-{ts}.json"
     report = {
         "model_label": args.model_label,
+        "strategy": args.strategy,
         "server_url": args.server_url,
         "seed": args.seed,
         "temperature": args.temperature,
@@ -326,6 +434,13 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--n-predict", type=int, default=256)
     parser.add_argument("--limit", type=int, default=None, help="cap to first N cases")
+    parser.add_argument(
+        "--strategy",
+        choices=sorted(STRATEGIES),
+        default="openai",
+        help="prompt/parse strategy — `openai` (server handles tools via chat template) "
+        "or `hermes` (Nous <tool_call> XML format injected in the system prompt)",
+    )
     args = parser.parse_args()
     sys.exit(run(args))
 
