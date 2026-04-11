@@ -30,6 +30,10 @@
 - [Phase 21: nemotron_h_moe Architecture Support](PHASE21.md)
 - [Phase 22: Fix get_tensor_async Race on rBAR Devices](PHASE22.md)
 
+# Qwen3.5 MTP Tool Calling
+
+- [Phase 1: Peer Host Quickstart](phases/qwen35-mtp/PHASE1.md)
+
 # Performance
 
 - [Benchmark Expectations](BENCHMARK_EXPECTATIONS.md)
