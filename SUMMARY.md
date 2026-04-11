@@ -1,5 +1,7 @@
 # Summary
 
+[Introduction](README.md)
+
 - [Plan](PLAN.md)
 
 # Phases
