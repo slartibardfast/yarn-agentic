@@ -1,0 +1,18 @@
+{
+  "name": "search_web",
+  "description": "Search the public web for information on a topic. Use this when the user asks for current information or a fact you are not sure about.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "The search query, as a natural-language string."
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "Maximum number of results to return. Defaults to 5."
+      }
+    },
+    "required": ["query"]
+  }
+}

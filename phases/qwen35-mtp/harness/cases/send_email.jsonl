@@ -1,0 +1,8 @@
+{"kind": "positive", "query": "Send an email to alice@example.com with subject 'Meeting tomorrow' and body 'Hi Alice, let us meet at 10am.'", "expected_name": "send_email", "expected_args": {"to": "alice@example.com", "subject": "Meeting tomorrow", "body": "Hi Alice, let us meet at 10am."}}
+{"kind": "positive", "query": "Email bob@work.net with subject 'Report attached' and body 'Please find the Q2 report attached.'", "expected_name": "send_email", "expected_args": {"to": "bob@work.net", "subject": "Report attached", "body": "Please find the Q2 report attached."}}
+{"kind": "positive", "query": "Send a message to carol@example.org. Subject: Welcome. Body: Welcome to the team!", "expected_name": "send_email", "expected_args": {"to": "carol@example.org", "subject": "Welcome", "body": "Welcome to the team!"}}
+{"kind": "positive", "query": "Please email dave@foo.com, subject 'Ping', body 'just checking in'.", "expected_name": "send_email", "expected_args": {"to": "dave@foo.com", "subject": "Ping", "body": "just checking in"}}
+{"kind": "positive", "query": "Draft and send: to eve@bar.co, subject 'Budget approval', body 'The budget has been approved.'", "expected_name": "send_email", "expected_args": {"to": "eve@bar.co", "subject": "Budget approval", "body": "The budget has been approved."}}
+{"kind": "negative", "query": "Explain how SMTP works."}
+{"kind": "negative", "query": "Send an email."}
+{"kind": "negative", "query": "What is the standard port number for IMAP?"}

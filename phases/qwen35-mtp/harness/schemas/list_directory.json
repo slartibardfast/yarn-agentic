@@ -1,0 +1,14 @@
+{
+  "name": "list_directory",
+  "description": "List the files and subdirectories inside a directory on the local filesystem.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Directory path to list. Defaults to the current directory if omitted."
+      }
+    },
+    "required": []
+  }
+}

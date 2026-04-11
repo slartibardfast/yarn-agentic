@@ -1,0 +1,7 @@
+{"kind": "positive", "query": "List the files in /etc.", "expected_name": "list_directory", "expected_args": {"path": "/etc"}}
+{"kind": "positive", "query": "What's in the home directory /home/llm?", "expected_name": "list_directory", "expected_args": {"path": "/home/llm"}}
+{"kind": "positive", "query": "Show me the contents of the current directory.", "expected_name": "list_directory", "expected_args": {}}
+{"kind": "positive", "query": "Can you list /var/log for me?", "expected_name": "list_directory", "expected_args": {"path": "/var/log"}}
+{"kind": "positive", "query": "List files under ./src please.", "expected_name": "list_directory", "expected_args": {"path": "./src"}}
+{"kind": "negative", "query": "What's the difference between ls and ls -la?"}
+{"kind": "negative", "query": "Can you recommend a good book about Unix?"}

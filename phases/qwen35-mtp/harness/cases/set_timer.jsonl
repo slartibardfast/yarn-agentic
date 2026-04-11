@@ -1,0 +1,7 @@
+{"kind": "positive", "query": "Set a timer for 300 seconds.", "expected_name": "set_timer", "expected_args": {"seconds": 300}}
+{"kind": "positive", "query": "Start a 5-minute timer please.", "expected_name": "set_timer", "expected_args": {"seconds": 300}}
+{"kind": "positive", "query": "Count down from 60 seconds.", "expected_name": "set_timer", "expected_args": {"seconds": 60}}
+{"kind": "positive", "query": "I need a timer for 2 minutes.", "expected_name": "set_timer", "expected_args": {"seconds": 120}}
+{"kind": "positive", "query": "Set a ten-second timer.", "expected_name": "set_timer", "expected_args": {"seconds": 10}}
+{"kind": "negative", "query": "What is a good duration for a pomodoro break?"}
+{"kind": "negative", "query": "Nice to meet you."}

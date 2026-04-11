@@ -1,0 +1,7 @@
+{"kind": "positive", "query": "Search the web for recent news about quantum computing breakthroughs.", "expected_name": "search_web", "expected_args": {"query": "recent quantum computing breakthroughs"}}
+{"kind": "positive", "query": "Can you look up who won the 2025 Nobel Prize in Physics?", "expected_name": "search_web", "expected_args": {"query": "2025 Nobel Prize in Physics winner"}}
+{"kind": "positive", "query": "Find me the top 3 results for 'best rust web frameworks 2026'.", "expected_name": "search_web", "expected_args": {"query": "best rust web frameworks 2026", "max_results": 3}}
+{"kind": "positive", "query": "What are the current ticket prices for the Louvre museum? Please search online.", "expected_name": "search_web", "expected_args": {"query": "Louvre museum ticket prices"}}
+{"kind": "positive", "query": "I need ten web search results about treating rose black spot.", "expected_name": "search_web", "expected_args": {"query": "treating rose black spot", "max_results": 10}}
+{"kind": "negative", "query": "What does the word 'ephemeral' mean?"}
+{"kind": "negative", "query": "Write me a short poem about autumn leaves."}

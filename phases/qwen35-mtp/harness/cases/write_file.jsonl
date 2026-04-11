@@ -1,0 +1,7 @@
+{"kind": "positive", "query": "Write the text 'hello world' into a file at /tmp/greeting.txt.", "expected_name": "write_file", "expected_args": {"path": "/tmp/greeting.txt", "contents": "hello world"}}
+{"kind": "positive", "query": "Save the line 'export PATH=/usr/local/bin:$PATH' to ~/.bashrc_extra for me.", "expected_name": "write_file", "expected_args": {"path": "~/.bashrc_extra", "contents": "export PATH=/usr/local/bin:$PATH"}}
+{"kind": "positive", "query": "Create a file at ./notes/today.md containing the text 'TODO: call the dentist'.", "expected_name": "write_file", "expected_args": {"path": "./notes/today.md", "contents": "TODO: call the dentist"}}
+{"kind": "positive", "query": "Please put the single word 'ok' into the file /tmp/status.", "expected_name": "write_file", "expected_args": {"path": "/tmp/status", "contents": "ok"}}
+{"kind": "positive", "query": "Write 'version: 1\\nname: test' into /tmp/cfg.yaml.", "expected_name": "write_file", "expected_args": {"path": "/tmp/cfg.yaml", "contents": "version: 1\nname: test"}}
+{"kind": "negative", "query": "Explain the difference between binary and text files."}
+{"kind": "negative", "query": "Save this for me."}

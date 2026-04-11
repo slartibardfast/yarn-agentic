@@ -1,0 +1,19 @@
+{
+  "name": "get_weather",
+  "description": "Get the current weather report for a city.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "city": {
+        "type": "string",
+        "description": "Name of the city, e.g. 'Paris' or 'Tokyo'."
+      },
+      "units": {
+        "type": "string",
+        "enum": ["metric", "imperial"],
+        "description": "Temperature units. Defaults to metric if not specified."
+      }
+    },
+    "required": ["city"]
+  }
+}

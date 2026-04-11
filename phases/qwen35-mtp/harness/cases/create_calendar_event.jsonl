@@ -1,0 +1,7 @@
+{"kind": "positive", "query": "Put 'Dentist appointment' on my calendar for 2026-04-15T09:30:00.", "expected_name": "create_calendar_event", "expected_args": {"title": "Dentist appointment", "start": "2026-04-15T09:30:00"}}
+{"kind": "positive", "query": "Schedule 'Team standup' on 2026-04-12T10:00:00 for 15 minutes.", "expected_name": "create_calendar_event", "expected_args": {"title": "Team standup", "start": "2026-04-12T10:00:00", "duration_minutes": 15}}
+{"kind": "positive", "query": "Book a calendar slot titled 'Lunch with Sam' at 2026-04-14T12:30:00 for 90 minutes.", "expected_name": "create_calendar_event", "expected_args": {"title": "Lunch with Sam", "start": "2026-04-14T12:30:00", "duration_minutes": 90}}
+{"kind": "positive", "query": "Add 'Quarterly review' to my calendar starting 2026-04-20T14:00:00.", "expected_name": "create_calendar_event", "expected_args": {"title": "Quarterly review", "start": "2026-04-20T14:00:00"}}
+{"kind": "positive", "query": "Create a calendar event 'Yoga class' for 2026-04-13T18:00:00, duration 45 minutes.", "expected_name": "create_calendar_event", "expected_args": {"title": "Yoga class", "start": "2026-04-13T18:00:00", "duration_minutes": 45}}
+{"kind": "negative", "query": "What time zone does Google Calendar default to?"}
+{"kind": "negative", "query": "Schedule something for me sometime."}

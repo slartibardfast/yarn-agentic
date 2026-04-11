@@ -1,0 +1,22 @@
+{
+  "name": "create_calendar_event",
+  "description": "Create a new event on the user's calendar.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Short title of the event."
+      },
+      "start": {
+        "type": "string",
+        "description": "Start time as an ISO 8601 datetime, e.g. '2026-04-12T15:30:00'."
+      },
+      "duration_minutes": {
+        "type": "integer",
+        "description": "Length of the event in minutes. Defaults to 60 if not specified."
+      }
+    },
+    "required": ["title", "start"]
+  }
+}

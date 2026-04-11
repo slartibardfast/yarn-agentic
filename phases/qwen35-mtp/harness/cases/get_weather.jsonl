@@ -1,0 +1,7 @@
+{"kind": "positive", "query": "What's the weather in Paris?", "expected_name": "get_weather", "expected_args": {"city": "Paris"}}
+{"kind": "positive", "query": "How hot is Tokyo right now in Fahrenheit?", "expected_name": "get_weather", "expected_args": {"city": "Tokyo", "units": "imperial"}}
+{"kind": "positive", "query": "Give me the current temperature in Berlin.", "expected_name": "get_weather", "expected_args": {"city": "Berlin"}}
+{"kind": "positive", "query": "I'm visiting New York City tomorrow. What's the forecast?", "expected_name": "get_weather", "expected_args": {"city": "New York City"}}
+{"kind": "positive", "query": "Can you pull up the weather report for San Francisco please?", "expected_name": "get_weather", "expected_args": {"city": "San Francisco"}}
+{"kind": "negative", "query": "What is seven times eight?"}
+{"kind": "negative", "query": "Hello, how are you today?"}

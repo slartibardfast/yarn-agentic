@@ -1,0 +1,14 @@
+{
+  "name": "set_timer",
+  "description": "Start a countdown timer for a specified number of seconds.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "seconds": {
+        "type": "integer",
+        "description": "Number of seconds to count down from."
+      }
+    },
+    "required": ["seconds"]
+  }
+}

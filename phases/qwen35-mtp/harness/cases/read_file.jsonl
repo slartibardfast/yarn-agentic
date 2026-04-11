@@ -1,0 +1,7 @@
+{"kind": "positive", "query": "Please read the file /etc/hostname and show me the contents.", "expected_name": "read_file", "expected_args": {"path": "/etc/hostname"}}
+{"kind": "positive", "query": "Can you open /home/llm/notes.md for me?", "expected_name": "read_file", "expected_args": {"path": "/home/llm/notes.md"}}
+{"kind": "positive", "query": "Read back ./config.yaml please.", "expected_name": "read_file", "expected_args": {"path": "./config.yaml"}}
+{"kind": "positive", "query": "What's in the file at /var/log/syslog?", "expected_name": "read_file", "expected_args": {"path": "/var/log/syslog"}}
+{"kind": "positive", "query": "Show me the contents of README.md in this directory.", "expected_name": "read_file", "expected_args": {"path": "README.md"}}
+{"kind": "negative", "query": "Explain what a symbolic link is on Linux."}
+{"kind": "negative", "query": "Thanks for your help earlier today."}
