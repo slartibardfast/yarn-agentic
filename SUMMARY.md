@@ -34,6 +34,7 @@
 
 - [Phase 1: Peer Host Quickstart](phases/qwen35-mtp/PHASE1.md)
 - [Phase 2: Tool-Calling Accuracy Harness](phases/qwen35-mtp/PHASE2.md)
+- [Phase 3: Closing the 5 t/s Gap (Vulkan GGML_OP_FUSED)](phases/qwen35-mtp/PHASE3.md)
 
 # Performance
 
