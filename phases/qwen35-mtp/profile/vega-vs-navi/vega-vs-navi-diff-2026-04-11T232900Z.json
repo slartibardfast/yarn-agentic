@@ -1,0 +1,216 @@
+{
+  "totals": {
+    "vega_total_ms": 21665.6,
+    "navi_total_ms": 13744.7,
+    "navi_vs_vega_ratio_total": 0.634,
+    "vega_prompt_t_s": 291.733,
+    "navi_prompt_t_s": 796.944,
+    "vega_predict_t_s": 35.883,
+    "navi_predict_t_s": 55.816,
+    "vega_mtp_accept": 0.6991,
+    "navi_mtp_accept": 0.6813
+  },
+  "n_shared_ops": 100,
+  "per_op_top20": [
+    {
+      "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=12288 n=1 k=4096",
+      "vega_us": 4307605.9,
+      "navi_us": 3327265.9,
+      "navi_vs_vega_ratio": 0.772,
+      "vega_gflops": 1160.3,
+      "navi_gflops": 1531.4,
+      "gflops_ratio": 1.32,
+      "share_pct_vega": 19.88
+    },
+    {
+      "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+      "vega_us": 3262704.4,
+      "navi_us": 1934065.2,
+      "navi_vs_vega_ratio": 0.593,
+      "vega_gflops": 470.7,
+      "navi_gflops": 809.9,
+      "gflops_ratio": 1.721,
+      "share_pct_vega": 15.06
+    },
+    {
+      "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), RMS_NORM_MUL RMS_NORM(4096,1,1,1), MUL_MAT_VEC q5_K m=248320 n=1 k=4096",
+      "vega_us": 1795109.6,
+      "navi_us": 1081629.8,
+      "navi_vs_vega_ratio": 0.603,
+      "vega_gflops": 852.2,
+      "navi_gflops": 1442.3,
+      "gflops_ratio": 1.692,
+      "share_pct_vega": 8.29
+    },
+    {
+      "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, SCALE, GET_ROWS, GET_ROWS",
+      "vega_us": 1767839.2,
+      "navi_us": 1097897.5,
+      "navi_vs_vega_ratio": 0.621,
+      "vega_gflops": 655.6,
+      "navi_gflops": 1076.8,
+      "gflops_ratio": 1.642,
+      "share_pct_vega": 8.16
+    },
+    {
+      "op": "MUL_MAT_ADD MUL_MAT_VEC q6_K m=4096 n=1 k=12288",
+      "vega_us": 1630015.2,
+      "navi_us": 1235505.7,
+      "navi_vs_vega_ratio": 0.758,
+      "vega_gflops": 790.1,
+      "navi_gflops": 1065.2,
+      "gflops_ratio": 1.348,
+      "share_pct_vega": 7.52
+    },
+    {
+      "op": "MUL_MAT_ADD MUL_MAT_VEC q4_K m=4096 n=1 k=12288",
+      "vega_us": 1107889.4,
+      "navi_us": 874713.5,
+      "navi_vs_vega_ratio": 0.79,
+      "vega_gflops": 1093.5,
+      "navi_gflops": 1412.3,
+      "gflops_ratio": 1.292,
+      "share_pct_vega": 5.11
+    },
+    {
+      "op": "MUL_MAT_VEC q6_K m=32 n=1 k=4096, SILU, MUL_MAT_VEC q4_K m=4096 n=1 k=4096",
+      "vega_us": 795670.7,
+      "navi_us": 504518.4,
+      "navi_vs_vega_ratio": 0.634,
+      "vega_gflops": 767.4,
+      "navi_gflops": 1233.8,
+      "gflops_ratio": 1.608,
+      "share_pct_vega": 3.67
+    },
+    {
+      "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 n=1 k=4096",
+      "vega_us": 722316.9,
+      "navi_us": 515741.7,
+      "navi_vs_vega_ratio": 0.714,
+      "vega_gflops": 786.2,
+      "navi_gflops": 1122.7,
+      "gflops_ratio": 1.428,
+      "share_pct_vega": 3.33
+    },
+    {
+      "op": "MUL_MAT q4_K m=12288 n=218 k=4096, MUL_MAT q4_K m=12288 n=218 k=4096",
+      "vega_us": 684995.0,
+      "navi_us": 186365.1,
+      "navi_vs_vega_ratio": 0.272,
+      "vega_gflops": 6342.4,
+      "navi_gflops": 23312.1,
+      "gflops_ratio": 3.676,
+      "share_pct_vega": 3.16
+    },
+    {
+      "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096, SCALE",
+      "vega_us": 578341.9,
+      "navi_us": 381622.5,
+      "navi_vs_vega_ratio": 0.66,
+      "vega_gflops": 698.5,
+      "navi_gflops": 1079.0,
+      "gflops_ratio": 1.545,
+      "share_pct_vega": 2.67
+    },
+    {
+      "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1)",
+      "vega_us": 546683.1,
+      "navi_us": 220916.8,
+      "navi_vs_vega_ratio": 0.404,
+      "vega_gflops": null,
+      "navi_gflops": null,
+      "gflops_ratio": null,
+      "share_pct_vega": 2.52
+    },
+    {
+      "op": "CPY, RMS_NORM_MUL RMS_NORM(128,32,1,1)",
+      "vega_us": 386419.3,
+      "navi_us": 141411.8,
+      "navi_vs_vega_ratio": 0.366,
+      "vega_gflops": null,
+      "navi_gflops": null,
+      "gflops_ratio": null,
+      "share_pct_vega": 1.78
+    },
+    {
+      "op": "GATED_DELTA_NET",
+      "vega_us": 339240.8,
+      "navi_us": 160607.4,
+      "navi_vs_vega_ratio": 0.473,
+      "vega_gflops": null,
+      "navi_gflops": null,
+      "gflops_ratio": null,
+      "share_pct_vega": 1.57
+    },
+    {
+      "op": "MUL_MAT_ADD MUL_MAT_VEC q5_K m=4096 n=1 k=4096",
+      "vega_us": 290967.7,
+      "navi_us": 184167.9,
+      "navi_vs_vega_ratio": 0.633,
+      "vega_gflops": 693.8,
+      "navi_gflops": 1117.9,
+      "gflops_ratio": 1.611,
+      "share_pct_vega": 1.34
+    },
+    {
+      "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096",
+      "vega_us": 286147.3,
+      "navi_us": 189956.8,
+      "navi_vs_vega_ratio": 0.664,
+      "vega_gflops": 705.7,
+      "navi_gflops": 1083.8,
+      "gflops_ratio": 1.536,
+      "share_pct_vega": 1.32
+    },
+    {
+      "op": "CONCAT, CPY, MUL_MAT_VEC q6_K m=32 n=1 k=4096",
+      "vega_us": 253525.6,
+      "navi_us": 78071.8,
+      "navi_vs_vega_ratio": 0.308,
+      "vega_gflops": 13.2,
+      "navi_gflops": 43.7,
+      "gflops_ratio": 3.311,
+      "share_pct_vega": 1.17
+    },
+    {
+      "op": "CPY, SSM_CONV, FUSED",
+      "vega_us": 239699.0,
+      "navi_us": 110666.4,
+      "navi_vs_vega_ratio": 0.462,
+      "vega_gflops": null,
+      "navi_gflops": null,
+      "gflops_ratio": null,
+      "share_pct_vega": 1.11
+    },
+    {
+      "op": "RMS_NORM_MUL RMS_NORM(4096,218,1,1), RMS_NORM(4096,0,1,1), MUL, MUL_MAT q5_K m=248320 n=218 k=4096, MUL_MAT_VEC q5_K m=248320 n=0 k=4096",
+      "vega_us": 215831.1,
+      "navi_us": 87800.0,
+      "navi_vs_vega_ratio": 0.407,
+      "vega_gflops": 6163.3,
+      "navi_gflops": 15151.1,
+      "gflops_ratio": 2.458,
+      "share_pct_vega": 1.0
+    },
+    {
+      "op": "MUL_MAT q6_K m=4096 n=218 k=12288",
+      "vega_us": 214486.2,
+      "navi_us": 86020.5,
+      "navi_vs_vega_ratio": 0.401,
+      "vega_gflops": 5219.2,
+      "navi_gflops": 13010.7,
+      "gflops_ratio": 2.493,
+      "share_pct_vega": 0.99
+    },
+    {
+      "op": "MUL_MAT q4_K m=4096 n=218 k=12288",
+      "vega_us": 185725.1,
+      "navi_us": 50330.6,
+      "navi_vs_vega_ratio": 0.271,
+      "vega_gflops": 5672.1,
+      "navi_gflops": 20927.6,
+      "gflops_ratio": 3.69,
+      "share_pct_vega": 0.86
+    }
+  ]
+}

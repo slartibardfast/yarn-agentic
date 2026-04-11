@@ -91,3 +91,59 @@ Disk free:      23 GB
   - artifacts: kv-matrix/kv-*.{stderr,drive.txt,perf.json}
               kv-matrix/kv-matrix-summary-2026-04-11T231000Z.json
               kv-matrix/SUMMARY.md
+
+[step 5] VRAM budget curve
+  - 3 V types x 6 contexts tested on Vega 64 (8167 MiB free)
+  - OOM cliffs:
+      f16     KV: at n_ctx=12288 (max usable ~8192)
+      q4_0    V : at n_ctx=16384 (max usable ~12288, +50%)
+      tq_v_4b V : at n_ctx=16384 (same tier as q4_0)
+  - all successful runs: graph splits = 1
+  - V-cache quantisation gives exactly one more context tier; not proportional
+    to the V cache savings because K is still f16 (256 MiB at n_ctx=16384)
+    and compute buffer is ~1014 MiB fixed
+  - llama.cpp fit-check reserves ~1 GiB headroom below the raw VRAM ceiling
+  - Phase 5 priority: K-cache quantisation would save 190 MiB at n_ctx=16384
+    and plausibly push the cliff to 24576+
+  - tq_v_4b only 5 MiB smaller than q4_0 at n_ctx=12288 (0.05% of total VRAM)
+  - status: OK
+  - artifacts: vram-budget/vram-*-ctx*.stderr
+              vram-budget/vram-budget-summary-2026-04-11T231500Z.json
+              vram-budget/SUMMARY.md
+
+[step 6] Pipeline stats bonus
+  - GGML_VK_PIPELINE_STATS=<substr> captures register count at compile time
+  - filter="flash_attn" caught 1 pipeline at startup: f32_f16_aligned_f32accf16
+    SGPR=96 VGPR=128 (comfortable, half of Vega's 256 VGPR wavefront limit)
+  - filter="mul_mat" + 1 drive run caught 8 pipeline variants
+  - KEY FINDING: mul_mat_vec_q5_k_f32_f32 compiles at VGPR=256
+    which is Vega's SIMD register limit — 1-wave occupancy
+    This is the vocab head (top-3 hotspot). Halving its VGPR count
+    would double occupancy and likely improve the top-3 bottleneck.
+  - Zero register spills anywhere — no perf-destroying eviction
+  - Q4_K/Q5_K/Q6_K/Q8_0 mul_mat_vec pipelines all in 64-128 VGPR range
+  - status: OK
+  - artifacts: pipeline-stats/{flash_attn,mul_mat}-*.stderr + SUMMARY.md
+
+[step 7] Vega 64 vs Navi 21 head-to-head
+  - same binary, model, prompt, seed, config
+  - Vega total GPU time: 21666 ms / Navi: 13745 ms (ratio 0.63)
+  - prompt: Vega 291.7 t/s / Navi 796.9 t/s (ratio 2.73x)
+  - predict: Vega 35.88 t/s / Navi 55.82 t/s (ratio 1.56x)
+  - MTP acceptance: 69.9% vs 68.1% (nearly identical)
+  - output: first 130 chars byte-identical, then diverge on one vowel
+    ("summarization" vs "summarisation") — numerical precision drift
+    between GCN and RDNA2 quant-dequant path, not a correctness bug
+  - BIG FINDING: prompt-eval batched MUL_MAT q4_K 12288x218 runs at
+    6342 GFLOPS on Vega vs 23312 GFLOPS on Navi (3.68x) — that's
+    the prompt-eval speedup in one number
+  - vocab head q5_k 248320x4096 (the 256-VGPR Vega limit) gets 1.72x
+    GFLOPS on Navi thanks to wave32 RDNA2 occupancy model
+  - RMS_NORM_MUL 1.69x on Navi (L2 cache improvement)
+  - IMPLICATION: Navi 21 already on-board, 2x VRAM (16 GiB vs 8), and
+    1.56x generation throughput with zero code changes. User should
+    strongly consider making Navi 21 the primary inference target.
+  - status: OK
+  - artifacts: vega-vs-navi/navi-per-op-*.{stderr,json,drive.txt}
+              vega-vs-navi/vega-vs-navi-diff-*.json
+              vega-vs-navi/SUMMARY.md
