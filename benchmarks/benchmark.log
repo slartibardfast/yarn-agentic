@@ -1,0 +1,32 @@
+nohup: ignoring input
+=== Building BEFORE (upstream main, no multi-GPU patches) ===
+[100%] Built target llama-cli
+=== Building AFTER (patch 6: full series with dmabuf) ===
+[100%] Built target llama-cli
+
+============================================
+Vulkan Multi-GPU Before/After Benchmark
+Date: 2026-03-08T19:07:26Z
+Host: AMD Ryzen 9 3950X
+GPU 0: AMD Radeon RX 6800 XT (16 GB GDDR6)
+GPU 1: AMD Radeon RX Vega 56/64 (8 GB HBM2)
+Model: Llama-2-13B Q8_0 (~13 GB)
+Prompt: 200 words, Generation: 128 tokens
+Flags: -smgs -ts 1,1 -ngl 99 -t 8
+============================================
+
+--- BEFORE: upstream main, single GPU (no multi-GPU support) ---
+llama_init_from_model: graph splits = 83
+llama_print_timings:        load time =   21164.73 ms
+llama_print_timings:      sample time =       3.93 ms /   128 runs   (    0.03 ms per token, 32561.69 tokens per second)
+llama_print_timings: prompt eval time =   10528.42 ms /   268 tokens (   39.29 ms per token,    25.45 tokens per second)
+llama_print_timings:        eval time =  392651.21 ms /   127 runs   ( 3091.74 ms per token,     0.32 tokens per second)
+llama_print_timings:       total time =  403194.39 ms /   395 tokens
+
+--- AFTER: patch 6 (async copies, staging pool, dmabuf zero-copy) ---
+llama_init_from_model: graph splits = 83
+ggml_vulkan: 0 = AMD Radeon RX Vega (RADV VEGA10) (radv) | uma: 0 | fp16: 1 | warp size: 64 | shared memory: 65536 | int dot: 0 | matrix cores: none | dmabuf: 1
+ggml_vulkan: 1 = AMD Radeon RX 6800 XT (RADV NAVI21) (radv) | uma: 0 | fp16: 1 | warp size: 32 | shared memory: 65536 | int dot: 1 | matrix cores: none | dmabuf: 1
+/home/llm/radv_ik_llama.cpp/benchmark.sh: line 64:  9604 Killed                     "${SUBMODULE}/build-after/bin/llama-cli" --model "$MODEL" --prompt "$PROMPT" --n-predict 128 --n-gpu-layers 99 --threads 8 -smgs -ts 1,1 2>&1
+      9605 Done                       | grep -E "graph splits|llama_print_timings|dmabuf"
+      9606 Done                       | tee -a "$RESULTS"

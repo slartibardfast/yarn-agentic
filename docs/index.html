@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vulkan Multi-GPU for llama.cpp</title>
+    <style>
+        :root {
+            --bg: #fafafa;
+            --fg: #1a1a1a;
+            --fg2: #666;
+            --fg3: #999;
+            --border: #e5e5e5;
+            --accent: #0066cc;
+            --green: #1a7f37;
+            --red: #cf222e;
+            --card-bg: #fff;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #111;
+                --fg: #e5e5e5;
+                --fg2: #999;
+                --fg3: #666;
+                --border: #2a2a2a;
+                --accent: #4d9de0;
+                --green: #56d364;
+                --red: #f85149;
+                --card-bg: #1a1a1a;
+            }
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: var(--bg);
+            color: var(--fg);
+            line-height: 1.7;
+            font-size: 15px;
+            font-weight: 400;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        code {
+            font-family: "SF Mono", "Fira Code", "Fira Mono", "Roboto Mono", monospace;
+            font-size: 0.85em;
+            background: var(--border);
+            padding: 0.15em 0.4em;
+            border-radius: 3px;
+        }
+
+        .container {
+            max-width: 680px;
+            margin: 0 auto;
+            padding: 0 1.5rem;
+        }
+
+        header {
+            padding: 5rem 0 3rem;
+        }
+
+        header h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            letter-spacing: -0.03em;
+            line-height: 1.3;
+            margin-bottom: 1.25rem;
+        }
+
+        header p {
+            color: var(--fg2);
+            font-size: 0.95rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .stats {
+            display: flex;
+            gap: 2.5rem;
+            margin-top: 2rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .stat-num {
+            font-size: 1.5rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            display: block;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--fg3);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 500;
+        }
+
+        section {
+            padding: 2.5rem 0;
+            border-top: 1px solid var(--border);
+        }
+
+        section h2 {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--fg3);
+            margin-bottom: 1.5rem;
+        }
+
+        section p, section li {
+            color: var(--fg2);
+            font-size: 0.9rem;
+            margin-bottom: 0.75rem;
+        }
+
+        section ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        section li {
+            padding-left: 1rem;
+            position: relative;
+        }
+
+        section li::before {
+            content: "\2013";
+            position: absolute;
+            left: 0;
+            color: var(--fg3);
+        }
+
+        .prior-item {
+            margin-bottom: 1rem;
+        }
+
+        .prior-item strong {
+            color: var(--fg);
+            font-weight: 500;
+        }
+
+        .phase {
+            margin-bottom: 1.75rem;
+        }
+
+        .phase-header {
+            display: flex;
+            align-items: baseline;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .phase-num {
+            font-weight: 600;
+            font-size: 0.8rem;
+            color: var(--fg3);
+            width: 1.75rem;
+            flex-shrink: 0;
+        }
+
+        .phase-title {
+            font-weight: 500;
+            color: var(--fg);
+            font-size: 0.95rem;
+        }
+
+        .phase-status {
+            font-size: 0.75rem;
+            font-weight: 500;
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+
+        .phase-status.complete {
+            color: var(--green);
+        }
+
+        .phase-status.skipped {
+            color: var(--fg3);
+        }
+
+        .phase ul {
+            margin-left: 2.25rem;
+        }
+
+        .data-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+
+        .data-row:last-child {
+            border-bottom: none;
+        }
+
+        .data-row .label {
+            color: var(--fg2);
+        }
+
+        .data-row .value {
+            font-family: "SF Mono", "Fira Code", monospace;
+            font-weight: 500;
+            font-size: 0.85rem;
+            color: var(--fg);
+        }
+
+        .data-row .positive {
+            color: var(--green);
+        }
+
+        .data-row .negative {
+            color: var(--red);
+        }
+
+        .hw-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.25rem 2rem;
+        }
+
+        @media (max-width: 540px) {
+            .hw-grid {
+                grid-template-columns: 1fr;
+            }
+            .stats {
+                gap: 1.5rem;
+            }
+        }
+
+        .hw-item {
+            display: flex;
+            align-items: baseline;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            padding: 0.3rem 0;
+        }
+
+        .hw-label {
+            color: var(--fg3);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 500;
+            width: 3rem;
+            flex-shrink: 0;
+        }
+
+        .hw-value {
+            color: var(--fg2);
+        }
+
+        .bench-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            margin: 1rem 0;
+        }
+
+        .bench-table th {
+            text-align: left;
+            font-weight: 500;
+            color: var(--fg3);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 0.5rem 0.75rem 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .bench-table td {
+            padding: 0.5rem 0.75rem 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+            color: var(--fg2);
+        }
+
+        .bench-table td:first-child {
+            color: var(--fg);
+            font-weight: 450;
+        }
+
+        .bench-table td.mono {
+            font-family: "SF Mono", "Fira Code", monospace;
+            font-size: 0.8rem;
+        }
+
+        .bench-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .bench-caption {
+            font-size: 0.8rem;
+            color: var(--fg3);
+            margin-bottom: 0.5rem;
+        }
+
+        .data-flow {
+            font-family: "SF Mono", "Fira Code", monospace;
+            font-size: 0.78rem;
+            color: var(--fg2);
+            line-height: 1.6;
+            margin: 1rem 0;
+            overflow-x: auto;
+        }
+
+        .links {
+            display: flex;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .links a {
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        footer {
+            padding: 2.5rem 0;
+            border-top: 1px solid var(--border);
+            color: var(--fg3);
+            font-size: 0.8rem;
+        }
+
+        footer a {
+            color: var(--fg2);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Vulkan Multi-GPU Split Mode Graph for llama.cpp</h1>
+            <p>NVIDIA has NCCL for multi-GPU LLM inference. AMD consumer GPUs on PCIe have nothing. This project adds multi-device Vulkan support to <a href="https://github.com/compilade/ik_llama.cpp">ik_llama.cpp</a>'s graph scheduler, enabling split-mode inference across multiple AMD GPUs using only standard Vulkan 1.2+ APIs.</p>
+            <p>Vendor-neutral. Works on RADV, NVIDIA proprietary, ANV, lavapipe. Tested on hardware spanning 2010 (Xeon X5650 + Polaris 12) to 2019 (Ryzen 9 + RDNA 2).</p>
+
+            <div class="stats">
+                <div>
+                    <span class="stat-num">12</span>
+                    <span class="stat-label">Phases</span>
+                </div>
+                <div>
+                    <span class="stat-num">~1,200</span>
+                    <span class="stat-label">Lines changed</span>
+                </div>
+                <div>
+                    <span class="stat-num">15x</span>
+                    <span class="stat-label">Transfer overhead reduction</span>
+                </div>
+            </div>
+        </header>
+
+        <section>
+            <h2>Problem</h2>
+            <div class="prior-item">
+                <strong>CUDA path.</strong> Direct GPU-to-GPU transfers via <code>cudaMemcpyPeerAsync</code> over PCIe or NVLink. NCCL handles multi-GPU communication transparently. Split mode graph scheduling works out of the box.
+            </div>
+            <div class="prior-item">
+                <strong>Vulkan path.</strong> No native peer-to-peer. The Vulkan backend has infrastructure for multiple devices&mdash;each <code>VkDevice</code> maps to one <code>ggml_backend</code>&mdash;but the async functions were wired to NULL and no cross-device copy mechanism existed. All the plumbing for multi-GPU was there. None of it was connected.
+            </div>
+        </section>
+
+        <section>
+            <h2>Phases</h2>
+            <p>Each phase is independently upstreamable. Foundation phases (1&ndash;6) benefit single-GPU Vulkan too.</p>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">1</span>
+                    <span class="phase-title">Async Interface and Events</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li>Un-NULL the async vtable entries: <code>set_tensor_async</code>, <code>get_tensor_async</code>, <code>cpy_tensor_async</code>, <code>synchronize</code></li>
+                    <li>Implement event API using Vulkan timeline semaphores</li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">2</span>
+                    <span class="phase-title">Split Buffer Type</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li>Distribute tensor rows across multiple Vulkan devices, mirroring CUDA's split buffer pattern</li>
+                    <li>Handle quant-interleaved row layouts for Q2_K through Q8_0</li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">3</span>
+                    <span class="phase-title">Cross-Device Copies via Host Staging</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li>GPU A &rarr; host staging &rarr; GPU B. The only portable approach in the Vulkan spec</li>
+                    <li>Staging buffer pool to avoid repeated allocation</li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">4</span>
+                    <span class="phase-title">Async Execution and Pipeline Parallelism</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li>Non-blocking <code>graph_compute</code>: submit to GPU, return immediately</li>
+                    <li>Thread safety audit of per-context state vs shared <code>vk_instance</code></li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">5</span>
+                    <span class="phase-title">Topology Discovery</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li>Device type awareness: discrete GPU, integrated, CPU (lavapipe)</li>
+                    <li>VRAM reporting and multi-GPU topology logging at startup</li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">6</span>
+                    <span class="phase-title">Runtime Testing and Fallbacks</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li>Scalar fallbacks for IQK on non-AVX2 hosts (Westmere Xeon)</li>
+                    <li>lavapipe fixes: memcpy early-outs for host-visible buffers</li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">7</span>
+                    <span class="phase-title">Async Cross-Device Copy Pipeline</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li>Replace synchronous fence wait with deferred pipeline: submit read, defer wait to <code>synchronize()</code></li>
+                    <li>17.8x prompt eval speedup on retro hardware</li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">8</span>
+                    <span class="phase-title">Double-Buffered Staging</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li>Per-copy staging pool with individual fences (correctness fix for concurrent copies)</li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">9</span>
+                    <span class="phase-title">Parallel Split Buffer Uploads</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li>Threaded per-device model weight uploads during loading</li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">10</span>
+                    <span class="phase-title">True Async Graph Compute</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li><code>graph_compute</code> returns after <code>vkQueueSubmit</code>; fence wait deferred to <code>synchronize()</code></li>
+                    <li>Overlaps CPU graph preparation with GPU execution</li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">11</span>
+                    <span class="phase-title">Transfer Queue Utilization</span>
+                    <span class="phase-status skipped">skipped</span>
+                </div>
+                <ul>
+                    <li>Cross-device copies already use transfer queues (Phase 7)</li>
+                    <li>No DMA/compute overlap opportunity with only 3 graph splits</li>
+                </ul>
+            </div>
+
+            <div class="phase">
+                <div class="phase-header">
+                    <span class="phase-num">12</span>
+                    <span class="phase-title">dmabuf Zero-Copy Transfer</span>
+                    <span class="phase-status complete">complete</span>
+                </div>
+                <ul>
+                    <li>Share GPU buffers via Linux dmabuf file descriptors, eliminating CPU memcpy</li>
+                    <li><code>VK_KHR_external_memory_fd</code> + <code>VK_EXT_external_memory_dma_buf</code></li>
+                </ul>
+            </div>
+        </section>
+
+        <section>
+            <h2>Data Flow</h2>
+            <div class="prior-item">
+                <strong>Before (Phases 3&ndash;10).</strong> Every cross-device copy does 4 data moves&mdash;2 DMA transfers and 2 CPU memcpys through host staging:
+            </div>
+            <div class="data-flow">GPU A device-local &rarr; [DMA] &rarr; host staging &rarr; [CPU memcpy] &rarr; host staging &rarr; [DMA] &rarr; GPU B device-local</div>
+            <div class="prior-item">
+                <strong>After (Phase 12).</strong> dmabuf shares physical pages between devices. 2 DMA transfers, zero CPU involvement:
+            </div>
+            <div class="data-flow">GPU A device-local &rarr; [DMA] &rarr; shared dmabuf &rarr; [DMA] &rarr; GPU B device-local</div>
+        </section>
+
+        <section>
+            <h2>Transfer Overhead</h2>
+            <p>Per-token cross-device transfer cost, measured on RX 6800 XT + Vega:</p>
+            <div class="data-row">
+                <span class="label">TinyLlama 1.1B &mdash; Phase 10 (host staging)</span>
+                <span class="value negative">+5 ms</span>
+            </div>
+            <div class="data-row">
+                <span class="label">TinyLlama 1.1B &mdash; Phase 12 (dmabuf)</span>
+                <span class="value positive">&minus;0.7 ms</span>
+            </div>
+            <div class="data-row">
+                <span class="label">Llama-2-7B &mdash; Phase 10 (host staging)</span>
+                <span class="value negative">+15 ms</span>
+            </div>
+            <div class="data-row">
+                <span class="label">Llama-2-7B &mdash; Phase 12 (dmabuf)</span>
+                <span class="value">+1 ms</span>
+            </div>
+            <div class="data-row">
+                <span class="label">Llama-2-13B &mdash; Phase 10 (host staging)</span>
+                <span class="value negative">+26 ms</span>
+            </div>
+            <div class="data-row">
+                <span class="label">Llama-2-13B &mdash; Phase 12 (dmabuf)</span>
+                <span class="value positive">&minus;4 ms</span>
+            </div>
+            <p>Negative overhead means multi-GPU is <em>faster</em> than single-GPU&mdash;doubled memory bandwidth outweighs transfer cost.</p>
+        </section>
+
+        <section>
+            <h2>Benchmarks</h2>
+
+            <div class="bench-caption">Llama-2-13B Q8_0 &middot; 109 token prompt &middot; best of 3 &middot; RX 6800 XT + Vega</div>
+            <table class="bench-table">
+                <thead>
+                    <tr>
+                        <th>Configuration</th>
+                        <th>Prompt</th>
+                        <th>Token gen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>6800 XT alone</td>
+                        <td class="mono">234 tok/s</td>
+                        <td class="mono">20 tok/s</td>
+                    </tr>
+                    <tr>
+                        <td>Both GPUs 1:1</td>
+                        <td class="mono">214 tok/s</td>
+                        <td class="mono">21 tok/s</td>
+                    </tr>
+                    <tr>
+                        <td>Both GPUs 2:1</td>
+                        <td class="mono">234 tok/s</td>
+                        <td class="mono">20 tok/s</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="bench-caption" style="margin-top: 1.5rem;">Llama-2-7B Q8_0 &middot; 109 token prompt &middot; best of 3</div>
+            <table class="bench-table">
+                <thead>
+                    <tr>
+                        <th>Configuration</th>
+                        <th>Prompt</th>
+                        <th>Token gen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>6800 XT alone</td>
+                        <td class="mono">382 tok/s</td>
+                        <td class="mono">40 tok/s</td>
+                    </tr>
+                    <tr>
+                        <td>Both GPUs 1:1</td>
+                        <td class="mono">356 tok/s</td>
+                        <td class="mono">39 tok/s</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="bench-caption" style="margin-top: 1.5rem;">TinyLlama 1.1B Q2_K &middot; 111 token prompt &middot; best of 3</div>
+            <table class="bench-table">
+                <thead>
+                    <tr>
+                        <th>Configuration</th>
+                        <th>Prompt</th>
+                        <th>Token gen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>6800 XT alone</td>
+                        <td class="mono">1117 tok/s</td>
+                        <td class="mono">90 tok/s</td>
+                    </tr>
+                    <tr>
+                        <td>Both GPUs 1:1</td>
+                        <td class="mono">1043 tok/s</td>
+                        <td class="mono">97 tok/s</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>Test Hardware</h2>
+            <div class="prior-item">
+                <strong>System A: Retro baseline.</strong> Intel Xeon X5650 (Westmere, 2010) with a Polaris 12 (2 GB GDDR5) and lavapipe. No AVX2, DDR3-1333. Deliberately terrible to stress-test the low end.
+            </div>
+            <div class="hw-grid">
+                <div class="hw-item">
+                    <span class="hw-label">CPU</span>
+                    <span class="hw-value">Xeon X5650 (2010)</span>
+                </div>
+                <div class="hw-item">
+                    <span class="hw-label">GPU 0</span>
+                    <span class="hw-value">Radeon Pro WX 2100</span>
+                </div>
+                <div class="hw-item">
+                    <span class="hw-label">GPU 1</span>
+                    <span class="hw-value">lavapipe (software)</span>
+                </div>
+                <div class="hw-item">
+                    <span class="hw-label">RAM</span>
+                    <span class="hw-value">DDR3-1333 triple-ch</span>
+                </div>
+            </div>
+
+            <div class="prior-item" style="margin-top: 1.5rem;">
+                <strong>System B: Real multi-GPU.</strong> AMD Ryzen 9 3950X with mixed-generation discrete GPUs&mdash;different architectures (RDNA 2 vs GCN 5), different warp sizes (32 vs 64), different PCIe generations.
+            </div>
+            <div class="hw-grid">
+                <div class="hw-item">
+                    <span class="hw-label">CPU</span>
+                    <span class="hw-value">Ryzen 9 3950X (2019)</span>
+                </div>
+                <div class="hw-item">
+                    <span class="hw-label">GPU 0</span>
+                    <span class="hw-value">RX 6800 XT &middot; 16 GB</span>
+                </div>
+                <div class="hw-item">
+                    <span class="hw-label">GPU 1</span>
+                    <span class="hw-value">RX Vega &middot; 8 GB HBM2</span>
+                </div>
+                <div class="hw-item">
+                    <span class="hw-label">Driver</span>
+                    <span class="hw-value">Mesa RADV</span>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Design</h2>
+            <ul>
+                <li><strong>Vendor-neutral</strong> &mdash; all changes use Vulkan 1.2+ spec features only. No driver-specific extensions except Phase 12 dmabuf (behind capability probe with clean fallback)</li>
+                <li><strong>NVIDIA-safe</strong> &mdash; no changes to CUDA/NCCL paths. NVIDIA's Vulkan driver supports all APIs used</li>
+                <li><strong>Host-staging model</strong> &mdash; cross-device transfers go through host memory (the only portable Vulkan approach). Phase 12 adds optional dmabuf for RADV</li>
+                <li><strong>Single file</strong> &mdash; all changes in <code>ggml/src/ggml-vulkan.cpp</code> plus minimal integration in <code>src/llama.cpp</code></li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Phase Evolution</h2>
+            <div class="bench-caption">System A (Polaris 12 + lavapipe) &middot; TinyLlama 1.1B &middot; multi-GPU</div>
+            <table class="bench-table">
+                <thead>
+                    <tr>
+                        <th>Phase</th>
+                        <th>Prompt</th>
+                        <th>Token gen</th>
+                        <th>Key change</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>6 (sync)</td>
+                        <td class="mono">15378 ms</td>
+                        <td class="mono">685 ms/tok</td>
+                        <td>Baseline</td>
+                    </tr>
+                    <tr>
+                        <td>7 (async)</td>
+                        <td class="mono">862 ms</td>
+                        <td class="mono">560 ms/tok</td>
+                        <td>Deferred fence wait</td>
+                    </tr>
+                    <tr>
+                        <td>8 (pool)</td>
+                        <td class="mono">893 ms</td>
+                        <td class="mono">537 ms/tok</td>
+                        <td>Per-copy staging</td>
+                    </tr>
+                    <tr>
+                        <td>9 (parallel)</td>
+                        <td class="mono">~1112 ms</td>
+                        <td class="mono">537 ms/tok</td>
+                        <td>Threaded uploads</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p>Phase 7 delivered a 17.8x prompt eval speedup by eliminating synchronous fence waits during cross-device copies.</p>
+        </section>
+
+        <section>
+            <h2>Links</h2>
+            <div class="links">
+                <a href="https://github.com/slartibardfast/radv_ik_llama.cpp">Repository</a>
+                <a href="https://github.com/compilade/ik_llama.cpp">ik_llama.cpp</a>
+                <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a>
+            </div>
+        </section>
+
+        <footer>
+            <p>Developed with assistance from <a href="https://claude.ai">Claude</a> (Anthropic). All Vulkan changes are vendor-neutral and upstreamable.</p>
+        </footer>
+    </div>
+</body>
+</html>

@@ -1,0 +1,10 @@
+[book]
+title = "Vulkan Multi-GPU Split Mode Graph"
+authors = []
+language = "en"
+src = "."
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+additional-css = ["theme/custom.css"]
