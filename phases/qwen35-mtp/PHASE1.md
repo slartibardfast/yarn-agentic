@@ -45,7 +45,7 @@ python3 -m venv .venv
 
 ```bash
 mkdir -p ~/models
-.venv/bin/huggingface-cli download Qwen/Qwen3.5-9B --local-dir ~/models/Qwen3.5-9B-HF
+.venv/bin/hf download Qwen/Qwen3.5-9B --local-dir ~/models/Qwen3.5-9B-HF
 
 .venv/bin/python -c "
 import json
@@ -165,6 +165,7 @@ jq '.timings | {predicted_n, predicted_per_second}' /tmp/nospec.json
 
 - **NEXTN regression:** every upstream sync may reset `LLM_TENSOR_NEXTN_*` from `LAYER_REPEATING` back to `LAYER_OUTPUT` in `src/llama-arch.cpp`, silently breaking all Qwen3.5 MTP loads with an abort (`"input/output layer tensor blk.N.nextn.eh_proj.weight used with a layer number"`). Grep before every build. Fix: restore `REPEATING` classification on the six NEXTN entries (see commit `a4ed1af94`).
 - **Stale gguf venv:** if `pip show gguf` doesn't point at this tree's `gguf-py`, the converter silently drops MTP tensors. Always install editable from the same tree you're building.
+- **`hf download`, NOT `huggingface-cli download`:** in `huggingface_hub >= 1.0`, `huggingface-cli` is deprecated and just prints a help stub — the download appears to "succeed" (exit 0) but nothing lands on disk. The current command is `hf download <repo> --local-dir <path>`. Every tutorial and old doc still shows `huggingface-cli download`; ignore them. Verify a file actually landed before trusting the exit code.
 - **`torch~=2.6.0` pin in `requirements-convert_hf_to_gguf.txt`:** breaks on Python 3.13+. Ignore the pin, install latest torch CPU wheel.
 - **`LLAMA_NO_MTP_AUTO=1`:** env var to bypass the server's MTP auto-enable. Needed to get a clean non-spec baseline for equivalence testing.
 - **`-fit off` is cleaner than auto-fit.** Auto-fit can stall in a resize loop. Set `-ngl` explicitly, use `-fit off`.
