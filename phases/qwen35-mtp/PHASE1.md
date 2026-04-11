@@ -120,8 +120,8 @@ PY
 
 In the startup log, confirm:
 
-- `offloaded <n>/<n> layers to GPU`
-- `Vulkan0 model buffer size ~= 5500 MiB`
+- `offloaded <n>/<n> layers to GPU` (should be the full layer count, e.g. `34/34` for Qwen3.5-9B including the MTP block)
+- **Model weights fit:** `Vulkan0 model buffer size` + `CPU_Mapped model buffer size` sums to ~5665 MiB. This build of the polaris branch keeps the token embedding + output tensors on a CPU `mmap`, so the `Vulkan0` line alone shows ~5000 MiB, not ~5500 MiB. Don't flag that as a regression — check the **sum** of the two buffer-size lines against the quantized file size.
 - `auto-enabling MTP speculative decoding`
 - `server is listening`
 
@@ -150,7 +150,9 @@ jq '.timings | {predicted_n, draft_n, draft_n_accepted, predicted_per_second}' /
 jq '.timings | {predicted_n, predicted_per_second}' /tmp/nospec.json
 ```
 
-**Pass criteria:** tokens identical, `draft_n_accepted > 0`, acceptance 70–90%. On Vega 64 via Vulkan, MTP spec should be faster than non-spec (GPU amortizes the 2nd decode), unlike the CPU case.
+**Pass criteria:** tokens identical, `draft_n_accepted > 0`, acceptance 70–90%.
+
+**Performance note** (revised after measurement on this peer host, 2026-04-11): theory says 2-phase MTP should be faster than non-spec on GPU full-offload because the draft pass amortizes on the GPU. In practice on Vega 64 Vulkan with this build, it measures out as neutral-to-slightly-slower — e.g. 27.07 t/s spec vs 27.65 t/s non-spec at 77.78 % acceptance (a ~2 % slowdown). The most likely cause is the ~666 MiB of `CPU_Mapped` tensors (see §8): they pull enough of the forward pass off-GPU to blunt the amortization. **Don't treat "spec is faster" as a pass criterion** — treat token identity and acceptance rate as the hard pass criteria, and measure throughput separately. If the throughput ordering matters for your use case, profile per-pass breakdown before building more spec infrastructure around it.
 
 ## 10. Batching feasibility (Plan A go/no-go, optional)
 
@@ -172,7 +174,8 @@ jq '.timings | {predicted_n, predicted_per_second}' /tmp/nospec.json
 - **Quant floor for tool calling is Q4_K_M.** Q3 and below break JSON schema compliance intermittently. Don't go lower.
 - **Always use GBNF grammar-constrained output for tool calls.** Free correctness floor — the model literally cannot emit invalid JSON. Pass via the `"grammar"` field in `/completion` requests.
 - **`llama-completion` vs `llama-server` disagree on `n_predict` accounting** by 1–2 tokens. Never use `llama-completion` as the non-spec baseline. Always compare server-vs-server via `LLAMA_NO_MTP_AUTO=1`.
-- **2-phase MTP is neutral-to-slower on CPU, faster on GPU.** On Vega 64 full offload it should win; on partial offload it becomes CPU-bound and the win shrinks. Don't assume without measuring.
+- **2-phase MTP is neutral-to-slower on CPU, faster on GPU.** On Vega 64 full offload it *should* win in theory; measured on this peer host it came out ~2 % slower even at 77 % acceptance — likely because the `CPU_Mapped` embed/output tensors (§8) blunt the amortization. Don't assume without measuring. See the §9 performance note.
+- **`batched-bench` and `llama-server` report wildly different throughput at the same `B=1`.** Measured on Vega 64 Vulkan with this model: `llama-server -np 1` hits ~27 t/s for single-token gen, while `llama-batched-bench -c 4096 -npl 1,2,4,8` reports ~5 t/s at `B=1`. Same model, same GPU, same `-c`. The batched-bench run shows `graph splits = 118` and reserves the recurrent-state memory for the full max-parallel (8 seqs) even when measuring `B=1`, which trips a much slower scheduling path. **Use `llama-server` throughput as the absolute baseline; `batched-bench` is only trustworthy for *scaling ratios* like `T(batch=4)/T(batch=1)`.** Don't report the batched-bench B=1 number as "the model's throughput."
 
 ## 12. What you're here to measure
 

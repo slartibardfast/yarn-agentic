@@ -33,6 +33,7 @@
 # Qwen3.5 MTP Tool Calling
 
 - [Phase 1: Peer Host Quickstart](phases/qwen35-mtp/PHASE1.md)
+- [Phase 2: Tool-Calling Accuracy Harness](phases/qwen35-mtp/PHASE2.md)
 
 # Performance
 
