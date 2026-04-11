@@ -254,11 +254,48 @@ draft_n: 4, draft_n_accepted: 4
 
 Correct output, MTP speculative decoding working, V cache savings realised, flash attention running entirely on Vulkan.
 
+### Resolution expanded to all V quant types (commit `a5af4aa97`)
+
+The reusable infrastructure got used immediately. With KV_SPLIT_PATH in place and the pair-keyed pipeline map proven out, extending mixed K=F16 + V=quant to cover **every** quantised V type already supported by the legacy single-type path is ~200 lines of additive shader code and a handful of wiring tweaks.
+
+**Shader coverage.** `flash_attn_base.glsl` gained a full per-type branch cascade for both K and V sides, covering:
+
+| Side  | Types                                                           |
+|-------|-----------------------------------------------------------------|
+| K     | F16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL, TQ_V_4B              |
+| V     | F16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL, TQ_V_4B              |
+
+Each K type has its own `dequantize4_k()` with the correct packed16 struct binding at binding 1; each V type has its own `dequantize4_v()` at binding 2. These are independent `#elif` branches under `KV_SPLIT_PATH`, so a given shader variant only compiles one K branch and one V branch.
+
+**`kvalues_iq4nl` availability.** The IQ4_NL lookup table in `types.glsl` was gated on `DATA_A_IQ4_NL || DATA_A_IQ4_XS` — the mixed path needed it under `DATA_K_IQ4_NL || DATA_V_IQ4_NL` as well. One-line ifdef extension, covers both directions.
+
+**Shader-gen loop.** `vulkan-shaders-gen.cpp` replaces the one-off `k_f16_v_tq_v_4b` registration with a loop over a `{name, define}` table for all seven V quants. Each entry emits four variants (fp16/fp32 × f16acc/f32acc) → 28 total mixed shaders. Only the K=F16 direction is populated today; K=quant + V=other is supported by the shader code but not yet registered in the gen, since there's no practical runtime configuration that would reach it.
+
+**Pipeline map refactor.** The dedicated `pipeline_flash_attn_f32_f16_k_f16_v_tq_v_4b` slot is replaced with `std::map<std::pair<ggml_type, ggml_type>, std::map<vk_fa_pipeline_state, vk_pipeline>> pipeline_flash_attn_f32_f16_kv_mixed` — one map, pair-keyed on `(k_type, v_type)`. `ggml_vk_flash_attn` routes any `k->type != v->type` case through this map instead of the type-indexed array. The `CREATE_FA_FOR_MAP` calls in `ggml_vk_load_shaders` now bind a local reference to each pair's map slot (to sidestep the preprocessor comma issue in brace-init-list keys) and iterate once per supported pair.
+
+**`supports_op` cascade.** Replaced the narrow `(F16, TQ_V_4B)` allowlist with a full switch over all seven supported V quant types when K is F16, rejecting any other K type or V type. Still scalar-only (coopmat2 falls back to single-type shaders).
+
+### Verification — every combination
+
+Each of the seven `--cache-type-v <quant>` values now loads on Qwen3.5-9B + q4km with `graph splits = 1`, V cache quantised as requested, zero errors:
+
+| `--cache-type-v` | V cache size | graph splits |
+|------------------|--------------|--------------|
+| q4_0             | 20.25 MiB    | 1            |
+| q4_1             | 22.50 MiB    | 1            |
+| q5_0             | 24.75 MiB    | 1            |
+| q5_1             | 27.00 MiB    | 1            |
+| q8_0             | 38.25 MiB    | 1            |
+| iq4_nl           | 20.25 MiB    | 1            |
+| tq_v_4b          | 18.56 MiB    | 1            |
+
+(K is F16 in every case, at 72.00 MiB.) All seven combinations run the attention entirely on Vulkan.
+
 ### What Track 3 delivers in summary
 
-- Full type-level integration of `GGML_TYPE_TQ_V_4B` into the Vulkan backend: types.glsl, dequant funcs, copy shaders, get_rows, set_rows, standalone dequant, **and** two flash-attention shader variants (single-type and the mixed F16+TQ_V_4B combo).
-- `--cache-type-v tq_v_4b --flash-attn on` runs entirely on Vulkan with `graph splits = 1` and ~53 MiB of V-cache savings at `n_ctx=4096` (scaling linearly with context).
-- The mixed-K/V-type infrastructure is reusable: adding more `DATA_K_*` / `DATA_V_*` combinations (e.g. a future `TQ_KV_1B` K cache paired with `TQ_V_4B` V) is now a matter of extending the `flash_attn_base.glsl` KV_SPLIT_PATH block and registering another shader variant.
+- Full type-level integration of `GGML_TYPE_TQ_V_4B` into the Vulkan backend: types.glsl, dequant funcs, copy shaders, get_rows, set_rows, standalone dequant, **and** flash-attention shader variants for both single-type and all mixed F16+quant combinations.
+- `--cache-type-v <quant> --flash-attn on` runs entirely on Vulkan for all seven supported quant V types, with `graph splits = 1` and the expected per-type V-cache memory savings at `n_ctx=4096` (scaling linearly with context).
+- The mixed-K/V-type infrastructure is fully reusable: adding a K quant combination (e.g. a future `TQ_KV_1B` K cache paired with a TurboQuant V) is now a matter of enabling one more shader variant in the gen loop and extending the supports_op allowlist — all the shader-side scaffolding is already in place.
 
 ## Track 4 (optional fusion work) — deliberately skipped
 
@@ -352,6 +389,7 @@ GGML_SCHED_DEBUG=1 GGML_VK_VISIBLE_DEVICES=1 ./build-vk/bin/llama-server \
 c91e18741 vulkan: scaffold TurboQuant V 4-bit (TQ_V_4B) type support
 b93c3a142 vulkan: add flash_attn TQ_V_4B variant (scalar path only)
 71ba1ed4a vulkan: support mixed K=F16 + V=TQ_V_4B flash attention
+a5af4aa97 vulkan: support all K=F16 + V=quant flash-attention combinations
 ```
 
 All on `github.com/slartibardfast/llama.cpp` branch `vulkan-phase4`. No upstream PR opened.
