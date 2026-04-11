@@ -1,0 +1,338 @@
+{
+  "baseline_label": "q4km-vega-f16kv-fusion-on",
+  "baseline_total_us": 21665576.8,
+  "baseline_prompt_t_s": 291.733,
+  "baseline_predict_t_s": 35.883,
+  "baseline_mtp_acceptance": 0.6991,
+  "runs": [
+    {
+      "label": "no_fusion",
+      "total_us_delta": 597977.0,
+      "total_us_delta_pct": 2.76,
+      "prompt_t_s": 289.302,
+      "prompt_delta_t_s": -2.43,
+      "predict_t_s": 34.88,
+      "predict_delta_t_s": -1.0,
+      "predict_delta_pct": -2.8,
+      "mtp_acceptance": 0.6991,
+      "only_in_baseline_top10": [
+        "CPY, RMS_NORM_MUL RMS_NORM(128,32,1,1)",
+        "CPY, RMS_NORM_MUL RMS_NORM(128,32,218,1)",
+        "CPY, RMS_NORM_MUL RMS_NORM(128,32,4,1)",
+        "GET_ROWS, RMS_NORM_MUL RMS_NORM(4096,1,1,1)",
+        "GET_ROWS, RMS_NORM_MUL RMS_NORM(4096,4,1,1)",
+        "MUL_MAT_ADD MUL_MAT_VEC q4_K m=4096 n=1 k=12288",
+        "MUL_MAT_ADD MUL_MAT_VEC q5_K m=4096 n=1 k=4096",
+        "MUL_MAT_ADD MUL_MAT_VEC q5_K m=4096 n=1 k=4096, CPY",
+        "MUL_MAT_ADD MUL_MAT_VEC q6_K m=4096 n=1 k=12288",
+        "RMS_NORM_MUL RMS_NORM(256,16,1,1)"
+      ],
+      "only_in_run_top10": [
+        "CPY, RMS_NORM(128,32,1,1)",
+        "CPY, RMS_NORM(128,32,218,1)",
+        "CPY, RMS_NORM(128,32,4,1)",
+        "GET_ROWS, RMS_NORM(4096,1,1,1)",
+        "GET_ROWS, RMS_NORM(4096,4,1,1)",
+        "MUL",
+        "MUL, MUL_MAT_VEC q5_K m=248320 n=1 k=4096",
+        "MUL, MUL_MAT_VEC q5_K m=248320 n=4 k=4096",
+        "MUL, RMS_NORM(4096,0,1,1), MUL, MUL_MAT q5_K m=248320 n=218 k=4096, MUL_MAT_VEC q5_K m=248320 n=0 k=4096",
+        "MUL, RMS_NORM(4096,1,1,1)"
+      ],
+      "biggest_op_deltas_top10": [
+        {
+          "op": "ADD",
+          "base_us": 44229.6,
+          "run_us": 143188.9,
+          "delta_us": 98959.3,
+          "base_count": 6307,
+          "run_count": 37139
+        },
+        {
+          "op": "CPY, SSM_CONV, FUSED",
+          "base_us": 239699.0,
+          "run_us": 218524.1,
+          "delta_us": -21174.9,
+          "base_count": 12886,
+          "run_count": 12886
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=32 n=1 k=4096, SILU, MUL_MAT_VEC q4_K m=4096 n=1 k=4096",
+          "base_us": 795670.7,
+          "run_us": 779718.8,
+          "delta_us": -15951.9,
+          "base_count": 18048,
+          "run_count": 18048
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=8192 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 n=1 k=4096, MUL_MAT_VEC q5_K m=1024 n=1 k=4096",
+          "base_us": 722316.9,
+          "run_us": 737553.7,
+          "delta_us": 15236.8,
+          "base_count": 6768,
+          "run_count": 6768
+        },
+        {
+          "op": "L2_NORM, L2_NORM, SIGMOID",
+          "base_us": 155304.8,
+          "run_us": 145467.0,
+          "delta_us": -9837.8,
+          "base_count": 18192,
+          "run_count": 18192
+        },
+        {
+          "op": "FUSED",
+          "base_us": 99107.2,
+          "run_us": 89644.9,
+          "delta_us": -9462.3,
+          "base_count": 25014,
+          "run_count": 25014
+        },
+        {
+          "op": "GET_ROWS, GET_ROWS, FUSED, CPY",
+          "base_us": 35842.8,
+          "run_us": 45140.8,
+          "delta_us": 9298.0,
+          "base_count": 4548,
+          "run_count": 4548
+        },
+        {
+          "op": "CONCAT, CPY",
+          "base_us": 29457.7,
+          "run_us": 38674.0,
+          "delta_us": 9216.3,
+          "base_count": 4524,
+          "run_count": 4524
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+          "base_us": 3262704.4,
+          "run_us": 3271238.4,
+          "delta_us": 8534.0,
+          "base_count": 755,
+          "run_count": 755
+        },
+        {
+          "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=12288 n=1 k=4096",
+          "base_us": 4307605.9,
+          "run_us": 4299598.9,
+          "delta_us": -8007.0,
+          "base_count": 24816,
+          "run_count": 24816
+        }
+      ]
+    },
+    {
+      "label": "no_multi_add",
+      "total_us_delta": 2710.3,
+      "total_us_delta_pct": 0.01,
+      "prompt_t_s": 291.914,
+      "prompt_delta_t_s": 0.18,
+      "predict_t_s": 35.856,
+      "predict_delta_t_s": -0.03,
+      "predict_delta_pct": -0.08,
+      "mtp_acceptance": 0.6991,
+      "only_in_baseline_top10": [],
+      "only_in_run_top10": [],
+      "biggest_op_deltas_top10": [
+        {
+          "op": "MUL_MAT q4_K m=12288 n=218 k=4096, MUL_MAT q4_K m=12288 n=218 k=4096",
+          "base_us": 684995.0,
+          "run_us": 683110.0,
+          "delta_us": -1885.0,
+          "base_count": 99,
+          "run_count": 99
+        },
+        {
+          "op": "MUL_MAT q4_K m=4096 n=218 k=12288",
+          "base_us": 185725.1,
+          "run_us": 186716.8,
+          "delta_us": 991.7,
+          "base_count": 48,
+          "run_count": 48
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1)",
+          "base_us": 546683.1,
+          "run_us": 547368.6,
+          "delta_us": 685.5,
+          "base_count": 50384,
+          "run_count": 50384
+        },
+        {
+          "op": "MUL_MAT q5_K m=4096 n=218 k=4096",
+          "base_us": 36817.7,
+          "run_us": 37476.1,
+          "delta_us": 658.4,
+          "base_count": 27,
+          "run_count": 27
+        },
+        {
+          "op": "MUL_MAT q6_K m=4096 n=218 k=12288",
+          "base_us": 214486.2,
+          "run_us": 213865.0,
+          "delta_us": -621.2,
+          "base_count": 51,
+          "run_count": 51
+        },
+        {
+          "op": "MUL_MAT_VEC q5_K m=248320 n=1 k=4096, ARGMAX",
+          "base_us": 3262704.4,
+          "run_us": 3262240.4,
+          "delta_us": -464.0,
+          "base_count": 755,
+          "run_count": 755
+        },
+        {
+          "op": "CPY, SSM_CONV, FUSED",
+          "base_us": 239699.0,
+          "run_us": 240069.0,
+          "delta_us": 370.0,
+          "base_count": 12886,
+          "run_count": 12886
+        },
+        {
+          "op": "CONCAT, CPY",
+          "base_us": 29457.7,
+          "run_us": 29799.2,
+          "delta_us": 341.5,
+          "base_count": 4524,
+          "run_count": 4524
+        },
+        {
+          "op": "MUL_MAT q6_K m=4096 n=218 k=4096",
+          "base_us": 33702.2,
+          "run_us": 34038.4,
+          "delta_us": 336.2,
+          "base_count": 24,
+          "run_count": 24
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), RMS_NORM_MUL RMS_NORM(4096,1,1,1), MUL_MAT_VEC q5_K m=248320 n=1 k=4096",
+          "base_us": 1795109.6,
+          "run_us": 1794801.5,
+          "delta_us": -308.1,
+          "base_count": 752,
+          "run_count": 752
+        }
+      ]
+    },
+    {
+      "label": "no_graph_opt",
+      "total_us_delta": 796431.1,
+      "total_us_delta_pct": 3.68,
+      "prompt_t_s": 288.665,
+      "prompt_delta_t_s": -3.07,
+      "predict_t_s": 35.296,
+      "predict_delta_t_s": -0.59,
+      "predict_delta_pct": -1.64,
+      "mtp_acceptance": 0.7347,
+      "only_in_baseline_top10": [
+        "ADD, CPY",
+        "ADD, GET_ROWS",
+        "CONCAT, CPY",
+        "CONCAT, CPY, MUL_MAT_VEC q6_K m=32 n=1 k=4096",
+        "CONCAT, CPY, MUL_MAT_VEC q6_K m=32 n=4 k=4096",
+        "CONCAT, SCALE",
+        "CONT, SCALE",
+        "CPY, RMS_NORM_MUL RMS_NORM(128,32,1,1)",
+        "CPY, RMS_NORM_MUL RMS_NORM(128,32,218,1)",
+        "CPY, RMS_NORM_MUL RMS_NORM(128,32,4,1)"
+      ],
+      "only_in_run_top10": [
+        "ADD, GET_ROWS, RMS_NORM(4096,0,1,1), MUL, MUL_MAT_VEC q5_K m=248320 n=0 k=4096",
+        "CPY, MUL_MAT q4_K m=4096 n=218 k=4096",
+        "CPY, MUL_MAT_VEC q4_K m=4096 n=1 k=4096",
+        "CPY, MUL_MAT_VEC q4_K m=4096 n=4 k=4096",
+        "CPY, SCALE",
+        "CPY, SCALE, GET_ROWS, GET_ROWS, CPY, SSM_CONV",
+        "GET_ROWS, GET_ROWS, CPY, MUL_MAT q5_K m=8192 n=218 k=4096",
+        "GET_ROWS, GET_ROWS, CPY, MUL_MAT_VEC q5_K m=8192 n=1 k=4096",
+        "GET_ROWS, GET_ROWS, CPY, SSM_CONV",
+        "L2_NORM, L2_NORM, MUL_MAT q6_K m=32 n=218 k=4096"
+      ],
+      "biggest_op_deltas_top10": [
+        {
+          "op": "ARGMAX",
+          "base_us": 5860.7,
+          "run_us": 1507605.1,
+          "delta_us": 1501744.4,
+          "base_count": 3,
+          "run_count": 773
+        },
+        {
+          "op": "MUL_MAT_VEC q6_K m=4096 n=1 k=4096",
+          "base_us": 286147.3,
+          "run_us": 875630.8,
+          "delta_us": 589483.5,
+          "base_count": 6016,
+          "run_count": 18408
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1)",
+          "base_us": 546683.1,
+          "run_us": 232796.2,
+          "delta_us": -313886.9,
+          "base_count": 50384,
+          "run_count": 33751
+        },
+        {
+          "op": "RMS_NORM_MUL RMS_NORM(4096,1,1,1), SCALE, GET_ROWS, GET_ROWS, CPY",
+          "base_us": 8709.4,
+          "run_us": 222645.3,
+          "delta_us": 213935.9,
+          "base_count": 751,
+          "run_count": 18384
+        },
+        {
+          "op": "CONCAT",
+          "base_us": 2235.0,
+          "run_us": 169887.2,
+          "delta_us": 167652.2,
+          "base_count": 758,
+          "run_count": 19325
+        },
+        {
+          "op": "MUL_MAT_VEC q4_K m=12288 n=1 k=4096, MUL_MAT_VEC q4_K m=12288 n=1 k=4096",
+          "base_us": 4307605.9,
+          "run_us": 4404883.7,
+          "delta_us": 97277.8,
+          "base_count": 24816,
+          "run_count": 25311
+        },
+        {
+          "op": "FUSED",
+          "base_us": 99107.2,
+          "run_us": 194164.7,
+          "delta_us": 95057.5,
+          "base_count": 25014,
+          "run_count": 44061
+        },
+        {
+          "op": "FLASH_ATTN_EXT dst(256,16,1,1),  q(256,1,16,1),  k(256,512,4,1),  v(256,512,4,1),  m(512,1,1,1)",
+          "base_us": 94209.1,
+          "run_us": 175605.2,
+          "delta_us": 81396.1,
+          "base_count": 3240,
+          "run_count": 5967
+        },
+        {
+          "op": "ADD",
+          "base_us": 44229.6,
+          "run_us": 125214.7,
+          "delta_us": 80985.1,
+          "base_count": 6307,
+          "run_count": 18801
+        },
+        {
+          "op": "MUL_MAT q6_K m=4096 n=218 k=4096",
+          "base_us": 33702.2,
+          "run_us": 102061.3,
+          "delta_us": 68359.1,
+          "base_count": 24,
+          "run_count": 72
+        }
+      ]
+    }
+  ]
+}

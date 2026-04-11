@@ -1,0 +1,62 @@
+=== OVERNIGHT PROFILING RUN ===
+Started:        2026-04-11T22:10:00Z (approximate)
+Plan:           phases/qwen35-mtp/OVERNIGHT.md @ 05f1bbb
+Yarn repo:      main @ 1172931
+Qwen35-mtp:     vulkan-phase4 @ a5af4aa97
+Binary:         /home/llm/src/qwen35-mtp/build-vk/bin/llama-server (b8783-71ba1ed4a)
+Models on disk:
+  /home/llm/models/Qwen3.5-9B-mtp-q4km.gguf       (5.9 GB)
+  /home/llm/models/Qwen3.5-9B-mtp-f16.gguf        (18.4 GB)
+  /home/llm/models/Hermes-3-Llama-3.1-8B.Q4_K_M.gguf (4.9 GB)
+Disk free:      23 GB
+
+=== WAKE-UP SUMMARY ===
+(to be filled at step 9)
+
+=== STEP LOG ===
+
+[step 0] env sanity
+  - disk free: 23 GB (pass)
+  - procs: no llama-server running
+  - yarn-agentic: main @ 1172931 (clean after Hermes commit)
+  - qwen35-mtp: vulkan-phase4 @ a5af4aa97 (clean)
+  - created profile/{per-op,fusion-ab,mtp-sweep,kv-matrix,vram-budget,pipeline-stats,vega-vs-navi,op-coverage}
+  - drive.py + parse_vk_perf.py + fixed_prompt.txt seeded
+  - status: OK
+
+[step 1] per-op profile, q4km, Vega, f16 KV
+  - server: GGML_VK_PERF_LOGGER=1 _CONCURRENT=1 _FREQUENCY=1, -fa on, default KV (f16)
+  - graph splits = 1 (as expected, post-Phase 4)
+  - driven with 3x fixed 218-token prompt, 256-token generation, seeds 42/43/44
+  - aggregate: prompt ~292 t/s, predict ~36 t/s, MTP acceptance 69.9% (442 drafted, 309 accepted)
+  - captured 758 Vulkan Timings blocks over 21.7 s of GPU work (100 distinct op combos)
+  - top 5 ops by share:
+      1. MUL_MAT_VEC q4_K 12288x4096 (fused gate)       19.9% / 4.31 s / 24816 calls
+      2. MUL_MAT_VEC q5_K 248320x4096 + ARGMAX          15.1% / 3.26 s /   755 calls   <- vocab proj + argmax fusion
+      3. RMS_NORM_MUL(4096)                              8.3% / 1.80 s /   752 calls
+      4. MUL_MAT_VEC q5_K 8192x4096 + SCALE + GET_ROWS   8.2% / 1.77 s / 17273 calls
+      5. MUL_MAT_ADD q6_K 4096x12288                     7.5% / 1.63 s / 12784 calls
+  - matmul GFLOPS/s range: 655–1160 (quant) / 6342 (prompt-eval batched) — ~10% of Vega peak
+  - status: OK
+  - artifacts: per-op/q4km-vega-f16kv-2026-04-11T224817Z.{stderr,json,drive.json}
+
+[step 2] fusion A/B
+  - 3 runs against step 1 baseline: no_fusion, no_multi_add, no_graph_opt
+  - findings:
+    * DISABLE_FUSION: +2.76% total / -2.80% predict — lower bound; only
+      scheduler-level pattern fusion (RMS_NORM_MUL, ADD chains) is affected,
+      graph-builder Phase 3 fusions are permanently on
+    * DISABLE_MULTI_ADD: +0.01% — multi-add pattern isn't firing for Qwen3.5-9B
+    * DISABLE_GRAPH_OPTIMIZE: +3.68% total / -1.64% predict
+      - ARGMAX alone: 5.9ms → 1507.6ms (255× slowdown on full-vocab argmax)
+      - graph-optimize is folding MUL_MAT_VEC q5_K 248320x4096 + ARGMAX into
+        a single dispatch; losing this costs 1.5s of GPU time per 3 runs
+      - also: MTP acceptance rose from 69.9% to 73.5% when graph-optimize was
+        disabled — numerical precision shift in the order-of-ops
+  - combined lower bound: ~6.4% of total GPU time is paid for by fusion + graph
+    optimize knobs (graph-builder fused ops from Phase 3 would be at least as
+    valuable again, not measured here)
+  - status: OK
+  - artifacts: fusion-ab/{no-fusion,no-multi-add,no-graph-opt}-*.{stderr,json,drive.txt}
+              fusion-ab/delta-2026-04-11T225700Z.json
+              fusion-ab/SUMMARY.md

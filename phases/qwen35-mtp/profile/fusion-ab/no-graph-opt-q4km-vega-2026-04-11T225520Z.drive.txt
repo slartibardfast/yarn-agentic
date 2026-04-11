@@ -1,0 +1,74 @@
+[1/3] seed=42 wall=8.1s prompt=222tok@287.4tps predict=256tok@35.3tps draft_n=147 accepted=108
+[2/3] seed=43 wall=8.2s prompt=222tok@290.7tps predict=256tok@35.3tps draft_n=147 accepted=108
+[3/3] seed=44 wall=8.1s prompt=222tok@288.7tps predict=256tok@35.3tps draft_n=147 accepted=108
+{
+  "label": "q4km-vega-f16kv-no-graph-opt",
+  "server_url": "http://127.0.0.1:9099",
+  "prompt_path": "/home/llm/yarn-agentic/phases/qwen35-mtp/profile/fixed_prompt.txt",
+  "n_runs": 3,
+  "n_predict": 256,
+  "base_seed": 42,
+  "runs": [
+    {
+      "seed": 42,
+      "wall_s": 8.09,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 772.47,
+        "prompt_per_token_ms": 3.4795945945945945,
+        "prompt_per_second": 287.3898015456911,
+        "predicted_n": 256,
+        "predicted_ms": 7251.161,
+        "predicted_per_token_ms": 28.32484765625,
+        "predicted_per_second": 35.30469120738044,
+        "draft_n": 147,
+        "draft_n_accepted": 108
+      },
+      "content_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client A (summarization job)\n[14:28:05] INFO: Request received from client B (chat)\n[14"
+    },
+    {
+      "seed": 43,
+      "wall_s": 8.163,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 763.72,
+        "prompt_per_token_ms": 3.4401801801801803,
+        "prompt_per_second": 290.68244906510233,
+        "predicted_n": 256,
+        "predicted_ms": 7256.786,
+        "predicted_per_token_ms": 28.3468203125,
+        "predicted_per_second": 35.277325251151126,
+        "draft_n": 147,
+        "draft_n_accepted": 108
+      },
+      "content_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client A (summarization job)\n[14:28:05] INFO: Request received from client B (chat)\n[14"
+    },
+    {
+      "seed": 44,
+      "wall_s": 8.081,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 769.058,
+        "prompt_per_token_ms": 3.464225225225225,
+        "prompt_per_second": 288.66483412174375,
+        "predicted_n": 256,
+        "predicted_ms": 7252.987,
+        "predicted_per_token_ms": 28.33198046875,
+        "predicted_per_second": 35.29580295676802,
+        "draft_n": 147,
+        "draft_n_accepted": 108
+      },
+      "content_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client A (summarization job)\n[14:28:05] INFO: Request received from client B (chat)\n[14"
+    }
+  ],
+  "aggregate": {
+    "prompt_per_second_median": 288.665,
+    "predicted_per_second_median": 35.296,
+    "mtp_draft_n_total": 441,
+    "mtp_draft_n_accepted_total": 324,
+    "mtp_acceptance_rate": 0.7347
+  }
+}

@@ -1,0 +1,74 @@
+[1/3] seed=42 wall=8.2s prompt=222tok@286.8tps predict=256tok@34.9tps draft_n=147 accepted=108
+[2/3] seed=43 wall=7.8s prompt=222tok@289.3tps predict=241tok@34.9tps draft_n=142 accepted=98
+[3/3] seed=44 wall=8.3s prompt=222tok@289.9tps predict=256tok@34.9tps draft_n=153 accepted=103
+{
+  "label": "q4km-vega-f16kv-no-fusion",
+  "server_url": "http://127.0.0.1:9099",
+  "prompt_path": "/home/llm/yarn-agentic/phases/qwen35-mtp/profile/fixed_prompt.txt",
+  "n_runs": 3,
+  "n_predict": 256,
+  "base_seed": 42,
+  "runs": [
+    {
+      "seed": 42,
+      "wall_s": 8.182,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 774.08,
+        "prompt_per_token_ms": 3.486846846846847,
+        "prompt_per_second": 286.7920628358826,
+        "predicted_n": 256,
+        "predicted_ms": 7339.396,
+        "predicted_per_token_ms": 28.669515625,
+        "predicted_per_second": 34.880254451456224,
+        "draft_n": 147,
+        "draft_n_accepted": 108
+      },
+      "content_head": "Here are the logs from the llama-server process during the outage window:\n[14:28:00] INFO: Request received from client A (summarization job)\n[14:28:05] INFO: Request received from client B (chat)\n[14"
+    },
+    {
+      "seed": 43,
+      "wall_s": 7.817,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 767.364,
+        "prompt_per_token_ms": 3.456594594594595,
+        "prompt_per_second": 289.30207828357857,
+        "predicted_n": 241,
+        "predicted_ms": 6906.733,
+        "predicted_per_token_ms": 28.65864315352697,
+        "predicted_per_second": 34.89348726814834,
+        "draft_n": 142,
+        "draft_n_accepted": 98
+      },
+      "content_head": "</think>\n\n1. **Detection**: At approximately 14:30, the primary inference endpoint began returning HTTP 503 (Service Unavailable) responses. The oncall engineer observed the error rate spike and initi"
+    },
+    {
+      "seed": 44,
+      "wall_s": 8.253,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 222,
+        "prompt_ms": 765.703,
+        "prompt_per_token_ms": 3.4491126126126126,
+        "prompt_per_second": 289.92964635113094,
+        "predicted_n": 256,
+        "predicted_ms": 7345.012,
+        "predicted_per_token_ms": 28.691453125,
+        "predicted_per_second": 34.85358499073929,
+        "draft_n": 153,
+        "draft_n_accepted": 103
+      },
+      "content_head": "</think>\n\n1. **Detection**: At approximately 14:30, the oncall person observed a spike in 503 errors from the primary inference endpoint, which persisted for roughly eight minutes.\n2. **Impact**: Duri"
+    }
+  ],
+  "aggregate": {
+    "prompt_per_second_median": 289.302,
+    "predicted_per_second_median": 34.88,
+    "mtp_draft_n_total": 442,
+    "mtp_draft_n_accepted_total": 309,
+    "mtp_acceptance_rate": 0.6991
+  }
+}
