@@ -11,7 +11,22 @@ Models on disk:
 Disk free:      23 GB
 
 === WAKE-UP SUMMARY ===
-(to be filled at step 9)
+Started:            2026-04-11T22:10 UTC
+Finished:           2026-04-11T23:40 UTC
+Steps completed:    9 of 9
+WAKE_USER markers:  none
+
+Headlines:
+  1. iq4_nl is the recommended --cache-type-v default (20.2 MiB, 0% diff vs f16)
+  2. q4_0 is a trap — same memory as iq4_nl but destroys output trajectory (97.5% fingerprint diff)
+  3. Navi 21 (device 0) is 2.73x prompt / 1.56x generate vs Vega 64, with 2x VRAM — no code changes required
+  4. Phase 3/4 fusion is worth at least 6.4% of GPU time (DISABLE_FUSION + DISABLE_GRAPH_OPTIMIZE combined)
+  5. mul_mat_vec_q5_k vocab head compiles at VGPR=256 (Vega SIMD ceiling, 1-wave occupancy) — concrete P0 target
+  6. K-cache quantisation is the next big lever for long-context VRAM on Vega (V alone buys only 1 tier)
+  7. Zero ops fall off Vulkan — Phase 4 coverage mission is complete
+
+Next action: read phases/qwen35-mtp/PROFILING.md top-to-bottom; decide between P0 (q5_k VGPR) and P1 (Navi as primary)
+
 
 === STEP LOG ===
 
@@ -147,3 +162,24 @@ Disk free:      23 GB
   - artifacts: vega-vs-navi/navi-per-op-*.{stderr,json,drive.txt}
               vega-vs-navi/vega-vs-navi-diff-*.json
               vega-vs-navi/SUMMARY.md
+
+[step 8] Op coverage via scheduler debug
+  - GGML_SCHED_DEBUG=2 parse of one driven /completion
+  - total nodes across all graph builds: 17744
+  - backends seen: exactly 1 (Vulkan0)
+  - ops landing on CPU: ZERO
+  - 912 FUSED ops per workload (Phase 3 fusion firing)
+  - op histogram top: MUL_MAT 23%, RMS_NORM 10%, MUL 10%, GET_ROWS 9%
+  - FINDING: Phase 4 coverage complete; no CPU fallbacks remain
+  - Phase 5 priorities should target per-op kernel speed, not coverage gaps
+  - status: OK
+  - artifacts: op-coverage/vega-sched-debug-*.stderr
+              op-coverage/summary-2026-04-11T233500Z.json
+              op-coverage/SUMMARY.md
+
+[step 9] RESULTS synthesis + handoff
+  - wrote phases/qwen35-mtp/PROFILING.md (top-to-bottom synthesis)
+  - prepended wake-up summary to this overnight.log
+  - regression check passed: Qwen3.5-9B-mtp-q4km + -fa on --cache-type-v tq_v_4b
+    starts cleanly with V cache = 18.56 MiB, graph splits = 1
+  - status: OK

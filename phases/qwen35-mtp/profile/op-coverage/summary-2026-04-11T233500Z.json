@@ -1,0 +1,52 @@
+{
+  "total_nodes": 17744,
+  "total_split_lines": 16,
+  "splits_by_backend": {
+    "Vulkan0": 16
+  },
+  "nodes_by_backend": {
+    "Vulka": {
+      "GET_ROWS": 1584,
+      "RMS_NORM": 1808,
+      "MUL": 1808,
+      "SCALE": 768,
+      "CPY": 1552,
+      "MUL_MAT": 4144,
+      "CONCAT": 400,
+      "SSM_CONV": 384,
+      "UNARY": 768,
+      "L2_NORM": 768,
+      "FUSED": 912,
+      "GATED_DELT": 384,
+      "ADD": 1056,
+      "GLU": 528,
+      "ROPE": 288,
+      "SET_ROWS": 288,
+      "FLASH_ATTN": 144,
+      "CONT": 144,
+      "ARGMAX": 16
+    }
+  },
+  "op_histogram_global": {
+    "GET_ROWS": 1584,
+    "RMS_NORM": 1808,
+    "MUL": 1808,
+    "SCALE": 768,
+    "CPY": 1552,
+    "MUL_MAT": 4144,
+    "CONCAT": 400,
+    "SSM_CONV": 384,
+    "UNARY": 768,
+    "L2_NORM": 768,
+    "FUSED": 912,
+    "GATED_DELT": 384,
+    "ADD": 1056,
+    "GLU": 528,
+    "ROPE": 288,
+    "SET_ROWS": 288,
+    "FLASH_ATTN": 144,
+    "CONT": 144,
+    "ARGMAX": 16
+  },
+  "ops_on_cpu_only": []
+}
