@@ -36,6 +36,8 @@
 - [Phase 2: Tool-Calling Accuracy Harness](phases/qwen35-mtp/PHASE2.md)
 - [Phase 3: Closing the 5 t/s Gap (Vulkan GGML_OP_FUSED)](phases/qwen35-mtp/PHASE3.md)
 - [Phase 4: Zero-split MTP + TQ_V_4B Scaffolding](phases/qwen35-mtp/PHASE4.md)
+- [Phase 5: FP16 RPM Research + mul_mat_vec Infrastructure](phases/qwen35-mtp/PHASE5.md)
+- [Phase 6: Vulkan TURBO_KV_4B — First Vulkan Walsh-Hadamard Transform](phases/qwen35-mtp/PHASE6.md)
 
 # Performance
 
