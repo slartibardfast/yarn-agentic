@@ -38,6 +38,8 @@
 - [Phase 4: Zero-split MTP + TQ_V_4B Scaffolding](phases/qwen35-mtp/PHASE4.md)
 - [Phase 5: FP16 RPM Research + mul_mat_vec Infrastructure](phases/qwen35-mtp/PHASE5.md)
 - [Phase 6: Vulkan TURBO_KV_4B — First Vulkan Walsh-Hadamard Transform](phases/qwen35-mtp/PHASE6.md)
+- [Phase 7: SET_ROWS Correctness + Openclaw BigCodeBench Comparison](phases/qwen35-mtp/PHASE7.md)
+- [Phase 8: TURBO_KV_4B Flash Attention — Multi-Head Stride Bug](phases/qwen35-mtp/PHASE8.md)
 
 # Performance
 
