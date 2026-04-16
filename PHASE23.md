@@ -52,12 +52,27 @@ Ran Lloyd-Max on 1M subsampled post-RHT weight values (200 iterations):
 
 The empirical codebook pulls extreme centroids ~0.2 inward (max centroid: 2.53 vs 2.73). This is consistent with kurtosis < 3.0 (lighter tails). The improvement is small but free — same compute, different constant table. TURBO_4B uses the empirical codebook.
 
-### Gaps vs QuIP#
+### E8P lattice vs scalar at 4 bpw (empirical)
 
-QuIP# achieves 5.56 PPL through THREE components. TURBO_4B implements only the first:
-1. **RHT incoherence processing** — implemented (shared with TURBO_KV_4B)
-2. **E8 lattice codebook** (8D vector quantizer) — not implemented (using scalar Lloyd-Max instead; ~25% MSE gap at 2-bit, narrower at 4-bit)
-3. **LDLQ Hessian-weighted rounding** (calibration-based) — not implemented (data-free approach like HIGGS)
+Implemented E8P D8-hat lattice (256-entry codebook, RVQ at 4 bpw). Tested against scalar Lloyd-Max:
+
+| Method | MSE per element | Distinct 8D points |
+|---|---|---|
+| Scalar 16-level Lloyd-Max | **0.00104** | 16^8 ≈ 4 billion |
+| E8P RVQ (2×16-bit) | 0.00806 | 256^2 = 65,536 |
+
+**Scalar wins by 7.7x at 4 bpw.** E8P's advantage is at 2-3 bpw where scalar has only 4-8 levels (and E8's 256-entry 8D codebook is far richer). At 4 bpw, scalar quantization is so fine-grained that 8D vector quantization cannot compete — the lattice structure provides no benefit when individual elements already have 16 reconstruction levels.
+
+The E8P code is retained for a potential TURBO_2B type (where E8P would dominate scalar).
+
+### QuIP# quality components — status
+
+| Component | Status | Impact at 4 bpw |
+|---|---|---|
+| RHT incoherence | **Implemented** | Core quality driver (eliminates outlier distortion) |
+| Empirical Lloyd-Max codebook | **Implemented** | 5.26% MSE improvement over Gaussian codebook |
+| E8P lattice codebook | **Implemented, not used at 4 bpw** | Scalar 7.7x better at this bitrate; E8P advantage is at 2-3 bpw |
+| imatrix-weighted rounding | **Implemented** | Primary quality gap closer (LDLQ proxy); pending end-to-end PPL validation |
 
 MTP acceptance rate (82% Q8_0 → 22% Q4_K_M) is from internal measurements, not published literature.
 
