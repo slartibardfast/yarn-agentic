@@ -376,3 +376,27 @@ make room for the 122B download. 158G free on /opt after cleanup.
 - Use clang (GCC 15 has -Wtemplate-body errors)
 - `-DGGML_IQK_FLASH_ATTENTION=OFF` on non-AVX2 hosts
 - Remote: use absolute `-S`/`-B` paths with cmake (SSH starts in /home/llm)
+
+## Phase 23: Parametric GPU codebook for TURBO_*B (2026-04-16)
+
+Replaced hardcoded `const float[]` codebook arrays in `turbo_rht.glsl`
+with a storage buffer binding (TURBO_CB_BINDING). Each TURBO_*B shader
+now reads its codebook from a per-bitrate `vk_buffer` owned by
+`vk_device_struct`, populated at device init with the published
+Lloyd-Max Gaussian centroids. A custom codebook (imatrix-weighted or
+per-model Lloyd-Max) can overwrite the buffer contents without shader
+recompilation — no CPU fallback needed.
+
+Binding layout:
+- dequant_turbo: 3 bindings (A, D, codebook) — was 2
+- mul_mat_vec_turbo: 6 bindings (A, B, D, Fuse0, Fuse1, codebook) — was 5
+
+Added a `std::vector<vk_subbuffer>` overload of `ggml_vk_dispatch_pipeline`
+because the existing `std::initializer_list` signature can't handle a
+binding count that depends on runtime type. Dispatches for TURBO types
+append the codebook buffer; all other types use the old fixed binding
+list.
+
+Verified: 40/40 backend-ops MUL_MAT pass on TURBO_3B/4B/5B across wave32
+(RX 6800 XT) and wave64 (Vega). TURBO_4B end-to-end PPL 20.84 @ 20 chunks
+matches pre-change baseline. q4_0/q4_k unaffected.
