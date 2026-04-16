@@ -20,19 +20,46 @@ TURBO_KV_4B already implements a complete RHT + codebook quantization pipeline f
 
 This is the same principle as QuIP# (ICML 2024, arXiv 2402.04396), which uses RHT + E8-lattice codebook and achieves near-lossless quality at 4 bpw — roughly Q5_K quality at Q4_K bitrate. No GGUF implementation of RHT-based weight quantization exists anywhere.
 
-## Expected Quality vs Q4_K_M (same ~4.5 bpw)
+## Literature Cross-Check and Empirical Validation
 
-Based on QuIP# published results (Llama-2-7B, WikiText-2):
+### Published results (corrected from original doc)
 
-| Method | bpw | PPL | vs Q4_K_M |
+| Method | bpw | PPL (Llama-2-7B WikiText-2) | Source |
 |---|---|---|---|
-| Q4_K_M | 4.58 | 6.74 | baseline |
-| QuIP# 4-bit (E8 lattice) | 4.0 | ~5.9 | -0.8 PPL at lower bpw |
-| TURBO_4B (Lloyd-Max, projected) | 4.5 | ~6.1-6.3 | -0.4 to -0.6 PPL |
+| FP16 | 16.0 | 5.47 | QuIP# Table 2 |
+| QuIP# 4-bit (E8 + LDLQ) | 4.0 | **5.56** | arXiv 2402.04396 Table 2 (original doc said ~5.9, which was wrong) |
+| HIGGS 4-bit (Hadamard + Lloyd-Max) | 4.0 | ~6.0 | arXiv 2411.17525 (closest analog — same approach, data-free) |
+| Q4_K_M | 4.58 | ~6.41 | llama.cpp perplexity table (Llama-3-8B; original doc said 6.74) |
+| TURBO_4B (projected) | 4.25 | ~5.9-6.1 | Based on HIGGS parity |
 
-Lloyd-Max Gaussian codebook is simpler than E8 lattice (table lookup vs lattice decode) but slightly less optimal. Still substantially better than k-quants because the RHT eliminates the outlier problem.
+### Empirical post-RHT distribution (Qwen3.5-0.8B, 772M values)
 
-MTP-specific impact: smoother quantization error from RHT should preserve draft token quality at lower bitrates, potentially allowing Q3-class bitrates (~3.5 bpw) without the MTP acceptance collapse seen with k-quants.
+| Statistic | Measured | N(0,1) | Literature claim | Assessment |
+|---|---|---|---|---|
+| Kurtosis | **2.960** | 3.000 | DartQuant: "~4.5" | DartQuant measured different conditions. At d=128, CLT convergence is complete. |
+| Excess kurtosis | **-0.040** | 0.000 | "sub-Gaussian" | Confirmed sub-Gaussian but barely. |
+| KS statistic | **0.003** | 0.000 | PolarQuant: "< 0.01 at d=128" | **Better than PolarQuant's bound.** |
+| Skewness | **-0.001** | 0.000 | — | Perfectly symmetric. |
+
+### Codebook optimization
+
+Ran Lloyd-Max on 1M subsampled post-RHT weight values (200 iterations):
+
+| Codebook | MSE | vs Gaussian |
+|---|---|---|
+| Lloyd-Max Gaussian (original) | 0.00833 | baseline |
+| **Lloyd-Max empirical** | **0.00789** | **-5.26%** |
+
+The empirical codebook pulls extreme centroids ~0.2 inward (max centroid: 2.53 vs 2.73). This is consistent with kurtosis < 3.0 (lighter tails). The improvement is small but free — same compute, different constant table. TURBO_4B uses the empirical codebook.
+
+### Gaps vs QuIP#
+
+QuIP# achieves 5.56 PPL through THREE components. TURBO_4B implements only the first:
+1. **RHT incoherence processing** — implemented (shared with TURBO_KV_4B)
+2. **E8 lattice codebook** (8D vector quantizer) — not implemented (using scalar Lloyd-Max instead; ~25% MSE gap at 2-bit, narrower at 4-bit)
+3. **LDLQ Hessian-weighted rounding** (calibration-based) — not implemented (data-free approach like HIGGS)
+
+MTP acceptance rate (82% Q8_0 → 22% Q4_K_M) is from internal measurements, not published literature.
 
 ## Implementation Plan
 
