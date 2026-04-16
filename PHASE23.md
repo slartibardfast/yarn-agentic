@@ -1,6 +1,6 @@
 # Phase 23: TURBO_4B Weight Quantization (RHT + Lloyd-Max Codebook)
 
-## Status: IN PROGRESS (CPU quantize/dequant/vec_dot complete, tests passing)
+## Status: IN PROGRESS — Vulkan MUL_MAT passing (32/32 on wave32+wave64), evaluation pending
 
 ## Problem
 
@@ -155,13 +155,98 @@ Add `TURBO_4B` as a quantization target. Support both:
 
 The Lloyd-Max codebook assumes Gaussian distribution after RHT. An importance matrix could weight the codebook centroids toward the distribution's actual shape (which may be sub-Gaussian for some tensors). This is analogous to unsloth's AWQ-style pre-scaling.
 
-## Verify by
+## Evaluation Plan
 
-1. **Correctness**: `test-backend-ops` MUL_MAT with TURBO_4B × F32 on both Vega and 6800 XT
-2. **Round-trip quality**: quantize → dequant → measure RMSE vs F16 on Qwen3.5-0.8B weight tensors. Must beat Q4_K_M RMSE at same bpw.
-3. **PPL**: `llama-perplexity` on WikiText-2 with Qwen3.5-0.8B TURBO_4B vs Q4_K_M
-4. **MTP acceptance**: Qwen3.5-0.8B with TURBO_4B weights + F16 MTP head. Acceptance rate must exceed Q4_K_M's 22%.
-5. **Performance**: mul_mat_vec throughput within 20% of Q4_K_M (dequant overhead from FWHT)
+### Model & Data
+
+- **Model**: Qwen3.5-0.8B (F16 baseline at `/home/llm/models/qwen35-0.8b-f16.gguf`)
+- **PPL test set**: WikiText-2 raw test (`/home/llm/models/wikitext-2-raw-test.txt`, 7249 lines)
+- **Calibration data** (for imatrix): same WikiText-2 test set (standard practice)
+- **Hardware**: 6800 XT (RDNA2, wave32) primary, Vega 64 (GCN, wave64) secondary
+
+### Calibration Artifacts
+
+Generate before quantization:
+
+1. **imatrix**: `llama-imatrix -m qwen35-0.8b-f16.gguf -f wikitext-2-raw-test.txt -o imatrix.gguf -ngl 99`
+2. **Model-specific codebook**: already at `qwen35-0.8b-codebook.gguf` (54% MSE improvement at 2-bit, 5% at 4-bit vs Gaussian)
+
+### Per-Tensor Sensitivity Analysis (Unsloth Dynamic 2.0 pattern)
+
+Before quantizing, measure per-tensor RMSE after TURBO_4B quantization → dequant vs F16 original. Identify the top-10 most sensitive tensors. Reference: Unsloth dynamic 2.0 found `out_proj` at KLD ~6.0 while most FFN tensors are ~0.1.
+
+Expected sensitive tensors (from Unsloth + TURBO KV cache experience):
+- `output.weight` (logit projection)
+- `blk.*.attn_output.weight` (attention out_proj — no preceding norm to absorb error)
+- `blk.0.*.weight` / `blk.24.*.weight` (first/last layers)
+- `blk.24.nextn.eh_proj.weight` (MTP head)
+
+### Quantization Conditions
+
+For each bitrate point (2B, 3B, 4B, 5B):
+
+| Condition | Description | Codebook | imatrix | Tensor protection |
+|---|---|---|---|---|
+| **Uniform** | All 2D weight tensors at target bitrate | Gaussian (tq_codebook.c) | None | None |
+| **+imatrix** | Same but with importance weighting | Gaussian | Yes | None |
+| **+mixed** | Sensitive tensors at +1 bit (Unsloth pattern) | Gaussian | Yes | Top-10 sensitive → +1 bit |
+
+### Controls (k-quant baselines)
+
+| Control | bpw | Purpose |
+|---|---|---|
+| F16 | 16.0 | Lossless baseline |
+| IQ2_XS | 2.31 | vs TURBO_2B (2.25 bpw) |
+| Q3_K_M | 3.74 | vs TURBO_3B (3.25 bpw) |
+| Q4_K_M | 4.58 | vs TURBO_4B (4.25 bpw) |
+| Q5_K_M | 5.33 | vs TURBO_5B (5.25 bpw) |
+
+Note: TURBO types are at LOWER bitrates than their k-quant controls. TURBO_4B at 4.25 bpw vs Q4_K_M at 4.58 bpw. A win means better PPL at fewer bits.
+
+### Expected PPL Results
+
+Based on HIGGS (arXiv 2411.17525) and our measured codebook MSE:
+
+| Type | bpw | Expected PPL (uniform) | Expected PPL (+imatrix+mixed) | Control PPL | Target |
+|---|---|---|---|---|---|
+| F16 | 16.0 | — | — | baseline | — |
+| TURBO_2B | 2.25 | high (4-level coarse) | improved | IQ2_XS ~similar | < IQ2_XS at lower bpw |
+| TURBO_3B | 3.25 | moderate | improved | Q3_K_M ~baseline | < Q3_K_M at lower bpw |
+| TURBO_4B | 4.25 | ~HIGGS 4-bit (~6.0 on Llama-2-7B equivalent) | ~5.8-5.9 | Q4_K_M ~6.4 | < Q4_K_M |
+| TURBO_5B | 5.25 | very close to F16 | near-F16 | Q5_K_M ~very close to F16 | < Q5_K_M at lower bpw |
+
+Key expectations:
+- **RHT eliminates outlier distortion** → uniform error distribution → PPL improvement over k-quants at same or lower bitrate
+- **imatrix helps most at low bitrates** (2B, 3B) where every centroid matters
+- **Mixed-precision helps output/attention tensors** — these have outsized impact on logit quality
+- **The 4B comparison is the headline number**: if TURBO_4B (4.25 bpw) beats Q4_K_M (4.58 bpw), that's the proof that RHT-based quantization is superior to min/max scaling
+
+### MTP Acceptance Rate
+
+Measure speculative decoding acceptance rate on Qwen3.5-0.8B:
+- F16: ~82% (reference)
+- Q4_K_M: ~22% (internal measurement)
+- TURBO_4B uniform: expect > 22% (RHT should preserve draft token quality)
+- TURBO_4B +imatrix+mixed (MTP head at TURBO_5B): expect >> 22%
+
+### Throughput
+
+GPU mul_mat_vec tok/s on 6800 XT (token generation, ne11=1):
+- Q4_K_M baseline: established
+- TURBO_4B: expect within 20% of Q4_K_M (FWHT overhead amortized by fused dot)
+- Prompt processing (ne11 > 8): falls back to CPU currently — measure the fallback overhead
+
+### Execution Order
+
+1. Generate imatrix (llama-imatrix, ~10 min GPU)
+2. Per-tensor sensitivity analysis (quantize → dequant → RMSE per tensor)
+3. Quantize controls: F16, IQ2_XS, Q3_K_M, Q4_K_M, Q5_K_M
+4. Quantize TURBO uniform: 2B, 3B, 4B, 5B
+5. Quantize TURBO +imatrix: 2B, 3B, 4B, 5B (once --codebook+--imatrix wired)
+6. Quantize TURBO +imatrix+mixed: 4B (with sensitive tensors at 5B)
+7. PPL on all (llama-perplexity, sequential, no concurrent GPU)
+8. MTP acceptance on TURBO_4B variants
+9. Throughput benchmarks (llama-bench, sequential)
 
 ## References
 
