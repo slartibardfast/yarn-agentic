@@ -43,9 +43,10 @@
 17. [PHASE 17: Vulkan Op Trace for Nemotron](PHASE17.md) — **COMPLETE**
 18. [PHASE 18: GPU-Accelerated REDUCE via dmabuf](PHASE18.md) — **COMPLETE**
 19. [PHASE 19: Graph-Split Correctness](PHASE19.md) — **COMPLETE** (fixed by Phase 22)
-20. [PHASE 20: Vulkan Token Generation Performance](PHASE20.md) — **IN PROGRESS**
-21. [PHASE 21: nemotron_h_moe Architecture Support](PHASE21.md) — PLANNED
+20. [PHASE 20: Vulkan Token Generation Performance](PHASE20.md) — **COMPLETE** (hybrid Mamba/MoE ops; dense-model MMVQ deprioritized)
+21. [PHASE 21: Dispatch Reduction for Hybrid Mamba Token Generation](PHASE21.md) — **COMPLETE**
 22. [PHASE 22: Fix get_tensor_async Race on rBAR Devices](PHASE22.md) — **COMPLETE**
+23. [PHASE 23: TURBO_4B Weight Quantization](PHASE23.md) — **IN PROGRESS** (CPU quant/dequant/vec_dot done, 9/9 roundtrip tests pass; Vulkan + quantize tool remaining)
 
 ### Upstream Alignment
 
