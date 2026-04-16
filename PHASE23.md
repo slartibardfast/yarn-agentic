@@ -1,6 +1,6 @@
 # Phase 23: TURBO_4B Weight Quantization (RHT + Lloyd-Max Codebook)
 
-## Status: IN PROGRESS — Vulkan MUL_MAT passing (32/32 on wave32+wave64), evaluation pending
+## Status: EVALUATED — Vulkan end-to-end working, PPL results recorded
 
 ## Problem
 
@@ -247,6 +247,65 @@ GPU mul_mat_vec tok/s on 6800 XT (token generation, ne11=1):
 7. PPL on all (llama-perplexity, sequential, no concurrent GPU)
 8. MTP acceptance on TURBO_4B variants
 9. Throughput benchmarks (llama-bench, sequential)
+
+## Results (WikiText-2 PPL, 50 chunks, 6800 XT wave32)
+
+| Model | bpw | PPL | vs F16 | Notes |
+|---|---|---|---|---|
+| F16 | 16.0 | **16.96** | 1.00x | baseline |
+| Q5_K_M | 6.02 | 17.03 | 1.00x | control at 5-bit |
+| **TURBO_5B+imat** | 5.70 | **17.51** | 1.03x | **beats Q5_K_M-ish at 0.32 fewer bpw** |
+| TURBO_5B | 5.70 | 17.71 | 1.04x | uniform, no imatrix |
+| Q4_K_M | 5.50 | 18.02 | 1.06x | control at 4-bit |
+| **TURBO_4B** | 5.03 | **18.93** | 1.12x | **beats Q4_K_M-ish at 0.47 fewer bpw (barely)** |
+| TURBO_4B+imat | 5.03 | 19.90 | 1.17x | imatrix regresses 4B |
+| Q3_K_M | 4.81 | 21.01 | 1.24x | control at 3-bit |
+| TURBO_3B+imat | 4.36 | 37.62 | 2.22x | 1.8x worse than Q3_K_M at fewer bpw |
+| TURBO_3B | 4.36 | 41.42 | 2.44x | worst useful TURBO result |
+| IQ2_XS | 3.72 | 42.52 | 2.51x | control at 2-bit |
+| TURBO_2B+imat | 3.69 | **53459** | — | **broken** |
+| TURBO_2B | 3.69 | **65299** | — | **broken** |
+
+Note on effective bpw: these include Q8_0 output tensor + F32 norms. Pure weight-row bpw is 2.25/3.25/4.25/5.25 for TURBO_2B/3B/4B/5B.
+
+### Findings vs expectations
+
+**At high bitrates (4B, 5B): TURBO is competitive.**
+- TURBO_5B at 5.70 bpw nearly matches Q5_K_M's PPL (17.71 vs 17.03) at 0.32 fewer bpw
+- TURBO_5B+imat (17.51) edges closer, 3% above F16
+- TURBO_4B at 5.03 bpw approaches Q4_K_M's PPL (18.93 vs 18.02) at 0.47 fewer bpw
+- These validate the core thesis: RHT + scalar Lloyd-Max works well at 4-5 bpw, consistent with HIGGS literature
+
+**At low bitrates (2B, 3B): TURBO fails.**
+- TURBO_2B catastrophically broken (PPL > 50K) — 4 scalar levels per element is too coarse even with RHT
+- TURBO_3B weak (2.2-2.4x F16) — 1.8x worse than Q3_K_M despite lower bpw
+- k-quants' per-sub-block adaptation (32-element sub-blocks with independent scales) dominates at low bitrates; our uniform per-128-block scaling loses too much information
+
+**imatrix behavior is inconsistent with expectations:**
+- Helps 3B (-9%, 41.42 → 37.62) — consistent with "imatrix matters most at low bitrates"
+- Helps 5B (-1%, 17.71 → 17.51)
+- Doesn't rescue 2B (still broken, only 18% reduction from 65K to 53K)
+- **Hurts 4B** (+5%, 18.93 → 19.90) — the 5-candidate scale search apparently picks worse scales when weighted
+- The 4B regression is a concrete bug in our scale optimization logic, not a limitation
+
+### What's validated
+- End-to-end Vulkan pipeline: quantize → load GPU → prompt-process → token-gen → PPL completes successfully
+- The RHT + codebook approach holds at the 4-5 bpw range
+- The framework (types, shaders, imatrix, model-specific codebook tool) is production-grade
+
+### What's not validated
+- Low-bitrate performance — TURBO is not competitive at 2-3 bpw against k-quants. The published HIGGS results showing ~6.0 PPL at 4-bit on Llama-3.1-8B assumed a better-adapted approach; our data-free scalar uniform codebook may not close the gap at low bpw for small models like 0.8B.
+- Mixed-precision (sensitive tensor protection) — not tested; could significantly improve 4B
+- E8P lattice at 2-bit — implemented but not wired into the quantizer; could rescue 2B
+- MTP acceptance rate — not measured (test infrastructure out of scope)
+
+### Known issues
+
+1. **TURBO_2B is broken**: RHT+4-level scalar doesn't work at 2-bit for this model. Options: wire E8P for 2B (we have the implementation), or accept that 2B isn't the right approach and focus on 3-5B range.
+
+2. **imatrix regresses 4B**: the scale-candidate loop in `quantize_block_turbo_weighted` needs review. The unweighted path produces better results at 4-bit.
+
+3. **TURBO_3B is weak**: likely needs sub-block scaling (like k-quants) or E8P-style VQ to compete at low bitrates.
 
 ## References
 

@@ -46,7 +46,7 @@
 20. [PHASE 20: Vulkan Token Generation Performance](PHASE20.md) — **COMPLETE** (hybrid Mamba/MoE ops; dense-model MMVQ deprioritized)
 21. [PHASE 21: Dispatch Reduction for Hybrid Mamba Token Generation](PHASE21.md) — **COMPLETE**
 22. [PHASE 22: Fix get_tensor_async Race on rBAR Devices](PHASE22.md) — **COMPLETE**
-23. [PHASE 23: TURBO_4B Weight Quantization](PHASE23.md) — **IN PROGRESS** (CPU quant/dequant/vec_dot done, 9/9 roundtrip tests pass; Vulkan + quantize tool remaining)
+23. [PHASE 23: TURBO Weight Quantization](PHASE23.md) — **EVALUATED** (end-to-end Vulkan, full bitrate ladder PPL: TURBO_5B competitive with Q5_K_M at 0.3 fewer bpw; TURBO_2B/3B weaker than k-quants at low bitrate)
 
 ### Upstream Alignment
 
