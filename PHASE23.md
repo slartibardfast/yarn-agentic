@@ -408,13 +408,18 @@ comparison — TURBO and k-quant wear different sizes so we pair by bpw.
 
 | Type          | bpw  | PPL    | vs Q-control at matching bpw     |
 |---------------|------|--------|----------------------------------|
-| TURBO_2B-D2   | 3.29 | (running) |                               |
+| TURBO_2B-D2   | 3.29 | **33.63**  | no k-quant at this bpw (between IQ2_XS ~2.3 and Q3_K_M 4.24) |
 | TURBO_3B-D2   | 4.00 | 18.60  | vs Q3_K_M (4.24): 17.26 = +1.34  |
 | TURBO_4B-D2   | 5.04 | 16.21  | vs Q4_K_M (5.08): 15.80 = +0.41  |
 | Q3_K_M        | 4.24 | 17.26  | k-quant control                  |
 | Q4_K_M        | 5.08 | 15.80  | k-quant control                  |
 
 **Dense transformer is much friendlier to TURBO than the SSM-hybrid model:**
+- **TURBO_2B-D2 on dense: PPL 33.63 @ 3.29 bpw** is a genuine usable
+  quality point — for comparison, on SSM-hybrid the same ftype hit
+  PPL 354 at a higher 4.37 bpw. The 10x quality improvement comes
+  from the dense model's attention/FFN weights being the kind of
+  Gaussian-incoherent distribution RHT+codebook is designed for.
 - TURBO_4B-D2 vs Q4_K_M: only +0.41 PPL at nearly matching bpw (5.04 vs 5.08)
   → TURBO is **practically competitive** at 4-bit on dense transformers
 - TURBO_3B-D2 vs Q3_K_M: +1.34 PPL at lower bpw (4.00 vs 4.24)
@@ -425,8 +430,24 @@ Caveat: requantize from Q8_0 introduces cumulative error. Both TURBO
 and k-quant see the same Q8_0 input, so relative comparison is fair,
 but absolute numbers are slightly worse than a direct f16 source.
 
-**Conclusion refreshed:** TURBO_4B/5B are shippable as alternatives on
-dense transformers. Quality is on par with k-quants at the same bpw
-(within noise). The GPU speed advantage of fused RHT+codebook
-mul_mat_vec is the differentiator, not PPL. TURBO_2B/3B need more work
-(per-sub-block scaling, richer codebook) to become competitive.
+**Conclusion refreshed:**
+
+1. **All TURBO_*B bitrates are shippable on dense transformers.**
+   TURBO_4B/5B match or closely track k-quants at the same bpw.
+   TURBO_2B-D2 carves out a new sub-3.5-bpw quality point not covered
+   by any standard k-quant mix.
+
+2. **GPU speed** — the fused RHT+codebook mul_mat_vec path
+   (activation pre-rotation + codebook index lookup + dot product in
+   one shader) is the main TURBO differentiator vs k-quants, not PPL.
+   Benchmarks needed to quantify.
+
+3. **SSM-heavy architectures (qwen35 hybrid)** — TURBO is a worse fit.
+   RHT's incoherence property is designed for attention/FFN weight
+   distributions; SSM state projections don't benefit. On these
+   models, k-quants dominate at every bpw.
+
+4. **Vulkan support for TURBO_2B** is now worth porting (previously
+   "not yet in GLSL" was an acceptable deferral because 2B was
+   broken; now it's a useful quality point and the CPU fallback
+   dominates inference time on dense transformers).

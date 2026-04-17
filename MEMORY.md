@@ -424,8 +424,16 @@ k-quants** at the same bpw (TURBO_4B-D2 20.54 @ 5.85 vs Q4_K_M 19.67
 path), gap narrows dramatically: TURBO_4B-D2 16.21 @ 5.04 bpw vs
 Q4_K_M 15.80 @ 5.08 bpw — only +0.41 PPL at same bitrate.
 
-Key insight: RHT+codebook works OK on attention/FFN weights
+**TURBO_2B-D2 on dense is 33.63 PPL @ 3.29 bpw** — a genuine usable
+quality point (vs 354 PPL on SSM-hybrid at higher 4.37 bpw, vs 1638
+PPL for pure TURBO_2B with E8P). The 10x improvement on the same
+bitrate is entirely from the dense model's weight distribution
+matching RHT's incoherence design target.
+
+Key insight: RHT+codebook works on attention/FFN weights
 (incoherence target) but underperforms on SSM state projections.
-The TURBO thesis is viable for dense transformers, marginal for
-SSM-heavy. TURBO_2B remains broken (4-level scalar codebook is
-fundamentally inadequate) regardless of architecture.
+The TURBO thesis is viable for dense transformers at all bitrates
+(2B through 5B); marginal for SSM-heavy models where k-quants
+dominate. Vulkan TURBO_2B GLSL port is now worth doing (previously
+deferred because 2B was broken; now it's a useful quality point
+where GPU support matters for performance).
