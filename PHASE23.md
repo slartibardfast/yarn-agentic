@@ -523,3 +523,19 @@ port effort isn't justified. A shader-level port would make TURBO_2B
 fast but not useful. If the 2-bit bitrate becomes important later, the
 path forward is replacing E8P with a higher-quality 2-bit codebook
 first, then porting that to Vulkan.
+
+## 2-bit k-quant baselines (yardstick for TURBO_2B phases)
+
+Measured on qwen35-0.8b-f16 → 2-bit k-quants, CPU-only, 20 chunks WikiText-2 raw, `-t 16`.
+All use D2-style promotion for output/attention where the quant type applies it.
+
+| Type           | bpw  | CPU PPL | CPU pp512 t/s | imatrix |
+|----------------|------|---------|---------------|---------|
+| Q2_K           | 4.34 | 113.86  |        1683   | —       |
+| Q2_K_S         | 4.25 |  37.40  |        1670   | yes     |
+| IQ2_XS         | 3.72 |  48.93  |        1713   | yes     |
+| IQ2_S          | 3.75 |  42.12  |        1699   | yes     |
+| **IQ2_M**      | 3.87 |  **31.94** |     1696   | yes     |
+| TURBO_2B v1    | 4.37 | 352.39  |          10   | no      |
+
+IQ2_M is the current best (31.94 PPL @ 3.87 bpw). TURBO_2B v1 is ~10× worse — the single-scale-per-128-element design cannot compete with k-quants' sub-block granularity regardless of how good E8P's codebook is.
