@@ -400,3 +400,32 @@ list.
 Verified: 40/40 backend-ops MUL_MAT pass on TURBO_3B/4B/5B across wave32
 (RX 6800 XT) and wave64 (Vega). TURBO_4B end-to-end PPL 20.84 @ 20 chunks
 matches pre-change baseline. q4_0/q4_k unaffected.
+
+## Phase 23: Codebook pipeline + D2 outlier protection complete (2026-04-17)
+
+End-to-end custom codebook pipeline shipped:
+- `llama-quantize --codebook PATH` reads centroids, applies via
+  `turbo_set_quantize_codebook`, embeds tensors into output GGUF.
+- `llama_model_loader::apply_turbo_codebooks()` reads embedded tensors
+  and forwards to Vulkan via `ggml_backend_reg_get_proc_address`.
+- `turbo_set_quantize_codebook` now derives effective `cent_max` from
+  `max(|centroid|)` so tool-normalized ([-1,1]) codebooks scale
+  correctly through the quantizer. Without this fix PPL was 4439
+  (vs 20.40 with fix).
+
+Unsloth Dynamic 2.0-style outlier promotion implemented:
+- Bumps attn_v/k/q/qkv/output and edge ffn_down within TURBO family
+  where UD targets match, falling back to Q6_K/Q8_0 for the
+  highest-precision tensors. Code in `llama_tensor_get_type_impl`.
+
+PPL findings: on SSM-hybrid qwen35-0.8b, TURBO+D2 is **dominated by
+k-quants** at the same bpw (TURBO_4B-D2 20.54 @ 5.85 vs Q4_K_M 19.67
+@ 5.50). On dense transformer Qwen2.5-Coder-1.5B (via Q8_0→quant
+path), gap narrows dramatically: TURBO_4B-D2 16.21 @ 5.04 bpw vs
+Q4_K_M 15.80 @ 5.08 bpw — only +0.41 PPL at same bitrate.
+
+Key insight: RHT+codebook works OK on attention/FFN weights
+(incoherence target) but underperforms on SSM state projections.
+The TURBO thesis is viable for dense transformers, marginal for
+SSM-heavy. TURBO_2B remains broken (4-level scalar codebook is
+fundamentally inadequate) regardless of architecture.
