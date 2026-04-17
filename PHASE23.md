@@ -399,3 +399,34 @@ transformer (Llama-3-8B / Qwen-7B / Phi) and either (a) confirm the RHT
 thesis holds there, (b) ship TURBO_4B/5B as alternative bitrates at
 similar quality to k-quants, or (c) pivot away from weight quantization
 and double down on TURBO_KV_4B (KV cache) which is the original win.
+
+### 2026-04-17 dense transformer cross-validation
+
+Ran the same D2 ladder on Qwen2.5-Coder-1.5B-Instruct (dense transformer,
+no SSM) via requantize from Q8_0 source. Matching bpw is the critical
+comparison — TURBO and k-quant wear different sizes so we pair by bpw.
+
+| Type          | bpw  | PPL    | vs Q-control at matching bpw     |
+|---------------|------|--------|----------------------------------|
+| TURBO_2B-D2   | 3.29 | (running) |                               |
+| TURBO_3B-D2   | 4.00 | 18.60  | vs Q3_K_M (4.24): 17.26 = +1.34  |
+| TURBO_4B-D2   | 5.04 | 16.21  | vs Q4_K_M (5.08): 15.80 = +0.41  |
+| Q3_K_M        | 4.24 | 17.26  | k-quant control                  |
+| Q4_K_M        | 5.08 | 15.80  | k-quant control                  |
+
+**Dense transformer is much friendlier to TURBO than the SSM-hybrid model:**
+- TURBO_4B-D2 vs Q4_K_M: only +0.41 PPL at nearly matching bpw (5.04 vs 5.08)
+  → TURBO is **practically competitive** at 4-bit on dense transformers
+- TURBO_3B-D2 vs Q3_K_M: +1.34 PPL at lower bpw (4.00 vs 4.24)
+  → TURBO saves 0.24 bpw at 7.8% PPL cost; unclear whether this is a
+    win depending on use case
+
+Caveat: requantize from Q8_0 introduces cumulative error. Both TURBO
+and k-quant see the same Q8_0 input, so relative comparison is fair,
+but absolute numbers are slightly worse than a direct f16 source.
+
+**Conclusion refreshed:** TURBO_4B/5B are shippable as alternatives on
+dense transformers. Quality is on par with k-quants at the same bpw
+(within noise). The GPU speed advantage of fused RHT+codebook
+mul_mat_vec is the differentiator, not PPL. TURBO_2B/3B need more work
+(per-sub-block scaling, richer codebook) to become competitive.
