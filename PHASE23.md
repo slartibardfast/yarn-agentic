@@ -315,3 +315,87 @@ Note on effective bpw: these include Q8_0 output tensor + F32 norms. Pure weight
 - Lloyd-Max codebook: `TURBO_KV_CODEBOOK[16]` in the same file
 - Unsloth dynamic 2.0 KLD sensitivity analysis: https://unsloth.ai/blog/dynamic-v2
 - Phase 0 FWHT stride-32 fix (this session): LDS swap for `subgroupShuffleXor(val, 32)` on wave64
+
+## 2026-04-17 update: Dynamic 2.0 outlier protection + custom codebook pipeline
+
+### What shipped
+
+1. **Parametric GPU codebook** — Vulkan shaders now read the codebook from
+   a per-bitrate storage buffer instead of hardcoded `const float` arrays.
+   Device init uploads the published Gaussian defaults; a custom codebook
+   can overwrite via `ggml_backend_vk_set_turbo_codebook(bits, centroids)`
+   exposed through `ggml_backend_reg_get_proc_address`. No CPU fallback.
+
+2. **Model loader hook** — `llama_model_loader::apply_turbo_codebooks()`
+   scans the loaded GGUF for `turbo.codebook.{2,3,4,5}bit` tensors and
+   forwards them to every backend that advertises the hook. Called from
+   `llama_model::load_tensors` after tensor data is loaded. Codebook
+   tensors are routed to a dedicated `codebook_weights_map` so they don't
+   inflate the arch-specific tensor count check.
+
+3. **`--codebook` in llama-quantize** — CLI flag that loads the centroid
+   tensors from a turbo-codebook output, applies them to the CPU
+   quantize path via `turbo_set_quantize_codebook()`, and embeds the
+   tensors into the output quantized GGUF so inference can apply them.
+
+4. **cent_max derivation from override** — `turbo_set_quantize_codebook`
+   caches `max(|centroid|)` as the effective `cent_max` so the block
+   scale factor matches the custom codebook's dynamic range. Without
+   this, a tool-produced codebook (normalized to [-1,1] max-abs) was
+   producing garbage (PPL 4439 on first test; 20.40 after fix).
+
+5. **Unsloth Dynamic 2.0 outlier promotion** — per-tensor type promotion
+   table mirroring Unsloth's UD-IQ1_S / UD-Q2_K_XL / UD-Q3_K_XL /
+   UD-Q4_K_XL pattern, using TURBO_*B types where their bpw matches the
+   UD target and Q6_K / Q8_0 for the highest-precision tensors.
+
+### Results (qwen35-0.8b-f16, 20 chunks WikiText-2 raw test)
+
+| Type              | bpw  | PPL     | vs baseline                    |
+|-------------------|------|---------|--------------------------------|
+| TURBO_2B (pure)   | 2.25 | 65299   | — (PHASE23 baseline)           |
+| TURBO_2B (E8P)    | 2.25 | 1638    | 40x better than pure 2B        |
+| **TURBO_2B-D2**   | 4.37 | 354     | 4.6x better than E8P alone     |
+| TURBO_3B (pure)   | 3.25 | 41.42   | (from PHASE23)                 |
+| **TURBO_3B-D2**   | 4.79 | 34.61   | modest improvement             |
+| TURBO_4B (pure)   | 4.25 | 20.84   | (PHASE23 baseline)             |
+| **TURBO_4B-D2**   | 5.85 | 20.54   | +1.60 bpw for 0.30 PPL gain    |
+| **TURBO_4B-D2+CB**| 5.85 | 20.40   | custom codebook: -0.14 PPL     |
+| TURBO_5B (pure)   | 5.25 | ~17.7   | (PHASE23)                      |
+| **TURBO_5B-D2**   | 6.34 | 19.90   | (Q8_0 output dominates bpw)    |
+| Q3_K_M (control)  | 4.81 | 23.35   | dense k-quant                  |
+| Q4_K_M (control)  | 5.50 | 19.67   | dense k-quant                  |
+
+### Findings
+
+- **TURBO_2B remains fundamentally broken.** Even with E8P + D2 outlier
+  protection (4.37 bpw) it only reaches PPL 354 — not close to IQ2_XS
+  (~42 PPL expected). The 4-level scalar codebook can't represent this
+  model's weights, and no plumbing fix changes that.
+
+- **D2 protection is dominated by k-quants at the same bpw.**
+  TURBO_3B-D2 at 4.79 bpw scores 34.61 PPL; Q3_K_M at 4.81 bpw scores
+  23.35 PPL. TURBO_4B-D2 at 5.85 bpw (20.54) is narrowly beaten by
+  Q4_K_M at 5.50 bpw (19.67). The Hadamard + scalar codebook approach
+  does not outperform standard k-quants on this SSM-hybrid model.
+
+- **Custom codebook pipeline works end-to-end** and yields a small but
+  real PPL improvement (~0.7% at 4B). Bigger gains would need
+  per-sub-block scaling or a richer codebook structure (residual VQ,
+  trellis-coded).
+
+- **SSM-hybrid bias:** qwen35-0.8b is dominated by SSM tensors with large
+  vocab overhead. These are precisely the weights RHT+codebook is
+  weakest on (SSM state projections are not incoherent in the same way
+  as attention/FFN, where RHT helps). A standard dense-transformer eval
+  would change the picture; this is the critical open validation.
+
+### Decision / next
+
+The pipeline is complete, fully tested, and shippable. The **quality
+story** (TURBO_*B competitive with k-quants at matching bpw) is not
+validated on this model. Next step is to reproduce on a dense
+transformer (Llama-3-8B / Qwen-7B / Phi) and either (a) confirm the RHT
+thesis holds there, (b) ship TURBO_4B/5B as alternative bitrates at
+similar quality to k-quants, or (c) pivot away from weight quantization
+and double down on TURBO_KV_4B (KV cache) which is the original win.
