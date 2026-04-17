@@ -451,3 +451,75 @@ but absolute numbers are slightly worse than a direct f16 source.
    "not yet in GLSL" was an acceptable deferral because 2B was
    broken; now it's a useful quality point and the CPU fallback
    dominates inference time on dense transformers).
+
+## 2026-04-17 session 2: codebook scale fix + CPU benchmarks
+
+### Phase A: codebook scale convention fixed at the tool boundary
+
+The turbo-codebook tool was emitting centroids in [-1, 1] (samples were
+max-abs normalized before Lloyd-Max), but the quantizer expects centroids
+in [-cent_max, cent_max] per the published convention. Previously
+compensated via a runtime `g_turbo_quantize_override_cent_max` workaround
+that derived cent_max from max(|centroid|) of the override; now the tool
+rescales centroids to the published cent_max after Lloyd-Max, and the
+quantizer uses `cfg->cent_max` uniformly whether the codebook is published
+or custom.
+
+Re-measured PPL with the fix (qwen35-0.8b TURBO_4B-D2 + custom codebook):
+**19.95 PPL @ 5.85 bpw** (down from 20.40 with the workaround, because
+the published cent_max exercises the full codebook range).
+
+### Phase B: CPU benchmarks on qwen35-0.8b
+
+Measured on AMD Ryzen 9 3950X (16 physical cores), `-ngl 0 -t 16`,
+`llama-bench -r 3`:
+
+| Model         | bpw   | CPU pp512 t/s | CPU tg128 t/s |
+|---------------|-------|--------------:|--------------:|
+| TURBO_2B-D2   | 4.37  |         10.46 |          5.86 |
+| TURBO_3B-D2   | 4.79  |       1430.93 |          7.71 |
+| TURBO_4B-D2   | 5.85  |       1360.69 |          8.31 |
+| TURBO_5B-D2   | 6.34  |       1359.54 |          7.69 |
+| Q3_K_M        | 4.81  |       1519.18 |         44.24 |
+| Q4_K_M        | 5.50  |       1492.76 |         41.49 |
+
+CPU PPL (`llama-perplexity -ngl 0 -t 16 --chunks 20`):
+
+| Model         | bpw   | CPU PPL | CPU prompt eval t/s |
+|---------------|-------|--------:|--------------------:|
+| TURBO_2B-D2   | 4.37  | 352.39  |               13.00 |
+
+### Findings
+
+- **TURBO is 5× slower than k-quants on CPU tg.** Q4_K_M runs at 41 t/s
+  vs TURBO_4B-D2 at 8.3 t/s. The per-block inverse-RHT (7-stage
+  butterfly) + codebook lookup has no AVX-optimized path; k-quants have
+  years of hand-tuned SIMD inner kernels. Fused RHT-space vec_dot gets
+  the inverse FWHT out of the token-gen inner loop but the forward RHT
+  on activation + codebook dequant still dominates.
+
+- **pp is close.** For prompt processing (batched mat-mat), TURBO_3B/4B/5B
+  are within 6-10% of the Q3/Q4 k-quants. The dequant-to-fp16 path
+  amortizes the RHT cost across many tokens, so TURBO's overhead doesn't
+  compound the way it does for tg.
+
+- **TURBO_2B pp is catastrophic** — 10.46 t/s vs 1430 for TURBO_3B. The
+  E8P lattice decode (256-entry codebook lookup per 8-element group,
+  plus sign-parity decode) is 100-150× slower than scalar codebook
+  lookup on CPU. Unusable without a SIMD implementation.
+
+- **TURBO_2B CPU PPL is 352.39** on qwen35-0.8b, consistent with the
+  earlier Vulkan-mixed run (354.24). Quality at this bitrate is too poor
+  for effective use regardless of speed — porting to Vulkan GLSL is not
+  worth the effort at the current codebook design. A better 2-bit
+  codebook (e.g., a trained E8 codebook à la QuIP#'s D8-hat replacement
+  or QTIP's trellis-coded VQ) would be the right next step, not a
+  shader port of the current inadequate one.
+
+### Decision: TURBO_2B Vulkan port dropped
+
+Given PPL 352 on qwen35-0.8b is not a useful quality point, the GPU
+port effort isn't justified. A shader-level port would make TURBO_2B
+fast but not useful. If the 2-bit bitrate becomes important later, the
+path forward is replacing E8P with a higher-quality 2-bit codebook
+first, then porting that to Vulkan.
