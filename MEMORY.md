@@ -480,3 +480,38 @@ Pause state (to pick up):
 - HARP_2B_S quant at /tmp/sens/bench/qwen35-0.8b-harp-2b-s.gguf
   (416 MB) preserved — next session can re-bench it without
   re-quantizing.
+
+## 2026-04-18 — Stale-gguf masquerading as a Vega shader bug
+
+While resuming the t/s Pareto bench, TURBO_2B came back with PPL ≈ 5M
+on both CPU and Vulkan1 (Vega). First hypothesis: Vega wave64 shader
+bug in `dequant_turbo.comp`. Spent time scoping test-backend-ops,
+`supports_op` paths, and planning a multi-device dequant test.
+
+Actual root cause: `qwen35-0.8b-turbo-2b-imat.gguf` (Apr 16 22:46 UTC)
+predated submodule commit `63f7cea1d` "TURBO: fix codebook scale
+convention" (Apr 17 09:13 UTC) by ~11 hours. The old gguf stores
+centroids in `[-1, 1]` (max-abs-normalized); current runtime expects
+`[-cent_max, cent_max]` (published convention, 2-bit cent_max=1.5104).
+Result: decoded values ~1.5× too small, catastrophic reconstruction
+error, PPL blows up.
+
+The "Vega" leg was a red herring: `ggml-vulkan.cpp:15697-15700`
+explicitly returns false for `MUL_MAT(GGML_TYPE_TURBO_2B)` with the
+comment "TURBO_2B uses E8P lattice VQ — not yet ported to GLSL. Fall
+back to CPU for now." So Vulkan never touched the dequant; both
+"devices" were CPU running the same stale gguf.
+
+Confirmed by running `test-turbo-4b-roundtrip` Test 10 — fresh
+quantize→dequant with current code gives clean RMSE=0.28 rel=0.29.
+Code is correct. Data was stale.
+
+Lesson: when a quantized gguf produces garbage, first check
+`git log --since=<gguf-mtime> ggml/src/ggml-turbo-kv.c` for
+convention-breaking changes in the submodule. GGUF has no version
+metadata for turbo centroids, so the mismatch is silent — this is a
+trap future-me will fall into again unless we add a header key.
+
+Cleanup: 11 stale TURBO/codebook ggufs deleted from `/home/llm/models/`.
+K-quants and HARP_2B_S unaffected (HARP_2B_S is IQ2_S+D2, no turbo
+centroids). Re-quantize pending with current tools.
