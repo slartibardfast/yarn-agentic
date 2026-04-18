@@ -539,3 +539,29 @@ All use D2-style promotion for output/attention where the quant type applies it.
 | TURBO_2B v1    | 4.37 | 352.39  |          10   | no      |
 
 IQ2_M is the current best (31.94 PPL @ 3.87 bpw). TURBO_2B v1 is ~10× worse — the single-scale-per-128-element design cannot compete with k-quants' sub-block granularity regardless of how good E8P's codebook is.
+
+---
+
+## Reopened: Vega (Vulkan1) dequant correctness (2026-04-18)
+
+The "TURBO_2B Vulkan port dropped" decision above still holds for the *quality-driven* argument (PPL 352 is not a useful quality point on qwen35-0.8b). But while running the t/s Pareto bench we discovered a separate **correctness bug**: TURBO_2B on the Vega (RADV VEGA10, GCN, wave64) produces PPL ≈ 5,065,215 and pp128 = 7.57 t/s. Vulkan0 (NAVI21, RDNA2, wave32) is correct, consistent with the CPU reference.
+
+This is a device-specific dequant bug — not the quality argument. Fixing it is worthwhile because:
+
+- The same `dequant_turbo.comp` + `turbo_rht.glsl` shader path serves HARP_2B (ggml_type 50) and future 2-bit variants. A wave64 bug here is a latent blocker for any Vega deployment of the family.
+- The bug exposes a gap in our test coverage: `test-backend-ops` reports `MUL_MAT(turbo_2b, f32)` as "not supported" at all shapes (inference actually dispatches dequant→f32-matmul, not a direct quantized matmul), so the operator-level harness never exercises the dequant on either device.
+- `GET_ROWS(turbo_2b)` is reported `SUPPORTED` by `supports_op` but **crashes at graph build** on Vulkan (`ggml_vk_op_f32<vk_op_binary_push_constants>` abort). A second, separate bug surfaced by the same scoping.
+
+### Plan (test-first)
+
+1. **New test `tests/test-turbo-dequant-multidev.cpp`**: generate known turbo_2b blocks from a det-rand f32 input, dequant on CPU reference, Vulkan0, Vulkan1 via the ggml backend abstraction. Report per-device NMSE vs CPU ref. Fail if any device's rel-RMSE > 1e-3 (dequant is deterministic).
+2. **Investigate GET_ROWS crash**: dispatch path in `ggml/src/ggml-vulkan/ggml-vulkan.cpp` for turbo_2b `GET_ROWS` — likely missing pipeline case; either register the pipeline or tighten `supports_op` to return false for unimplemented shapes.
+3. **Localize wave64 dequant divergence**: diff SPIR-V output of `dequant_turbo.comp` at `SUBGROUP_SIZE=32` vs `SUBGROUP_SIZE=64`. Primary suspects: inverse-RHT butterfly (`turbo_rht.glsl` lines ~112–128) and `subgroupShuffleXor(val, s)` for s ∈ [1..32] under wave64 layout.
+4. **Fix** shader; re-run the multi-device test; verify both devices match CPU ref.
+5. **Re-measure Vega PPL** for the t/s Pareto row — expect ~352 (matching the CPU baseline). The pareto will record TURBO_2B as functionally correct across all three backends but still PPL-uncompetitive vs IQ2_M.
+
+### Non-goals for this reopening
+
+- Not trying to improve TURBO_2B's PPL. That's a codebook/block-structure problem deferred to a future phase.
+- Not porting a better 2-bit codebook. Same deferral.
+- Not bringing TURBO_2B "up to shipping quality". The reopening is narrowly about **Vulkan correctness across devices** and **test coverage**.
