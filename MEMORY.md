@@ -437,3 +437,46 @@ The TURBO thesis is viable for dense transformers at all bitrates
 dominate. Vulkan TURBO_2B GLSL port is now worth doing (previously
 deferred because 2B was broken; now it's a useful quality point
 where GPU support matters for performance).
+
+## 2026-04-18 — per-layer sensitivity sweep on qwen35-0.8b + pause
+
+Ran a fresh singleton-layer sweep: for each layer L ∈ [0, 25),
+quantize HARP_2B_S with ONLY blk.L attn+ffn promoted to Q5_K,
+measure wikitext-2 (20 chunks) PPL vs baseline 33.78. Five parallel
+Bash batches covered layers 0-4, 5-9, 10-14, 15-19, 20-24.
+
+Key findings (full table in DATA.md § Ablation 11):
+- **L23 is the dominant sensitivity spike** (−3.77 PPL alone,
+  2× any other layer). Drives most of the "last 3" Abl7 effect.
+- **L24 is neutral** (+0.00). Terminal-layer attn+ffn don't move
+  the needle; the already-Q6_K output projection is the bottleneck.
+- **Top-5 spikes: L23, L15, L3, L14, L19.** Total singleton ΔPPL
+  = −10.0 (linear-sum prediction).
+- **Sparse-top5 combined recipe VALIDATED**: HARP_2B_S + Q5_K on
+  {3,14,15,19,23} hits **PPL 25.21 @ ~4.64 bpw** — beats dense
+  same-bpw recipes (mid-7 at 27.68, edge-3 at 27.74) and is within
+  ~1.8 PPL of edge-7 (23.43) at 0.43 bpw less. 85% layer-independence
+  (actual 25.21 vs predicted 23.8 → 1.4 PPL cross-layer redundancy).
+- **Implication**: sparse-targeted promotion of sensitivity spikes
+  dominates dense edge-promotion recipes at the same bpw budget.
+
+Lesson re: CPU parallelism: llama-quantize ignores `-t` and pins all
+cores. A running quantize is a host-wide exclusive claim. Parallel
+sweeps alongside a live quantize run ~2× slow for nothing. Feedback
+memory saved to .claude/…/feedback_no_cpu_parallel_sweeps.md with a
+TODO (task #59) to patch llama-quantize to honor `-t`.
+
+Pause state (to pick up):
+- Per-layer sensitivity sweep: complete, committed to DATA.md.
+- Sparse-top5 recipe: validated, results in DATA.md.
+- t/s Pareto bench: partial. IQ2_XS, Q3_K_M, Q4_K_M, Q5_K_M done
+  (results in coord/results/ts-pareto.txt, not committed because
+  coord/results/ is gitignored as volatile state). TURBO_2B and
+  HARP_2B_S bench interrupted mid-PPL; kill was clean.
+- Coord: gpu-0 IDLE, gpu-1 IDLE, no pending queue. Kill logged to
+  coord/gpu.log.
+- Committed: DATA.md, COORD.md, scripts/{sens_sweep_batch.sh,
+  ts_pareto_bench.sh, harp_2b_s_35b_a3b.sh}, .gitignore update.
+- HARP_2B_S quant at /tmp/sens/bench/qwen35-0.8b-harp-2b-s.gguf
+  (416 MB) preserved — next session can re-bench it without
+  re-quantizing.
