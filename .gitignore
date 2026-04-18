@@ -7,3 +7,11 @@ book/
 # Editor / OS
 *.swp
 .DS_Store
+
+# GPU coordination state (volatile, per-host)
+coord/gpu-*.state
+coord/gpu.lock
+coord/gpu.log
+coord/gpu.queue
+coord/abort
+coord/results/
