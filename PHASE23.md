@@ -628,3 +628,53 @@ The earlier two wrong hypotheses (Vega shader bug → stale gguf) came from plau
 ### Related latent bug (not fixed)
 
 `quantize_turbo_generic` also forgets to advance `quant_weights` inside the per-row loop (line 893: `src` and `qrow` advance, `quant_weights` does not). This is dormant because weights are ignored, but it would corrupt results the moment weights are actually used. Left in place with a comment is probably wrong; deferred to whoever re-introduces imatrix-aware quant.
+
+## 2026-04-19 — Throughput reality + gate recalibration
+
+Track B (AVX2 decoder for HARP_2B) + Path I (TCQ+E8 hybrid) completed. Both produce clean empirical ceilings; neither is a shippable path as written. The integrated reading reshapes the phase's throughput expectations.
+
+### The pp ≥ 1200 gate is wrong
+
+It was calibrated against Q4_K_M (pp128 = 520) with "HARP_2B should be faster because it's 2 bpw." The reasoning is wrong on two counts:
+
+1. **Datatype channel.** Q4_K_M's `vec_dot_type = Q8_K` dispatches to `vpmaddubsw` — 32 MAC/cycle on AVX2. HARP_2B's `vec_dot_type = F32` uses fp32 FMA — 8 MAC/cycle. Before any decoder work, HARP_2B is at 0.25× Q4_K_M's arithmetic throughput.
+2. **Decoder complexity.** Q4_K's decoder is ~1 integer-SIMD instruction. HARP_2B's trellis decoder is 5-10 instructions plus a 128-step serial state chain that defeats OoO. Measured at 77-80 % self-time inside the block kernel, ~50 % of that in the state chain.
+
+The realistic AVX2 ceiling with the existing `vec_dot_t` contract is ~200 pp128, not 1200. Any 2 bpw type using `vec_dot_type = F32` is architecturally stuck behind that wall; the true rival is not Q4_K_M but IQ2_S (879 pp128 at matched bit budget, single-lookup 8-D lattice decoder).
+
+### Recalibrated gates
+
+| Metric | Old gate | New gate | Rationale |
+|---|---|---|---|
+| HARP_2B pp128 (0.8B, AVX2) | ≥ 1200 | within 2-3× of IQ2_S on same host (~300-400) | matched-bpw rival, same `vec_dot_type=F32` |
+| HARP_2B pp128 (35B-A3B, AVX2) | — | within 1.5-2× of IQ2_XXS | memory-bound regime compresses the gap 10-20× |
+| HARP_2B_V3 / HARP_2B_E8 | same as above | same as above | lattice/trellis variants inherit the contract |
+
+### Three routes to close the gap (from Track B writeup)
+
+1. **Dequant-then-Q8_K at model load.** CPU-0.8B-only shipping path. On 35B the 4× RAM inflation disqualifies it unless paired with lazy-per-expert dequant (top-k experts live, the rest compressed on disk; MoE gives this a plausible working set).
+2. **Fused decode-GEMM (weeks of CPU kernel work).** AVX2 gather weakness makes this harder than AVX-512 VNNI would; realistic ceiling ~150-200 pp128.
+3. **Consolidate on HARP_2B_S (IQ2_S substrate).** Already at 879 pp128 / 33.78 PPL on 0.8B. Trellis quality upside conceded; lattice-decoder quality shipped with the D2 routing we already have.
+
+### Prerequisite if we ever pursue route (1) or (2)
+
+Change HARP_2B's `vec_dot_type` from F32 to Q8_K and have the AVX2 decoder emit 8-bit integer output. Expected one-off lift 2-3× on pp128 (~30-40 with current state chain). Not a ship path on its own; factors out the datatype penalty so the decoder-cost piece can be measured cleanly. Would be Track B2 if we decide to continue on HARP_2B throughput work.
+
+### Path I (HARP_2B_E8) — TCQ + lattice hybrid stopped at T1
+
+Hypothesis: V=1 trellis emitting 8-D E8 lattice points would beat 1-D scalars at 2 bpw by exploiting E8's better Gaussian-rate-distortion. Reality: at 40 B block, `bits_per_emit == L == 16` means the block fits exactly 16 × 16-bit E8P codes with zero bits left for inter-emission state. The trellis degenerates into independent per-group E8P encoding.
+
+- T1 NMSE 10.15 %, T2 10.13 % — both match the independent E8P-on-iid-Gaussian floor (~10.3 %).
+- Implementation correct: `test-backend-ops -p harp_2b_e8` 10/10; regressions on HARP_2B/V2/V3 green.
+- A real TCQ + lattice hybrid needs either a bigger block (≥ 48 B for state bits) or a different emission dimensionality.
+
+The type stays in the tree as `GGML_TYPE_HARP_2B_E8 = 53`; not a ship candidate at this block layout.
+
+### Phase-level implication
+
+Throughput work on HARP_2B now has an evidence-based decision tree, not a speculative "make AVX2 fast" open-ended track:
+
+- If 35B-A3B PPL shows HARP_2B beating HARP_2B_S by enough to justify kernel work, start with the `vec_dot_type → Q8_K` migration, then evaluate route (1) lazy-dequant or route (2) fused-GEMM.
+- If 35B-A3B PPL shows HARP_2B_S matching or beating HARP_2B, consolidate. HARP_2B stays as a research artifact; the D2 routing + lattice substrate ships.
+
+Either way, the 35B-A3B quality number is the next gate. CPU throughput decisions flow from it, not the other way around.
