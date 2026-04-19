@@ -515,3 +515,49 @@ trap future-me will fall into again unless we add a header key.
 Cleanup: 11 stale TURBO/codebook ggufs deleted from `/home/llm/models/`.
 K-quants and HARP_2B_S unaffected (HARP_2B_S is IQ2_S+D2, no turbo
 centroids). Re-quantize pending with current tools.
+
+## 2026-04-19 — Correction: stale-gguf was also wrong; real bug is in weighted quant
+
+The stale-gguf lesson above is **also wrong** as a root-cause claim.
+Keeping it in place because the symptom chain (wrong diagnosis chained
+twice) is itself the lesson.
+
+After deleting the 11 stale ggufs and re-quantizing with current tools,
+TURBO_2B with `--imatrix` still produced PPL 3.9M. The same f16 source
+quantized **without** `--imatrix` gave PPL 252 (5 chunks) / ~352
+(20 chunks) — matching the PHASE23 baseline. So the bug lives in the
+imatrix code path, not the gguf format, not the Vulkan shaders.
+
+Real root cause in `llama.cpp/ggml/src/ggml-turbo-kv.c`:
+`quantize_block_turbo` (bulk, no-imatrix) has a dedicated E8P lattice
+branch for `bits==2` at lines 619-636 — packs two bytes per 8-element
+group via `e8p_encode_16bit`. `quantize_block_turbo_weighted` (imatrix
+per-block loop) had **no such branch** and fell through to scalar
+Lloyd-Max index packing. Dequant always decodes bits==2 as E8P, so the
+imatrix path's scalar-packed bytes came back as garbage E8P codes.
+TURBO_3B/4B/5B were unaffected because scalar Lloyd-Max matched both
+sides for bits>=3.
+
+Fix: delegate `quantize_block_turbo_weighted` → `quantize_block_turbo`.
+Weights were ignored anyway per the existing `(void)weights;` comment.
+Submodule commit `5e5bda3cf`. Test `weighted_bulk_identity` added to
+`test-turbo-4b-roundtrip` — asserts bit-identity across all four
+turbo bitrates; catches this class of divergence by construction.
+
+**Meta-lesson**: I chased two wrong hypotheses in sequence (Vega shader
+bug → stale gguf) before the real cause surfaced. Each was plausible
+in isolation but ruled out by a minimal repro that I should have run
+earlier. Rule of thumb: after proposing a fix, run the single cheapest
+repro that would distinguish "fix worked" from "symptom persists". If
+symptom persists, the hypothesis is wrong — don't elaborate it, start
+over. This is especially easy to miss when the "fix" step is expensive
+(delete+requantize) and produces a clean-looking command-line
+completion.
+
+**Reusable diagnostic**: for TURBO_*B PPL blowups, run
+`test-turbo-4b-roundtrip` Test 10 (CPU quant→dequant roundtrip) first.
+If it passes, the code is correct; the bug is in data format or in a
+different code path (imatrix, custom codebook). If it fails, the bug
+is in the core quantize/dequant. Now that Test 11 exists, add it to
+the bisection: Test 11 failure isolates to the weighted-vs-bulk
+divergence.
