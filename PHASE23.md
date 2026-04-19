@@ -712,3 +712,37 @@ What unparks as a batch when 35B-A3B work opens:
 - TURBO_2B re-evaluation (separately parked).
 
 No 0.8B work worth pursuing further at this point. Any further HARP-family investment on 0.8B has the wrong quality regime relative to HARP_2B_S; the architecture vs codebook split — HARP_2B's V=1 scalar vs IQ2_S's 8-D lattice at the same bit budget — is structural.
+
+## 2026-04-19 — Strategic pivot: abandon trellis 2-bit family, compare to Unsloth
+
+Finding the phase's 2-bit research produced: **no novel codec survived**. HARP_2B (V=1 trellis), HARP_2B_V2, HARP_2B_V3, HARP_2B_E8, and TURBO_2B all either underperform IQ2_S at matched bpw or stop at information-theoretic ceilings we can't beat. The one shippable artifact, `HARP_2B_S`, is honestly:
+
+> *IQ2_S encoder bits + Unsloth-Dynamic-2.0-style per-role routing + Qwen3.5 SSM carveouts*
+
+Nothing in that sentence is our own codec invention. Unsloth already ships `unsloth/Qwen3.5-0.8B-GGUF` and `unsloth/Qwen3.5-35B-A3B-GGUF` with Dynamic 2.0 UD-Q*_XL variants, and their 9B numbers (UD-IQ2_XXS 3.19 GB / UD-IQ2_M 3.65 GB) suggest the IQ-substrate Dynamic variants exist or are on the way. **Our likely unique contribution is the SSM carveouts for gated-DeltaNet.**
+
+### Decisions
+
+1. **Rename HARP_2B_S → UD_IQ2_S_QWEN35.** Ftype integer 46 retained for gguf back-compat; CLI keeps `HARP_2B_S` as a deprecated alias. The new name is honest about what the recipe actually is: *Unsloth Dynamic 2.0 applied to IQ2_S for Qwen3.5.*
+2. **Abandon all other 2-bit efforts.** No further development on:
+   - HARP_2B (trellis V=1)
+   - HARP_2B_V2 (V=2 K=2)
+   - HARP_2B_V3 (V=2 K=4, completed research artifact)
+   - HARP_2B_E8 (TCQ + E8 hybrid, stopped at T1)
+   - TURBO_2B (RHT + 4-level Lloyd-Max)
+   - Path J MoE per-expert lattice (novel 2-bit on 35B-A3B)
+   - HARP_2B Vulkan GLSL port (#45) — with the family abandoned, the port is meaningless
+   - All five "fix TURBO_2B" follow-ups (Phases A/B/C/D/E — tasks #37-#41).
+
+   All code stays in the tree as research artifacts for anyone who wants to pick it up later; no active work.
+3. **Compare our UD_IQ2_S_QWEN35 directly to Unsloth's shipping recipes.** Tasks #37, #38, #39, #40, #41, #45, #50, #55 deleted. Single replacement task: #61 "Benchmark UD_IQ2_S_QWEN35 vs Unsloth Qwen3.5 GGUFs".
+4. **Unsloth-wins outcome: adopt theirs.** If Unsloth's UD-IQ*_XL beats or matches ours on Qwen3.5 at matched bpw with no SSM breakage, we use `unsloth/Qwen3.5-*-GGUF` directly and retire `UD_IQ2_S_QWEN35` from our build.
+5. **We-win outcome: keep ours.** Likely delta is the SSM carveouts; we document that specifically, keep the ftype in our fork, and propose an SSM-aware patch upstream to Unsloth if it's clean.
+
+### Surviving 2-bit work
+
+Just #61 (benchmark against Unsloth) and — separately — the existing HARP_2B_S → UD_IQ2_S_QWEN35 recipe as the local ship candidate. Everything else is parked.
+
+### Sparse-top-5 sensitivity-driven promotion (task #57 finding) — status
+
+The only methodological piece that might be our own genuine contribution. If we benchmark UD_IQ2_S_QWEN35 against Unsloth and the delta (in our favor) is partly explained by sparse-top-5 layer promotion beyond what Unsloth does, that's a separable contribution worth publishing independently of the Qwen3.5 recipe. Gated on the comparison outcome.
