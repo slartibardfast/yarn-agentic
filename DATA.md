@@ -650,3 +650,20 @@ Per-layer stderr ≈ ±1.50 throughout, so individual ΔPPL < 1.5 is inside nois
 **Actionable conclusion**: **sparse-targeted promotion of sensitivity spikes beats dense edge promotion at the same bpw budget**. For a given quality target, sparse spends bpw where it matters most, avoiding the "dead" layers (L10, L12, L24) that contribute ~nothing to quality but cost bpw under a dense edge recipe.
 
 For 35B-A3B, this implies running the same singleton sweep on (at minimum) a subset of the 40 layers to identify equivalents of L23 before applying the edge-5 style recipe in scripts/harp_2b_s_35b_a3b.sh. The extra quantize+PPL cost on 35B-A3B is high (~4-8 h per singleton), so this is likely only feasible for ~8-10 candidate layers, not all 40. Pick candidates by prior: (a) layers flanking the MTP head (blk.37-41), (b) layers at gated-DeltaNet↔attention transition boundaries, (c) one representative mid-depth layer as control.
+
+## Path F — measurement hygiene audit (2026-04-19)
+
+Pre-flight check before the A/B/C tracks. Ran:
+
+```
+HARP_L=16 HARP_PATH=lut HARP_VITERBI=tailbit harp-analyze --samples 10000 --seed 12345
+```
+
+Result:
+- `mean_nmse=0.082464` (per-block-normalized)
+- `pooled_nmse=0.082476` (Σerr/Σx² across all blocks)
+- `dr_nmse=0.082448` (against known sigma=0.01)
+
+All three within 0.01 pp of each other — measurement is honest, no per-block-variance artifact, and no sigma-drift bug. 8.25% is above the PPV frontier of 6.25% at N=128, R=2 iid Gaussian, consistent with the dispersion penalty at finite block length and the baseline (default) config of this harness. The previous best 6.15% reported in PHASE23 came from the `wide+rms+no-sub-scales` config; this pre-flight used defaults and isn't directly comparable — its purpose was to validate the three metrics agree.
+
+Conclusion: proceed with tracks A/B/C. Path F hygiene: pass.
