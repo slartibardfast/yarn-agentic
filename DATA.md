@@ -794,3 +794,23 @@ Scope is ~1 day on top of Track A's plumbing. Blocked on 35B-A3B showing it's wo
 - `harp.lmap` reader in model-loader + tensor registration in `load_tensors`.
 - End-to-end quantize+PPL proving the policy threads through correctly.
 - Negative-result finding: single-L LUT is the real constraint, not the dispatcher.
+
+## Unsloth benchmark — UD_IQ2_S_QWEN35 is strictly dominated (2026-04-19)
+
+Direct head-to-head on qwen35-0.8b, wikitext-2, 20 chunks, -t 16, --device none:
+
+| Recipe | Size MB | PPL (20 chunks) |
+|---|---:|---:|
+| **Ours UD_IQ2_S_QWEN35** | 396.8 | **33.78 ± 1.83** |
+| Unsloth UD-IQ2_M | 371.9 | 28.72 ± 1.30 |
+| Unsloth UD-IQ3_XXS | 398.2 | 24.20 ± 1.07 |
+| Unsloth UD-Q2_K_XL | 417.7 | 26.26 ± 1.13 |
+
+Ours is dominated on every axis:
+- At ~same size (398 MB): UD-IQ3_XXS wins by 9.58 PPL.
+- At smaller size (372 MB): UD-IQ2_M still wins by 5.06 PPL.
+- At slightly larger (418 MB): UD-Q2_K_XL wins by 7.52 PPL.
+
+Per-tensor inspection of UD-IQ2_M shows Unsloth's gated-DeltaNet routing is independently developed (they land on Q8_0 for `ssm_beta`, Q5_K for `ssm_out`, F32 for `ssm_conv1d`, IQ3_XXS for `attn_gate`) — different choices from ours but complete coverage of the same tensor roles. Their per-layer variation (attention-layer `attn_output` → IQ3_S on all 6 attention layers, selective `ffn_down` promotion) is structural-architecture-driven where ours is sensitivity-driven. Both approaches are per-layer; ours is not a methodological novelty.
+
+Abandon decision recorded in PHASE23.md retrospective section. No further UD_IQ2_S_QWEN35 development; adopt `unsloth/Qwen3.5-*-GGUF` directly for any Qwen3.5 2-bit ship need.
