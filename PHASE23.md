@@ -746,3 +746,75 @@ Just #61 (benchmark against Unsloth) and — separately — the existing HARP_2B
 ### Sparse-top-5 sensitivity-driven promotion (task #57 finding) — status
 
 The only methodological piece that might be our own genuine contribution. If we benchmark UD_IQ2_S_QWEN35 against Unsloth and the delta (in our favor) is partly explained by sparse-top-5 layer promotion beyond what Unsloth does, that's a separable contribution worth publishing independently of the Qwen3.5 recipe. Gated on the comparison outcome.
+
+## Retrospective — 2-bit efforts and why they all failed (2026-04-19)
+
+Closing the phase's 2-bit chapter. Abandoning the area without further pursuit. This section is the honest ledger of what we tried, what happened, and what would need to be true to reopen it.
+
+### What we built and measured (summary table)
+
+| Effort | bpw | 0.8B PPL | Outcome | Why it failed |
+|---|---:|---:|---|---|
+| TURBO_2B (RHT + 4-level Lloyd-Max) | 4.37 | 353.3 | Park | Single scalar per 128-elem block; codebook too coarse; structural ceiling. |
+| HARP_2B V=1 (QTIP trellis + RHT + LUT) | 4.16 | 127.9 (uniform L=14) / 143.4 (per-layer L) | Abandoned | Trellis decoder saturates at Shannon floor (PPV analysis). Single-L LUT means per-layer L policy regresses, not improves. |
+| HARP_2B_V3 (V=2 K=4) | 2.5 | ~127 | Abandoned | Paper's hero-config V=2 paired-emission gave no measurable quality win over V=1 at our bit budget. |
+| HARP_2B_E8 (TCQ + E8 8-D lattice) | 2.5 | T1 stopped at 10.15% NMSE | Abandoned | At 40 B block / 2 bpw, `bits_per_emit == L` means trellis degenerates to independent per-group E8P. Hybrid premise cannot fit the block layout. |
+| UD_IQ2_S_QWEN35 (was HARP_2B_S: IQ2_S + D2 routing + SSM carveouts) | 4.16 | **33.78** | **Dominated by Unsloth** | Unsloth UD-IQ2_M beats at smaller size (28.72 PPL @ 372 MB); UD-IQ3_XXS at same size 24.20 PPL. |
+
+Additional negative or neutral results (research artifacts left in-tree):
+
+- **Path B — V=2 K=2 at halved bpw**: 30% NMSE; halved transition budget starves the trellis.
+- **Path E — LDL-preconditioned V=1**: implemented end-to-end; did not close the gap to the paper's preconditioned column in our measurement regime. Artifact kept.
+- **Path H5 — offline-fit per-tensor scale function**: completed as research; no measurable product win at our block layout.
+- **Path F — measurement hygiene**: confirmed pooled/dr/per-block NMSE agree within 0.01 pp. Not a failure — a small, honest clean-up.
+
+### Speed axis failed independently of quality
+
+AVX2 HARP_2B decoder (Track B) hit pp128=13 vs IQ2_S at 879 on the same host. Profile attributes 77-80% to the block kernel, half of that to the serial trellis state chain (`state = (state<<2 | bits) & mask`, 128 dependent iterations per block — OoO cannot reorder past the dependency). Separately, `vec_dot_type=F32` forgoes `vpmaddubsw`'s 32-MAC/cycle int8 dotprod path for fp32 FMA (8 MAC/cycle), giving up 4× throughput before any decoder work. Gate of pp ≥ 1200 was miscalibrated against Q4_K_M (Q8_K path). Realistic ceiling with the existing `vec_dot_t` contract is ~200 pp128.
+
+This means even if any of the quality variants had worked, shipping HARP_2B on CPU was blocked by the decoder contract. The shipping story required either dequant-then-Q8_K-GEMM (4× RAM inflation — disqualifying on 35B-A3B) or a fused decode-GEMM kernel (weeks of CPU kernel work for an uncertain 2-3× over IQ2_S at matched bit budget).
+
+### What we shipped: nothing novel
+
+The one artifact that actually worked (UD_IQ2_S_QWEN35) is literally *IQ2_S substrate + Unsloth Dynamic 2.0-style routing + Qwen3.5 SSM carveouts*. All three ingredients exist in Unsloth's publicly-available Qwen3.5 GGUFs with different (and better-performing) choices:
+
+- SSM carveouts: Unsloth has them. `ssm_beta` → Q8_0 (ours: Q4_K), `ssm_out` → Q5_K (ours: Q4_K), etc.
+- Per-layer variation: Unsloth does it architecturally (all 6 attention layers get `attn_output` → IQ3_S; selective `ffn_down` bumps). Our sensitivity-driven sparse-top-5 is a *different mechanism* but not a novel concept — their Dynamic 2.0 documentation explicitly says "Dynamic 2.0 measures per-layer sensitivity during quantization and assigns bit-widths accordingly."
+- MoE-awareness: applies on 35B-A3B; their routing almost certainly handles it (not verified, because we're abandoning before the 35B comparison).
+
+### Literature review — what we missed
+
+Completed deeper literature review on 2026-04-19. Paths we did not explore that are live in the field:
+
+1. **Quantization-aware training (QAT) at 2-bit.**
+   - **EfficientQAT** (arXiv 2407.11062, ACL 2025): 2-bit Llama-2-70B in 41 h on A100-80GB, <3 pp accuracy degradation.
+   - **Bit-by-Bit** (arXiv 2604.07888, 2026): progressive QAT with outlier channel splitting; beats BitDistiller + EfficientQAT at W2A2.
+   - **UPQ — Unified Progressive Quantization** (arXiv 2506.09104, 2025): unifies block-wise PTQ with distillation-based QAT for INT2 instruction-tuned LLMs.
+   - **BitDistiller**: knowledge distillation within QAT.
+   - **OneBit**: binary / ternary extreme.
+   - We never attempted QAT. This is the direction that actually breaks the PPV ceiling, because it changes the source distribution to one the codec can encode.
+
+2. **VPTQ** (vector PTQ, 2024-2026): 2-bit via lookup-table vector codebook, similar family to AQLM/QuIP#. Reports 0.01-0.34 PPL reduction on LLaMA-2, 0.38-0.68 on Mistral-7B vs prior SOTA 2-bit.
+
+3. **SpQR** (outlier isolation + 2-bit base): the approach that actually keeps GPTQ usable at 2-bit. We used imatrix but not explicit outlier isolation.
+
+4. **Gated-DeltaNet 2-bit quantization specifically** (arXiv 2412.06464 is the Gated DeltaNet paper; no public 2-bit quant work on it): this *is* genuinely unexplored territory. Our HARP_2B project had an implicit opportunity here with the S0–S6 delta-rule ablation, but the ablation never cleanly ran to completion on 0.8B with a working quality baseline. The open research question remains open — we did not resolve it.
+
+### What would need to be true to reopen the area
+
+Rough preconditions for any future 2-bit work on this project:
+
+1. **A QAT pipeline.** Our entire effort was PTQ with different codecs. QAT gives 2-3 orders of magnitude more leverage at 2-bit and is the direction where the published state of the art actually lives.
+2. **A fused decode-GEMM kernel or a Q8_K-emit decoder.** Without this, any custom 2-bit type is throughput-locked ~50-100× behind k-quants on CPU.
+3. **A specific research question on gated-DeltaNet.** The inline S0–S6 ablation was a reasonable idea that never shipped cleanly; if reopened, it's the one place where we could plausibly produce a finding that isn't already done elsewhere.
+4. **A reason to not just use Unsloth's GGUFs.** They already ship Qwen3.5 2-bit variants that beat anything we produced. Unless we have a custom-model-family target where Unsloth doesn't have a recipe, direct adoption is correct.
+
+### Status
+
+- `UD_IQ2_S_QWEN35` ftype kept in the build tree (ftype int 46) but superseded by Unsloth's GGUFs for actual use.
+- All HARP_2B variants (V=1, V=2, V=3, E8) remain in the submodule as implementation artifacts; no ongoing work.
+- TURBO_2B remains parked (pre-existing decision).
+- Paths I and J parked. Task #55 and tasks #37-#41, #45, #50 deleted.
+- Task #61 (Unsloth benchmark) complete; closing it.
+
+The next time this area is worth revisiting: when QAT compute is available, or when a hybrid-architecture model we care about isn't covered by Unsloth's dynamic quants. Neither is the case now.
