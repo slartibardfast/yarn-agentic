@@ -749,3 +749,48 @@ Policy P3: parse `coord/results/sens-a{0..4}.txt` (25 layers covered), take the 
 
 The infrastructure (cfg extension, `harp.lmap` emit/read, decoder registry, quantize wiring) lands regardless because the 35B-A3B phase needs it for any per-layer or per-role refinement of the policy.
 
+
+## Track A — per-layer L policy on HARP_2B (0.8B) — regression, not improvement (2026-04-19)
+
+Implemented per-layer L dispatcher + P3 sensitivity-driven policy on HARP_2B. Plumbed through encoder/decoder cfg, `harp.lmap` side tensor in the codebook GGUF, model-loader reader, and quantize propagation. Policy P3: 12/25 layers downgraded to L=14 (below median ablation PPL 33.04), 13 kept at L=16.
+
+| Config | Layers at L=16 | bpw | PPL (20 chunks) | vs baseline |
+|---|---|---:|---:|---|
+| Uniform L=14 (B0 baseline, prior) | 0/25 | 4.16 | 127.85 | — |
+| P3 sensitivity-driven | 13/25 | 4.16 | **143.43 ± 8.18** | **+15.58 worse** |
+
+Correctness gate (< 50) and stretch gate (< 31.94) both missed.
+
+### Root cause — the untapped lever is the LUT, not the L policy
+
+The LUT emitted by `turbo-codebook` is trained at L=14 only (`bitshift_codebook.train()` uses a fixed trellis width during the SGD stages). Applying that same LUT at L=16 on some layers produces a calibration mismatch — the trained codebook entries don't optimally cover the state-emission distribution that a wider trellis actually reaches. The mismatch penalty (≈ +1 PPL per upgraded layer) outweighs the trellis-state gain (≈ +0.2 PPL per upgraded layer from additional path diversity).
+
+The finding is informative beyond this run. The framing from the research plan — "per-layer L is a cheap lever because the decoder cost is L-invariant" — is only true when the codebook is co-calibrated with L. With a single-L-trained LUT, per-layer L is not a free dial; it's an active PPL risk.
+
+### What this implies for HARP_2B on 0.8B
+
+HARP_2B V=1 scalar trellis on 0.8B is fundamentally capped around 127-143 PPL at 4.16 bpw, vs HARP_2B_S (IQ2_S + D2 routing) at **33.78** PPL at the same bit budget. The 4× gap is structural: V=1 single-scalar emission + 128-element single-scale block cannot match IQ2_S's 8-D lattice codebook at 2 bpw on iid Gaussian sources (PPV floor argument, documented earlier in this file).
+
+### Options considered, not taken
+
+1. **Per-L LUT co-training** — extend `turbo-codebook` to emit one LUT per distinct L value in the policy (so L=14 layers use an L=14-trained LUT and L=16 layers use an L=16-trained LUT). Closes the calibration mismatch. Estimated 2-3× LUT storage (two 2 KB LUTs = 4 KB per model); training is a re-run. Not pursued — HARP_2B_S already dominates at this bit budget regardless.
+2. **Per-role LUTs** — separate LUTs for attn, ffn, expert roles. Same calibration argument. Also not pursued.
+3. **Reversed-polarity policy** — keep sensitive layers at L=14 (matched-LUT), upgrade tolerant layers to L=16. Would minimize the mismatch surface but also minimizes the benefit. Diagnostic value only; the HARP_2B_S gap is still 4×.
+
+### Implementation notes for follow-up
+
+The Track A plumbing is complete and correct. If HARP_2B V=1 is ever reopened (e.g. if 35B-A3B shows a surprising quality upside), the pieces needed are:
+
+- Per-L LUT training in `tools/turbo-codebook/turbo-codebook.cpp` (add second training pass at L=16).
+- Emit two LUT tensors (`harp.lut.L14`, `harp.lut.L16`) into the codebook GGUF.
+- Loader + decoder dispatch to select LUT by resolved L.
+
+Scope is ~1 day on top of Track A's plumbing. Blocked on 35B-A3B showing it's worth building.
+
+### Track A delivered
+
+- Per-layer L dispatcher in `ggml-harp.c` + tensor registry (`harp_2b_register_tensor`, `harp_2b_resolve_tensor_cfg`).
+- `harp.lmap` emission in `turbo-codebook` from sensitivity `.txt` files.
+- `harp.lmap` reader in model-loader + tensor registration in `load_tensors`.
+- End-to-end quantize+PPL proving the policy threads through correctly.
+- Negative-result finding: single-L LUT is the real constraint, not the dispatcher.
