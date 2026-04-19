@@ -611,3 +611,36 @@ a 40 B block at 2 bpw cannot carry TCQ state bits between 8-D E8
 emissions, so the trellis degenerates to per-group E8P at the E8P
 Gaussian floor (~10% NMSE). Type retained in tree (`GGML_TYPE_HARP_2B_E8 = 53`)
 but not a ship candidate at this block layout.
+
+## 2026-04-19 — Per-layer L needs per-L LUT (Track A finding)
+
+Track A implemented per-layer L policy for HARP_2B V=1 end-to-end
+(dispatcher, codebook side tensor, loader registration, quantize
+propagation). Measured PPL 143.43 at P3 sensitivity-driven policy vs
+127.85 at uniform L=14 — a 15-PPL regression.
+
+Root cause: `turbo-codebook` trains the LUT at L=14 only. Upgrading
+selected layers to L=16 applies the same LUT against a wider trellis
+whose state-emission distribution doesn't match the codebook's
+training distribution. The calibration mismatch penalty (~+1 PPL per
+upgraded layer) outweighs the trellis-state gain (~+0.2 PPL per
+upgraded layer).
+
+**Corrected mental model**: per-layer L is not a zero-cost lever. It
+only pays if the LUT is co-trained per L.
+
+**Order of operations for any future V=1 work:**
+1. Per-L LUT co-training (add L=16 training pass to turbo-codebook,
+   emit two LUT tensors `harp.lut.L14` and `harp.lut.L16`).
+2. Per-layer L policy becomes a real lever only after (1).
+3. Per-role LUTs (attn/ffn/expert) are a second-order refinement.
+
+None of this closes the 4× PPL gap to HARP_2B_S at matched 2 bpw on
+0.8B. HARP_2B V=1's structural ceiling on small dense models is real:
+V=1 single-scalar emission + 128-element single-scale block cannot
+match IQ2_S's 8-D lattice codebook. 35B-A3B may be different (MoE
+weight-mass + memory-bound regime); that's where the question unparks.
+
+**All Track A plumbing is correct and stays in the tree** — if V=1
+ever gets reopened, the dispatcher side is done, only the LUT-training
+side needs extending.
