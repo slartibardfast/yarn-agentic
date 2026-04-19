@@ -678,3 +678,37 @@ Throughput work on HARP_2B now has an evidence-based decision tree, not a specul
 - If 35B-A3B PPL shows HARP_2B_S matching or beating HARP_2B, consolidate. HARP_2B stays as a research artifact; the D2 routing + lattice substrate ships.
 
 Either way, the 35B-A3B quality number is the next gate. CPU throughput decisions flow from it, not the other way around.
+
+### Track A follow-up — per-layer L is not a free lever (2026-04-19)
+
+Plumbing-complete on the per-layer L dispatcher (dispatcher in ggml-harp.c, `harp.lmap` side tensor, loader registration, quantize propagation). End-to-end measured PPL **143.43** at P3 sensitivity-driven policy vs **127.85** for uniform L=14 — a 15-PPL regression, not an improvement.
+
+Root cause: `turbo-codebook` trains the LUT at L=14 only. Upgrading selected layers to L=16 applies the same LUT against a wider trellis whose state-emission distribution doesn't match the codebook's training distribution. The calibration penalty outweighs the trellis-state gain.
+
+**Corrected mental model**: the original plan framed per-layer L as "zero decode-time overhead, so free." That's only true with a per-L LUT; against a single-L LUT, per-layer L actively regresses quality.
+
+**Re-ordering for any future HARP_2B V=1 work** (blocked on 35B-A3B):
+1. Per-L LUT co-training (2 LUTs per model) is the correctness prerequisite.
+2. Per-layer L policy becomes a lever only after (1).
+3. Per-role LUTs are a second-order refinement on top.
+
+None of these close the 4× PPL gap to HARP_2B_S on 0.8B. They only matter if 35B-A3B shows HARP_2B V=1 has a quality regime the lattice doesn't reach.
+
+### 0.8B work — exhausted
+
+All three tracks landed; findings integrated. The qwen35-0.8b signal source is exhausted for HARP-family weight quantization. Recap for readers joining the phase:
+
+| Artifact | Status | Number | Decision |
+|---|---|---|---|
+| HARP_2B_S (IQ2_S + D2) | shipping candidate | 33.78 PPL, 879 pp128 | **Default CPU path across 0.8B and 35B-A3B** |
+| HARP_2B V=1 (trellis) + per-layer L | implemented, measured | 143.43 PPL, 13 pp128 AVX2 | Park — 4× PPL gap + 68× pp gap vs HARP_2B_S |
+| HARP_2B_V3 (V=2 K=4) | implemented, measured | research artifact | Park — no quality win over V=1 |
+| HARP_2B_E8 (Path I TCQ+E8) | implemented, STOP at T1 | 10.15% NMSE | Park — 40 B block cannot carry TCQ state |
+
+What unparks as a batch when 35B-A3B work opens:
+- HARP_2B_S T4 PPL on 35B-A3B (the primary ship question).
+- HARP_2B V=1 T4 PPL on 35B-A3B (only if user wants to know whether the trellis quality wins at scale; if it does, per-L LUT work and `vec_dot_type → Q8_K` migration become justified).
+- Path J MoE per-expert lattice.
+- TURBO_2B re-evaluation (separately parked).
+
+No 0.8B work worth pursuing further at this point. Any further HARP-family investment on 0.8B has the wrong quality regime relative to HARP_2B_S; the architecture vs codebook split — HARP_2B's V=1 scalar vs IQ2_S's 8-D lattice at the same bit budget — is structural.
