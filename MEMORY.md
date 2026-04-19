@@ -576,3 +576,38 @@ vs IQ2_XS's 48.93 / 352.8 MB / 936 pp128. HARP_2B_S trades ~44 MB and
 pareto frontier at 0.8B size. Whether that flips at 35B-A3B is the
 open question (MoE expert-FFN weight mass + lattice VQ vs scalar
 codebooks) — gated until HARP_2B_S is T4-benched there.
+
+## 2026-04-19 — HARP_2B throughput ceiling + `vec_dot_type` discipline
+
+Track B (AVX2 decoder) landed pp128=13 on qwen35-0.8b. IQ2_S at matched
+2 bpw hits 879 on the same host. Root cause is not tunable SIMD:
+
+1. `vec_dot_type = F32` forgoes `vpmaddubsw` (32 MAC/cycle int8 dotprod)
+   for fp32 FMA (8 MAC/cycle). 4× datatype-level penalty before any
+   decoder work, independent of bpw.
+2. Trellis decoder is 5-10 instructions per weight with a 128-step
+   serial state chain (`state[i] = f(state[i-1])`); OoO can't reorder
+   past the dependency. ~50% of block-kernel time goes into the chain.
+
+Realistic AVX2 ceiling with the existing `vec_dot_t` contract is
+~200 pp128, not the 1200 originally gated. The gate was miscalibrated
+against Q4_K_M (4.5 bpw, Q8_K int8 path), not IQ2_S at matched bit
+budget — IQ2_S is the relevant rival.
+
+**Reusable lesson**: any new low-bit ggml quant type should declare
+`vec_dot_type = Q8_K` and emit 8-bit integer output from the decoder,
+not fp32. That single contract choice is a 4× throughput multiplier
+on AVX2 and compounds on AVX-512 VNNI.
+
+**35B-A3B note**: the 68× gap on 0.8B is expected to compress 10-20×
+at 35B because the model is RAM-resident (memory-bandwidth-bound, not
+decoder-bound). Throughput decisions on HARP_2B are gated on 35B-A3B
+quality showing a win worth the kernel investment; otherwise
+consolidate on HARP_2B_S (IQ2_S substrate + D2 routing, already
+879 pp128 / 33.78 PPL on 0.8B).
+
+Path I (HARP_2B_E8) confirmed this framing from the other direction:
+a 40 B block at 2 bpw cannot carry TCQ state bits between 8-D E8
+emissions, so the trellis degenerates to per-group E8P at the E8P
+Gaussian floor (~10% NMSE). Type retained in tree (`GGML_TYPE_HARP_2B_E8 = 53`)
+but not a ship candidate at this block layout.
