@@ -565,3 +565,51 @@ The "Vega bug" was CPU fallback producing the same garbage: `ggml-vulkan.cpp:156
 - `test-backend-ops` cannot cover TURBO_2B MUL_MAT because `supports_op` returns false. Any future dequant regression would escape the operator-level harness. The existing `test-turbo-4b-roundtrip` Test 10 covers CPU roundtrip, which is the path we're actually using. No action — good enough for now.
 - `GET_ROWS(turbo_2b)` is still reported `SUPPORTED` by `supports_op` on Vulkan but aborts at graph build (`ggml_vk_op_f32<vk_op_binary_push_constants>`). Separate latent bug. **Deferred** — TURBO_2B doesn't use GET_ROWS in practice because the embedding table is `token_embd` which is a different quant type in every recipe.
 - **Gguf versioning gap**: nothing in the GGUF header distinguishes pre-scale-fix from post-scale-fix TURBO blocks. A stale gguf silently decodes to garbage rather than erroring. A small header bump (e.g. a `turbo.centroid_convention` u32 metadata key) would make this fail loudly. **Noted for future work** — not in-scope for today.
+
+---
+
+## Corrected root cause (2026-04-19): missing E8P branch in weighted quantize path
+
+The stale-gguf diagnosis above was also wrong. Re-quantizing the TURBO_2B gguf with current tools still produced PPL 3.9M when `--imatrix` was passed. Quantizing without `--imatrix` on the same f16 source gave the expected PPL 252 (5 chunks) / ~352 (20 chunks). So the bug is in the imatrix code path, not the gguf.
+
+### The actual bug
+
+Two divergent code paths in `ggml/src/ggml-turbo-kv.c`:
+
+- **Bulk path** (`quant_weights == NULL`): `quantize_row_turbo_ref` → `quantize_block_turbo` (line 589). For `bits==2` this has a dedicated branch (lines 619-636) that encodes each group of 8 elements as an E8P lattice code via `e8p_encode_16bit`. 32 bytes per 128-elem block.
+- **Weighted path** (`quant_weights != NULL`): per-row loop in `quantize_turbo_generic` → `quantize_block_turbo_weighted` (line 816). For `bits==2` this has **no E8P branch** — it falls through to scalar Lloyd-Max and packs 2-bit codebook indices into the standard bit-stream.
+
+`dequantize_block_turbo` always decodes `bits==2` as E8P. So with `--imatrix` the bytes are packed scalar indices but get decoded as E8P codes. Pure garbage.
+
+Contrast with TURBO_3B/4B/5B: both paths use scalar Lloyd-Max for `bits>=3`, so they were bit-identical and the bug was invisible — the divergence only matters at bits==2.
+
+### The fix
+
+`quantize_block_turbo_weighted` explicitly ignored its `weights` parameter (per its own long-standing `(void)weights;` comment): per-element nearest-centroid is invariant to a positive scalar weight, and imatrix-driven per-block scale search was tried at TURBO_4B and regressed. Since the weighted function was effectively a buggy duplicate of the bulk function, the fix is to delegate:
+
+```c
+static void quantize_block_turbo_weighted(..., const float * weights) {
+    (void)weights;
+    quantize_block_turbo(src, dst, block_size, codebook, n_levels, bits, cent_max);
+}
+```
+
+This removes the duplicate pipeline, closes the divergence by construction, and leaves a clean insertion point for real imatrix use (per-block scale search, mixed precision) if it's ever re-introduced.
+
+### The test
+
+A new `Test 11: weighted_bulk_identity` in `tests/test-turbo-4b-roundtrip.cpp` calls `quantize_turbo_{2,3,4,5}b` with NULL vs a dummy non-NULL weights vector and asserts bit-identical output. Pre-fix: turbo_2b diverges at byte 2 (the `inv_std` fp16 field — bulk uses `E8P_CENT_MAX/max_abs`, weighted used scalar `cent_max/max_abs`). Post-fix: all four bitrates identical across 288/416/544/672 bytes.
+
+### Verification
+
+- Test 11 passes all 4 types post-fix
+- Fresh re-quantize of `qwen35-0.8b-turbo-2b-imat.gguf` with `--imatrix`: 5-chunk PPL 251.80 (bit-identical chunk values to the no-imatrix path, as expected now that both paths produce the same bits)
+- 20-chunk final PPL running for the t/s Pareto row
+
+### Meta-lesson for MEMORY
+
+The earlier two wrong hypotheses (Vega shader bug → stale gguf) came from plausible but unverified signals: PPL 5M on Vega pointed at shaders because the Vega label suggested device-specific; the gguf-mtime-vs-commit-date correlation was compelling but only relevant when paired with an independent failure. Root-cause discipline: don't stop at the first plausible culprit — rerun the minimal reproduction after each "fix" and keep going if the symptom persists. The test-backend-ops exploration was useful even though the bug wasn't there — it ruled out multiple hypotheses at once.
+
+### Related latent bug (not fixed)
+
+`quantize_turbo_generic` also forgets to advance `quant_weights` inside the per-row loop (line 893: `src` and `qrow` advance, `quant_weights` does not). This is dormant because weights are ignored, but it would corrupt results the moment weights are actually used. Left in place with a comment is probably wrong; deferred to whoever re-introduces imatrix-aware quant.
