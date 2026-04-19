@@ -818,3 +818,51 @@ Rough preconditions for any future 2-bit work on this project:
 - Task #61 (Unsloth benchmark) complete; closing it.
 
 The next time this area is worth revisiting: when QAT compute is available, or when a hybrid-architecture model we care about isn't covered by Unsloth's dynamic quants. Neither is the case now.
+
+## 2026-04-19 (correction) — Both TURBO_2B and HARP_2B_S are **Abandoned**, not "Parked" or "Dominated"
+
+The earlier retrospective under-committed. Restating cleanly:
+
+### Status of every HARP / TURBO 2-bit ftype
+
+| ftype | Decision |
+|---|---|
+| TURBO_2B | **Abandoned** |
+| HARP_2B | **Abandoned** |
+| HARP_2B_V2 | **Abandoned** |
+| HARP_2B_V3 | **Abandoned** |
+| HARP_2B_E8 | **Abandoned** |
+| HARP_2B_S | **Abandoned** |
+
+All six are dead. No active development, no "research artifact" status that implies future revisit, no "ship candidate" framing. Nothing in this family survives. `unsloth/Qwen3.5-*-GGUF` is the correct answer for any Qwen3.5 2-bit need. If some other model family needs 2-bit later, start from the literature review in this phase doc, not from any of our code.
+
+The implementation code stays in the submodule only because pulling it out would be larger surgery than it's worth right now. Treat it as historical.
+
+### The HARP_2B_S → UD_IQ2_S_QWEN35 rename was a mistake
+
+I renamed `HARP_2B_S` to `UD_IQ2_S_QWEN35` earlier today after we determined the recipe was IQ2_S + Unsloth-Dynamic-2.0-style routing + Qwen3.5 SSM carveouts — the thought being that honest naming mattered. It did not. The recipe is dominated by Unsloth's own GGUFs at matched bpw; there is no "it" to name accurately. Renaming implied we were still going to ship the ftype, which we aren't.
+
+The rename was committed to a local submodule branch only (not pushed to origin) and has now been reverted in the same branch. Neither the rename nor any HARP_2B_S code was ever published. Net effect on the code tree: zero.
+
+**Lesson**: when abandoning a line of work, don't rename it on the way out. The rename signals "still maintaining this under a different name" when the correct signal is "this is dead." Next time something is genuinely dominated on the core benchmark, the response is one word in the status table, not a rename.
+
+### What's on the shelf, honestly
+
+- `GGML_TYPE_TURBO_2B` through `GGML_TYPE_HARP_2B_E8` (6 ggml types): dead code. Still in `ggml.h`, still with type traits, vec_dot dispatchers, and routing blocks. Works for existing ggufs on disk if someone tries to load one. Not selectable as new-quantization targets for any practical purpose — the CLI options exist but lead to strictly-worse-than-published-alternatives.
+- `LLAMA_FTYPE_MOSTLY_TURBO_2B` through `LLAMA_FTYPE_MOSTLY_HARP_2B_E8` (6 ftypes, integers 40-49 reserved): same — dead but intact, keeps old GGUFs loadable.
+- `quantize-codebook`, `harp-analyze`, `harp-analyze-tensor`, related test harnesses: all in the submodule. Unreferenced from active work.
+- Any 0.8B GGUFs we built with HARP_2B_S / HARP_2B / TURBO_2B on disk at `/home/llm/models/`: obsolete.
+
+### Shipping recommendation for Qwen3.5
+
+`unsloth/Qwen3.5-0.8B-GGUF` and `unsloth/Qwen3.5-35B-A3B-GGUF` directly. Measured Unsloth numbers on 0.8B (from today's bench):
+
+| Unsloth variant | Size MB | PPL |
+|---|---:|---:|
+| UD-IQ2_XXS | 338 | (not benched) |
+| UD-IQ2_M | 372 | 28.72 |
+| UD-IQ3_XXS | 398 | 24.20 |
+| UD-Q2_K_XL | 418 | 26.26 |
+| UD-Q3_K_XL | 492 | (not benched) |
+
+Pick by target size. At ~400 MB, UD-IQ3_XXS is the obvious choice.
