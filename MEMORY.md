@@ -644,3 +644,44 @@ weight-mass + memory-bound regime); that's where the question unparks.
 **All Track A plumbing is correct and stays in the tree** — if V=1
 ever gets reopened, the dispatcher side is done, only the LUT-training
 side needs extending.
+
+## 2026-04-19 — Strategic pivot: abandon trellis 2-bit, compare to Unsloth
+
+The research cycle on novel 2-bit codecs for Qwen3.5 concluded with
+**no novel codec that beats IQ2_S at matched bpw on the 0.8B yardstick.**
+HARP_2B V=1 (127-143 PPL), HARP_2B_V3 (similar), HARP_2B_E8 (STOP at
+T1 NMSE 10.15%), and TURBO_2B (353 PPL) all underperform the plain
+IQ2_S encoder (33.78 PPL with our D2 routing wrapper).
+
+### Renames
+- `HARP_2B_S` → `UD_IQ2_S_QWEN35`. Ftype integer 46 preserved for
+  gguf back-compat. CLI keeps `HARP_2B_S` as a deprecated alias for
+  scripts.
+- The new name is honest: it's *Unsloth Dynamic 2.0 applied to IQ2_S,
+  with Qwen3.5 SSM carveouts*. No novel codec.
+
+### Abandoned (code stays in-tree as artifacts; no active work)
+- HARP_2B (V=1 trellis, quantlut_sym LUT, RHT encoder)
+- HARP_2B_V2 (V=2 K=2)
+- HARP_2B_V3 (V=2 K=4, task #51 completed as research artifact)
+- HARP_2B_E8 (Path I TCQ+E8 hybrid, stopped at T1 gate)
+- TURBO_2B (RHT + 4-level Lloyd-Max, parked separately prior to pivot)
+- Path J MoE per-expert lattice
+- HARP_2B Vulkan GLSL port
+
+### Tasks deleted: #37, #38, #39, #40, #41, #45, #50, #55
+New task #61: Benchmark UD_IQ2_S_QWEN35 vs Unsloth's Qwen3.5 GGUFs.
+
+### Decisive next step
+Download `unsloth/Qwen3.5-0.8B-GGUF` and `unsloth/Qwen3.5-35B-A3B-GGUF`,
+measure their PPL + t/s at matched bpw against our UD_IQ2_S_QWEN35.
+- If Unsloth wins: adopt their GGUFs, retire UD_IQ2_S_QWEN35 from the
+  build.
+- If we win: probably the delta is the SSM carveouts (+ possibly
+  sparse-top-5 layer promotion). Document the delta; propose SSM-aware
+  patch upstream to Unsloth if it's clean.
+
+### Only surviving methodological contribution
+Sparse-top-5 sensitivity-driven layer promotion (task #57 finding) —
+if it helps beyond what Unsloth does, it's a separable contribution
+worth publishing independently of the Qwen3.5 recipe.
