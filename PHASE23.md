@@ -604,7 +604,22 @@ A new `Test 11: weighted_bulk_identity` in `tests/test-turbo-4b-roundtrip.cpp` c
 
 - Test 11 passes all 4 types post-fix
 - Fresh re-quantize of `qwen35-0.8b-turbo-2b-imat.gguf` with `--imatrix`: 5-chunk PPL 251.80 (bit-identical chunk values to the no-imatrix path, as expected now that both paths produce the same bits)
-- 20-chunk final PPL running for the t/s Pareto row
+- 20-chunk final PPL: **353.2750 ± 20.65** on CPU, within stderr of the prior 352.39 yardstick
+
+### t/s Pareto bench — closed (2026-04-19)
+
+Final rows on qwen35-0.8b (CPU, wikitext-2, 20 chunks):
+
+| quant      | size_mb | ppl      | pp128  | tg64  |
+|------------|--------:|---------:|-------:|------:|
+| IQ2_XS     | 352.8   |  48.9313 | 936.33 | 42.17 |
+| Q3_K_M     | 453.8   |  23.5818 | 893.96 | 46.92 |
+| Q4_K_M     | 516.8   |  20.0234 | 838.40 | 45.32 |
+| Q5_K_M     | 565.2   |  19.0640 | 800.35 | 42.90 |
+| HARP_2B_S  | 396.8   |  33.7752 | 878.64 | 40.73 |
+| TURBO_2B   | 412.8   | 353.2750 |   2.77 |  1.77 |
+
+TURBO_2B is CPU-only (Vulkan `supports_op` returns false for `MUL_MAT`), explaining the 300× t/s gap. On 0.8B TURBO_2B is not a shippable quality point; its MoE-on-35B evaluation remains the only place it could compete (expert FFN weight mass favours the E8P lattice over scalar codebooks). HARP_2B_S is the on-disk ship candidate at 2-bit-class sizes, 33.78 PPL at 3.3 bpw equivalent.
 
 ### Meta-lesson for MEMORY
 
