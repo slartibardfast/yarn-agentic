@@ -734,3 +734,24 @@ need, use `unsloth/Qwen3.5-*-GGUF` directly.
    Dynamic 2.0 covers Qwen3.5 0.8B and 35B-A3B).
 
 None are true today.
+
+## 2026-04-19 — Don't rename on the way out
+
+When abandoning a line of work, don't rename it on the way out. I
+renamed `HARP_2B_S` → `UD_IQ2_S_QWEN35` earlier today after deciding
+the recipe was worth naming honestly. Then we ran the Unsloth
+comparison, saw strict dominance, and abandoned the whole thing.
+
+The rename implied "still maintaining this under a different name"
+when the correct signal was "dead." Extra commit noise, extra confusion
+for anyone reading the history, and zero product value. The rename
+was only committed to a local submodule branch (never pushed) and has
+been reverted in the same branch. Net code impact: zero.
+
+**Rule**: abandoning a ftype / feature / module is a one-line status
+change, not a rename. If the old name is misleading, explain the
+misleading in the retrospective, don't fix it with a rename.
+
+All 6 HARP / TURBO 2-bit ftypes (TURBO_2B, HARP_2B, V2, V3, E8, HARP_2B_S)
+are Abandoned, period. Use `unsloth/Qwen3.5-*-GGUF` for any Qwen3.5
+2-bit need.
