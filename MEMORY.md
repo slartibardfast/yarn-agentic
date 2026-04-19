@@ -561,3 +561,18 @@ different code path (imatrix, custom codebook). If it fails, the bug
 is in the core quantize/dequant. Now that Test 11 exists, add it to
 the bisection: Test 11 failure isolates to the weighted-vs-bulk
 divergence.
+
+## 2026-04-19 — t/s Pareto bench closed on qwen35-0.8b
+
+Final 20-chunk CPU PPL on post-fix TURBO_2B: **353.2750 ± 20.65**,
+matches prior 352.39 yardstick within stderr. Pareto row updated at
+`coord/results/ts-pareto.txt` (volatile, gitignored). The full table
+is preserved in PHASE23.md under "t/s Pareto bench — closed".
+
+Finding worth keeping: on qwen35-0.8b at 2-bit budgets, HARP_2B_S
+(IQ2_S substrate + D2 routing) sits at PPL 33.78 / 396.8 MB / 878 pp128,
+vs IQ2_XS's 48.93 / 352.8 MB / 936 pp128. HARP_2B_S trades ~44 MB and
+~7% pp throughput for 15 PPL of headroom. TURBO_2B is outside the
+pareto frontier at 0.8B size. Whether that flips at 35B-A3B is the
+open question (MoE expert-FFN weight mass + lattice VQ vs scalar
+codebooks) — gated until HARP_2B_S is T4-benched there.
