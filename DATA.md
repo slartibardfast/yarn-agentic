@@ -667,3 +667,63 @@ Result:
 All three within 0.01 pp of each other — measurement is honest, no per-block-variance artifact, and no sigma-drift bug. 8.25% is above the PPV frontier of 6.25% at N=128, R=2 iid Gaussian, consistent with the dispersion penalty at finite block length and the baseline (default) config of this harness. The previous best 6.15% reported in PHASE23 came from the `wide+rms+no-sub-scales` config; this pre-flight used defaults and isn't directly comparable — its purpose was to validate the three metrics agree.
 
 Conclusion: proceed with tracks A/B/C. Path F hygiene: pass.
+
+## Path I — TCQ + E8 lattice hybrid (2026-04-19) — STOP at T1 gate
+
+Track C implemented a new type `GGML_TYPE_HARP_2B_E8 = 53` that uses the V=1 bitshift trellis but emits 8-D E8 lattice points per transition instead of 1-D scalars. Block layout kept at 40 B for comparability.
+
+| Metric | Value | Target |
+|---|---|---|
+| T1 pooled NMSE (10 000 Gaussian blocks, σ=0.01) | 10.15 % | < 4 % |
+| T2 NMSE (`blk.0.attn_qkv.weight`) | 10.13 % | within 0.5 pp of T1 |
+| T3 PPL | not run | — (T1 gate triggered STOP) |
+
+T2 tracks T1 within 0.02 pp, confirming the E8P codebook behaves identically on real post-RHT weights and synthetic Gaussians. `test-backend-ops -p harp_2b_e8` passes 10/10; regression tests on HARP_2B/V2/V3 stay green.
+
+**Structural finding**: at 2 bpw with a 40 B block budget and L=16 (`bits_per_emit == L`), the V=1 trellis degenerates to independent per-group E8P encoding — there's no room for inter-group state. The block fits 16 × 16-bit E8P codes, not a real TCQ + lattice hybrid with memory between emissions. The 10 % NMSE floor matches independent verification: `e8p_encode_16bit` on unit-variance Gaussian hits ~10.3 % NMSE without Hessian weighting. QuIP# achieves sub-6 % only with Hessian-weighted + residual coding at 4 bpw.
+
+**Conclusion**: the "TCQ + nested lattice" hybrid idea as framed does not fit a 40 B block at 2 bpw. A real hybrid needs either (a) a bigger block (48 B+) for state-carrying bits, or (b) a different emission dimensionality that leaves room for inter-emission state. Path I is parked with notes. HARP_2B_E8 type stays in the tree for future experimentation; not a ship candidate.
+
+## Track B — AVX2 decoder bench + structural diagnosis (2026-04-19)
+
+AVX2 decoder (both LUT-gather and 1MAD paths) landed on Ryzen 9 3950X (zen2). `test-backend-ops -p harp_2b` 40/40 pass; roundtrip 11/11; no correctness divergence vs scalar. First draft had a 40 % accuracy bug from an incorrect sign-hash (xorshift instead of Knuth mul-hash used by `turbo_kv_random_sign`); caught pre-bench and fixed.
+
+| Path | pp128 (t/s) | tg64 (t/s) | note |
+|---|---:|---:|---|
+| scalar (`HARP_USE_SCALAR=1`) | 3.43 | 2.98 | reference |
+| AVX2 LUT gather | 10.05 | 8.39 | gather-limited |
+| AVX2 1MAD | **13.01** | **10.68** | FMA chain, fastest |
+| Q4_K_M reference | 520 | 30 | same host/flags |
+| HARP_2B_S (IQ2_S + D2) reference | 879 | 41 | pareto-bench row |
+
+Gate (pp ≥ 1200) missed by ~100×. Perf profile (`perf record -F 200`) attributes 77-80 % self-time to the block kernel, of which ~50 % is the serial `state = (state << 2 | bits) & mask` chain (128 dependent iterations per block defeat OoO). Remaining 20-25 % split between activation RHT cache, horizontal reduce, OpenMP glue, fp16↔fp32.
+
+### Why the gate was wrong
+
+The pp ≥ 1200 gate was calibrated against `Q8_K vec_dot_type` infrastructure; HARP_2B's `vec_dot_type = F32` forgoes the int8 dotprod path (`vpmaddubsw`, 32 MAC/cycle) for fp32 FMA (8 MAC/cycle). That's a 4× datatype-level penalty before a single instruction of decoder work. On top of that, the trellis decoder is ~5-10× more instructions per weight than IQ2_S's single-lookup lattice decoder. Realistic AVX2 ceiling with the existing `vec_dot_t` contract is ~200 pp128, not 1200.
+
+### Revised framing — the real benchmark is IQ2_S at matched bit budget
+
+The Q4_K_M comparison is a misdirection. At 2 bpw, the relevant rival is IQ2_S (which also rides the `vec_dot_type = F32` path but with an 8-D lattice codebook: one packed-index lookup + one scale per weight, no state chain). HARP_2B_S at 879 pp128 vs HARP_2B AVX2-1MAD at 13 pp128 is the 68× gap you have to close or concede.
+
+### Three routes to close the gap, reconciled against 35B-A3B reality
+
+1. **Dequant-then-GEMM (load-time expansion to Q8_K).** ~1 day of work. Inherits Q8_K's pp throughput (~800+ on this host). Quality is exactly HARP_2B's quality. Cost: **4× RAM inflation**. On 0.8B that's 413 MB → ~850 MB, livable. On 35B-A3B a 2 bpw model is ~9 GB; inflated to Q8_K it's ~35 GB — the whole memory-compression reason for 2-bit quantization is gone. **Route (1) is CPU-0.8B-only** unless paired with lazy-per-expert dequant (keep compressed on disk, decompress top-k experts to scratch Q8_K on demand; MoE makes this plausible — ~10 GB working set with top-2 experts live).
+
+2. **Fused block decode-GEMM.** Walk each weight block's trellis once, SIMD-FMA against N=64-128 activation columns in the same pass. QTIP's GPU kernel pattern, CPU-adapted. Weeks of work; AVX2 gather weakness makes this harder than AVX-512 VNNI would. Realistic ceiling: ~150-200 pp128 (still 4-6× below IQ2_S's single-lookup decoder).
+
+3. **Consolidate on HARP_2B_S.** Already at 879 pp128, 33.78 PPL on 0.8B. Concede the trellis quality upside; ship the lattice-decoder quality. The D2 routing work already applies.
+
+### 35B-A3B inverts the cost model
+
+On 0.8B the model fits in L3 and decoder cost dominates throughput. On 35B-A3B the weights are RAM-resident and throughput is memory-bandwidth-bound — decoder cycles are largely hidden behind DRAM stalls. The 68× gap on 0.8B is expected to narrow substantially at the 35B scale; empirical prediction is 3-5× rather than 68×. This changes the ship calculus: HARP_2B's quality upside (if real) is far cheaper to carry on 35B than on 0.8B.
+
+### Follow-up path (not yet taken)
+
+The one concrete next step that surfaces signal cleanly: change HARP_2B's `vec_dot_type` to Q8_K, re-dispatch the AVX2 kernel to emit 8-bit integer output, re-bench. Expected lift 2-3× to pp128 ≈ 30-40. Still short of any gate, but it factors out the datatype penalty so decoder cost can be measured cleanly, and it's a prerequisite to any fused-GEMM route. One-file change in scope. Not committed to; gated on whether we pursue route (2) at all.
+
+### What Track B actually delivered
+
+- AVX2 kernels for both decoder paths, correct and benched.
+- A clear profile identifying the serial-state-chain + vec_dot-contract mismatch as the structural bottleneck — not "AVX2 intrinsics tuned insufficiently."
+- A reusable lesson: any new low-bit quant type should target Q8_K as `vec_dot_type`, not F32, to ride the int8 dotprod path.
