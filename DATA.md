@@ -727,3 +727,25 @@ The one concrete next step that surfaces signal cleanly: change HARP_2B's `vec_d
 - AVX2 kernels for both decoder paths, correct and benched.
 - A clear profile identifying the serial-state-chain + vec_dot-contract mismatch as the structural bottleneck — not "AVX2 intrinsics tuned insufficiently."
 - A reusable lesson: any new low-bit quant type should target Q8_K as `vec_dot_type`, not F32, to ride the int8 dotprod path.
+
+## Path quality closure (per-layer L on 0.8B)
+
+Task #43 Track A, 2026-04-19. End-to-end T3 PPL with the full HARP_2B pipeline on qwen35-0.8b: imatrix-weighted Viterbi + Gaussian-trained LUT + per-(layer, role) L policy driven by the task #57 sensitivity map.
+
+Policy P3: parse `coord/results/sens-a{0..4}.txt` (25 layers covered), take the median ablation PPL (33.04), downgrade layers below the median to L=14 and keep L=16 for the rest. 12/25 layers downgraded; all 4 roles share the same L per layer (sensitivity data is per-layer only).
+
+| Config | bpw | PPL | Δ vs IQ2_M=31.94 |
+|---|---|---|---|
+| HARP_2B + per-layer L (P3 sensitivity-driven) | 4.16 | 143.43 ± 8.18 | +111.5 |
+| HARP_2B uniform L=14 (B0 baseline, DATA.md earlier) | 4.16 | 127.85 ± 6.99 | +95.9 |
+| IQ2_M (upstream reference) | 3.87 | 31.94 ± 1.42 | 0 |
+| HARP_2B_S (IQ2_S-clone, D2 MoE-aware) | 4.19 | 33.78 ± 1.54 | +1.84 |
+
+**Gate outcome**: PPL < 50 correctness — **MISS** (143.43 > 50). Stretch PPL < 31.94 — **MISS**.
+
+**Finding**: per-layer L P3 policy *regresses* PPL by ~15 points on 0.8B relative to uniform L=14. The LUT is trained at L=14 (`turbo-codebook.cpp:563`, `harp_lut_train(NULL, 0, 14, lut_f32)`); reusing that same LUT at L=16 on 13 layers produces a calibration mismatch that outweighs the trellis-state gain. The machinery is correct — encoder and decoder both honour the lmap, the pipeline flows codebook GGUF → quantize → model GGUF → inference, and the decoder registry resolves 121/122 HARP_2B tensors — but the policy itself is wrong without matched per-L LUTs.
+
+**Next moves (not in Track A scope)**: (a) train per-L LUTs (one at L=14, one at L=16) and emit both, switching at decode; (b) reverse the policy and downgrade *high-sensitivity* layers to L=14 (counterintuitive but matches the L=14 LUT's calibration); (c) accept the 127.85 uniform-L=14 floor — HARP_2B_S at 33.78 PPL is already the ship-line on 0.8B and the plan treats 0.8B as a yardstick for 35B-A3B.
+
+The infrastructure (cfg extension, `harp.lmap` emit/read, decoder registry, quantize wiring) lands regardless because the 35B-A3B phase needs it for any per-layer or per-role refinement of the policy.
+
