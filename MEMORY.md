@@ -685,3 +685,52 @@ measure their PPL + t/s at matched bpw against our UD_IQ2_S_QWEN35.
 Sparse-top-5 sensitivity-driven layer promotion (task #57 finding) —
 if it helps beyond what Unsloth does, it's a separable contribution
 worth publishing independently of the Qwen3.5 recipe.
+
+## 2026-04-19 — 2-bit area abandoned after Unsloth dominance benchmark
+
+Final benchmark on qwen35-0.8b, same wikitext-2 / 20 chunks / -t 16:
+
+| Recipe | Size MB | PPL |
+|---|---:|---:|
+| Ours UD_IQ2_S_QWEN35 | 396.8 | 33.78 |
+| Unsloth UD-IQ2_M | 371.9 | 28.72 |
+| Unsloth UD-IQ3_XXS | 398.2 | 24.20 |
+| Unsloth UD-Q2_K_XL | 417.7 | 26.26 |
+
+Ours is strictly dominated. Unsloth already handles the gated-DeltaNet
+SSM tensors (different — and better — choices than ours: Q8_0 ssm_beta,
+Q5_K ssm_out, F32 conv1d) and already does per-layer sensitivity-driven
+promotion as part of Dynamic 2.0. No piece of our Qwen3.5-specific
+work survives the comparison as a contribution.
+
+**Abandoned**: all 2-bit efforts (TURBO_2B, HARP_2B V=1/V=2/V=3, Path I
+E8 hybrid, UD_IQ2_S_QWEN35 active use, Path J MoE lattice). Code stays
+in-tree as implementation artifacts. Tasks #37-#41, #45, #50, #55
+deleted; task #61 (benchmark) completed. For any Qwen3.5 2-bit ship
+need, use `unsloth/Qwen3.5-*-GGUF` directly.
+
+**Literature review completed** (PHASE23 retrospective):
+- QAT is the path we didn't explore. EfficientQAT (arXiv 2407.11062,
+  ACL 2025): 2-bit Llama-2-70B in 41 h, <3pp degradation. Bit-by-Bit
+  (2604.07888), UPQ (2506.09104), BitDistiller, OneBit. Our project
+  was PTQ-only; published 2-bit SOTA is QAT.
+- VPTQ: vector PTQ at 2-bit with LUT codebooks. Similar family to
+  AQLM/QuIP#. Reports 0.01-0.68 PPL improvements over prior 2-bit
+  SOTA on LLaMA-2 and Mistral-7B.
+- SpQR: outlier isolation + 2-bit base; we used imatrix but not
+  explicit outlier isolation.
+- Gated-DeltaNet 2-bit quantization specifically remains unexplored
+  in public literature. Our HARP_2B S0–S6 delta-rule ablation was the
+  right instinct but never ran cleanly to completion on 0.8B because
+  the quality baseline HARP_2B itself was inadequate.
+
+**Preconditions to reopen 2-bit work** (documented in PHASE23):
+1. QAT pipeline (PTQ-only is saturated at the PPV ceiling).
+2. Fused decode-GEMM kernel or Q8_K-emit decoder (else throughput
+   dead on arrival).
+3. A specific question on gated-DeltaNet (only genuinely open research
+   direction we could have owned).
+4. A model family Unsloth doesn't cover (currently none — their
+   Dynamic 2.0 covers Qwen3.5 0.8B and 35B-A3B).
+
+None are true today.
