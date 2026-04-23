@@ -2,7 +2,7 @@
 
 ## Status
 
-Design document — **REVISED**. The earlier draft made ISA-availability claims that do not match what the targeted CPUs actually implement; that draft is superseded by this file. See the final "Notes" section for what changed and why. No kernel code written yet.
+Design document. No kernel code written yet.
 
 ## Scope
 
@@ -142,16 +142,4 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 
 ## Notes
 
-**Supersedes earlier revision.** The earlier draft contained several ISA-availability claims that do not match reality and were not derived from Agner Fog's tables despite the citation. Concretely:
-
-- It marked **VPSHUFB** as missing on Zen 2 and Zen 3. VPSHUFB is SSSE3 (2006) with an AVX2 YMM form; every AVX2-capable CPU has it, including Zen 1.
-- It marked **VBLENDVPS/PD** as missing on Zen 2, Zen 3, and Zen 4. VBLENDVPS/PD is AVX (2011); every AVX-capable CPU has it.
-- It marked **VPERMPD** as missing on Zen 4. VPERMPD is AVX2; Zen 4 has the full AVX2 ISA.
-- It described **VPAND/VPANDN** as introduced on Zen 4. They are SSE2 (2001).
-- It listed **VPOPCNTD** as an AVX2 instruction. `VPOPCNTD` is AVX-512VPOPCNTDQ, not AVX2.
-- It treated **Zen 4** as an AVX2-only target. Zen 4 has full AVX-512F/BW/DQ/VL/VBMI/VBMI2/VNNI/BF16/VPOPCNTDQ/BITALG/GFNI.
-- CPUID constants were wrong: Zen 4 is family `0x19` (same as Zen 3, distinguished by model), not family `0x1A`; Haswell does not include model `0x4F` (that is Broadwell-EP).
-
-The 2-kernel split in the earlier draft was derived from the incorrect matrix and is abandoned here in favour of a single-kernel baseline plus measurement-driven variants.
-
-**Zen 1 / Zen+** implement full AVX2 (the earlier draft's "Zen 1 has only ~10 AVX2 instructions" claim is wrong), but 128-bit internal execution halves their effective throughput on 256-bit ops. They can be readmitted to scope if a deployment needs them.
+**Zen 1 / Zen+** implement the full AVX2 ISA but 128-bit internal execution halves their effective throughput on 256-bit ops. They can be readmitted to scope if a deployment needs them.
