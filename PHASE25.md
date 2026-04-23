@@ -2,13 +2,62 @@
 
 ## Status
 
-Design document. No kernel code written yet.
+Design document. Prerequisite spec-alignment work complete (commits `46bf05e` and `8b179fb`); no kernel code written yet.
 
 ## Scope
 
 Non-AVX-512 x86 CPUs with AVX2.
 
 AVX-512-capable CPUs fall through to the scalar reference path until a dedicated AVX-512 kernel is written. This is a scope decision: the AVX-512 kernel is future work, not a claim that AVX-512 is slower than AVX2 on modern silicon. On Skylake-SP and Ice Lake-SP AVX-512 did incur measurable frequency-license throttling that could make AVX2 competitive on latency-bound code; on Zen 4 and Sapphire Rapids that penalty is largely absent.
+
+## Spec-code alignment (prerequisite)
+
+Before any kernel work begins, `turbo-kv-4b.allium` must be a high-fidelity description of `llama.cpp/ggml/src/ggml-turbo-kv.c`. A weed pass on 2026-04-23 (following the HQ-agent spec consolidation of `93b6ec2`) compared the spec against the scalar C reference and closed the divergences below.
+
+### Divergences found
+
+1. **`normalize`** — spec had unguarded `1.0 / norm`. Code guards against `norm < 1e-10` (`ggml-turbo-kv.c:256`).
+2. **`QuantizeBlock`** — spec had unguarded `config.cent_max / max_abs(rotated)`. Code clamps `max_abs` to `1.0` when below `1e-10` (`ggml-turbo-kv.c:273-274`).
+3. **`reconstruct_codebook` / `DequantizeBlock`** — spec had unguarded `1.0 / block.inv_std`. Code falls back to `sqrtf(dim)` when `inv_std < 1e-10` (`ggml-turbo-kv.c:311-312`).
+4. **`ReconstructionPreservesNorm`** — spec claimed a universal 10 % relative-error bound. The bound is distribution-conditional; it holds for near-Gaussian post-RHT inputs (PHASE24 measured `rel=0.083` on unit Gaussian) but can be exceeded on adversarial inputs.
+5. **`VectorDot` modelled the single-block primitive only** — code composes N per-block dots into one score per K position via `turbo_kv_4b_attention_multi` (`ggml-turbo-kv.c:362-399`).
+
+### Resolutions
+
+**Spec-side (landed in `46bf05e` and `8b179fb`):**
+
+1. `normalize` now `requires: norm > 0.0`.
+2. `QuantizeBlock` now `requires: L2_norm(tensor.data) > 0.0` — a single precondition that covers both the `normalize` entry (`norm > 0`) and the `cent_max / max_abs(rotated)` division (`max_abs > 0` follows from `L2_norm(input) > 0` via RHT orthogonality).
+3. `reconstruct_codebook` and `DequantizeBlock` both `requires: block.inv_std > 0.0`.
+4. `ReconstructionPreservesNorm` now carries a prose comment restricting its domain to near-Gaussian post-RHT inputs; the expression form is unchanged.
+5. New rule **`MultiBlockVectorDot(query, blocks)`** models the multi-block composition, with `@guidance` documenting the equivalence to `dot_product(query, dequantize_row(blocks))` via RHT orthogonality within each block and linearity across blocks. The optimized implementation (pre-rotate query once per row, sum per-block dots in RHT-rotated space) is recorded in the `@guidance` as the intended kernel path.
+
+**Code-side (deferred cleanup item for this phase):**
+
+- `dequantize_block_turbo_kv_4b` at `ggml-turbo-kv.c:311-312` falls back to `inv_std = sqrtf((float) dim)` when `inv_std < 1e-10`. With the tightened spec (`requires: block.inv_std > 0.0`), this branch handles undefined-behaviour input only. The `sqrtf(dim)` value itself is unmotivated; decision: either document *why* the fallback is `sqrt(dim)` or replace with a simpler sentinel (`1.0f`, or a hard assert). Decision tracked alongside the kernel implementation (Next Steps step 1).
+
+### Final spec state
+
+- `allium check`: 0 errors, 0 warnings.
+- `allium plan`: **41 obligations** (up from 20 in PHASE24) — breakdown:
+
+  | Category | Count |
+  |----------|-------|
+  | entity_fields | 2 |
+  | config_default | 5 |
+  | rule_success | 11 |
+  | rule_failure | 14 (one per `requires:` clause) |
+  | rule_entity_creation | 2 |
+  | invariant | 7 |
+  | **Total** | **41** |
+
+  PHASE24's "20 of 20 obligations verified" statement is superseded by the post-consolidation, post-weed spec. Re-verification against all 41 is folded into Next Steps (step 2).
+
+### Intentional gaps (by design)
+
+- **Internal zero-padding for `dim < block_size`** (`ggml-turbo-kv.c:260-262, 329-331`). The public API always passes `dim = block_size`; padding is defensive for an unreachable internal state. The spec's `requires: tensor.count = config.block_size` captures the contract at the API boundary.
+- **Block-layout artifacts** (`residual_norm`, `_pad`, fp16 representation of `norm` / `inv_std`). Wire format; the spec models behaviour.
+- **Multi-block `head_dim ≤ 4 * block_size` cap** (`turbo_kv_4b_attention_multi` returns early if `n_blocks > 4`). An implementation limit, not a behavioural one.
 
 ## Target microarchitectures
 
@@ -131,7 +180,7 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 
 ## Design constraints
 
-1. **Test-first:** the kernel must pass all 20 Allium obligations from PHASE24 before it ships. No deferrals.
+1. **Test-first:** the kernel must satisfy all 41 Allium obligations generated from the aligned spec (see Spec-code alignment above) before it ships. No deferrals.
 2. **Surgical changes:** match existing `ggml-turbo-kv.c` style exactly.
 3. **No workarounds:** if a target needs something this design did not anticipate, implement it. Do not downgrade types or hack around it.
 4. **No riff on tables:** actual Agner Fog figures go into a separate committed data file with row citations. Do not quote timing numbers from memory.
@@ -139,8 +188,8 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 
 ## Next steps
 
-1. Implement the single-kernel AVX2 baseline in `ggml-turbo-kv.c` behind runtime CPUID dispatch.
-2. Verify all 20 Allium obligations from PHASE24 via `test-backend-ops`.
+1. Implement the single-kernel AVX2 baseline in `ggml-turbo-kv.c` behind runtime CPUID dispatch. While touching the file, resolve the `sqrtf(dim)` fallback at `ggml-turbo-kv.c:311-312` (document or replace with a simpler sentinel) — the tightened spec now treats `inv_std < 1e-10` as undefined input.
+2. Verify all 41 Allium obligations from the aligned spec via `test-backend-ops` (superseding PHASE24's 20-obligation run). The new rule_failure obligations from the weed pass don't need dedicated tests — they assert the code rejects or produces defensive output on inputs the public API never constructs, which `test-backend-ops` already exercises indirectly through its structural fuzzing.
 3. Profile the baseline on the available host (Zen 2). Identify which of the 15 core instructions actually dominate cycle count — expect this to be a small subset.
 4. For the instructions flagged hot in step 3 (and only those), extract per-uarch latency, reciprocal throughput, and port-binding data from Agner Fog `instruction_tables.ods` for all 6 targets. Commit as a structured data file alongside this doc, with source row numbers cited.
 5. Combine the Zen 2 hot-path counters with the Agner figures to extrapolate expected per-target performance. Introduce a variant kernel only if the extrapolation predicts a target would fall below the goal.
