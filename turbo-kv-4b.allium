@@ -7,261 +7,161 @@
 --   - SIMD implementations (AVX2, AVX512, SSE4.1, ARM) — implementation detail
 --   - Vulkan shaders — implementation detail
 --   - CUDA/ROCM backends — not yet implemented
---   - TURBO_2B/3B/4B/5B weight quantization — separate concern (blind ally)
---   - Custom codebook loading via llama-turbo-codebook — extension point
---   - imatrix-weighted quantization — inactive path (delegates to unweighted)
---   - fused_rope — superseded by split K cache
+--   - TURBO_2B/3B/4B/5B weight quantization — separate concern
+--   - Custom codebook loading — extension point
+--   - imatrix-weighted quantization — inactive path
+
+-- ============================================================
+-- External entities (managed by ggml/tensor system)
+-- ============================================================
+
+external entity Tensor {
+    data: Set<Decimal>
+    count: Integer
+}
+
+actor TensorSupplier {
+    identified_by: Tensor
+}
 
 -- ============================================================
 -- Value types
 -- ============================================================
 
-type BlockId: Integer
-
-type Seed: Integer  -- 0x12345678 default
+value BlockId {
+    index: Integer
+}
 
 -- A quantized KV block: 128 float elements → 72 bytes
-entity Block {
-    id: BlockId
-    norm: Float          -- L2 norm of original 128-elem vector (fp16 stored)
-    inv_std: Float       -- CENT_MAX / max(|RHT(normalized)|), fp16 stored
-    indices: Array<Int, 64>  -- 4-bit codebook indices, 2 per byte, LSB-first
-}
-
--- A block's worth of 128 codebook indices (unpacked)
-entity CodebookIndices {
-    values: Array<Int, 128>  -- each in [0, 15]
+entity TurboBlock {
+    norm: Decimal          -- L2 norm of original 128-elem vector
+    inv_std: Decimal       -- CENT_MAX / max(|RHT(normalized)|)
+    indices: Set<Integer>  -- 128 codebook indices, each in [0, 15]
 }
 
 -- ============================================================
--- Codebook — 16-entry Lloyd-Max-Gaussian for N(0,1)
+-- Config
 -- ============================================================
 
--- The codebook is a fixed set of 16 reconstruction levels for standard
--- normal distribution. These are the optimal centroids (Max 1960).
--- The system could use a different codebook (custom Lloyd-Max from
--- calibration data) and still be the same algorithm — but the default
--- is fixed and requires no calibration.
-constant Codebook: Array<Float, 16> = [
-    -2.7326, -2.0690, -1.6180, -1.2562,
-    -0.9423, -0.6568, -0.3881, -0.1284,
-     0.1284,  0.3881,  0.6568,  0.9423,
-     1.2562,  1.6180,  2.0690,  2.7326
-]
-
--- CENT_MAX: the largest centroid magnitude. Used to scale per-block
--- so that max(|RHT(normalized)|) maps to ±CENT_MAX.
-constant CENT_MAX: Float = 2.7326
-
--- Block size: every quantization operates on exactly 128 elements.
-constant BLOCK_SIZE: Integer = 128
+config {
+    block_size: Integer = 128
+    codebook_size: Integer = 16
+    seed: Integer = 305419896  -- 0x12345678
+    cent_max: Decimal = 2.7326
+}
 
 -- ============================================================
--- RHT (Random Hadamard Transform)
--- ============================================================
-
--- The RHT is an orthogonal preprocessing rotation applied to each
--- 128-element block before quantization. It consists of three steps:
---
---   1. Random sign flip: each element multiplied by ±1 derived from
---      a Knuth multiplicative hash of (seed, index).
---   2. Unnormalized Walsh-Hadamard butterfly: O(n log n) stage tree
---      of add/sub pairs over a power-of-2 dimension.
---   3. Normalization: each element divided by sqrt(n).
---
--- The RHT is its own inverse except for the sign step. To invert:
--- apply normalization, then Walsh-Hadamard, then the same sign flip.
---
--- The RHT makes the pre-quantization distribution approximately Gaussian
--- (kurtosis ~2.96, KS test 0.003), which is well-suited to the
--- Lloyd-Max Gaussian codebook.
-
-function RHT_forward(data: Array<Float, 128>, seed: Integer): Array<Float, 128>
-    -- Sign flip: data[i] *= sign(KnuthHash(seed, i))
-    -- Walsh-Hadamard butterfly: O(n log n) add/sub tree
-    -- Normalize: data[i] /= sqrt(128)
-    requires: length(data) = 128
-    ensures: result is an orthogonal rotation of data
-    ensures: RHT_forward(x) = RHT_matrix(seed) * x
-    ensures: RHT_matrix(seed) is orthogonal: R^T * R = I
-end
-
-function RHT_inverse(data: Array<Float, 128>, seed: Integer): Array<Float, 128>
-    -- Reverse order: normalize, Walsh-Hadamard, sign flip (same signs)
-    requires: length(data) = 128
-    ensures: RHT_inverse(RHT_forward(x, seed), seed) = x
-end
-
--- ============================================================
--- Quantize: f32 vector → Block
+-- Rules
 -- ============================================================
 
 rule QuantizeBlock {
-    when: QuantizeBlock(original: Array<Float, 128>, seed: Integer)
+    when: QuantizeBlock(tensor, seed)
 
-    -- Step 1: Compute L2 norm
-    let norm = L2_norm(original)
+    requires: tensor.count = config.block_size
 
-    -- Step 2: Normalize to unit vector
-    let normalized = original / norm
+    let norm = L2_norm(tensor.data)
+    let rotated = RHT_forward(normalize(tensor.data), config.seed)
+    let max_val = max(rotated)
+    let inv_std = config.cent_max / max_val
+    let indices = nearest_centroid(tensor.data, inv_std)
 
-    -- Step 3: Apply RHT rotation
-    let rotated = RHT_forward(normalized, seed)
-
-    -- Step 4: Compute per-block scale factor
-    let max_abs = max_i |rotated[i]|
-    let inv_std = CENT_MAX / max_abs
-
-    -- Step 5: Scale and find nearest codebook centroid per element
-    let scaled = rotated * inv_std
-    let indices = Array<Int, 128>()
-    for i in 0..128:
-        indices[i] = argmin_c |scaled[i] - Codebook[c]|
-
-    -- Step 6: Pack indices into 64 bytes (2 per byte, LSB-first)
-    let packed = pack_4bit(indices)
-
-    ensures: Block.created(
+    ensures: TurboBlock.created(
         norm: norm,
         inv_std: inv_std,
-        indices: packed
+        indices: indices
     )
-    ensures: Block.size_bytes = 72  -- 2 (norm) + 2 (inv_std) + 64 (indices) + 2 (padding)
 }
-
--- ============================================================
--- Dequantize: Block → f32 vector
--- ============================================================
 
 rule DequantizeBlock {
-    when: DequantizeBlock(block: Block)
+    when: DequantizeBlock(block)
 
-    -- Step 1: Unpack 4-bit indices
-    let unpacked = unpack_4bit(block.indices)
+    let codebook_values = reconstruct_codebook(block)
+    let dequant_rotated = RHT_inverse(codebook_values, config.seed)
+    let reconstructed = rescale(dequant_rotated, block.norm)
 
-    -- Step 2: Codebook lookup with per-block scale
-    let codebook_values = Array<Float, 128>()
-    for i in 0..128:
-        codebook_values[i] = Codebook[unpacked[i]] / block.inv_std
-
-    -- Step 3: Inverse RHT
-    let dequant_rotated = RHT_inverse(codebook_values, TURBO_KV_DEFAULT_SEED)
-
-    -- Step 4: Rescale by original L2 norm
-    let reconstructed = dequant_rotated * block.norm
-
-    ensures: Array<Float, 128> created = reconstructed
+    ensures: Tensor.created(
+        data: reconstructed,
+        count: config.block_size
+    )
 }
-
--- ============================================================
--- vec_dot: <f32 query, Block> → scalar
--- ============================================================
-
--- The dot product exploits RHT orthogonality: <a, b> = <RHT(a), RHT(b)>.
--- Since the K block stores quantized RHT-rotated data, we only need
--- to rotate the query once and then do a direct dot product with
--- the dequantized rotated values — no inverse RHT needed on K side.
 
 rule VectorDot {
-    when: VectorDot(query: Array<Float, 128>, block: Block)
+    when: VectorDot(query, block)
 
-    -- Pre-rotate query (same RHT as quantize)
-    let q_rotated = RHT_forward(query, TURBO_KV_DEFAULT_SEED)
+    requires: query.count = config.block_size
 
-    -- Dequant the block (in RHT space, no inverse needed)
-    let k_dequant = dequantized_rotated(block)
+    let q_rotated = RHT_forward(query.data, config.seed)
+    let k_dequant = reconstruct_codebook(block)
+    let dot_result = dot_product(q_rotated, k_dequant) * block.norm
 
-    ensures: Float result = sum_i q_rotated[i] * k_dequant[i] * block.norm
-}
-
--- ============================================================
--- Multi-block attention (head_dim > 128)
--- ============================================================
-
--- Models like Qwen3.5 use head_dim = 256, which maps to 2 blocks per
--- K row. The RHT is applied per-block (each 128-elem chunk independently),
--- and the full dot product is the sum of per-block dots.
-
-rule MultiBlockDot {
-    when: MultiBlockDot(query: Array<Float, N>, blocks: Array<Block, N/128>)
-
-    requires: N is a multiple of 128
-
-    -- Rotate each block of the query independently
-    for b in 0..N/128:
-        let q_block = query[b*128 .. (b+1)*128]
-        let q_rot_block = RHT_forward(q_block, TURBO_KV_DEFAULT_SEED)
-
-    ensures: Float result = sum_b dot(q_rot_block_b, dequant_rotated(blocks[b])) * blocks[b].norm
-}
-
--- ============================================================
--- Query pre-rotation (public helper)
--- ============================================================
-
--- Applied once per query vector before attention over all K positions.
--- Handles the case where dim > 128 (multi-block) and where dim is not
--- a power of 2 (tail block zero-padded to 128).
-
-rule PreRotateQuery {
-    when: PreRotateQuery(query: Array<Float, dim>, dim: Integer)
-
-    requires: dim > 0
-
-    -- Whole blocks: each 128-elem chunk rotated independently
-    -- Tail block: zero-padded to 128, then rotated
-
-    ensures: Array<Float, ceil(dim/128)*128> produced
-    ensures: each 128-elem chunk is RHT-forwarded with same seed
+    ensures: result = dot_result
 }
 
 -- ============================================================
 -- Invariants
 -- ============================================================
 
-invariant ReconstructionQuality {
-    -- The quantize→dequantize round-trip must preserve the L2 norm
-    -- of the original vector up to quantization error.
-    for all original: Array<Float, 128>:
-        let block = QuantizeBlock(original)
-        let reconstructed = DequantizeBlock(block)
-        L2_norm(reconstructed) ≈ L2_norm(original)  -- within quantization error
+invariant ReconstructionPreservesNorm {
+    for block in TurboBlocks:
+        for original in QuantizedVectors:
+            let reconstructed = dequantize(block)
+            abs(L2_norm(reconstructed) - L2_norm(original)) <= quantization_error_bound
 }
 
 invariant RHTOrthogonality {
-    -- RHT preserves dot products: <RHT(a), RHT(b)> = <a, b>
-    for all a, b: Array<Float, 128>, seed: Integer:
-        dot(RHT_forward(a, seed), RHT_forward(b, seed)) = dot(a, b)
+    for a in Vectors:
+        for b in Vectors:
+            for seed in Seeds:
+                let a_rot = RHT_forward(a, seed)
+                let b_rot = RHT_forward(b, seed)
+                dot_product(a_rot, b_rot) = dot_product(a, b)
 }
 
 invariant DeterministicSeed {
-    -- All RHT operations use the same fixed seed.
-    -- Changing the seed between quantize and dequant/vec_dot produces
-    -- incorrect results because the rotation spaces don't align.
-    TURBO_KV_DEFAULT_SEED = 0x12345678
+    config.seed = 305419896
 }
 
 invariant BlockSizeFixed {
-    -- Every quantization operates on exactly 128 elements.
-    -- This is a design decision, not a parameter.
-    BLOCK_SIZE = 128
+    config.block_size = 128
+}
+
+invariant IndicesInBounds {
+    for block in TurboBlocks:
+        for idx in block.indices:
+            idx >= 0 and idx < config.codebook_size
 }
 
 -- ============================================================
--- Implementation gaps
+-- Deferred specifications (algorithm-level: resolved in separate files)
+-- ============================================================
+
+-- RESOLVED — each has its own distilled spec:
+-- RHT_forward    -> turbo-rht.allium rule RHT_forward
+-- RHT_inverse    -> turbo-rht.allium rule RHT_inverse
+-- L2_norm        -> turbo-l2norm.allium rule L2_norm
+-- normalize      -> turbo-normalize.allium rule normalize
+-- nearest_centroid -> turbo-nearest-centroid.allium rule nearest_centroid
+-- reconstruct_codebook -> turbo-reconstruct.allium rule reconstruct_codebook
+-- rescale        -> turbo-rescale.allium rule rescale
+
+-- REMAINING deferred (black-box helpers, never formally specified):
+deferred dot_product    -- black box: sum of element-wise products
+deferred max            -- black box: maximum of collection
+deferred abs            -- black box: absolute value
+deferred ceil           -- black box: ceiling division
+deferred zero_pad       -- black box: append zero elements
+
+-- ============================================================
+-- Deferred implementations
 -- ============================================================
 
 -- The following SIMD/backend implementations are NOT yet provided.
--- They must produce results identical to the scalar reference path
--- above. PPL quality on the target model must match the CPU baseline.
+-- They must produce results identical to the scalar reference path.
+-- PPL quality on the target model must match the CPU baseline.
 
--- [DEFERRED] AVX2 implementation of quantize/dequantize/vec_dot
--- [DEFERRED] AVX512 implementation of quantize/dequantize/vec_dot
--- [DEFERRED] CUDA implementation of quantize/dequantize/vec_dot
--- [DEFERRED] ROCM implementation of quantize/dequantize/vec_dot
--- [DEFERRED] Vulkan shader implementation (partially exists)
--- [DEFERRED] ARM NEON implementation
-
--- Quality gate: any SIMD/backend implementation must produce vec_dot
--- results within numerical tolerance of the scalar reference path.
--- Perplexity on the target model must not regress vs. the CPU baseline.
+deferred AVX2_Quantize    -- see: ggml-cpu/arch/x86/turbo_kv_4b_sse.h (AVX2 port)
+deferred AVX512_Quantize  -- see: ggml-cpu/arch/x86/ (new file)
+deferred CUDA_Quantize    -- see: ggml-cuda/ (new file)
+deferred ROCM_Quantize    -- see: ggml-rocm/ (new file)
+deferred Vulkan_Quantize  -- see: ggml-vulkan/ (partially exists)
+deferred ARM_NEON_Quantize  -- see: ggml-cpu/arch/arm/ (new file)
