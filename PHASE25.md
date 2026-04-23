@@ -17,14 +17,14 @@ AVX-512-capable CPUs fall through to the scalar reference path until a dedicated
 | 1 | Haswell | Intel | 2013 | AVX2 baseline; legacy server (Xeon E5-26xx v3, Xeon E3 v3). |
 | 2 | Skylake client | Intel | 2015 | AVX2 only; 6th–10th gen Core consumer/mobile. Skylake-W/SP/X is excluded — those have AVX-512. |
 | 3 | Alder Lake / Raptor Lake | Intel | 2021–2022 | P-core AVX-512 fused off at retail. E-cores never shipped AVX-512. Treated as AVX2-only. |
-| 4 | Zen 2 | AMD | 2019 | First Zen generation with native 256-bit AVX2 execution. Ryzen 3000, Threadripper 3000, EPYC 7002. |
-| 5 | Zen 3 | AMD | 2020 | Refines Zen 2. Ryzen 5000, EPYC 7003. |
+| 4 | Zen 1 / Zen+ | AMD | 2017–2018 | Full AVX2 ISA, but 128-bit internal SIMD execution decomposes 256-bit ops into two µops — effective 256-bit throughput is ~halved vs Zen 2. Ryzen 1000/2000 desktop, Threadripper 1000/2000, EPYC 7001 Naples. |
+| 5 | Zen 2 | AMD | 2019 | First Zen generation with native 256-bit AVX2 execution. Ryzen 3000, Threadripper 3000, EPYC 7002. |
+| 6 | Zen 3 | AMD | 2020 | Refines Zen 2. Ryzen 5000, EPYC 7003. |
 
 **Explicitly excluded:**
 
 - **Zen 4 (Ryzen 7000, EPYC 9004)** — has AVX-512F/BW/DQ/VL/VBMI/VBMI2/VNNI/BF16/VPOPCNTDQ/BITALG/GFNI. Covered by the AVX-512 scope decision above.
 - **Skylake-W, Skylake-X, Cascade Lake, Ice Lake-SP, Sapphire Rapids, Emerald Rapids** — all AVX-512.
-- **Zen 1 / Zen+** — implement the full AVX2 ISA but decompose 256-bit ops into two 128-bit µops. Consistently slower than Zen 2. Left out to bound initial scope; can be readmitted if real-world hosts turn up.
 - **Broadwell** — microarchitecturally close to Haswell; no separate kernel warranted. The Haswell kernel will run on Broadwell unchanged.
 - **Goldmont, Tremont, Gracemont (standalone)** — Atom tier, not an LLM hosting target.
 
@@ -51,22 +51,22 @@ All 15 instructions below are in AVX2 or earlier. Every AVX2-capable CPU in scop
 | 15 | VBLENDVPS / VBLENDVPD | AVX | Mask-driven conditional blend (quantization clamp) |
 
 ```
-Instruction          Haswell  SKL-client  ADL/RPL  Zen 2  Zen 3
-VPERM2I128               ✓         ✓          ✓       ✓      ✓
-VPERMD                   ✓         ✓          ✓       ✓      ✓
-VPERMQ                   ✓         ✓          ✓       ✓      ✓
-VPERMPD                  ✓         ✓          ✓       ✓      ✓
-VPERM2F128               ✓         ✓          ✓       ✓      ✓
-VPMOVZXBW                ✓         ✓          ✓       ✓      ✓
-VPMOVSXBW                ✓         ✓          ✓       ✓      ✓
-VPMOVMSKB                ✓         ✓          ✓       ✓      ✓
-VPSHUFB                  ✓         ✓          ✓       ✓      ✓
-VPSLLVD                  ✓         ✓          ✓       ✓      ✓
-VCVTDQ2PD                ✓         ✓          ✓       ✓      ✓
-VEXTRACTF128             ✓         ✓          ✓       ✓      ✓
-VINSERTF128              ✓         ✓          ✓       ✓      ✓
-VRSQRTPS                 ✓         ✓          ✓       ✓      ✓
-VBLENDVPS/PD             ✓         ✓          ✓       ✓      ✓
+Instruction          Haswell  SKL-client  ADL/RPL  Zen 1/+  Zen 2  Zen 3
+VPERM2I128               ✓         ✓          ✓        ✓       ✓      ✓
+VPERMD                   ✓         ✓          ✓        ✓       ✓      ✓
+VPERMQ                   ✓         ✓          ✓        ✓       ✓      ✓
+VPERMPD                  ✓         ✓          ✓        ✓       ✓      ✓
+VPERM2F128               ✓         ✓          ✓        ✓       ✓      ✓
+VPMOVZXBW                ✓         ✓          ✓        ✓       ✓      ✓
+VPMOVSXBW                ✓         ✓          ✓        ✓       ✓      ✓
+VPMOVMSKB                ✓         ✓          ✓        ✓       ✓      ✓
+VPSHUFB                  ✓         ✓          ✓        ✓       ✓      ✓
+VPSLLVD                  ✓         ✓          ✓        ✓       ✓      ✓
+VCVTDQ2PD                ✓         ✓          ✓        ✓       ✓      ✓
+VEXTRACTF128             ✓         ✓          ✓        ✓       ✓      ✓
+VINSERTF128              ✓         ✓          ✓        ✓       ✓      ✓
+VRSQRTPS                 ✓         ✓          ✓        ✓       ✓      ✓
+VBLENDVPS/PD             ✓         ✓          ✓        ✓       ✓      ✓
 ```
 
 ## Throughput variation — qualitative, to be quantified
@@ -75,6 +75,7 @@ Per-uarch latency, reciprocal throughput, and port-binding data must be extracte
 
 Known qualitative differences worth measuring, from published microarchitectural descriptions (not from invented numbers):
 
+- **Zen 1 / Zen+** decomposes every 256-bit AVX2 op into two 128-bit µops; effective YMM throughput is systematically ~halved relative to Zen 2+. This is the tightest target in scope and the most likely to drive a uarch-specific variant (e.g. an XMM-width path) if measurement demands one.
 - **VPSLLVD** reciprocal throughput improved materially between Zen 2 and Zen 3. If bit-unpack is a hot path, this is the most likely trigger for a Zen 2-specific variant.
 - **VPERMD / VPERMQ** are lane-crossing; they are the RHT bottleneck on all targets and dominate latency regardless of uarch.
 - **VRSQRTPS** reciprocal throughput differs between Intel client and Zen.
@@ -84,17 +85,18 @@ All of these are throughput differences, not capability differences.
 
 ## Kernel strategy
 
-**Baseline: a single AVX2 kernel covering all 5 targets.**
+**Baseline: a single AVX2 kernel covering all 6 targets.**
 
-**Rationale:** the ISA is uniform. A single compiled kernel emits the same instructions on every target. A multi-kernel split would add maintenance cost without fixing a concrete problem. The earlier draft's two-kernel split was derived from an ISA matrix that turned out to be wrong.
+**Rationale:** the ISA is uniform. A single compiled kernel emits the same instructions on every target. A multi-kernel split would add maintenance cost without fixing a concrete problem.
 
 **What this design does not include ahead of measurement:**
 
+- No Zen 1/+ 128-bit XMM-width variant, even though 256-bit ops are split internally on that uarch.
 - No Zen 2-specific VPSLLVD-avoidance variant until VPSLLVD is measured as the bottleneck.
 - No "VPAND-optimized path" — VPAND/VPANDN are SSE2 (2001) and part of the baseline kernel on every target.
 - No emulation paths — all 15 instructions are natively available everywhere in scope.
 
-**Conditional second kernel:** if profiling one representative CPU per target class identifies a single instruction as a dominant bottleneck on a specific uarch, introduce a variant kernel at that point with the measurement as justification. Do not speculate.
+**Conditional second kernel:** if profiling one representative CPU per target class identifies a single instruction (or Zen 1/+'s 256-bit decomposition) as a dominant bottleneck, introduce a variant kernel at that point with the measurement as justification. Do not speculate.
 
 ## CPUID detection
 
@@ -121,6 +123,8 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
   - Raptor Lake: models `0xB7`, `0xBA`, `0xBE`, `0xBF`
   - (Skylake-SP/W/X is family 6 model `0x55` — has AVX-512, excluded via the AVX-512F bit.)
 - AMD:
+  - Zen 1: family `0x17`, models `0x01` (Summit Ridge desktop, Naples EPYC), `0x11` (Raven Ridge APU), `0x20` (Dali/Pollock)
+  - Zen+: family `0x17`, models `0x08` (Pinnacle Ridge desktop, Colfax Threadripper), `0x18` (Picasso APU)
   - Zen 2: family `0x17`, models include `0x31`, `0x47`, `0x60`, `0x68`, `0x71`, `0xA0`
   - Zen 3: family `0x19`, models `0x00`–`0x0F`, `0x20`–`0x2F`, `0x40`–`0x4F`, `0x50`–`0x5F`
   - Zen 4: family `0x19`, models `0x10`–`0x1F`, `0x60`–`0x6F`, `0x70`–`0x7F`, `0xA0`–`0xAF` (excluded via the AVX-512F bit)
@@ -135,11 +139,11 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 
 ## Next steps
 
-1. Extract latency / reciprocal-throughput / port-binding data for all 15 instructions across the 5 targets from Agner Fog `instruction_tables.ods`. Commit as a structured file (CSV or similar) alongside this doc, with source row numbers cited.
+1. Extract latency / reciprocal-throughput / port-binding data for all 15 instructions across the 6 targets from Agner Fog `instruction_tables.ods`. Commit as a structured file (CSV or similar) alongside this doc, with source row numbers cited.
 2. Implement the single-kernel AVX2 baseline in `ggml-turbo-kv.c` behind runtime CPUID dispatch.
 3. Verify all 20 Allium obligations via `test-backend-ops`.
 4. Profile one representative CPU per target class. Introduce a second kernel only if measurement demands it.
 
 ## Notes
 
-**Zen 1 / Zen+** implement the full AVX2 ISA but 128-bit internal execution halves their effective throughput on 256-bit ops. They can be readmitted to scope if a deployment needs them.
+**Zen 1 / Zen+ is the floor for performance targeting.** If the baseline kernel meets latency goals on Zen 1/+, it will meet them on every other target. Conversely, if measurement shows the 256-bit-split penalty dominates, the natural response is an XMM-width variant for that uarch rather than per-instruction workarounds.
