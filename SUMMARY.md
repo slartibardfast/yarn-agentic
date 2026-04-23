@@ -26,9 +26,12 @@
 - [Phase 17: Vulkan Op Trace for Nemotron](PHASE17.md)
 - [Phase 18: GPU-Accelerated REDUCE via dmabuf](PHASE18.md)
 - [Phase 19: Graph-Split Correctness](PHASE19.md)
-- [Phase 20: Vega Rapid Packed Math Optimization](PHASE20.md)
-- [Phase 21: nemotron_h_moe Architecture Support](PHASE21.md)
+- [Phase 20: Vulkan Token Generation Performance](PHASE20.md)
+- [Phase 21: Dispatch Reduction for Hybrid Mamba Token Generation](PHASE21.md)
 - [Phase 22: Fix get_tensor_async Race on rBAR Devices](PHASE22.md)
+- [Phase 23: TURBO_4B Weight Quantization](PHASE23.md)
+- [Phase 24: TURBO_KV_4B — Formal Spec → Test Obligations](PHASE24.md)
+- [Phase 25: TURBO_KV_4B AVX2 Kernel Design — Non-AVX-512 Microarchitecture Targets](PHASE25.md)
 
 # Qwen3.5 MTP Tool Calling
 
