@@ -2,7 +2,8 @@
 -- turbo-kv-4b.allium
 
 -- Scope: TURBO_KV_4B KV cache quantization
--- Includes: Block layout, quantize, dequantize, vec_dot, RHT transform
+-- Includes: Block layout, quantize, dequantize, vec_dot, RHT transform,
+--   L2_norm, normalize, nearest_centroid, reconstruct_codebook, rescale
 -- Excludes:
 --   - SIMD implementations (AVX2, AVX512, SSE4.1, ARM) — implementation detail
 --   - Vulkan shaders — implementation detail
@@ -28,10 +29,6 @@ actor TensorSupplier {
 -- Value types
 -- ============================================================
 
-value BlockId {
-    index: Integer
-}
-
 -- A quantized KV block: 128 float elements → 72 bytes
 entity TurboBlock {
     norm: Decimal          -- L2 norm of original 128-elem vector
@@ -48,10 +45,93 @@ config {
     codebook_size: Integer = 16
     seed: Integer = 305419896  -- 0x12345678
     cent_max: Decimal = 2.7326
+    reconstruction_rel_error: Decimal = 0.1  -- observed 0.083 for unit Gaussian; budget to 10%
 }
 
 -- ============================================================
--- Rules
+-- Algorithm-level rules (distilled from scalar C reference)
+-- ============================================================
+
+rule L2_norm {
+    when: L2_norm(data)
+
+    let norm_sq = sum_of_squares(data)
+    let result = sqrt(norm_sq)
+
+    ensures: result >= 0.0
+}
+
+rule normalize {
+    when: normalize(data, norm)
+
+    let inv_norm = 1.0 / norm
+    let result = scaled(data, inv_norm)
+
+    ensures: L2_norm(result) = 1.0
+}
+
+rule rescale {
+    when: rescale(data, norm)
+
+    requires: norm >= 0.0
+
+    let result = scaled(data, norm)
+
+    ensures: L2_norm(result) = L2_norm(data) * norm
+}
+
+rule RHT_forward {
+    when: RHT_forward(data, n, seed)
+
+    requires: n > 0
+
+    let n2 = floor_pow2(n)
+    let with_signs = apply_sign_flip(data, n2, seed)
+    let hadamarded = walsh_hadamard_transform(with_signs, n2)
+    let result = scale(hadamarded, 1.0 / sqrt(n2), n2)
+
+    ensures: result.length = n
+}
+
+rule RHT_inverse {
+    when: RHT_inverse(data, n, seed)
+
+    requires: n > 0
+
+    let n2 = floor_pow2(n)
+    let scaled_data = scale(data, 1.0 / sqrt(n2), n2)
+    let hadamarded = walsh_hadamard_transform(scaled_data, n2)
+    let result = apply_sign_flip(hadamarded, n2, seed)
+
+    ensures: result.length = n
+}
+
+rule nearest_centroid {
+    when: nearest_centroid(rotated_data, inv_std, codebook_entries)
+
+    requires: codebook_entries.count > 0
+
+    let scaled_data = scaled_vector(rotated_data, inv_std)
+    let result = find_nearest(scaled_data, codebook_entries)
+
+    ensures: result.count = rotated_data.count
+}
+
+rule reconstruct_codebook {
+    when: reconstruct_codebook(block, codebook_entries)
+
+    requires: codebook_entries.count > 0
+    requires: block.count > 0
+
+    let scale = 1.0 / block.inv_std
+    let lut = scaled_codebook(codebook_entries, scale)
+    let result = lookup_indices(block.indices, lut, block.count)
+
+    ensures: result.count = block.count
+}
+
+-- ============================================================
+-- Composite rules (orchestrate algorithm-level rules)
 -- ============================================================
 
 rule QuantizeBlock {
@@ -60,10 +140,11 @@ rule QuantizeBlock {
     requires: tensor.count = config.block_size
 
     let norm = L2_norm(tensor.data)
-    let rotated = RHT_forward(normalize(tensor.data), config.seed)
-    let max_val = max(rotated)
+    let normalized = normalize(tensor.data, norm)
+    let rotated = RHT_forward(normalized, config.block_size, config.seed)
+    let max_val = max_abs(rotated)
     let inv_std = config.cent_max / max_val
-    let indices = nearest_centroid(tensor.data, inv_std)
+    let indices = nearest_centroid(rotated, inv_std, turbo_kv_4b_codebook)
 
     ensures: TurboBlock.created(
         norm: norm,
@@ -75,8 +156,8 @@ rule QuantizeBlock {
 rule DequantizeBlock {
     when: DequantizeBlock(block)
 
-    let codebook_values = reconstruct_codebook(block)
-    let dequant_rotated = RHT_inverse(codebook_values, config.seed)
+    let codebook_values = reconstruct_codebook(block, turbo_kv_4b_codebook)
+    let dequant_rotated = RHT_inverse(codebook_values, config.block_size, config.seed)
     let reconstructed = rescale(dequant_rotated, block.norm)
 
     ensures: Tensor.created(
@@ -90,8 +171,8 @@ rule VectorDot {
 
     requires: query.count = config.block_size
 
-    let q_rotated = RHT_forward(query.data, config.seed)
-    let k_dequant = reconstruct_codebook(block)
+    let q_rotated = RHT_forward(query.data, config.block_size, config.seed)
+    let k_dequant = reconstruct_codebook(block, turbo_kv_4b_codebook)
     let dot_result = dot_product(q_rotated, k_dequant) * block.norm
 
     ensures: result = dot_result
@@ -103,18 +184,31 @@ rule VectorDot {
 
 invariant ReconstructionPreservesNorm {
     for block in TurboBlocks:
-        for original in QuantizedVectors:
-            let reconstructed = dequantize(block)
-            abs(L2_norm(reconstructed) - L2_norm(original)) <= quantization_error_bound
+        let reconstructed = DequantizeBlock(block)
+        abs(L2_norm(reconstructed.data) - block.norm) <= block.norm * config.reconstruction_rel_error
 }
 
 invariant RHTOrthogonality {
-    for a in Vectors:
-        for b in Vectors:
-            for seed in Seeds:
-                let a_rot = RHT_forward(a, seed)
-                let b_rot = RHT_forward(b, seed)
-                dot_product(a_rot, b_rot) = dot_product(a, b)
+    for a in Tensors:
+        for b in Tensors:
+            let a_rot = RHT_forward(a.data, a.count, config.seed)
+            let b_rot = RHT_forward(b.data, b.count, config.seed)
+            dot_product(a_rot, b_rot) = dot_product(a.data, b.data)
+}
+
+invariant RHTIsSelfInverse {
+    for v in Tensors:
+        let rotated = RHT_forward(v.data, v.count, config.seed)
+        let restored = RHT_inverse(rotated, v.count, config.seed)
+        restored = v.data
+}
+
+invariant NearestCentroidMinimizesError {
+    for x in ScaledValues:
+        for cb in Codebooks:
+            let best = find_nearest(x, cb.entries)
+            for other in cb.entries:
+                abs(x - best) <= abs(x - other)
 }
 
 invariant DeterministicSeed {
@@ -132,27 +226,29 @@ invariant IndicesInBounds {
 }
 
 -- ============================================================
--- Deferred specifications (algorithm-level: resolved in separate files)
+-- Deferred specifications (black-box helpers)
 -- ============================================================
 
--- RESOLVED — each has its own distilled spec:
--- RHT_forward    -> turbo-rht.allium rule RHT_forward
--- RHT_inverse    -> turbo-rht.allium rule RHT_inverse
--- L2_norm        -> turbo-l2norm.allium rule L2_norm
--- normalize      -> turbo-normalize.allium rule normalize
--- nearest_centroid -> turbo-nearest-centroid.allium rule nearest_centroid
--- reconstruct_codebook -> turbo-reconstruct.allium rule reconstruct_codebook
--- rescale        -> turbo-rescale.allium rule rescale
-
--- REMAINING deferred (black-box helpers, never formally specified):
-deferred dot_product    -- black box: sum of element-wise products
-deferred max            -- black box: maximum of collection
-deferred abs            -- black box: absolute value
-deferred ceil           -- black box: ceiling division
-deferred zero_pad       -- black box: append zero elements
+deferred sum_of_squares   -- black box: sum of element-wise squares
+deferred sqrt             -- black box: square root function
+deferred scaled           -- black box: element-wise multiplication by scalar (2-arg)
+deferred scale            -- black box: element-wise multiplication by scalar over first n elements (3-arg, used in RHT)
+deferred scaled_vector    -- see: ggml-turbo-kv.c quantize_block_turbo_kv_4b step 5 (x * inv_std)
+deferred scaled_codebook  -- see: ggml-turbo-kv.c dequantize_block_turbo_kv_4b (codebook * scale)
+deferred find_nearest     -- see: ggml-turbo-kv.c quantize_block_turbo_kv_4b step 5 (argmin linear scan)
+deferred lookup_indices   -- see: ggml-turbo-kv.c dequantize_block_turbo_kv_4b (bit unpack + codebook lookup)
+deferred floor_pow2       -- see: ggml-turbo-kv.c turbo_kv_pow2_floor
+deferred apply_sign_flip  -- see: ggml-turbo-kv.c turbo_kv_random_sign
+deferred walsh_hadamard_transform -- see: ggml-turbo-kv.c walsh_hadamard
+deferred dot_product      -- black box: sum of element-wise products
+deferred max              -- black box: maximum of collection
+deferred max_abs          -- black box: maximum of element-wise absolute values
+deferred abs              -- black box: absolute value (scalar)
+deferred ceil             -- black box: ceiling division
+deferred zero_pad         -- black box: append zero elements
 
 -- ============================================================
--- Deferred implementations
+-- Deferred implementations (SIMD/backend)
 -- ============================================================
 
 -- The following SIMD/backend implementations are NOT yet provided.
