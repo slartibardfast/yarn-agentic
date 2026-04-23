@@ -96,7 +96,7 @@ All of these are throughput differences, not capability differences.
 - No "VPAND-optimized path" — VPAND/VPANDN are SSE2 (2001) and part of the baseline kernel on every target.
 - No emulation paths — all 15 instructions are natively available everywhere in scope.
 
-**Conditional second kernel:** if profiling one representative CPU per target class identifies a single instruction (or Zen 1/+'s 256-bit decomposition) as a dominant bottleneck, introduce a variant kernel at that point with the measurement as justification. Do not speculate.
+**Conditional second kernel:** measurement happens on one host only — this Zen 2 machine. Performance on the other 5 targets is extrapolated from Agner Fog tables for the hot instructions identified on Zen 2. If that extrapolation predicts a target (most likely Zen 1/+ due to 256-bit decomposition) would fall below the performance goal, introduce a variant kernel at that point. No speculation ahead of measurement, but also no per-target profiling rig.
 
 ## CPUID detection
 
@@ -139,10 +139,11 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 
 ## Next steps
 
-1. Extract latency / reciprocal-throughput / port-binding data for all 15 instructions across the 6 targets from Agner Fog `instruction_tables.ods`. Commit as a structured file (CSV or similar) alongside this doc, with source row numbers cited.
-2. Implement the single-kernel AVX2 baseline in `ggml-turbo-kv.c` behind runtime CPUID dispatch.
-3. Verify all 20 Allium obligations via `test-backend-ops`.
-4. Profile one representative CPU per target class. Introduce a second kernel only if measurement demands it.
+1. Implement the single-kernel AVX2 baseline in `ggml-turbo-kv.c` behind runtime CPUID dispatch.
+2. Verify all 20 Allium obligations from PHASE24 via `test-backend-ops`.
+3. Profile the baseline on the available host (Zen 2). Identify which of the 15 core instructions actually dominate cycle count — expect this to be a small subset.
+4. For the instructions flagged hot in step 3 (and only those), extract per-uarch latency, reciprocal throughput, and port-binding data from Agner Fog `instruction_tables.ods` for all 6 targets. Commit as a structured data file alongside this doc, with source row numbers cited.
+5. Combine the Zen 2 hot-path counters with the Agner figures to extrapolate expected per-target performance. Introduce a variant kernel only if the extrapolation predicts a target would fall below the goal.
 
 ## Notes
 
