@@ -226,38 +226,16 @@ invariant IndicesInBounds {
 }
 
 -- ============================================================
--- Deferred specifications (black-box helpers)
+-- Implementation notes
 -- ============================================================
 
-deferred sum_of_squares   -- black box: sum of element-wise squares
-deferred sqrt             -- black box: square root function
-deferred scaled           -- black box: element-wise multiplication by scalar (2-arg)
-deferred scale            -- black box: element-wise multiplication by scalar over first n elements (3-arg, used in RHT)
-deferred scaled_vector    -- see: ggml-turbo-kv.c quantize_block_turbo_kv_4b step 5 (x * inv_std)
-deferred scaled_codebook  -- see: ggml-turbo-kv.c dequantize_block_turbo_kv_4b (codebook * scale)
-deferred find_nearest     -- see: ggml-turbo-kv.c quantize_block_turbo_kv_4b step 5 (argmin linear scan)
-deferred lookup_indices   -- see: ggml-turbo-kv.c dequantize_block_turbo_kv_4b (bit unpack + codebook lookup)
-deferred floor_pow2       -- see: ggml-turbo-kv.c turbo_kv_pow2_floor
-deferred apply_sign_flip  -- see: ggml-turbo-kv.c turbo_kv_random_sign
-deferred walsh_hadamard_transform -- see: ggml-turbo-kv.c walsh_hadamard
-deferred dot_product      -- black box: sum of element-wise products
-deferred max              -- black box: maximum of collection
-deferred max_abs          -- black box: maximum of element-wise absolute values
-deferred abs              -- black box: absolute value (scalar)
-deferred ceil             -- black box: ceiling division
-deferred zero_pad         -- black box: append zero elements
-
--- ============================================================
--- Deferred implementations (SIMD/backend)
--- ============================================================
-
--- The following SIMD/backend implementations are NOT yet provided.
--- They must produce results identical to the scalar reference path.
--- PPL quality on the target model must match the CPU baseline.
-
-deferred AVX2_Quantize    -- see: ggml-cpu/arch/x86/turbo_kv_4b_sse.h (AVX2 port)
-deferred AVX512_Quantize  -- see: ggml-cpu/arch/x86/ (new file)
-deferred CUDA_Quantize    -- see: ggml-cuda/ (new file)
-deferred ROCM_Quantize    -- see: ggml-rocm/ (new file)
-deferred Vulkan_Quantize  -- see: ggml-vulkan/ (partially exists)
-deferred ARM_NEON_Quantize  -- see: ggml-cpu/arch/arm/ (new file)
+-- The rule bodies above call helpers (sum_of_squares, sqrt, scaled,
+-- scale, scaled_vector, scaled_codebook, find_nearest, lookup_indices,
+-- floor_pow2, apply_sign_flip, walsh_hadamard_transform, dot_product,
+-- max, max_abs, abs) as black-box functions. Their C reference lives
+-- in llama.cpp/ggml/src/ggml-turbo-kv.c.
+--
+-- SIMD and backend implementations (AVX2, AVX-512, CUDA, ROCm, Vulkan,
+-- ARM NEON) are outside the spec per the scope at the top of this file.
+-- Any implementation must produce results identical to the scalar
+-- reference path; PPL on the target model must match the CPU baseline.
