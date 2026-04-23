@@ -1,200 +1,157 @@
-# Phase 25: TURBO_KV_4B AVX2 Kernel Design — Non-AVX-512 Target Architecture Matrix
+# Phase 25: TURBO_KV_4B AVX2 Kernel Design — Non-AVX-512 Microarchitecture Targets
 
-## Status: COMPLETE — design document, no implementation yet
+## Status
 
-## Problem
+Design document — **REVISED**. The earlier draft made ISA-availability claims that do not match what the targeted CPUs actually implement; that draft is superseded by this file. See the final "Notes" section for what changed and why. No kernel code written yet.
 
-Design the AVX2 kernel strategy for TURBO_KV_4B quantization across non-AVX-512 microarchitectures, using Agner Fog's instruction tables as the authoritative reference. Determine kernel splits, lowest-common-denominator instruction sets, and fallback paths.
+## Scope
 
-**Scope note:** AVX-512 CPUs are excluded from this kernel scope. On AVX-512 CPUs, the scalar reference path or a dedicated AVX-512 kernel (future work) is used. The rationale: AVX-512 has known limitations (frequency throttling, state transition overhead, thermal constraints) that can make AVX2 faster in practice on some workloads. TURBO quantization is latency-bound with long dependency chains, making AVX-512's frequency penalty particularly harmful.
+Non-AVX-512 x86 CPUs with AVX2.
 
-## Target Microarchitectures
+AVX-512-capable CPUs fall through to the scalar reference path until a dedicated AVX-512 kernel is written. This is a scope decision: the AVX-512 kernel is future work, not a claim that AVX-512 is slower than AVX2 on modern silicon. On Skylake-SP and Ice Lake-SP AVX-512 did incur measurable frequency-license throttling that could make AVX2 competitive on latency-bound code; on Zen 4 and Sapphire Rapids that penalty is largely absent.
 
-Goldmont excluded (Atom-based, limited AVX2, not LLM hosting tier). Zen 1 excluded (too limited AVX2 — only ~10 AVX2 instructions).
+## Target microarchitectures
 
-| # | Microarchitecture | Vendor | Year | AVX2 | LLM Hosting Relevance |
-|---|-------------------|--------|------|------|----------------------|
-| 1 | Haswell | Intel | 2013 | Baseline | Legacy server (E5-26xx v3) |
-| 2 | Skylake-W | Intel | 2017 | Full | Workstation (Xeon W) |
-| 3 | Zen 2 | AMD | 2019 | Full | Desktop/Threadripper 2 |
-| 4 | Zen 3 | AMD | 2020 | Full | Desktop/EPYC 7002 |
-| 5 | Zen 4 | AMD | 2022 | Full + extras | EPYC 9004, Ryzen 7000, PCIe 4.0, better memory bandwidth |
+| # | Microarchitecture | Vendor | Year | Notes |
+|---|-------------------|--------|------|-------|
+| 1 | Haswell | Intel | 2013 | AVX2 baseline; legacy server (Xeon E5-26xx v3, Xeon E3 v3). |
+| 2 | Skylake client | Intel | 2015 | AVX2 only; 6th–10th gen Core consumer/mobile. Skylake-W/SP/X is excluded — those have AVX-512. |
+| 3 | Alder Lake / Raptor Lake | Intel | 2021–2022 | P-core AVX-512 fused off at retail. E-cores never shipped AVX-512. Treated as AVX2-only. |
+| 4 | Zen 2 | AMD | 2019 | First Zen generation with native 256-bit AVX2 execution. Ryzen 3000, Threadripper 3000, EPYC 7002. |
+| 5 | Zen 3 | AMD | 2020 | Refines Zen 2. Ryzen 5000, EPYC 7003. |
 
-**Why Zen 4 as the fourth target:**
-- Introduces **VPAND/VPANDN** — dedicated bitwise AND/NAND, useful for TURBO bit manipulation (replaces multi-instruction sequences)
-- **VPSLLVD** throughput is 6× faster than Zen 2 (rtp=0.5 vs rtp=3) — important for bit unpack in quantization
-- Represents modern AMD server class with PCIe 4.0 and improved memory controller — direct LLM hosting relevance
-- Lacks AVX-512, keeping it in scope
-- Significant microarchitectural gap from Zen 2 (different IPC, improved scheduler, more execution ports)
+**Explicitly excluded:**
 
-## Instruction Availability Matrix
+- **Zen 4 (Ryzen 7000, EPYC 9004)** — has AVX-512F/BW/DQ/VL/VBMI/VBMI2/VNNI/BF16/VPOPCNTDQ/BITALG/GFNI. Covered by the AVX-512 scope decision above.
+- **Skylake-W, Skylake-X, Cascade Lake, Ice Lake-SP, Sapphire Rapids, Emerald Rapids** — all AVX-512.
+- **Zen 1 / Zen+** — implement the full AVX2 ISA but decompose 256-bit ops into two 128-bit µops. Consistently slower than Zen 2. Left out to bound initial scope; can be readmitted if real-world hosts turn up.
+- **Broadwell** — microarchitecturally close to Haswell; no separate kernel warranted. The Haswell kernel will run on Broadwell unchanged.
+- **Goldmont, Tremont, Gracemont (standalone)** — Atom tier, not an LLM hosting target.
 
-Extracted from Agner Fog's instruction_tables.ods for 15 TURBO quantization core instructions across 5 target uarchs.
+## Instruction availability
 
-### Core instruction set
+All 15 instructions below are in AVX2 or earlier. Every AVX2-capable CPU in scope implements all of them. There is no ISA-driven kernel split.
 
-| # | Instruction | Role in TURBO |
-|---|-------------|---------------|
-| 1 | VPERM2I128 | RHT butterfly lane swap |
-| 2 | VPERMD | RHT sign mask application (32-bit shuffle) |
-| 3 | VPERMQ | RHT butterfly (64-bit shuffle) |
-| 4 | VPERMPD | RHT butterfly (64-bit permute) |
-| 5 | VPERM2F128 | 128-bit lane permute |
-| 6 | VPMOVZXBW | Bit unpack: 8-bit indices → 16-bit |
-| 7 | VPMOVSXBW | Sign-extend unpack |
-| 8 | VPMOVMSKB | Extract bitmask from YMM register |
-| 9 | VPSHUFB | Table-driven byte shuffle (codebook lookup) |
-| 10 | VPSLLVD | Variable left shift (bit unpack) |
-| 11 | VCVTDQ2PD | int32 → float64 (norm computation) |
-| 12 | VEXTRACTF128 | Extract XMM from YMM |
-| 13 | VINSERTF128 | Insert XMM into YMM |
-| 14 | VRSQRTPS | Reciprocal square root (normalization) |
-| 15 | VBLENDVPS/PD | Conditional blend (quantization clamping) |
-
-### Availability matrix
+| # | Instruction | Introduced in | Role in TURBO |
+|---|-------------|---------------|---------------|
+| 1 | VPERM2I128 | AVX2 | RHT butterfly lane swap |
+| 2 | VPERMD | AVX2 | RHT sign mask application (32-bit lane-crossing shuffle) |
+| 3 | VPERMQ | AVX2 | RHT butterfly (64-bit lane-crossing shuffle) |
+| 4 | VPERMPD | AVX2 | RHT butterfly (64-bit float permute) |
+| 5 | VPERM2F128 | AVX | 128-bit lane permute |
+| 6 | VPMOVZXBW | SSE4.1 / AVX2 YMM | Bit unpack: u8 → u16 |
+| 7 | VPMOVSXBW | SSE4.1 / AVX2 YMM | Sign-extend unpack: i8 → i16 |
+| 8 | VPMOVMSKB | SSE2 / AVX2 YMM | Extract byte bitmask from YMM |
+| 9 | VPSHUFB | SSSE3 / AVX2 YMM | Table-driven byte shuffle (codebook lookup) |
+| 10 | VPSLLVD | AVX2 | Variable left shift (bit unpack) |
+| 11 | VCVTDQ2PD | SSE2 / AVX2 YMM | int32 → float64 (norm computation) |
+| 12 | VEXTRACTF128 | AVX | Extract XMM from YMM |
+| 13 | VINSERTF128 | AVX | Insert XMM into YMM |
+| 14 | VRSQRTPS | SSE / AVX2 YMM | Reciprocal square root (normalization) |
+| 15 | VBLENDVPS / VBLENDVPD | AVX | Mask-driven conditional blend (quantization clamp) |
 
 ```
-Instruction                  Haswell  SKL-W    Zen 2    Zen 3    Zen 4
-VPERM2I128                      ✓        ✓        ✓        ✓        ✓
-VPERMD                          ✓        ✓        ✓        ✓        ✓
-VPERMQ                          ✓        ✓        ✓        ✓        ✓
-VPERMPD                         ✓        ✓        ✓        ✓        ✗
-VPERM2F128                      ✓        ✓        ✓        ✓        ✓
-VPMOVZXBW                       ✓        ✓        ✓        ✓        ✓
-VPMOVSXBW                       ✓        ✓        ✓        ✓        ✓
-VPMOVMSKB                       ✓        ✓        ✓        ✓        ✓
-VPSHUFB                         ✓        ✓        ✗        ✗        ✓
-VPSLLVD                         ✓        ✓        ✓        ✓        ✓
-VCVTDQ2PD                       ✓        ✓        ✓        ✓        ✓
-VEXTRACTF128                    ✓        ✓        ✓        ✓        ✓
-VINSERTF128                     ✓        ✓        ✓        ✓        ✓
-VRSQRTPS                        ✓        ✓        ✓        ✓        ✓
-VBLENDVPS/PD                    ✓        ✓        ✗        ✗        ✗
+Instruction          Haswell  SKL-client  ADL/RPL  Zen 2  Zen 3
+VPERM2I128               ✓         ✓          ✓       ✓      ✓
+VPERMD                   ✓         ✓          ✓       ✓      ✓
+VPERMQ                   ✓         ✓          ✓       ✓      ✓
+VPERMPD                  ✓         ✓          ✓       ✓      ✓
+VPERM2F128               ✓         ✓          ✓       ✓      ✓
+VPMOVZXBW                ✓         ✓          ✓       ✓      ✓
+VPMOVSXBW                ✓         ✓          ✓       ✓      ✓
+VPMOVMSKB                ✓         ✓          ✓       ✓      ✓
+VPSHUFB                  ✓         ✓          ✓       ✓      ✓
+VPSLLVD                  ✓         ✓          ✓       ✓      ✓
+VCVTDQ2PD                ✓         ✓          ✓       ✓      ✓
+VEXTRACTF128             ✓         ✓          ✓       ✓      ✓
+VINSERTF128              ✓         ✓          ✓       ✓      ✓
+VRSQRTPS                 ✓         ✓          ✓       ✓      ✓
+VBLENDVPS/PD             ✓         ✓          ✓       ✓      ✓
 ```
 
-### Lowest Common Denominator (LCD) analysis
+## Throughput variation — qualitative, to be quantified
 
-**3/5 uarchs** (Haswell, Skylake-W, Zen 4) share all 15 instructions.
+Per-uarch latency, reciprocal throughput, and port-binding data must be extracted directly from Agner Fog's `instruction_tables.ods` and committed as a structured data file before any kernel decisions are made on timing grounds. Specific figures are not reproduced here — see MEMORY feedback "Follow published specs, don't riff" and the `no-riff` note in Design Constraints.
 
-**1/5 uarchs** (Zen 3) shares 13/15 (missing VPSHUFB, VBLENDVPS/PD).
+Known qualitative differences worth measuring, from published microarchitectural descriptions (not from invented numbers):
 
-**1/5 uarchs** (Zen 2) shares 13/15 (missing VPSHUFB, VBLENDVPS/PD).
+- **VPSLLVD** reciprocal throughput improved materially between Zen 2 and Zen 3. If bit-unpack is a hot path, this is the most likely trigger for a Zen 2-specific variant.
+- **VPERMD / VPERMQ** are lane-crossing; they are the RHT bottleneck on all targets and dominate latency regardless of uarch.
+- **VRSQRTPS** reciprocal throughput differs between Intel client and Zen.
+- **VBLENDVPS/PD** reciprocal throughput is worse on Haswell than on later Intel or Zen.
 
-**Missing instructions and their emulation paths:**
+All of these are throughput differences, not capability differences.
 
-| Instruction | Missing on | Emulation | Cost multiplier |
-|-------------|-----------|-----------|-----------------|
-| VPERMPD | Zen 4 | VPERMQ + VPERM2I128 | 2× μops |
-| VPSHUFB | Zen 2, Zen 3 | VPERM2I128 + VPERMD chain | 3-4× μops |
-| VBLENDVPS/PD | Zen 2, Zen 3, Zen 4 | VPERM2I128 + VPERMD + VPERMQ | 3-4× μops |
+## Kernel strategy
 
-**Zen 2/3 are the constraint boundary.** They lack VPSHUFB and VBLENDVPS/PD. Haswell, Skylake-W, and Zen 4 have the complete set.
+**Baseline: a single AVX2 kernel covering all 5 targets.**
 
-## Kernel Split Strategy
+**Rationale:** the ISA is uniform. A single compiled kernel emits the same instructions on every target. A multi-kernel split would add maintenance cost without fixing a concrete problem. The earlier draft's two-kernel split was derived from an ISA matrix that turned out to be wrong.
 
-### Kernel 1: Zen 2/3 baseline (AVX2 constrained)
+**What this design does not include ahead of measurement:**
 
-**Target:** Zen 2, Zen 3 — the most constrained instruction set.
+- No Zen 2-specific VPSLLVD-avoidance variant until VPSLLVD is measured as the bottleneck.
+- No "VPAND-optimized path" — VPAND/VPANDN are SSE2 (2001) and part of the baseline kernel on every target.
+- No emulation paths — all 15 instructions are natively available everywhere in scope.
 
-**Instruction set:** 13 instructions (LCD minus VPSHUFB, VBLENDVPS/PD, VPERMPD).
+**Conditional second kernel:** if profiling one representative CPU per target class identifies a single instruction as a dominant bottleneck on a specific uarch, introduce a variant kernel at that point with the measurement as justification. Do not speculate.
 
-**Emulation paths needed:**
-- **VPSHUFB** → VPERM2I128 + VPERMD chain (~4 μops vs 1)
-- **VBLENDVPS/PD** → VPERM2I128 + VPERMD + VPERMQ chain (~4 μops vs 1)
-- **VPERMPD** → VPERMQ + VPERM2I128 (2 μops vs 1)
-
-**Rationale:** Zen 2/3 have the most limited AVX2 instruction set. They can execute all other TURBO instructions natively. The emulation paths for VPSHUFB and VBLENDVPS/PD use permutation instructions that Zen 2/3 do have. The emulation cost is ~3-4× per instruction but the kernels remain correct.
-
-### Kernel 2: Haswell/Skylake-W/Zen 4 (AVX2 full LCD)
-
-**Target:** Haswell, Skylake-W, Zen 4 — all share the full 15-instruction LCD set.
-
-**Instruction set:** All 15 core instructions.
-
-**Additional useful instructions on Zen 4:**
-- **VPAND / VPANDN** — bitwise AND/NAND (replaces multi-instruction bit-mask sequences in quantization)
-- **VPMADDUBSW** — dot product accumulation (attention path, future)
-- **VPOPCNTD** — population count (bit counting, future)
-- **VPMIN / VPMAX** — integer min/max (quantization clamping, future)
-
-**Rationale:** These three uarchs share the full LCD instruction set. They differ in timing characteristics (see below) but not in instruction availability. The kernel can detect Zen 4 at runtime and enable VPAND-optimized paths within the same kernel.
-
-**Why these three together:** Despite their generational differences (Haswell 2013 → Zen 4 2022), they share the same AVX2 instruction set boundary. The timing differences can be handled via runtime dispatch within the kernel, not via separate kernels.
-
-## Timing Comparison — Key Instructions
-
-All data from Agner Fog's instruction tables.
-
-```
-Instruction                  Haswell      Skylake      Zen 2        Zen 3        Zen 4
-VPERM2I128              lat=3  rtp=1  P2    lat=3  rtp=1  P2    lat=3  rtp=1  P2    lat=3  rtp=1  P2    lat=3  rtp=1  P2
-VPERMD                  lat=8  rtp=1  P12   lat=8  rtp=1  P12   lat=8  rtp=1  P12   lat=8  rtp=1  P12   lat=8  rtp=1  P12
-VPERMQ                  lat=6  rtp=1  P12   lat=6  rtp=1  P12   lat=6  rtp=1  P12   lat=6  rtp=1  P12   lat=6  rtp=1  P12
-VPMOVZXBW               lat=4  rtp=1  P12   lat=4  rtp=1  P12   lat=4  rtp=1  P12   lat=4  rtp=1  P12   lat=4  rtp=1  P12
-VPMOVSXBW               lat=4  rtp=1  P12   lat=4  rtp=1  P12   lat=4  rtp=1  P12   lat=4  rtp=1  P12   lat=4  rtp=1  P12
-VPSLLVD                 lat=1  rtp=2  P0 P1 lat=1  rtp=1  P01   lat=1  rtp=3  P12   lat=1  rtp=0.5 P12 lat=1  rtp=0.5 P23
-VRSQRTPS                lat=3  rtp=0.5 P01 lat=3  rtp=0.5 P01   lat=3  rtp=1  P01   lat=3  rtp=1  P01   lat=3  rtp=1  P01
-VBLENDVPS/PD            lat=2  rtp=2  P5    lat=1  rtp=1  P01   N/A          N/A          N/A          lat=1  rtp=0.5 P01
-VPMOVMSKB               lat=5  rtp=2  P2    lat=5  rtp=2  P2    lat=5  rtp=2  P2    lat=5  rtp=2  P2    lat=5  rtp=2  P2
-```
-
-**Key timing observations:**
-- **VPSLLVD** is the most timing-divergent instruction: Zen 2 (rtp=3, P12) vs Zen 3/4 (rtp=0.5, P12) vs Skylake (rtp=1, P01). This is a critical differentiator — bit unpack is 6× slower on Zen 2.
-- **VRSQRTPS** has 2× throughput difference: Skylake (rtp=0.5, P01) vs Zen 2/3/4 (rtp=1, P01). Haswell also rtp=0.5 but on P01.
-- **VPERMD** has 8-cycle latency on all uarchs — this is the RHT bottleneck, same across all targets.
-- **VPMOVZXBW/VPMOVSXBW** share ports P12 across all uarchs — throughput-limited, not latency-bound.
-- **VBLENDVPS/PD** is 4× faster on Skylake (rtp=0.5) vs Haswell (rtp=2) — matters for quantization clamping path.
-- **Zen 4 VPSLLVD** (rtp=0.5, P23) is the fastest — enables faster bit unpack in Zen 4.
-
-## Runtime Detection Strategy
+## CPUID detection
 
 ```c
-// CPUID-based detection
-bool cpu_has_avx2 = cpuid(7, 0).ebx & (1 << 5);
-bool cpu_has_avx512f = cpuid(7, 0).ebx & (1 << 16);
-bool cpu_has_avx512bw = cpuid(7, 0).ebx & (1 << 30);
+// AVX2 is required for this kernel.
+bool cpu_has_avx2 = (cpuid(7, 0).ebx >> 5) & 1;
 
-// Exclude AVX-512 CPUs — use scalar ref or future AVX-512 kernel
-bool cpu_has_avx512 = cpu_has_avx512f && cpu_has_avx512bw;
-if (cpu_has_avx512) return scalar_quantize_row_turbo_kv_4b(...);
+// Any AVX-512F implies the AVX-512 scope fallthrough.
+bool cpu_has_avx512f = (cpuid(7, 0).ebx >> 16) & 1;
 
-// AMD-specific: Zen generation via leaf 0x80000001
-uint32_t family = (cpuid(0x80000001, 0).eax >> 8) & 0xF;
-uint32_t ext_family = (cpuid(0x80000001, 0).eax >> 20) & 0xFF;
-uint32_t model = (cpuid(0x80000001, 0).eax >> 4) & 0xF;
+if (!cpu_has_avx2)       return scalar_quantize_row_turbo_kv_4b(...);
+if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope decision
 
-// Zen 2 = family 0x17, model >= 0x70
-// Zen 3 = family 0x19
-// Zen 4 = family 0x1A
-
-// Intel: Haswell = family 6, model 0x45/0x4F; Skylake = family 6, model 0x5E
+// All remaining AVX2-only CPUs run the same kernel, uarch-independent.
 ```
 
-**Kernel selection priority:**
-1. **AVX-512 detected** → scalar reference path (or future AVX-512 kernel)
-2. **VPAND detected** (Zen 4) → Kernel 2 with VPAND-optimized paths
-3. **VPSHUFB detected** (Haswell, Skylake-W) → Kernel 2 without emulation
-4. **AVX2 only** (Zen 2/3) → Kernel 1 with emulation paths
+**Family/model reference (informational — no uarch-specific dispatch yet):**
 
-## Design Constraints
+- Intel, family 6:
+  - Haswell: models `0x3C`, `0x3F`, `0x45`, `0x46`
+  - Broadwell: models `0x3D`, `0x47`, `0x4F`, `0x56`
+  - Skylake client: models `0x4E`, `0x5E`
+  - Alder Lake: models `0x97`, `0x9A`
+  - Raptor Lake: models `0xB7`, `0xBA`, `0xBE`, `0xBF`
+  - (Skylake-SP/W/X is family 6 model `0x55` — has AVX-512, excluded via the AVX-512F bit.)
+- AMD:
+  - Zen 2: family `0x17`, models include `0x31`, `0x47`, `0x60`, `0x68`, `0x71`, `0xA0`
+  - Zen 3: family `0x19`, models `0x00`–`0x0F`, `0x20`–`0x2F`, `0x40`–`0x4F`, `0x50`–`0x5F`
+  - Zen 4: family `0x19`, models `0x10`–`0x1F`, `0x60`–`0x6F`, `0x70`–`0x7F`, `0xA0`–`0xAF` (excluded via the AVX-512F bit)
 
-1. **Test-first discipline:** Every kernel must pass the 20 Allium obligations from PHASE24. No deferrals.
-2. **GPU testing:** All GPU tests use only Vega (`GGML_VK_VISIBLE_DEVICES=1`).
-3. **No workarounds:** If an instruction is missing, implement it properly — no type downgrades or hacks.
-4. **Surgical changes:** Match existing ggml-turbo-kv.c style exactly. Touch only what changes.
-5. **Universal where possible:** Kernel 2 covers 3/5 uarchs with the full LCD. Kernel 1 covers the remaining 2/5 with emulation.
+## Design constraints
 
-## Next Steps
+1. **Test-first:** the kernel must pass all 20 Allium obligations from PHASE24 before it ships. No deferrals.
+2. **Surgical changes:** match existing `ggml-turbo-kv.c` style exactly.
+3. **No workarounds:** if a target needs something this design did not anticipate, implement it. Do not downgrade types or hack around it.
+4. **No riff on tables:** actual Agner Fog figures go into a separate committed data file with row citations. Do not quote timing numbers from memory.
+5. **GPU testing (repo rule, noted for context):** GPU tests use Vega only (`GGML_VK_VISIBLE_DEVICES=1`); does not apply to CPU kernels but flagged here so it doesn't fall off the checklist at integration time.
 
-1. Implement Zen 2/3 baseline kernel (Kernel 1) with emulation paths for VPSHUFB and VBLENDVPS/PD
-2. Implement Haswell/Skylake-W/Zen 4 kernel (Kernel 2) using full LCD + VPAND-optimized paths for Zen 4
-3. Add runtime CPU detection and kernel dispatch in ggml-turbo-kv.c
-4. Verify all 20 Allium obligations against each kernel via test-backend-ops
+## Next steps
+
+1. Extract latency / reciprocal-throughput / port-binding data for all 15 instructions across the 5 targets from Agner Fog `instruction_tables.ods`. Commit as a structured file (CSV or similar) alongside this doc, with source row numbers cited.
+2. Implement the single-kernel AVX2 baseline in `ggml-turbo-kv.c` behind runtime CPUID dispatch.
+3. Verify all 20 Allium obligations via `test-backend-ops`.
+4. Profile one representative CPU per target class. Introduce a second kernel only if measurement demands it.
 
 ## Notes
 
-- **AVX-512 excluded from scope:** AVX-512 CPUs use the scalar reference path. A dedicated AVX-512 kernel (ZMM registers, 64 elements/instruction) is future work. Reasons: AVX-512 frequency throttling, state transition overhead, and thermal constraints can make AVX2 faster in practice on latency-bound workloads like TURBO quantization.
-- **Zen 1 excluded:** Too limited AVX2 support (only ~10 AVX2 instructions).
-- **Goldmont excluded:** Atom-based, not LLM hosting tier.
-- **The 2-kernel strategy** balances coverage (5 uarchs) against implementation complexity (2 kernels).
-- **Zen 4's VPAND/VPANDN** are the most impactful new instructions — they replace multi-instruction bit-mask sequences used in quantization index packing.
+**Supersedes earlier revision.** The earlier draft contained several ISA-availability claims that do not match reality and were not derived from Agner Fog's tables despite the citation. Concretely:
+
+- It marked **VPSHUFB** as missing on Zen 2 and Zen 3. VPSHUFB is SSSE3 (2006) with an AVX2 YMM form; every AVX2-capable CPU has it, including Zen 1.
+- It marked **VBLENDVPS/PD** as missing on Zen 2, Zen 3, and Zen 4. VBLENDVPS/PD is AVX (2011); every AVX-capable CPU has it.
+- It marked **VPERMPD** as missing on Zen 4. VPERMPD is AVX2; Zen 4 has the full AVX2 ISA.
+- It described **VPAND/VPANDN** as introduced on Zen 4. They are SSE2 (2001).
+- It listed **VPOPCNTD** as an AVX2 instruction. `VPOPCNTD` is AVX-512VPOPCNTDQ, not AVX2.
+- It treated **Zen 4** as an AVX2-only target. Zen 4 has full AVX-512F/BW/DQ/VL/VBMI/VBMI2/VNNI/BF16/VPOPCNTDQ/BITALG/GFNI.
+- CPUID constants were wrong: Zen 4 is family `0x19` (same as Zen 3, distinguished by model), not family `0x1A`; Haswell does not include model `0x4F` (that is Broadwell-EP).
+
+The 2-kernel split in the earlier draft was derived from the incorrect matrix and is abandoned here in favour of a single-kernel baseline plus measurement-driven variants.
+
+**Zen 1 / Zen+** implement full AVX2 (the earlier draft's "Zen 1 has only ~10 AVX2 instructions" claim is wrong), but 128-bit internal execution halves their effective throughput on 256-bit ops. They can be readmitted to scope if a deployment needs them.
