@@ -64,6 +64,8 @@ rule L2_norm {
 rule normalize {
     when: normalize(data, norm)
 
+    requires: norm > 0.0
+
     let inv_norm = 1.0 / norm
     let result = scaled(data, inv_norm)
 
@@ -122,6 +124,7 @@ rule reconstruct_codebook {
 
     requires: codebook_entries.count > 0
     requires: block.count > 0
+    requires: block.inv_std > 0.0
 
     let scale = 1.0 / block.inv_std
     let lut = scaled_codebook(codebook_entries, scale)
@@ -138,6 +141,10 @@ rule QuantizeBlock {
     when: QuantizeBlock(tensor, seed)
 
     requires: tensor.count = config.block_size
+    -- Rejects the all-zero input. Rules this out for normalize (needs norm > 0)
+    -- and for the cent_max / max_abs(rotated) division below; RHT is orthogonal,
+    -- so max_abs(rotated) > 0 whenever L2_norm(tensor.data) > 0.
+    requires: L2_norm(tensor.data) > 0.0
 
     let norm = L2_norm(tensor.data)
     let normalized = normalize(tensor.data, norm)
@@ -155,6 +162,8 @@ rule QuantizeBlock {
 
 rule DequantizeBlock {
     when: DequantizeBlock(block)
+
+    requires: block.inv_std > 0.0
 
     let codebook_values = reconstruct_codebook(block, turbo_kv_4b_codebook)
     let dequant_rotated = RHT_inverse(codebook_values, config.block_size, config.seed)
@@ -182,6 +191,11 @@ rule VectorDot {
 -- Invariants
 -- ============================================================
 
+-- Holds for TurboBlocks whose pre-quantization input is near-Gaussian
+-- after normalize + RHT — the operating domain TURBO_KV_4B targets
+-- (kurtosis ~2.96 observed on Qwen3.5 KV; PHASE24 measured rel_err=0.083
+-- on unit Gaussian). Adversarial inputs (one-hot, highly sparse) can
+-- exceed the bound and are outside the operating domain.
 invariant ReconstructionPreservesNorm {
     for block in TurboBlocks:
         let reconstructed = DequantizeBlock(block)
