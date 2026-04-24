@@ -344,7 +344,7 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 
     **Decision: no variant kernel.** Every target's projection falls at or below the pre-repack Zen 2 baseline of 486 ns/call. Zen 1 at 434 ns is the worst case in scope and is still faster than what Zen 2 delivered before this phase's vectorisation work landed. The 128-bit XMM-width variant hypothesised in §"Kernel strategy" as a contingency for Zen 1 is not triggered — the AVX2 kernel as shipped satisfies the performance goal on every uarch in scope.
 
-    An Alder Lake / Raptor Lake P-core actual measurement would validate the IceLake proxy assumption, but the extrapolation is conservative: Golden Cove has a wider retire pipeline than Ice Lake on most integer ops, so real performance should be no worse than the IceLake projection.
+    An Alder Lake / Raptor Lake P-core actual measurement would validate the IceLake proxy assumption, but the extrapolation is conservative: Golden Cove has a wider retire pipeline than Ice Lake on most integer ops, so real performance should be no worse than the IceLake projection. `reference/agner/verify_projection.sh` is a portable runner that executes `bench-turbo-kv-quantize` 5× on any host, takes the median, detects the uarch from `/proc/cpuinfo`, and reports the delta vs the projected value in this table. Exits 0 within ±20 %.
 
 ## Notes
 
