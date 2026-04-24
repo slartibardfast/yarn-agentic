@@ -1,0 +1,61 @@
+Profile fraction tracked: 0.6219 (62.19%)
+Untracked fraction (assumed uarch-neutral): 0.3781
+
+Instruction             Haswell    Skylake    IceLake       Zen1       Zen2       Zen3
+--------------------------------------------------------------------------------------
+VMULPS_y                  0.500      0.500      0.500      1.000      0.500      0.500
+VFMADD231PS_y             0.500      0.500      0.500      1.000      0.500      0.500
+VHADDPS_y                 2.000      2.000      2.000      3.000      2.000      2.000
+VADDPS_y                  1.000      0.500      0.500      1.000      0.500      0.500
+VINSERTI128               1.000      1.000      1.000      0.670      1.000      1.000
+VPMOVSXBD_y               1.000      1.000      1.000      0.500      1.000      1.000
+VFMADD213SS               0.500      0.500      0.500      0.500      0.500      0.500
+VCVTDQ2PS_y               1.000      0.500      0.500      2.000      1.000      0.500
+VMOVDQU_y_load            0.500      0.500      0.500      1.000      0.500      0.500
+VPSRLW_y                  1.000      0.500      0.500      2.000      1.000      0.500
+
+Per-instruction cycle contribution on each uarch, as a factor
+of its Zen 2 contribution (recip_U / recip_Zen2):
+Instruction             Haswell    Skylake    IceLake       Zen1       Zen2       Zen3
+--------------------------------------------------------------------------------------
+VMULPS_y                   1.00       1.00       1.00       2.00       1.00       1.00
+VFMADD231PS_y              1.00       1.00       1.00       2.00       1.00       1.00
+VHADDPS_y                  1.00       1.00       1.00       1.50       1.00       1.00
+VADDPS_y                   2.00       1.00       1.00       2.00       1.00       1.00
+VINSERTI128                1.00       1.00       1.00       0.67       1.00       1.00
+VPMOVSXBD_y                1.00       1.00       1.00       0.50       1.00       1.00
+VFMADD213SS                1.00       1.00       1.00       1.00       1.00       1.00
+VCVTDQ2PS_y                1.00       0.50       0.50       2.00       1.00       0.50
+VMOVDQU_y_load             1.00       1.00       1.00       2.00       1.00       1.00
+VPSRLW_y                   1.00       0.50       0.50       2.00       1.00       0.50
+
+Weighted slowdown vs Zen 2 (profile-fraction weighted):
+  Haswell     profiled avg slowdown = 1.100x    overall cycles vs Zen 2 = 1.062x
+  Skylake     profiled avg slowdown = 0.949x    overall cycles vs Zen 2 = 0.968x
+  IceLake     profiled avg slowdown = 0.949x    overall cycles vs Zen 2 = 0.968x
+  Zen1        profiled avg slowdown = 1.635x    overall cycles vs Zen 2 = 1.395x
+  Zen2        profiled avg slowdown = 1.000x    overall cycles vs Zen 2 = 1.000x
+  Zen3        profiled avg slowdown = 0.949x    overall cycles vs Zen 2 = 0.968x
+
+Absolute prediction for AVX2 quantize (311 ns baseline, Zen 2 Ryzen 9 3950X @ ~3.5 GHz boost):
+  Haswell     projected  330.4 ns/call (ratio 1.062)
+  Skylake     projected  301.1 ns/call (ratio 0.968)
+  IceLake     projected  301.1 ns/call (ratio 0.968)
+  Zen1        projected  433.8 ns/call (ratio 1.395)
+  Zen2        projected  311.0 ns/call (ratio 1.000)
+  Zen3        projected  301.1 ns/call (ratio 0.968)
+
+Per-uarch hotspots — instructions with slowdown >= 1.5x vs Zen 2:
+  Haswell:
+    VADDPS_y              2.00x  (profile 6.23%)
+  Skylake: (none >= 1.5x)
+  IceLake: (none >= 1.5x)
+  Zen1:
+    VMULPS_y              2.00x  (profile 12.78%)
+    VFMADD231PS_y         2.00x  (profile 10.37%)
+    VADDPS_y              2.00x  (profile 6.23%)
+    VHADDPS_y             1.50x  (profile 8.24%)
+    VCVTDQ2PS_y           2.00x  (profile 4.51%)
+    VMOVDQU_y_load        2.00x  (profile 3.74%)
+    VPSRLW_y              2.00x  (profile 1.85%)
+  Zen3: (none >= 1.5x)
