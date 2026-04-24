@@ -123,15 +123,20 @@ Rules:
 
 PLAN.md and PHASEx.md use three marks with explicit meanings:
 
-- `[ ]` — not started, OR in progress, OR done but unverified against the step's stated claim. Default state. Bias toward this when in doubt.
+- `[ ]` — not started, OR in progress, OR done but unverified against the step's stated claim. Default state.
 - `[~]` — genuine partial. The step has landed enough to be usable and the remaining work is explicitly tracked as subtasks under the same checkbox. Not a softer `[x]`; use only when partial delivery is intentional and scoped.
 - `[x]` — done. The user-visible path the step enables works when a user flips the default flag, AND the verification evidence binds on the step's actual claim. Not "infrastructure landed." Not "works in the narrow config I tested." Not "works with `-t 1` but regresses at `-t 8`."
 
+Decision procedure — check in order, stop at the first `YES`:
+1. Is the feature working at default settings AND did the verification bind on the step's scoped claim? → `[x]`.
+2. Is the delivery intentionally partial, with the remaining work explicitly tracked as subtasks inline under this checkbox? → `[~]`.
+3. Default → `[ ]`.
+
 Rules:
+- `[ ]` is not a pause. An open box is an active obligation — it marks state accurately, not a signal to stop work. Keep working toward closure or hand back to the user for direction (see also: the "never stop at friction" auto-memory).
 - Prefer `[ ]` over `[x]` when ambiguous. Leaving a box open and revisiting is cheap; re-opening a closed box once the record says "done" is expensive.
-- When in doubt between `[~]` and `[x]`, use `[~]` and list the remaining subtasks inline under the checkbox.
 - Closing a box requires verification evidence that binds on the step's actual claim. "Binds" means the verification would have caught a regression in the thing the step promised to deliver — the target named in scope, the configuration the feature gates on, the inputs the step said it would handle. Evidence from an adjacent easier case that doesn't exercise the claim does not close the box.
-- A step that was marked `[x]` and later found to be incomplete is reopened to `[ ]` with a dated note in the iteration log — not silently downgraded.
+- A step that was marked `[x]` and later found to be incomplete is reopened to `[ ]` with a note in the iteration log naming what forced the reopen — not silently downgraded.
 
 ## 6. Maintain MEMORY.md
 
