@@ -2,7 +2,9 @@
 
 ## Status
 
-Kernel baseline implemented; three AVX2 bugs found and fixed during propagation; PBT coverage complete over both `turbo-kv-4b.allium` and the sibling `mul_mat_cpu.allium` distilled during this phase. Profiling (Next Steps step 3) is the active step.
+Kernel baseline and two follow-on vectorisations shipped. The argmin inner loop (step 5 of quantize) was vectorised against a distilled `nearest_centroid.allium` contract, step 4's `max_abs` scan was vectorised, and the block layout was repacked to fp32 scales with an fp64/AVX2 L2_norm. 30 PBT properties cover the full lifecycle; `test-backend-ops -b CPU -o MUL_MAT` passes 1113/1113 turbo_kv_4b cases, and GPU and CPU now produce bit-identical `norm` / `inv_std` values.
+
+Three smaller-but-still-worth-it scalar paths remain in the quantize hot path; they are enumerated in Next Steps (steps 3a–3c) as the immediate follow-on work before the cross-uarch Agner extrapolation.
 
 ## Scope
 
@@ -66,12 +68,37 @@ The kernel outlined below is live in the llama.cpp submodule. This section recor
 
 ### Files added/modified
 
-- `ggml/src/ggml-cpu/arch/x86/turbo_kv_4b_avx2.h` — AVX2 inner kernel. Processes 32 elements per iteration via `_mm256_shuffle_epi8` (VPSHUFB) against a duplicated int8 codebook, with eight XMM accumulators for ILP. Replaces the previous scalar fallback on AVX2 hosts.
+**Vec_dot hot path (landed first):**
+
+- `ggml/src/ggml-cpu/arch/x86/turbo_kv_4b_avx2.h` — AVX2 inner kernel. Processes 32 elements per iteration via `_mm256_shuffle_epi8` (VPSHUFB) against a duplicated int8 codebook, with eight XMM accumulators for ILP. Replaces the previous scalar fallback on AVX2 hosts. Also carries `turbo_kv_4b_avx2_nearest_centroid_block` (Step 5 argmin, see below).
 - `ggml/src/ggml-cpu/arch/x86/turbo_kv_4b_sse.h` — gains a `turbo_kv_4b_sse_single_block_dot` wrapper paralleling the AVX2 one, so both SIMD paths expose the same per-block API.
 - `ggml/src/ggml-cpu/ggml-cpu.c` — rewritten `ggml_vec_dot_turbo_kv_4b_f32_cpu` dispatch: pre-rotate the query once per call via `turbo_kv_rotate_query`, loop per block summing `single_block_dot` outputs, arch-dispatch at the per-block granularity.
 - `ggml/src/ggml.c` — adds `GGML_TYPE_TURBO_KV_4B` case to `ggml_quantize_chunk`, without which `test-backend-ops` could not construct the test tensor.
 - `tests/test-backend-ops.cpp` — adds `GGML_TYPE_TURBO_KV_4B` to `all_types[]`. Primary correctness gate per the llama.cpp repo's testing CLAUDE.md.
-- `tests/test-turbo-kv-pbt.cpp` — 26 PBT properties, all passing 100 RapidCheck runs each.
+
+**Quantize hot path (landed as follow-on):**
+
+- Step 5 (nearest-centroid argmin) — vectorised in `turbo_kv_4b_avx2_nearest_centroid_block`. Eight centroid distances computed in parallel per element, lane-mask argmin (strict `<` preserves first-match tie-break). Reduced a 2048-scalar-comparison inner loop to a 16-wide SIMD scan. **11.1× speedup on step 5 in isolation; end-to-end quantize 5.32× vs scalar at first landing.**
+- Step 4 (`max_abs` scan) — AVX2 `_mm256_max_ps` cascade with scalar tail. Small but noise-free.
+- Step 1 (`L2_norm`) — fp64 accumulator inner loop: `_mm256_cvtps_pd` → `_mm256_fmadd_pd` on two 128-bit halves per iteration. The fp64 accumulator absorbs sum-tree drift before the final `sqrtf` → fp32 rounding, so scalar and SIMD paths agree at fp32 precision regardless of summation order. Eliminates the sum-tree non-associativity risk that a straight-line AVX2 port would have exposed.
+
+**Block layout repack (landed with the L2_norm widening):**
+
+- `block_turbo_kv_4b` — was `(uint16_t norm, uint16_t residual_norm, uint16_t inv_std_fp16, uint16_t _pad, uint8_t mse_indices[64])`. Now `(float norm, float inv_std, uint8_t mse_indices[64])`. Same 72 bytes. Reclaims the 4 wasted bytes that were reserved for a composite residual that never materialised. Eliminates the fp16 ↔ fp32 round-trip at every read site (single_block_dot wrapper, dequant, attention, set_rows, cpy). CPU and GPU now produce **bit-identical** `norm` / `inv_std` values (was last-bit different due to independent fp16 rounding paths).
+- Four Vulkan compute shaders updated to read/write fp32 directly (`dequant`, `get_rows`, `cpy_f32`, `set_rows`). The `turbo_kv_f32_to_fp16_bits` GLSL helper is removed.
+- SSE Westmere-fallback wrapper and the scalar `dequantize_block_turbo_kv_4b` both read fp32 directly; the SSE inner kernel itself is unchanged (still int8-codebook + SSSE3 pshufb).
+
+**Test coverage:**
+
+- `tests/test-turbo-kv-pbt.cpp` — 30 PBT properties, all passing 100 RapidCheck runs each. Includes the three propagated from the `nearest_centroid.allium` contract (`ArgminFirstMatch_lower_index_on_tie`, `PackNibbleIndices_roundtrip`, `NearestCentroidAssignment_matches_reference`), one AVX2-vs-scalar argmin bit-exactness property, and two direct-coverage properties for `QuantizeBlock.created` and `DequantizeBlock.Tensor.created`.
+
+**Bench numbers (Zen 2, Ryzen 9 3950X, post-repack):**
+
+| Bench | Scalar | AVX2 | Speedup |
+|---|---|---|---|
+| `bench-turbo-kv-4b-avx2` (single_block_dot, inside vec_dot) | — | 22.91 ns/call | — |
+| `bench-turbo-kv-quantize` (full pipeline per block, 128 elems) | 2278 ns/call | 402 ns/call | 5.66× |
+| `bench-turbo-kv-argmin` (step 5 isolated) | — | — | 11.1× |
 
 ### Bugs surfaced by the lifecycle
 
@@ -169,7 +196,7 @@ The 87× cost difference per call matters because quantize runs at similar frequ
 
 **Symbol-level breakdown** (93.15% in `quantize_block_turbo_kv_4b`, 4.00% in `walsh_hadamard_sse`, 2.19% in `turbo_kv_rht_forward` scalar wrapper, 0.52% in fp16 conversion):
 
-### Primary hot instructions — `quantize_block_turbo_kv_4b` inner loop
+### Primary hot instructions — `quantize_block_turbo_kv_4b` inner loop (pre-vectorisation baseline)
 
 | # | Instruction | Introduced in | Role | Profiled % |
 |---|-------------|---------------|------|-----------|
@@ -182,9 +209,9 @@ The 87× cost difference per call matters because quantize runs at similar frequ
 | 7 | VMULSS | SSE / AVX | Scalar multiply (rotated[i] × inv_std) | 7.45 |
 | 8 | VMINSS | SSE / AVX | Min-reduction within the inner scan | 2.91 |
 
-**Surprising finding: the hot inner loop is entirely SCALAR.** The 128-element nearest-centroid assignment runs 128 × 16 = 2048 scalar distance-computes per call via `vsubss` + `vandps` + `vcomiss` + `ja`. The compiler can't auto-vectorize it because of the data-dependent argmin branch (`if (d < best_dist) { best_dist = d; best = c; }`).
+**This profile captured the state *before* the Step-5 argmin vectorisation landed.** The profile is kept here for historical reference because it's what motivated the distilled `nearest_centroid.allium` contract and the subsequent kernel rewrite. Post-vectorisation the scalar distance-compute instructions above are gone; the dominant instructions in the quantize hot path are now `VPCMPGTD`-style lane-mask argmin updates in the AVX2 inner loop, plus the SSE butterflies inside `walsh_hadamard_sse` (see secondary section).
 
-This is **the obvious optimization target** for a future phase: replace the scalar argmin with a vectorized version that computes 8 distances in parallel and uses SIMD min-reduce. VPSHUFB on the int8-quantized codebook (same trick as the vec_dot kernel) should plausibly give 4–8× speedup on quantize. But that's a kernel rewrite, not a documentation update — leaving it for a separate phase once the AVX-512 kernel scope is settled (they'll likely share the vectorized argmin).
+The argmin vectorisation landed under this phase (not deferred to a separate phase as the original text speculated). It lives in `turbo_kv_4b_avx2.h::turbo_kv_4b_avx2_nearest_centroid_block`, shares the int8-codebook + `VPSHUFB` trick with the vec_dot kernel, and produces byte-identical `mse_indices` vs the scalar reference on every input (guarded by `property_AVX2_NearestCentroidAssignment_matches_reference` at 100 RapidCheck runs per build). `bench-turbo-kv-argmin` reports 11.1× on Step 5 in isolation.
 
 ### Secondary hot instructions — `walsh_hadamard_sse` (4.00% of total)
 
@@ -282,12 +309,24 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 ## Next steps
 
 1. **DONE** — Single-kernel AVX2 baseline implemented in `llama.cpp/ggml/src/ggml-cpu/arch/x86/turbo_kv_4b_avx2.h` + dispatch in `ggml-cpu/ggml-cpu.c`. Landed across four llama.cpp submodule commits (`0d7f16ffe`, `4a0297f56`, `588dd9bdd`, `70036900a`); the three bugs found along the way are documented in the Implementation progress section above. **Open sub-item:** the `sqrtf(dim)` fallback at `ggml-turbo-kv.c:311-312` is still present and still unmotivated — tracked but not resolved here. The tightened `requires: block.inv_std > 0.0` in the spec makes it dead code under valid input; either replace with `1.0f` or leave the defensive behaviour with a comment explaining what it's defensive against. Low urgency.
-2. **DONE** — PBT coverage against both specs. 26 properties in `tests/test-turbo-kv-pbt.cpp` directly test 30 of 46 obligations; 2 more are structurally implied; 14 `rule_failure.*` obligations are consciously skipped per the `feedback_simd_needs_independent_reference` memory entry (defensive clamps outside the spec contract). All 26 × 100 RapidCheck runs pass every build. `test-backend-ops -b CPU -o MUL_MAT` also passes 1113/1113 including 10 `turbo_kv_4b` cases — but that gate alone would not have caught the three kernel bugs (it compares CPU backend against itself with `use_ref` toggled, which doesn't bypass SIMD).
-3. **Done** — both inference hot paths profiled on Zen 2:
-   - vec_dot path via `tests/bench-turbo-kv-4b-avx2` (llama.cpp `cc357dc9c`): 141 cycles/call, IPC 2.46, FMA-dominated.
-   - Quantize path via `tests/bench-turbo-kv-quantize`: 9719 cycles/call, IPC 1.72, scalar-argmin-dominated. The 13 vec_dot instructions and the 8 quantize instructions now live in Instruction availability § with profiled %s.
-   - **Concrete optimization target surfaced by the profile:** the scalar nearest-centroid loop in `quantize_block_turbo_kv_4b` (2048 scalar distance computes per call via VSUBSS + VANDPS + VCOMISS + JA) is the obvious place to vectorize. Plausible 4–8× speedup using 256-bit distance-compute + SIMD min-reduce. Out of scope for this phase; captured here for PHASE25-follow-on planning.
-4. For the instructions flagged hot in step 3, extract per-uarch latency, reciprocal throughput, and port-binding data from Agner Fog `instruction_tables.ods` for all 6 targets. Primary extraction set: 13 vec_dot instructions + 8 quantize instructions + 4 representative WHT instructions = ~23 rows. Commit as a structured data file alongside this doc, with source row numbers cited. Skip the 11 instructions explicitly listed as "never referenced" in the secondary section.
+
+2. **DONE** — PBT coverage against all three lifecycle specs (`turbo-kv-4b.allium`, `mul_mat_cpu.allium`, `nearest_centroid.allium`). 30 properties in `tests/test-turbo-kv-pbt.cpp`, all passing 100 RapidCheck runs each. Directly covers 28 of 46 obligations (up from 26 after distilling the argmin contract and adding direct-coverage props for `QuantizeBlock.created` and `DequantizeBlock.Tensor.created`). 14 `rule_failure.*` obligations are consciously skipped per `feedback_simd_needs_independent_reference` (defensive clamps outside the spec contract). `test-backend-ops -b CPU -o MUL_MAT` also passes 1113/1113 including 10 `turbo_kv_4b` cases, but that gate alone would not have caught the three kernel bugs — it compares CPU backend against itself with `use_ref` toggled, which doesn't bypass SIMD.
+
+3. **DONE** — both inference hot paths profiled on Zen 2, and the first-order optimisation targets surfaced by the profile have been executed:
+   - **3.1 DONE — argmin vectorisation (Step 5 of quantize).** Distilled `nearest_centroid.allium` as a byte-exact contract, propagated three PBT properties (`ArgminFirstMatch`, `PackNibbleIndices`, `NearestCentroidAssignment`), implemented `turbo_kv_4b_avx2_nearest_centroid_block`. 11.1× on Step 5 in isolation, 5.32× end-to-end at first landing.
+   - **3.2 DONE — `max_abs` vectorisation (Step 4 of quantize).** AVX2 `_mm256_max_ps` cascade with scalar tail.
+   - **3.3 DONE — block layout repack + L2_norm widening.** `block_turbo_kv_4b` repacked to fp32 scales (reclaiming wasted 4 bytes), L2_norm moved to fp64 accumulator with AVX2 SIMD inner loop. Removed fp16 ↔ fp32 round-trips from every read site; CPU and GPU now produce bit-identical `norm` / `inv_std`. 84 ns saved on the AVX2 quantize path; end-to-end quantize speedup 5.32× → **5.66×**. Committed as `6e0fb3e2f` in the llama.cpp submodule.
+
+3a. **TODO — RHT AVX2 widening.** `walsh_hadamard_sse` in `ggml-turbo-kv.c:123-147` uses SSE 128-bit loads/stores throughout. At the butterfly-len ≥ 8 stages (4 of 7 for n=128) the same code widens cleanly to 256-bit. The sign-flip and scale passes at `ggml-turbo-kv.c:161-177` also run 128-bit and widen trivially. Add a `walsh_hadamard_avx2` variant behind `__AVX2__`, keep SSE4.1 as the fallback for Westmere-to-Sandy-Bridge. Bit-exactness is maintained if the add/sub order per butterfly stage is preserved; this is a throughput widening, not an algorithmic change. Estimated savings: **30–60 ns** on 402 ns baseline (currently 4–6% of per-call cost lives in `walsh_hadamard_sse` per the existing profile, plus additional cost in the SSE sign-flip and scale passes).
+
+3b. **TODO — Step-2 normalize vectorisation + RHT sign-flip fusion.** `ggml-turbo-kv.c:294-296` is a pure scalar `rotated[i] = src[i] * inv_norm` over 128 floats. Drop-in 16× `_mm256_mul_ps`. Structurally: the RHT sign-flip pass (also 128 floats) runs immediately after and walks the same buffer. Fuse the two into a single pass — multiply by `inv_norm`, XOR in the sign bit, store once — eliminating a full load/store sweep of 128 floats. Estimated savings: **15–25 ns** for the mul widening, **plus 5–10 ns** for the fusion.
+
+3c. **TODO — Step-4 horizontal max reduce.** `ggml-turbo-kv.c:321-325` reduces the 8-lane `max_vec` via a scalar `for (k = 0..7)` loop. Replace with an in-register cascade: `_mm256_permute2f128 + _mm256_max_ps` → `_mm_shuffle + _mm_max_ps` × 2. Trivial, but noise floor: **2–3 ns**.
+
+3d. **TODO (lowest priority) — Sign-mask construction inside RHT.** `ggml-turbo-kv.c:166-169` calls `turbo_kv_random_sign` scalar four times per chunk. Either vectorise the LCG per-index seed-mix, or precompute a sign-mask table per `seed` at startup (only one seed is used in practice: `TURBO_KV_DEFAULT_SEED = 0x12345678u` — a single 128-byte table would replace all runtime sign computation). Gated on whether 3a–3c reveal this as a measurable hot path after they land. Estimated savings: **5–10 ns** or effectively free with the lookup-table approach.
+
+4. For the instructions flagged hot across both paths, extract per-uarch latency, reciprocal throughput, and port-binding data from Agner Fog `instruction_tables.ods` for all 6 targets. Primary extraction set: 13 vec_dot instructions + the post-3a-through-3d quantize-path instructions + 4 representative WHT instructions. Commit as a structured data file alongside this doc, with source row numbers cited.
+
 5. Combine the Zen 2 hot-path counters (both paths) with the Agner figures to extrapolate expected per-target performance. Introduce a variant kernel only if the extrapolation predicts a target would fall below the goal.
 
 ## Notes
