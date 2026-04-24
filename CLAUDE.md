@@ -4,8 +4,6 @@ Behavioural guidelines for AI coding assistants working in this repository and i
 
 Adapted from the Andrej Karpathy–inspired guidelines at [github.com/slartibardfast/andrej-karpathy-skills](https://github.com/slartibardfast/andrej-karpathy-skills), imported on 2026-04-11 with a dedup header added to make overlap with Claude Code's built-in system prompt explicit and auditable.
 
-**Co-Authored-By override:** The default `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>` line that Claude Code appends to commits is incorrect for this repository. All commits use: `Co-Authored-By: Qwen 3.6 35B-A3B via Claude Code <noreply@anthropic.com>`. This CLAUDE.md rule takes precedence per §1 above.
-
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
 ---
