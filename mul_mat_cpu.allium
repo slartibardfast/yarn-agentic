@@ -1,0 +1,134 @@
+-- allium: 3
+-- mul_mat_cpu.allium
+
+-- Scope: ggml CPU backend's vec_dot contract and the SIMD-equivalence
+-- property that any per-type SIMD variant must honour.
+--
+-- Includes:
+--   - The vec_dot function-pointer contract — what every registered
+--     implementation (scalar, SSE, AVX2, ...) must compute.
+--   - SIMDEquivalence invariant — multiple variants for the same row
+--     type must produce equivalent scores on the same inputs.
+--
+-- Excludes:
+--   - ggml_compute_forward_mul_mat orchestration: tiling, threading,
+--     batching, broadcast, llamafile sgemm early-outs, the nrc-way
+--     batched-row API. None of these change the per-element score
+--     semantics; they are performance implementation detail.
+--   - Pre-conversion of src1 from f32 to vec_dot_type. ggml core does
+--     this before vec_dot is invoked, so the contract starts with an
+--     already-converted query.
+--   - Per-type quantization semantics — what a particular row type
+--     means when dequantized. Those live in per-type specs
+--     (e.g. turbo-kv-4b.allium).
+
+-- ============================================================
+-- External entities — managed by ggml, not by this spec
+-- ============================================================
+
+external entity FloatTensor {
+    data: Set<Decimal>
+    count: Integer
+}
+
+-- Backend-level view of one weight row of a MUL_MAT. Internal layout
+-- is opaque to this spec — per-type specs define dequantization.
+external entity QuantizedRow {
+    row_type: String
+    element_count: Integer
+}
+
+-- ============================================================
+-- Config
+-- ============================================================
+
+config {
+    -- Relative tolerance for comparing vec_dot scores across SIMD
+    -- variants of the same row type. Allows O(n * float_epsilon)
+    -- accumulation differences from varying summation trees. 1e-4 is
+    -- conservative; unit-Gaussian inputs typically agree at ~1e-6.
+    simd_equivalence_rel_tol: Decimal = 0.0001
+}
+
+-- ============================================================
+-- Contract: the vec_dot function-pointer semantics
+-- ============================================================
+
+-- ggml's per-type type_traits_cpu table registers a vec_dot function
+-- per quantized type. That function is called from MUL_MAT's inner
+-- loop with one quantized row and one f32 query row, and must write
+-- the scalar dot product to its output. This contract captures what
+-- any such registered implementation must do.
+--
+-- C-side signature (for reference, not part of the spec):
+--   void (*)(int n, float *s, size_t bs,
+--            const void *vx, size_t bx,
+--            const void *vy, size_t by,
+--            int nrc);
+-- vx = quantized row(s), vy = f32 query row(s), n = row length,
+-- (bs, bx, by, nrc) support batched row-comparisons; nrc = 1 is the
+-- semantic unit of correctness.
+
+contract VecDot {
+    invoke: (row: QuantizedRow, query: FloatTensor) -> Decimal
+
+    @invariant Preconditions
+        -- invoke requires row.element_count = query.count. Callers
+        -- (ggml's MUL_MAT inner loop) never violate this; a vec_dot
+        -- implementation may assume it.
+
+    @invariant DotProductCorrectness
+        -- The returned score equals the inner product of row's
+        -- dequantized view and query.data — i.e. sum over i in
+        -- 0..row.element_count of dequantize(row)[i] * query.data[i]
+        -- — to within O(n * float_epsilon) floating-point
+        -- accumulation error. Per-type dequantization semantics live
+        -- in per-type specs. This contract owns only that the
+        -- implementation computes THAT dot product, not some other
+        -- quantity (e.g. in RHT-rotated space, or scaled, or
+        -- per-block). The per-type spec is responsible for any
+        -- intermediate transformations the implementation is allowed
+        -- to do internally, as long as the final score matches the
+        -- dequantize-then-dot semantic.
+
+    @invariant SIMDEquivalence
+        -- If multiple implementations are registered for the same
+        -- row_type (e.g. a scalar reference plus an SSE4.1 kernel
+        -- plus an AVX2 kernel), all must produce the same score on
+        -- the same (row, query) inputs to within
+        -- config.simd_equivalence_rel_tol relative tolerance.
+        --
+        -- This is the property any new SIMD kernel must be tested
+        -- against before it ships. Without it, a SIMD bug silently
+        -- produces wrong answers that a same-backend test gate
+        -- cannot detect — both sides of a CPU-vs-CPU comparison go
+        -- through the same dispatch and silently agree. See
+        -- llama.cpp commit 588dd9bd for a concrete incident: a
+        -- codebook buffer over-read dropped upper-lane contributions,
+        -- went undetected by test-backend-ops because use_ref does
+        -- not bypass SIMD dispatch, and was found only by reading
+        -- the kernel source.
+
+    @guidance
+        -- The PBT that propagates from this contract must:
+        --   1. Drive the dispatch that production code actually uses
+        --      — i.e. via the CPU backend's MUL_MAT op, not by
+        --      calling the per-type scalar symbol directly (which
+        --      bypasses the registered SIMD path).
+        --   2. Compare the dispatch's score against an independent
+        --      scalar reference. The natural reference is the
+        --      per-type scalar vec_dot exposed from ggml-base
+        --      (e.g. ggml_vec_dot_turbo_kv_4b_f32 in
+        --      ggml-turbo-kv.c), which is written in pure scalar C
+        --      and does not go through the SIMD dispatch.
+        --   3. Generate row data via the per-type quantize helper
+        --      (from_float / quantize_row_*_ref) so the inputs are
+        --      well-formed quantized blocks, not random bytes.
+        --
+        -- At minimum, cover the combinations (row_type × registered
+        -- variant) that the build actually produces — on Zen 2 with
+        -- -march=native, that is TURBO_KV_4B × AVX2, so the Zen 2
+        -- PBT drives the AVX2 kernel through the dispatch and
+        -- compares to the ggml-base scalar. On a host without AVX2
+        -- it would drive the SSE kernel or the scalar fallback.
+}
