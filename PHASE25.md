@@ -2,9 +2,9 @@
 
 ## Status
 
-Every scalar path surfaced by the Zen 2 profile is now vectorised. Kernel baseline (step 1), argmin (step 5), `max_abs` (step 4), block repack to fp32 scales, fp64/AVX2 `L2_norm`, RHT AVX2 widening, normalize + RHT sign-flip fusion, and a precomputed signmask LUT for the in-tree seed have all shipped. Full-pipeline AVX2 quantize is **311 ns/call** on Zen 2 (down from a pre-repack 486 ns — 36% session reduction, 7.2× vs scalar). 30 PBT properties cover the lifecycle; `test-backend-ops -b CPU -o MUL_MAT` passes 1113/1113 turbo_kv_4b cases; GPU and CPU produce bit-identical `norm` / `inv_std`.
+**Phase complete.** Every scalar path surfaced by the Zen 2 profile is vectorised (step 3 and sub-steps 3a–3d). Kernel baseline, argmin, `max_abs`, block repack to fp32 scales, fp64/AVX2 `L2_norm`, RHT AVX2 widening, normalize + RHT sign-flip fusion, and a precomputed signmask LUT for the in-tree seed all shipped. Full-pipeline AVX2 quantize is **311 ns/call** on Zen 2 (down from a pre-repack 486 ns — 36% session reduction, 7.2× vs scalar). 30 PBT properties cover the lifecycle; `test-backend-ops -b CPU -o MUL_MAT` passes 1113/1113 turbo_kv_4b cases; GPU and CPU produce bit-identical `norm` / `inv_std`.
 
-The only remaining Next Step is the cross-uarch Agner extrapolation (step 4 below).
+Agner Fog data for all 6 target uarchs has been extracted into `reference/agner/turbo_kv_4b_agner.csv` (step 4) and combined with the Zen 2 profile to extrapolate per-target performance (step 5). Conclusion: **no variant kernel needed** — the slowest projected target is Zen 1 at ~1.40× Zen 2 overall (~434 ns/call), still faster than the pre-repack Zen 2 baseline. Details in Next Steps § below.
 
 ## Scope
 
@@ -327,9 +327,24 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 
 **Cumulative savings across 3a–3d: 91 ns** on the AVX2 quantize path (402 → 311 ns). End-to-end speedup vs scalar: 5.66× → **7.2×**. Landed as `4ad8efd1e` in the llama.cpp submodule. All 30 PBT properties, 8/8 attention, 1113/1113 `test-backend-ops -b CPU -o MUL_MAT`, and every GPU-side test still pass with `max_err = 0.000000` in the differential tests.
 
-4. For the instructions flagged hot across both paths, extract per-uarch latency, reciprocal throughput, and port-binding data from Agner Fog `instruction_tables.ods` for all 6 targets. Primary extraction set: 13 vec_dot instructions + the post-3a-through-3d quantize-path instructions + 4 representative WHT instructions. Commit as a structured data file alongside this doc, with source row numbers cited.
+4. **DONE — Agner Fog extraction.** `reference/agner/turbo_kv_4b_agner.csv` holds per-uarch latency, reciprocal throughput, execution-pipe binding, and µop count for 27 instructions × 6 microarchitectures (162 rows), each citing the Agner sheet + row number for verification. Reproducible via `reference/agner/extract.py`. Targets are Haswell, Skylake, IceLake (proxy for Alder Lake / Raptor Lake P-core per the rationale in `reference/agner/README.md`), Zen 1 (proxy for Zen+), Zen 2, Zen 3. Proxies, grouped-row handling, and the operand-pattern preference order are documented in the README.
 
-5. Combine the Zen 2 hot-path counters (both paths) with the Agner figures to extrapolate expected per-target performance. Introduce a variant kernel only if the extrapolation predicts a target would fall below the goal.
+5. **DONE — Cross-uarch extrapolation.** `reference/agner/analyze.py` combines the Zen 2 profile %s from section "Primary hot instructions" with the Agner reciprocal throughputs, computes a profile-weighted slowdown vs Zen 2, and projects per-call cycles for each target:
+
+    | Target | profile-weighted slowdown vs Zen 2 | projected ns/call (311 ns baseline) |
+    |---|---|---|
+    | Haswell | 1.10× (tracked) → 1.06× overall | 330 |
+    | Skylake | 0.95× → 0.97× overall | 301 |
+    | IceLake (≈ Alder Lake / Raptor Lake P) | 0.95× → 0.97× overall | 301 |
+    | Zen 1 / Zen+ | **1.64× (tracked) → 1.40× overall** | **434** |
+    | Zen 2 (baseline) | 1.000× | 311 |
+    | Zen 3 | 0.95× → 0.97× overall | 301 |
+
+    The 0.378 untracked fraction of cycles (frontend, L1 load, branch prediction) is assumed uarch-neutral. Per-instruction hotspots driving the Zen 1 slowdown: VMULPS/VFMADD/VADDPS/VHADDPS/VCVTDQ2PS/VMOVDQU/VPSRLW all hit 2× (256-bit µop decomposition), VHADDPS 1.5×. Haswell's only slowdown vs Zen 2 is VADDPS at 2× (recip 1 vs 0.5), contributing 0.06× overall.
+
+    **Decision: no variant kernel.** Every target's projection falls at or below the pre-repack Zen 2 baseline of 486 ns/call. Zen 1 at 434 ns is the worst case in scope and is still faster than what Zen 2 delivered before this phase's vectorisation work landed. The 128-bit XMM-width variant hypothesised in §"Kernel strategy" as a contingency for Zen 1 is not triggered — the AVX2 kernel as shipped satisfies the performance goal on every uarch in scope.
+
+    An Alder Lake / Raptor Lake P-core actual measurement would validate the IceLake proxy assumption, but the extrapolation is conservative: Golden Cove has a wider retire pipeline than Ice Lake on most integer ops, so real performance should be no worse than the IceLake projection.
 
 ## Notes
 
