@@ -214,9 +214,37 @@ rule ReadKVRecentFromOverlay {
     )
 
     @guidance
-        -- Aspirational read-path rule. Open question on
-        -- two-pass FA + LSE merge vs. single-pass assembled-K
-        -- is unresolved; neither structure is yet in code.
+        -- Aspirational read-path rule. Selected implementation
+        -- direction (not yet in code): two-pass flash-attention
+        -- with online-softmax merge.
+        --   Pass A: FA over positions in [0, seq_len -
+        --     residual_window), K = main quantised cache, V = V
+        --     cache. Existing turbo_kv_4b FA kernel handles this
+        --     verbatim; no kernel change.
+        --   Pass B: FA over positions in [seq_len -
+        --     residual_window, seq_len), K = overlay reshaped
+        --     view, V = V cache. Existing fp16/bf16 FA kernel
+        --     handles this verbatim given correct K shape.
+        --   Merge: online-softmax combine using (M, S) per query
+        --     per head from each pass: M_new = max(M_a, M_b);
+        --     scale_a = exp(M_a - M_new); scale_b = exp(M_b -
+        --     M_new); S_new = scale_a*S_a + scale_b*S_b;
+        --     VKQ_new = (scale_a*VKQ_a + scale_b*VKQ_b); final
+        --     output = VKQ_new / S_new.
+        -- Rejected: single-pass assembled-K — would require
+        -- dequantising the whole main cache to fp16/bf16 every
+        -- decode (5+ GFLOP and 500+ MB scratch at 35B-A3B /
+        -- 32K ctx), defeating the compression.
+        -- Prerequisites: extend ggml_flash_attn_ext to emit
+        -- per-query (M, S, VKQ_unscaled) — the existing CPU
+        -- kernel already computes these internally as
+        -- chunk-partial state for its threaded reduction
+        -- (see ops.cpp around the partials write in
+        -- flash_attn_ext_f16_one_chunk). Expose via a new
+        -- ggml_flash_attn_ext_lse API that outputs shape
+        -- [DV+2, n_head, n_tokens] with the extra rows holding
+        -- M and S. Merge implementable with existing ggml ops
+        -- once LSE is exposed (no new merge op required).
 }
 
 -- Aspirational companion: attended positions older than the
