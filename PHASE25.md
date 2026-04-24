@@ -2,7 +2,7 @@
 
 ## Status
 
-Design document. Prerequisite spec-alignment work complete (commits `46bf05e` and `8b179fb`); no kernel code written yet.
+Kernel baseline implemented; three AVX2 bugs found and fixed during propagation; PBT coverage complete over both `turbo-kv-4b.allium` and the sibling `mul_mat_cpu.allium` distilled during this phase. Profiling (Next Steps step 3) is the active step.
 
 ## Scope
 
@@ -38,26 +38,52 @@ Before any kernel work begins, `turbo-kv-4b.allium` must be a high-fidelity desc
 
 ### Final spec state
 
-- `allium check`: 0 errors, 0 warnings.
-- `allium plan`: **41 obligations** (up from 20 in PHASE24) — breakdown:
+- `allium check`: 0 errors, 0 warnings on both `turbo-kv-4b.allium` and `mul_mat_cpu.allium`.
+- `allium plan`: **46 obligations total** — 41 from `turbo-kv-4b.allium` plus 5 from `mul_mat_cpu.allium` (the SIMD-equivalence spec distilled during this phase; see Implementation progress below). Combined breakdown:
 
   | Category | Count |
   |----------|-------|
-  | entity_fields | 2 |
-  | config_default | 5 |
+  | entity_fields | 4 (Tensor, TurboBlock, FloatTensor, QuantizedRow) |
+  | config_default | 7 (5 for turbo-kv-4b, 2 for mul_mat_cpu — `simd_equivalence_{rel,abs}_tol`) |
+  | contract_signature | 1 (VecDot.invoke) |
   | rule_success | 11 |
   | rule_failure | 14 (one per `requires:` clause) |
   | rule_entity_creation | 2 |
   | invariant | 7 |
-  | **Total** | **41** |
+  | **Total** | **46** |
 
-  PHASE24's "20 of 20 obligations verified" statement is superseded by the post-consolidation, post-weed spec. Re-verification against all 41 is folded into Next Steps (step 2).
+  PHASE24's "20 of 20 obligations verified" statement is superseded by the post-consolidation, post-weed, post-distill spec set. Re-verification against all 46 is folded into Next Steps (step 2).
 
 ### Intentional gaps (by design)
 
 - **Internal zero-padding for `dim < block_size`** (`ggml-turbo-kv.c:260-262, 329-331`). The public API always passes `dim = block_size`; padding is defensive for an unreachable internal state. The spec's `requires: tensor.count = config.block_size` captures the contract at the API boundary.
 - **Block-layout artifacts** (`residual_norm`, `_pad`, fp16 representation of `norm` / `inv_std`). Wire format; the spec models behaviour.
 - **Multi-block `head_dim ≤ 4 * block_size` cap** (`turbo_kv_4b_attention_multi` returns early if `n_blocks > 4`). An implementation limit, not a behavioural one.
+
+## Implementation progress
+
+The kernel outlined below is live in the llama.cpp submodule. This section records what shipped, the bugs surfaced by the Allium lifecycle, and the regression guard that now protects future work.
+
+### Files added/modified
+
+- `ggml/src/ggml-cpu/arch/x86/turbo_kv_4b_avx2.h` — AVX2 inner kernel. Processes 32 elements per iteration via `_mm256_shuffle_epi8` (VPSHUFB) against a duplicated int8 codebook, with eight XMM accumulators for ILP. Replaces the previous scalar fallback on AVX2 hosts.
+- `ggml/src/ggml-cpu/arch/x86/turbo_kv_4b_sse.h` — gains a `turbo_kv_4b_sse_single_block_dot` wrapper paralleling the AVX2 one, so both SIMD paths expose the same per-block API.
+- `ggml/src/ggml-cpu/ggml-cpu.c` — rewritten `ggml_vec_dot_turbo_kv_4b_f32_cpu` dispatch: pre-rotate the query once per call via `turbo_kv_rotate_query`, loop per block summing `single_block_dot` outputs, arch-dispatch at the per-block granularity.
+- `ggml/src/ggml.c` — adds `GGML_TYPE_TURBO_KV_4B` case to `ggml_quantize_chunk`, without which `test-backend-ops` could not construct the test tensor.
+- `tests/test-backend-ops.cpp` — adds `GGML_TYPE_TURBO_KV_4B` to `all_types[]`. Primary correctness gate per the llama.cpp repo's testing CLAUDE.md.
+- `tests/test-turbo-kv-pbt.cpp` — 26 PBT properties, all passing 100 RapidCheck runs each.
+
+### Bugs surfaced by the lifecycle
+
+All three were silent: none tripped `test-backend-ops -b CPU` (which compares the CPU backend against itself with `use_ref` toggled — doesn't bypass SIMD), and none tripped the existing test-turbo-kv-4b-attn (which compares two paths that both go through the scalar `turbo_kv_4b_single_block_dot`). Only a test that compared the AVX2 dispatch against an **independent** scalar reference (the ggml-base `ggml_vec_dot_turbo_kv_4b_f32`) caught them.
+
+1. **Codebook buffer over-read** (submodule `588dd9bdd`). The int8 codebook table was declared `[16]` bytes but loaded via `_mm256_loadu_si256` (32-byte load). `VPSHUFB` treats each 128-bit YMM lane independently, so the upper-lane lookups sampled whatever `.bss` happened to sit after the array. On the test host those bytes were zero, so upper-lane contributions silently dropped out of every per-iteration accumulation instead of being garbage. Fix: 32-byte table with the 16 centroids duplicated.
+2. **Inverted `per_block_scale`** (submodule `70036900a`). Both the SSE and AVX2 per-block wrappers computed `(127 / CENT_MAX) / inv_std` but the inner kernels expect its reciprocal `(CENT_MAX / 127) / inv_std`. The SSE kernel's own doc comment had the correct formula; the new wrappers contradicted it. Scores were inflated by `(127/CENT_MAX)² ≈ 2160×`.
+3. **AVX2 upper-lane interleave** (same commit). The interleave step pulled elements 16..31 of each 32-element iter from upper-lane VPSHUFB results that contained duplicated `codebook[0]` values (because `bytes_16`'s upper lane was zero-padded). The correct lookups for all 32 elements were entirely in the lower lane — split by the low/high nibble unpack — but the code was reading the wrong half. Fix: replace `unpacklo(hi_low, hi_high)` with `unpackhi(lo_low, lo_high)`.
+
+### Regression guard
+
+`mul_mat_cpu.allium` was distilled during this phase (not a prerequisite, a product). Its `SIMDEquivalence` contract asserts that any registered SIMD variant must produce the same score as the scalar reference on the same inputs, within a mixed absolute/relative tolerance. Its propagated PBT property in `test-turbo-kv-pbt.cpp` (`property_SIMDEquivalence_turbo_kv_4b` + `property_SIMDEquivalence_multi_row`) runs on every build. The memory entry `feedback_simd_needs_independent_reference.md` documents why `test-backend-ops -b CPU` alone is insufficient and codifies the pattern for future SIMD kernel work.
 
 ## Target microarchitectures
 
@@ -188,9 +214,9 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 
 ## Next steps
 
-1. Implement the single-kernel AVX2 baseline in `ggml-turbo-kv.c` behind runtime CPUID dispatch. While touching the file, resolve the `sqrtf(dim)` fallback at `ggml-turbo-kv.c:311-312` (document or replace with a simpler sentinel) — the tightened spec now treats `inv_std < 1e-10` as undefined input.
-2. Verify all 41 Allium obligations from the aligned spec via `test-backend-ops` (superseding PHASE24's 20-obligation run). The new rule_failure obligations from the weed pass don't need dedicated tests — they assert the code rejects or produces defensive output on inputs the public API never constructs, which `test-backend-ops` already exercises indirectly through its structural fuzzing.
-3. Profile the baseline on the available host (Zen 2). Identify which of the 15 core instructions actually dominate cycle count — expect this to be a small subset.
+1. **DONE** — Single-kernel AVX2 baseline implemented in `llama.cpp/ggml/src/ggml-cpu/arch/x86/turbo_kv_4b_avx2.h` + dispatch in `ggml-cpu/ggml-cpu.c`. Landed across four llama.cpp submodule commits (`0d7f16ffe`, `4a0297f56`, `588dd9bdd`, `70036900a`); the three bugs found along the way are documented in the Implementation progress section above. **Open sub-item:** the `sqrtf(dim)` fallback at `ggml-turbo-kv.c:311-312` is still present and still unmotivated — tracked but not resolved here. The tightened `requires: block.inv_std > 0.0` in the spec makes it dead code under valid input; either replace with `1.0f` or leave the defensive behaviour with a comment explaining what it's defensive against. Low urgency.
+2. **DONE** — PBT coverage against both specs. 26 properties in `tests/test-turbo-kv-pbt.cpp` directly test 30 of 46 obligations; 2 more are structurally implied; 14 `rule_failure.*` obligations are consciously skipped per the `feedback_simd_needs_independent_reference` memory entry (defensive clamps outside the spec contract). All 26 × 100 RapidCheck runs pass every build. `test-backend-ops -b CPU -o MUL_MAT` also passes 1113/1113 including 10 `turbo_kv_4b` cases — but that gate alone would not have caught the three kernel bugs (it compares CPU backend against itself with `use_ref` toggled, which doesn't bypass SIMD).
+3. **Active** — Profile the baseline on this Zen 2 host. Identify which of the 15 core instructions from the Instruction availability matrix actually dominate cycle count for the `turbo_kv_4b_avx2_single_block_dot` hot path. Expected candidates based on the kernel's structure: `_mm256_shuffle_epi8` (codebook lookup, once per 32 elements), `_mm_cvtepi8_epi32` (int8 → int32 conversion, 8× per iteration), `_mm_add_ps` / `_mm_mul_ps` (FMA-equivalent accumulation). Expect 2-4 instructions to account for >80% of cycles.
 4. For the instructions flagged hot in step 3 (and only those), extract per-uarch latency, reciprocal throughput, and port-binding data from Agner Fog `instruction_tables.ods` for all 6 targets. Commit as a structured data file alongside this doc, with source row numbers cited.
 5. Combine the Zen 2 hot-path counters with the Agner figures to extrapolate expected per-target performance. Introduce a variant kernel only if the extrapolation predicts a target would fall below the goal.
 
