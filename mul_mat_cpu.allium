@@ -100,33 +100,69 @@ contract VecDot {
         -- The returned score equals the inner product of row's
         -- dequantized view and query.data — i.e. sum over i in
         -- 0..row.element_count of dequantize(row)[i] * query.data[i]
-        -- — to within O(n * float_epsilon) floating-point
-        -- accumulation error. Per-type dequantization semantics live
-        -- in per-type specs. This contract owns only that the
-        -- implementation computes THAT dot product, not some other
-        -- quantity (e.g. in RHT-rotated space, or scaled, or
-        -- per-block). The per-type spec is responsible for any
-        -- intermediate transformations the implementation is allowed
-        -- to do internally, as long as the final score matches the
-        -- dequantize-then-dot semantic.
+        -- — up to two sources of error:
+        --
+        --   (a) Codebook-representation error. A SIMD implementation
+        --       is permitted to pre-quantize the per-type codebook
+        --       into a narrower-integer LUT for fast shuffle-based
+        --       lookup (e.g. the turbo_kv_4b AVX2 / SSE kernels hold
+        --       the 16-entry fp32 codebook as int8). The per-type
+        --       spec owns the bound this introduces; this contract
+        --       only requires that the implementation's dequantize
+        --       semantics match the per-type spec up to that bound.
+        --
+        --   (b) O(n * float_epsilon) floating-point accumulation
+        --       error from varying summation trees across SIMD widths.
+        --
+        -- Both error sources are quantified together by the mixed
+        -- tolerance in SIMDEquivalence below. The scalar reference
+        -- (e.g. ggml_vec_dot_turbo_kv_4b_f32 in ggml-base) uses the
+        -- fp32 codebook directly and achieves only (b), making it the
+        -- appropriate oracle for the SIMD path's combined error.
+        --
+        -- This contract owns only that the implementation computes
+        -- THAT dot product, not some other quantity (e.g. in
+        -- RHT-rotated space, or scaled, or per-block). The per-type
+        -- spec is responsible for any intermediate transformations
+        -- the implementation is allowed to do internally, as long as
+        -- the final score matches the dequantize-then-dot semantic
+        -- within the error budget above.
 
     @invariant SIMDEquivalence
         -- If multiple implementations are registered for the same
         -- row_type (e.g. a scalar reference plus an SSE4.1 kernel
         -- plus an AVX2 kernel), all must produce the same score on
-        -- the same (row, query) inputs to within
-        -- config.simd_equivalence_rel_tol relative tolerance.
+        -- the same (row, query) inputs within the mixed tolerance:
+        --
+        --     abs_err <= config.simd_equivalence_abs_tol
+        --     OR
+        --     rel_err <= config.simd_equivalence_rel_tol
+        --
+        -- The disjunction is necessary because rel_err is unstable
+        -- when the reference score is near zero (random queries and
+        -- keys readily produce |dot| much smaller than either
+        -- operand's norm); abs_err covers that regime while rel_err
+        -- covers the typical-magnitude regime.
         --
         -- This is the property any new SIMD kernel must be tested
         -- against before it ships. Without it, a SIMD bug silently
         -- produces wrong answers that a same-backend test gate
         -- cannot detect — both sides of a CPU-vs-CPU comparison go
-        -- through the same dispatch and silently agree. See
-        -- llama.cpp commit 588dd9bd for a concrete incident: a
-        -- codebook buffer over-read dropped upper-lane contributions,
-        -- went undetected by test-backend-ops because use_ref does
-        -- not bypass SIMD dispatch, and was found only by reading
-        -- the kernel source.
+        -- through the same dispatch and silently agree. Concrete
+        -- incidents found only after this invariant was tested:
+        --
+        --   llama.cpp 70036900a — inverted per_block_scale in the
+        --     SSE and AVX2 per-block wrappers: scores inflated ~2160x.
+        --     Passed 1113/1113 test-backend-ops CPU MUL_MAT cases.
+        --
+        --   llama.cpp 70036900a — AVX2 interleave pulled upper-lane
+        --     VPSHUFB results that were duplicated codebook[0] from a
+        --     zero-padded index vector; elements 16..31 of every
+        --     32-element iter computed against the wrong lookups.
+        --
+        --   llama.cpp 588dd9bd — AVX2 codebook buffer over-read
+        --     (int8[16] loaded as 32 bytes); upper-lane contributions
+        --     silently resolved to zero on the test host's .bss layout.
 
     @guidance
         -- The PBT that propagates from this contract must:
