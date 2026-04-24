@@ -265,5 +265,7 @@ contract FlashAttentionEquivalence {
 --   (head_dim=128) and 9B (head_dim=256). Single-prompt sanity,
 --   not distribution coverage.
 --
--- NO existing coverage compares CPU FA to GPU FA directly. That
--- is what this spec's propagated PBT will add.
+-- Cross-backend coverage: tests/test-turbo-kv-attention-pbt.cpp
+-- propagated from this spec. Compares CPU FA (reference) against
+-- every registered non-CPU backend at multi-block head_dim=256
+-- with RapidCheck-generated Q/K/V distributions.
