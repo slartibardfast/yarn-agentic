@@ -150,16 +150,66 @@ VPSHUFB                  ✓         ✓          ✓        ✓       ✓      
 VPAND                    ✓         ✓          ✓        ✓       ✓      ✓
 ```
 
-### Secondary: quantize + RHT paths (pending separate profile)
+### Secondary: quantize + RHT paths (profiled)
 
-These instructions live in `quantize_block_turbo_kv_4b`, `turbo_kv_rht_forward` / `turbo_kv_rht_inverse`, and `turbo_kv_rotate_query`. They run **per K/V cache write** (during prefill, once per token per layer; during decode, once per token per layer for the K side), not per attention score. For a 32-layer model decoding at 50 t/s that's still ~1600 quantize calls and ~1600 query-rotations per second — enough to matter for end-to-end throughput, just not the vec_dot-level bottleneck.
+These instructions live in `quantize_block_turbo_kv_4b`, `turbo_kv_rht_forward` / `turbo_kv_rht_inverse`, and `turbo_kv_rotate_query`. They run **per K/V cache write** — during prefill, once per token per layer; during decode, once per token per layer for the K side. For a 32-layer model decoding at 50 t/s that's ~1600 quantize calls and ~1600 query-rotations per second. This path matters for end-to-end throughput separately from vec_dot.
 
-A separate micro-bench + profile pass on `quantize_block_turbo_kv_4b` is the honest way to rank these; the list below is the *candidate set*, not a hot-path ranking.
+Per-call cost (`quantize_row_turbo_kv_4b_ref` with `dim=block_size`, measured via `tests/bench-turbo-kv-quantize`):
 
-- **RHT butterfly + sign mask:** `VPERM2I128`, `VPERMD`, `VPERMQ`, `VPERMPD`, `VPERM2F128` — AVX / AVX2 lane permutes in `walsh_hadamard_sse` and the SSE4.1 `apply_sign_flip` path.
-- **Decode + scale:** `VPSHUFB` (also in vec_dot), `VPSRLW`, `VPAND` — nibble extraction and codebook lookup; shared with the vec_dot decode pipeline.
-- **Norm computation:** sqrtf intrinsic (scalar), `VPSLLVD` (if bit-unpack optimization is added later — currently unused).
-- **Never referenced in the current kernel:** `VPMOVZXBW`, `VPMOVSXBW` (the kernel skips byte→word and goes direct to byte→dword via `VPMOVSXBD`), `VCVTDQ2PD` (kernel is single-precision, uses `VCVTDQ2PS`), `VPMOVMSKB`, `VEXTRACTF128`, `VINSERTF128` (superseded by the AVX2 `*I128` variants in the vec_dot path), `VRSQRTPS` (the scalar path uses libc `sqrtf` / `1.0f / ...`), `VBLENDVPS/PD`. Listed in the original PHASE25 draft aspirationally; not in scope for any step 4 Agner extraction unless a future change brings them back.
+| Metric | Value | vec_dot ratio |
+|---|---|---|
+| ns/call | 2346 | 87× slower |
+| cycles/call | 9719 | 69× |
+| instructions/call | 16710 | 48× |
+| IPC | 1.72 | lower (more stalls) |
+| Branches/call | 3042 | 150× |
+| Branch-miss rate | 4.3% | 2.5× worse |
+
+The 87× cost difference per call matters because quantize runs at similar frequency to vec_dot during decode (one K write per token per layer, vs one attention-score call per token per K-position per layer). For long contexts vec_dot wins on total cycles; for short contexts quantize dominates.
+
+**Symbol-level breakdown** (93.15% in `quantize_block_turbo_kv_4b`, 4.00% in `walsh_hadamard_sse`, 2.19% in `turbo_kv_rht_forward` scalar wrapper, 0.52% in fp16 conversion):
+
+### Primary hot instructions — `quantize_block_turbo_kv_4b` inner loop
+
+| # | Instruction | Introduced in | Role | Profiled % |
+|---|-------------|---------------|------|-----------|
+| 1 | VANDPS (scalar) | AVX | `fabsf(x - codebook[c])` via sign-bit clear | 13.51 |
+| 2 | VMOVAPS (scalar) | SSE / AVX | Register-to-register move; spill/reload | 11.14 |
+| 3 | VSUBSS | SSE / AVX | `x - codebook[c]` in nearest-centroid scan | 10.88 |
+| 4 | VCOMISS | SSE / AVX | Compare current distance to best-so-far | 10.25 |
+| 5 | JA | x86-64 | Conditional branch on the argmin update | 9.94 |
+| 6 | VADDSS | SSE / AVX | Scalar accumulator add (various) | 9.91 |
+| 7 | VMULSS | SSE / AVX | Scalar multiply (rotated[i] × inv_std) | 7.45 |
+| 8 | VMINSS | SSE / AVX | Min-reduction within the inner scan | 2.91 |
+
+**Surprising finding: the hot inner loop is entirely SCALAR.** The 128-element nearest-centroid assignment runs 128 × 16 = 2048 scalar distance-computes per call via `vsubss` + `vandps` + `vcomiss` + `ja`. The compiler can't auto-vectorize it because of the data-dependent argmin branch (`if (d < best_dist) { best_dist = d; best = c; }`).
+
+This is **the obvious optimization target** for a future phase: replace the scalar argmin with a vectorized version that computes 8 distances in parallel and uses SIMD min-reduce. VPSHUFB on the int8-quantized codebook (same trick as the vec_dot kernel) should plausibly give 4–8× speedup on quantize. But that's a kernel rewrite, not a documentation update — leaving it for a separate phase once the AVX-512 kernel scope is settled (they'll likely share the vectorized argmin).
+
+### Secondary hot instructions — `walsh_hadamard_sse` (4.00% of total)
+
+The SSE4.1 butterfly inside `turbo_kv_rht_forward`. Used only when `__SSE4_1__` is defined (i.e., every target in scope). Per-call cost is amortized over one RHT call per block.
+
+| # | Instruction | Introduced in | Role | Profiled % within `walsh_hadamard_sse` |
+|---|-------------|---------------|------|---|
+| 1 | VHADDPS / VHSUBPS | SSE3 | Stage-1 butterfly: horizontal add/sub | top-2 (details in `perf annotate walsh_hadamard_sse`) |
+| 2 | VADDPS / VSUBPS | SSE / AVX | Stages 2+: 4-lane add/sub butterfly | |
+| 3 | VSHUFPS, VMOVLHPS, VMOVHLPS | SSE | Stage-2 lane recombination | |
+| 4 | VMOVUPS | SSE / AVX | Unaligned load / store across each stage | |
+
+All standard AVX / SSE instructions, present on every target in scope. Not a per-uarch concern for step 4 unless a specific uarch has a bad VHADDPS throughput (worth one row in the Agner extraction).
+
+### Never referenced in the current kernel
+
+Instructions from the original PHASE25 draft that don't appear anywhere in the profile (or in the kernel source) — removed from step 4 scope entirely:
+
+- `VPMOVZXBW`, `VPMOVSXBW` — the kernel goes byte→dword directly via `VPMOVSXBD`, skipping the intermediate word unpack.
+- `VCVTDQ2PD` — kernel is single-precision throughout; uses `VCVTDQ2PS`.
+- `VPMOVMSKB`, `VEXTRACTF128`, `VINSERTF128` — superseded by `*I128` variants in the AVX2 path, or not used.
+- `VRSQRTPS` — the scalar norm computation uses libc `sqrtf` (one call per block, off the hot path).
+- `VBLENDVPS/PD` — not used.
+- `VPERM2I128`, `VPERMD`, `VPERMQ`, `VPERMPD`, `VPERM2F128` — not used by either the vec_dot or the quantize/RHT hot paths. The WHT uses scalar butterflies, not lane permutes.
+- `VPSLLVD` — not used; the kernel uses scalar multiply for the normalize step.
 
 ## Throughput variation — qualitative, to be quantified
 
@@ -233,9 +283,11 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 
 1. **DONE** — Single-kernel AVX2 baseline implemented in `llama.cpp/ggml/src/ggml-cpu/arch/x86/turbo_kv_4b_avx2.h` + dispatch in `ggml-cpu/ggml-cpu.c`. Landed across four llama.cpp submodule commits (`0d7f16ffe`, `4a0297f56`, `588dd9bdd`, `70036900a`); the three bugs found along the way are documented in the Implementation progress section above. **Open sub-item:** the `sqrtf(dim)` fallback at `ggml-turbo-kv.c:311-312` is still present and still unmotivated — tracked but not resolved here. The tightened `requires: block.inv_std > 0.0` in the spec makes it dead code under valid input; either replace with `1.0f` or leave the defensive behaviour with a comment explaining what it's defensive against. Low urgency.
 2. **DONE** — PBT coverage against both specs. 26 properties in `tests/test-turbo-kv-pbt.cpp` directly test 30 of 46 obligations; 2 more are structurally implied; 14 `rule_failure.*` obligations are consciously skipped per the `feedback_simd_needs_independent_reference` memory entry (defensive clamps outside the spec contract). All 26 × 100 RapidCheck runs pass every build. `test-backend-ops -b CPU -o MUL_MAT` also passes 1113/1113 including 10 `turbo_kv_4b` cases — but that gate alone would not have caught the three kernel bugs (it compares CPU backend against itself with `use_ref` toggled, which doesn't bypass SIMD).
-3. **Partially done** — vec_dot hot path profiled on Zen 2 via `tests/bench-turbo-kv-4b-avx2` and `perf record` (llama.cpp submodule commit `cc357dc9c`). 141 cycles/call, IPC 2.46; the 13 primary hot-path instructions now live in the Instruction availability § with profiled %s. The reframed matrix supersedes the earlier 15-instruction aspirational list.
-   - **Follow-up sub-step:** profile `quantize_block_turbo_kv_4b` the same way. It runs per token per layer during both prefill and decode (not "once per eviction" — that was wrong in an earlier draft). The Secondary section of Instruction availability is its *candidate set*, not a profiled ranking. Write a sibling micro-bench (`bench-turbo-kv-quantize.cpp`?) and rank the RHT/quantize-path instructions before step 4.
-4. For the instructions flagged hot in step 3 (vec_dot path — done; quantize/RHT path — pending), extract per-uarch latency, reciprocal throughput, and port-binding data from Agner Fog `instruction_tables.ods` for all 6 targets. Commit as a structured data file alongside this doc, with source row numbers cited. Scope to the union of both profiled hot paths once both exist — no point extracting figures for instructions that profile at ~0% on both paths.
+3. **Done** — both inference hot paths profiled on Zen 2:
+   - vec_dot path via `tests/bench-turbo-kv-4b-avx2` (llama.cpp `cc357dc9c`): 141 cycles/call, IPC 2.46, FMA-dominated.
+   - Quantize path via `tests/bench-turbo-kv-quantize`: 9719 cycles/call, IPC 1.72, scalar-argmin-dominated. The 13 vec_dot instructions and the 8 quantize instructions now live in Instruction availability § with profiled %s.
+   - **Concrete optimization target surfaced by the profile:** the scalar nearest-centroid loop in `quantize_block_turbo_kv_4b` (2048 scalar distance computes per call via VSUBSS + VANDPS + VCOMISS + JA) is the obvious place to vectorize. Plausible 4–8× speedup using 256-bit distance-compute + SIMD min-reduce. Out of scope for this phase; captured here for PHASE25-follow-on planning.
+4. For the instructions flagged hot in step 3, extract per-uarch latency, reciprocal throughput, and port-binding data from Agner Fog `instruction_tables.ods` for all 6 targets. Primary extraction set: 13 vec_dot instructions + 8 quantize instructions + 4 representative WHT instructions = ~23 rows. Commit as a structured data file alongside this doc, with source row numbers cited. Skip the 11 instructions explicitly listed as "never referenced" in the secondary section.
 5. Combine the Zen 2 hot-path counters (both paths) with the Agner figures to extrapolate expected per-target performance. Introduce a variant kernel only if the extrapolation predicts a target would fall below the goal.
 
 ## Notes
