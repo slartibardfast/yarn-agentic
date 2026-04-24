@@ -1,10 +1,17 @@
 -- allium: 3
 -- turbo_kv_residual_window.allium
 
--- Scope: residual window KV-cache improvement — keep the most
--- recent N tokens in fp16 uncompressed, quantise only the older
--- tail. Composes on top of the core TurboQuant specs
--- (turbo-kv-4b.allium, turbo-kv-3b.allium).
+-- Scope: residual-window KV-cache overlay — maintain a separate
+-- fp16/bf16 ring-buffer copy of the K vector for the most recent
+-- N positions, alongside the core quantised K cache. Every token
+-- is still quantised into the main cache; the overlay exists
+-- in parallel.
+--
+-- Composes on top of turbo-kv-4b.allium and turbo-kv-3b.allium
+-- (and any other lossy K-cache scheme). The overlay writes do
+-- not affect the main cache's contents or correctness in any
+-- way — they are a second storage path maintained for a future
+-- attention read path that can consult them for recent tokens.
 --
 -- Citable sources:
 --
@@ -19,210 +26,310 @@
 --                   K4/V4 rw=128:  EXACT at 2K and 4K ctx
 --                   K4/V4 rw=0:    MISS (garbage output)
 --                   K4/V2 rw=0:    MISS
---                 The rw=0 → MISS result is the critical evidence:
---                 symmetric 4-bit quantisation without a residual
---                 window fails the most basic retrieval task. The
---                 residual window is not a minor optimisation; it
---                 is load-bearing for 4-bit-and-below quality.
+--                 The rw=0 MISS result is the critical evidence:
+--                 symmetric 4-bit K quantisation without a residual
+--                 window fails the most basic retrieval task.
 --                 README: "What doesn't work: 3-4 bit compression
 --                 without a residual window produces garbage, same
 --                 as V2."
 --
 --   [QUANT.CPP]   Does NOT implement a residual window. Our
---                 llama.cpp port inherits this gap. The port's
---                 current 4-bit symmetric KV matches the
---                 [TONBI-V3] K4/V4 rw=0 failing configuration —
---                 the 9B +0.23 PPL observation is consistent with
---                 this being a driver.
+--                 llama.cpp port addresses this gap.
 --
--- Goal: specify a residual_window parameter that, when > 0,
--- causes the most recent `residual_window` tokens to bypass
--- quantisation and remain in fp16. All older tokens are
--- quantised per the core TurboQuant spec. Attention reads the
--- concatenation of (quantised tail + fp16 window).
+-- Difference from [TONBI-V3] framing: [TONBI-V3] is an eviction
+-- model — recent tokens are held in fp16 and quantised on eviction
+-- past the window. This spec is an *overlay* model — every token
+-- is quantised into the main cache as usual, and a separate
+-- fp16/bf16 ring buffer additionally holds the last N K vectors
+-- per stream per layer. The overlay is redundant storage, not
+-- the authoritative copy.
 --
--- Includes: rolling-window maintenance, tail quantisation trigger,
--- read-time concatenation of fp16 + quantised.
--- Excludes: per-layer window-size overrides (layer-adaptive is a
--- separate spec), asymmetric K/V bit widths (separate spec).
+-- Implemented today: the cparams flag, per-layer allocation at
+-- context init, the graph-build overlay write on cpy_k, and the
+-- dtype auto-resolution. Aspirational and flagged as such below:
+-- the attention read path consuming the overlay, the Vulkan port
+-- of the overlay write + read, and GGUF state persistence across
+-- session save/load. Rules for the aspirational paths appear
+-- below with @guidance annotations marking them as not yet
+-- witnessed by code.
 
 -- ============================================================
--- External entities
+-- External Entities
 -- ============================================================
 
-external entity Tensor {
+-- One K vector produced for a single (layer, stream, position)
+-- by the forward pass. The overlay mirrors this value at the
+-- ring-buffer slot for the position.
+external entity KVector {
     data: Set<Decimal>
     count: Integer
-}
-
--- The KV-cache is organised as a sequence of rows, one per token
--- position per head. Recent rows live in fp16; older rows are
--- quantised via turbo-kv-4b.allium's QuantizeHead (or 3b).
-external entity FloatRow {
-    data: Set<Decimal>
-    count: Integer
+    layer: Integer
+    stream: Integer
     position: Integer
 }
 
-external entity QuantizedHead {
-    norm: Decimal
-    inv_std: Decimal
-    indices: Set<Integer>
+-- The context in which the cache lives. Used to bound the
+-- residual window against sequence length.
+external entity Context {
+    n_ctx: Integer
+    n_layer: Integer
+    n_stream: Integer
 }
+
+-- ============================================================
+-- Enumerations
+-- ============================================================
+
+-- Runtime overlay storage dtype. The CLI may accept an "auto"
+-- sentinel, but that is resolved into one of these two values
+-- before the overlay is allocated. See ResolveOverlayDtypeAuto.
+enum OverlayDtype { f16 | bf16 }
 
 -- ============================================================
 -- Config
 -- ============================================================
 
 config {
-    -- Size of the rolling fp16 tail. [TONBI-V3] default is 128.
-    -- Larger window → better recent-token attention fidelity at
-    -- the cost of compression ratio; smaller window → more
-    -- compression at the cost of tail-quality. [TONBI-V3] README
-    -- measurements use rw=128 and report EXACT needle-retrieval
-    -- at 2K and 4K contexts on Llama 3.2.
+    -- Size of the ring-buffer overlay, in tokens. [TONBI-V3]
+    -- default is 128. 0 disables the overlay entirely (no
+    -- allocation, no writes, no reads). Measured needle-in-
+    -- haystack evidence in [TONBI-V3] puts 128 at the knee for
+    -- 4-bit K at the 3B-parameter scale on Llama 3.2.
     residual_window: Integer = 128
 
-    -- A context length at or below which the residual window
-    -- subsumes the whole sequence (i.e. no quantisation happens).
-    -- At seq_len ≤ residual_window the entire cache is fp16.
-    -- This matches [TONBI-V3] compress_kv behaviour: "If S <= rw,
-    -- keep everything in fp16".
-    min_seq_for_quantisation: Integer = 129
+    -- Runtime overlay dtype. Concrete values only; the "auto"
+    -- CLI sentinel is resolved by ResolveOverlayDtypeAuto before
+    -- reaching this parameter.
+    overlay_dtype: OverlayDtype = f16
 }
 
 -- ============================================================
--- Open questions
+-- Rules
 -- ============================================================
 
-open question "Residual window size tuning: [TONBI-V3] defaults to 128 and reports it as the knee of the quality curve at model scales around 3B. Larger models or head_dim=256 configurations (Qwen3.5 9B) may need a larger window; smaller models may tolerate less. No public measurement campaign at our target sizes."
+-- Compute the ring-buffer slot for a (stream, position) pair.
+-- Load-bearing for downstream reasoning about overwrites,
+-- rollback and the overlay read path. The overlay tensor is
+-- laid out as [n_embd_k_gqa, residual_window, n_stream]; the
+-- flat slot index is stream * residual_window + (position mod
+-- residual_window). The modulo is a black-box function since
+-- the Allium expression language does not include %.
+rule ComputeOverlaySlot {
+    when: OverlaySlotRequested(stream, position)
 
-open question "Sliding vs fixed-start window: [TONBI-V3] implements the rolling-tail semantics (most recent N tokens in fp16, rest quantised). An alternative would be a fixed initial-tokens window (first N tokens in fp16 for the attention-sink / first-few-tokens phenomenon literature). This spec models the rolling-tail variant only."
+    requires: config.residual_window > 0
 
-open question "Interaction with quant.cpp Variant F multi-block split: the core spec (turbo-kv-4b.allium) inherits the per-128-element sub-block split. The residual window acts at the TOKEN level (rows); it is orthogonal to the within-row quantisation granularity. Composition should be clean, but the interaction has not been empirically tested."
+    let slot = stream * config.residual_window + modulo(position, config.residual_window)
 
--- ============================================================
--- Composite rules
--- ============================================================
-
--- Incremental write (seq_len ≤ residual_window): the whole
--- sequence fits in the fp16 window. No quantisation happens;
--- the row is appended as fp16.
-rule AppendRowWithinWindow {
-    when: AppendRow(row, seq_len)
-
-    requires: row.count > 0
-    requires: seq_len <= config.residual_window
-
-    ensures: FloatRow.created(
-        data: row.data,
-        count: row.count,
-        position: seq_len
+    ensures: OverlaySlotResolved(
+        stream: stream,
+        position: position,
+        slot: slot
     )
 }
 
--- Incremental write (seq_len > residual_window): the window
--- is full, so the oldest fp16 row (at position
--- seq_len - residual_window - 1) is quantised via the core
--- spec's QuantizeHead rule and moved to the quantised tail.
--- The new row is appended as fp16 at the head of the window.
+-- On each decoded token, the K vector for that token is written
+-- into the overlay at the ring-buffer slot for (stream, position).
+-- This runs in parallel with the main cache's own append; it does
+-- not displace, gate, or depend on the main-cache write.
 --
--- This matches [TONBI-V3] compress_kv's split semantics: older
--- than `split_at = S - rw` is compressed, rest is fp16.
-rule AppendRowWithEviction {
-    when: AppendRow(row, seq_len)
+-- Writes overwrite any stale data at the same slot (ring wrap);
+-- at position p the slot (p mod residual_window) for that stream
+-- last held data from position (p - residual_window).
+rule AppendOverlayRow {
+    when: KVectorProduced(k)
 
-    requires: row.count > 0
-    requires: seq_len > config.residual_window
+    requires: config.residual_window > 0
+    requires: k.count > 0
 
-    let evicted_row = oldest_fp16_row_before_append(row, seq_len, config.residual_window)
-    let quantised = QuantizeHead(evicted_row, config.seed)
-
-    ensures: FloatRow.created(
-        data: row.data,
-        count: row.count,
-        position: seq_len
+    ensures: OverlaySlotResolved(
+        stream: k.stream,
+        position: k.position,
+        slot: k.stream * config.residual_window + modulo(k.position, config.residual_window)
     )
-    -- QuantizeHead's own ensures clause (from the core spec)
-    -- creates the QuantizedHead entity for the evicted row.
+
+    ensures: OverlayWriteCommitted(
+        layer: k.layer,
+        stream: k.stream,
+        position: k.position,
+        data: k.data
+    )
+
+    @guidance
+        -- Implementation: the graph-build path calls
+        -- cpy_k_window(k_cur, k_window_idxs, il) alongside
+        -- cpy_k for the main cache. The dtype of the stored
+        -- bytes matches config.overlay_dtype after resolution.
 }
 
--- Read (seq_len ≤ residual_window): whole sequence is in the
--- fp16 window. Attention reads only the fp16 range.
-rule ReadKVShortSequence {
-    when: ReadKVForAttention(query_position, seq_len)
+-- Auto-resolution of config.overlay_dtype when the CLI passes
+-- the "auto" sentinel: inspect the model's native K projection
+-- float type and pick BF16 if any model weights are BF16, F16
+-- if all float weights are F16 or F32, and BF16 as a safe
+-- upgrade when weights are quantised with no F16 fallback.
+-- Fires once at context initialisation before any overlay
+-- allocation occurs.
+rule ResolveOverlayDtypeAuto {
+    when: OverlayDtypeAutoRequested(context, model_has_bf16_weights, model_has_only_float_weights)
 
-    requires: seq_len > 0
-    requires: seq_len <= config.residual_window
+    requires: config.residual_window > 0
 
-    let fp16_range = positions(0, seq_len)
+    ensures:
+        if model_has_bf16_weights:
+            OverlayDtypeResolved(context: context, dtype: bf16)
+        else if model_has_only_float_weights:
+            OverlayDtypeResolved(context: context, dtype: f16)
+        else:
+            OverlayDtypeResolved(context: context, dtype: bf16)
 
-    ensures: result = attention_read_fp16(fp16_range)
+    @guidance
+        -- The sentinel handling is a CLI concern; this rule
+        -- describes the observable resolution that tests can
+        -- verify. See open question on whether the rule belongs
+        -- in config defaults instead.
 }
 
--- Read (seq_len > residual_window): attention reads the
--- quantised tail [0, seq_len - residual_window) plus the fp16
--- window [seq_len - residual_window, seq_len).
-rule ReadKVLongSequence {
-    when: ReadKVForAttention(query_position, seq_len)
+-- Aspirational attention-read rule: reconcile the main
+-- (quantised) cache with the overlay for the most recent
+-- residual_window positions. At query time, for each attended
+-- position in the last residual_window of the sequence, the
+-- attention read prefers the overlay K over the dequantised
+-- main cache K. Positions older than residual_window are
+-- served from the main cache only.
+--
+-- NOT YET IMPLEMENTED. Writes into the overlay happen on every
+-- decode, but the FA / attention read path does not consult
+-- the overlay yet.
+rule ReadKVRecentFromOverlay {
+    when: ReadKVForAttention(query_position, attended_position, stream, seq_len)
 
-    requires: seq_len > 0
-    requires: seq_len > config.residual_window
+    requires: config.residual_window > 0
+    requires: attended_position > seq_len - config.residual_window
+    requires: attended_position <= seq_len
 
-    let quantised_range = positions(0, seq_len - config.residual_window)
-    let fp16_range = positions(seq_len - config.residual_window, seq_len)
+    ensures: AttentionKeySource(
+        query_position: query_position,
+        attended_position: attended_position,
+        source: overlay
+    )
 
-    ensures: result = attention_read_mixed(quantised_range, fp16_range)
+    @guidance
+        -- Aspirational read-path rule. Open question on
+        -- two-pass FA + LSE merge vs. single-pass assembled-K
+        -- is unresolved; neither structure is yet in code.
+}
+
+-- Aspirational companion: attended positions older than the
+-- residual window are served from the quantised main cache.
+rule ReadKVTailFromMainCache {
+    when: ReadKVForAttention(query_position, attended_position, stream, seq_len)
+
+    requires: attended_position <= seq_len - config.residual_window
+
+    ensures: AttentionKeySource(
+        query_position: query_position,
+        attended_position: attended_position,
+        source: main_cache
+    )
+
+    @guidance
+        -- Aspirational. When residual_window = 0 the
+        -- ReadKVRecentFromOverlay rule's requires fails for
+        -- every position, and this rule covers the whole
+        -- sequence (equivalent to the currently implemented
+        -- behaviour where every read is from the main cache).
 }
 
 -- ============================================================
 -- Invariants
 -- ============================================================
 
--- At any point, the quantised tail plus the fp16 window covers
--- the whole sequence with no overlap and no gap.
-invariant CoverageCompleteNoOverlap {
-    for q in ActiveQueries:
-        let fp16_size = min(q.seq_len, config.residual_window)
-        let quant_size = max(0, q.seq_len - config.residual_window)
-        fp16_size + quant_size = q.seq_len
+-- The residual window must fit in the context and be
+-- non-negative. Zero disables the overlay.
+invariant ResidualWindowWithinContext {
+    for c in Contexts:
+        config.residual_window >= 0 and config.residual_window <= c.n_ctx
 }
 
--- Recent tokens must be fp16 — no lossy compression on the N
--- most recent positions.
-invariant RecentTokensLossless {
-    for q in ActiveQueries:
-        for position in recent_positions(q, config.residual_window):
-            position_representation(q, position) = "fp16"
+-- The overlay dtype must be a concrete float type at runtime.
+-- The "auto" CLI sentinel must be resolved (by
+-- ResolveOverlayDtypeAuto) before this invariant is checked.
+invariant OverlayDtypeIsFloat {
+    config.overlay_dtype in {f16, bf16}
 }
 
--- Default config bound — 0 would match our port's current state
--- (no residual window). Must be ≥ 0.
-invariant ResidualWindowNonNegative {
-    config.residual_window >= 0
+-- SWA composition: when a sliding-window-attention layer is
+-- stacked with a non-SWA base cache in a hybrid memory, the
+-- overlay is meaningful only on the non-SWA side. The SWA
+-- side runs with residual_window = 0 for its own cache. This
+-- is enforced at cache construction; the hybrid-memory spec
+-- owns the per-layer SWA flagging. Listed here as a scope
+-- note rather than an expression-bearing invariant because
+-- per-layer SWA typing lives outside this spec.
+
+-- ============================================================
+-- Actor Declarations
+-- ============================================================
+
+-- The overlay inspector is a test-boundary actor used to peek
+-- at raw overlay bytes to verify write correctness. No
+-- production caller takes this role.
+actor OverlayInspector {
+    identified_by: Context where n_layer > 0
 }
 
 -- ============================================================
--- Implementation notes
+-- Surfaces
 -- ============================================================
 
--- The [TONBI-V3] reference implementation is in
--- tonbistudio/turboquant-pytorch/turboquant/compressors_v3.py
--- (class TurboQuantV3, method compress_kv). Their compressed
--- output is a dict with keys: "compressed" (quantised tail),
--- "fp16" (recent window), "shape", "split_at" (first quantised
--- index).
---
--- Our llama.cpp port has NO residual window today; the port's
--- KV cache is fully quantised from position 0. Adopting this
--- improvement requires: a second fp16 buffer for the window,
--- a rolling-write path that quantises the evicted row, and an
--- attention-read path that does one pass over the quantised
--- tail and one over the fp16 window then concatenates.
---
--- Approximate implementation cost: moderate. The rolling-window
--- machinery is a scheduler concern (where the fp16 and
--- quantised buffers are allocated and how eviction is timed),
--- not a numerics concern. Attention dispatch needs to handle
--- a mixed-precision KV but that's a one-of configuration, not
--- per-call branching.
+-- Introspection API for verifying overlay writes. Exposes the
+-- raw overlay bytes at a specific (layer, stream, slot) and
+-- the byte size of one slot so callers can allocate a
+-- receiving buffer. Writes are visible through this surface
+-- after AppendOverlayRow fires.
+surface OverlayPeek {
+    facing inspector: OverlayInspector
+
+    context ctx: Context
+
+    exposes:
+        ctx.n_layer
+        ctx.n_stream
+
+    provides:
+        PeekOverlaySlot(inspector, ctx, layer, stream, slot)
+        QueryOverlaySlotByteSize(inspector, ctx, layer)
+
+    @guarantee WritesObservableAfterAppend
+        -- After AppendOverlayRow has committed a write for a
+        -- given (layer, stream, position), PeekOverlaySlot at
+        -- the resolved slot returns those bytes until the
+        -- next write wraps into the same slot.
+
+    @guarantee SlotByteSizeMatchesDtype
+        -- QueryOverlaySlotByteSize returns n_embd_k_gqa
+        -- multiplied by the per-element byte size of
+        -- config.overlay_dtype (2 bytes for f16 and bf16).
+}
+
+-- ============================================================
+-- Open Questions
+-- ============================================================
+
+open question "Residual window size tuning: [TONBI-V3] defaults to 128 and reports it as the knee of the quality curve at model scales around 3B. Larger models or head_dim=256 configurations (Qwen3.5 9B) may need a larger window; smaller models may tolerate less. No public measurement campaign at our target sizes."
+
+open question "Sliding vs fixed-start window: [TONBI-V3] implements the rolling-tail semantics (most recent N tokens overlaid in fp16). An alternative would be a fixed initial-tokens window (first N tokens in fp16 for the attention-sink / first-few-tokens phenomenon literature). This spec models the rolling-tail variant only."
+
+open question "Interaction with quant.cpp Variant F multi-block split: the core spec (turbo-kv-4b.allium) inherits the per-128-element sub-block split. The residual window acts at the token level (rows); it is orthogonal to the within-row quantisation granularity. Composition should be clean, but the interaction has not been empirically tested."
+
+open question "Auto-resolution placement: ResolveOverlayDtypeAuto is modelled as a rule because config defaults in Allium support only arithmetic over references and literals, and the auto-resolve logic inspects model weight types. A cleaner framing might be a dedicated config-default expression form, or a separate resolution phase. Left as a rule for now."
+
+open question "Overlay representation at the RoPE boundary: the overlay stores whatever k_cur holds at the point cpy_k would have stored it. On standard K caches this is post-RoPE; on pre-RoPE-store caches (turbo-kv-4b stores pre-RoPE and RoPE-at-read) it is pre-RoPE. Whether the attention read path should standardise on one representation — and what MTP rollback must preserve — is unresolved."
+
+open question "Read-path structure: should attention over a recent-overlay plus quantised-tail cache use two-pass FA with LSE merge (one pass per source, merged softmax denominators), or single-pass with an assembled-K tensor spliced at query time? Merge granularity and cross-backend portability are at stake. Not yet prototyped."
+
+open question "Rollback semantics: seq_rm (sequence-position removal) currently does not touch the overlay. Rolled-back positions retain stale ring-buffer data until overwritten. This is harmless today (no reader) but becomes observable once the attention-read path consumes the overlay. MTP draft-rejection and prompt rewind are the concrete callers that force a decision."
+
+open question "Persistence across session save/load: should the overlay participate in state_write / state_read on llama_memory_i? The in-memory ring buffer is lost across session-resume and server checkpoints today. Implications for long-running server deployments and multi-turn evaluation harnesses."
+
+open question "Cross-backend equivalence: does the overlay require its own rule in turbo_kv_4b_backend.allium, or is it covered by that spec's general 'all backends produce the same output given the same inputs' invariant? Does the two-pass FA read path need its own cross-backend validation once it exists?"
