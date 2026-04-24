@@ -1,38 +1,34 @@
 -- allium: 3
 -- turbo_kv_4b_attention.allium
 
--- Scope: multi-block flash-attention equivalence between the CPU
--- scalar reference and any registered GPU backend (Vulkan today;
--- CUDA / ROCm / Metal when they arrive) for TURBO_KV_4B-quantised
--- keys and values.
+-- Scope: flash-attention equivalence between the CPU scalar
+-- reference and any registered GPU backend (Vulkan today; CUDA /
+-- ROCm / Metal when they arrive) for TurboQuant 4-bit KV caches
+-- (Zandieh et al., ICLR 2026, arxiv 2504.19874).
 --
--- The backend spec (turbo_kv_4b_backend.allium) covers the CPY,
--- dequantize, GET_ROWS, and SET_ROWS ops at byte-identity against
--- CPU scalar. It does NOT cover the flash-attention path, which is
--- what production inference actually uses for the KV cache. This
--- file closes that gap: every backend's GGML_OP_FLASH_ATTN_EXT
--- output must agree with the CPU scalar's output within an fp32
--- reduction-drift tolerance, over multi-block heads (head_dim =
--- N * block_size, N > 1).
+-- The backend spec (turbo_kv_4b_backend.allium) covers quantise,
+-- dequantise, get_rows, and set_rows at byte-identity / ULP parity
+-- against the CPU scalar. It does NOT cover the flash-attention
+-- path, which is what production inference actually uses for the
+-- KV cache. This file closes that gap: every backend's
+-- GGML_OP_FLASH_ATTN_EXT output must agree with the CPU scalar's
+-- output within an fp32 reduction-drift tolerance.
 --
--- Motivation — direction-of-travel PPL data (reference/ppl) showed
--- turbo_kv_4b on 9B IQ3_XXS came in +0.23 PPL above F16 baseline
--- while remaining within noise on 0.8B. The 0.8B → 9B jump doubles
--- head_dim from 128 → 256 (1 block/head → 2 blocks/head). Three
--- candidate causes:
---   (a) genuine algorithmic quality gap from per-block inv_std
---       granularity at multi-block heads (out of this spec's
---       scope; that's codebook design, not backend equivalence),
---   (b) IQ3_XXS weight × turbo_kv_4b KV interaction (can't test
---       here without 9B BF16 weights fitting on this machine),
---   (c) latent GPU FA bug analogous to the two multi-block bugs
---       found and fixed in the CPY / GET_ROWS shaders today.
--- This spec + its propagated PBT disambiguate (c) by driving the
--- same Q × K × V through both paths and comparing outputs.
+-- Multi-head shapes (head_dim > 128) are a distinct concern from
+-- multi-head cross-backend equivalence. The paper's algorithm
+-- operates on one head_dim-sized row at a time with a single
+-- head_dim × head_dim rotation (paper §3). The 0.8B Qwen3.5 uses
+-- head_dim=128; 9B / 35B-A3B use head_dim=256. Direction-of-travel
+-- PPL data (reference/ppl) shows turbo_kv_4b at head_dim=256 on 9B
+-- IQ3_XXS coming in +0.23 PPL above F16 baseline, attributed (per
+-- turbo-kv-4b.allium open questions) to the port's divergence from
+-- the paper's head-centric algorithm — NOT to a GPU FA bug. This
+-- spec's PBT confirms that: CPU FA vs GPU FA at head_dim=256 pass
+-- within fp32 tolerance.
 --
 -- Includes:
 --   - External entities shared with turbo-kv-4b.allium + the
---     backend spec (TurboBlock, FloatTensor).
+--     backend spec (QuantizedHead, FloatTensor).
 --   - Tolerance config calibrated at fp32 dot-product drift over
 --     n = head_dim elements plus softmax-weighted V accumulation
 --     over n_kv positions.
@@ -43,9 +39,9 @@
 --
 -- Excludes:
 --   - Raw dot-product-per-K-position semantics — owned by
---     turbo-kv-4b.allium's MultiBlockVectorDot rule. This spec
---     asserts that the end-to-end FLASH_ATTN_EXT output matches,
---     not each intermediate dot.
+--     turbo-kv-4b.allium's VectorDot rule. This spec asserts that
+--     the end-to-end FLASH_ATTN_EXT output matches, not each
+--     intermediate dot.
 --   - Softmax numerical correctness at the op level — that's a
 --     generic FA concern, not turbo_kv_4b-specific. A separate
 --     spec would cover it if needed.
@@ -61,9 +57,8 @@
 -- turbo_kv_4b_backend.allium
 -- ============================================================
 
-external entity TurboBlock {
+external entity QuantizedHead {
     norm: Decimal
-    inv_std: Decimal
     indices: Set<Integer>
 }
 
@@ -77,26 +72,21 @@ external entity FloatTensor {
 -- ============================================================
 
 config {
-    -- Multi-block head dimension. The whole point of this spec is
-    -- that head_dim > block_size (so head_dim / block_size > 1
-    -- TURBO_KV blocks per head) — single-block heads are trivially
-    -- covered by the backend spec's per-block equivalence plus one
-    -- dot-product with the query. Real 9B / 35B-A3B configurations
-    -- use head_dim = 256, so multi_block_head_dim defaults there.
-    multi_block_head_dim: Integer = 256
-    block_size: Integer = 128
+    -- Head dimension. Real Qwen3.5 / Qwen3.6 configurations use
+    -- head_dim = 128 (0.8B) or head_dim = 256 (9B, 35B-A3B).
+    -- The PBT that propagates from this spec should cover both.
+    head_dim: Integer = 256
 
     -- Score (pre-softmax) reduction-drift tolerance. The
     -- per-position attention score is the dot product of the
-    -- RHT-rotated query with the dequantised K, accumulated over
-    -- head_dim = 256 elements. Pairwise reduction on GPU vs linear
+    -- rotated query with the codebook-looked-up K, accumulated
+    -- over head_dim elements. Pairwise reduction on GPU vs linear
     -- accumulation on CPU produces different fp32 drift trees.
     -- Bound: log2(head_dim) × fp32_epsilon
     --   = log2(256) × 2^-23 ≈ 8 × 1.19e-7 ≈ 1e-6 relative on the
-    --   score magnitude.
-    -- Times the per-block codebook quantisation error (which is the
-    -- SAME bytes on both sides, so it's shared bias not drift),
-    -- the backend-equivalence bound on the score stays at ~1e-6.
+    --   score magnitude at head_dim=256.
+    -- Codebook quantisation error is shared bias (same indices
+    -- and codebook on both sides) and does not enter the drift bound.
     score_rel_tol: Decimal = 0.00001
 
     -- Post-softmax × V accumulation. The FA output at each query
@@ -135,8 +125,8 @@ contract FlashAttentionEquivalence {
     --   v: TURBO_KV_4B [head_dim, n_kv,     n_heads_kv, n_batch]
     --   mask: F16      [n_kv, n_tokens, 1, n_batch]   (optional)
     -- out: F32         [head_dim, n_tokens, n_heads, n_batch]
-    flash_attn_ext: (query: FloatTensor, keys: Set<TurboBlock>,
-                     values: Set<TurboBlock>, mask: FloatTensor)
+    flash_attn_ext: (query: FloatTensor, keys: Set<QuantizedHead>,
+                     values: Set<QuantizedHead>, mask: FloatTensor)
         -> FloatTensor
 
     @invariant ScoreEquivalence
@@ -181,26 +171,26 @@ contract FlashAttentionEquivalence {
         -- Combined bound ~2e-6 relative; 1e-5 gives a 5x safety
         -- margin.
 
-    @invariant MultiBlockParity
-        -- Specifically for heads where head_dim > block_size
-        -- (i.e. n_turbo_blocks_per_head > 1), the equivalence
-        -- claims above must hold at least as tightly as for
-        -- single-block heads — no additional drift may creep in
-        -- from the multi-block dispatch.
+    @invariant LargeHeadDimParity
+        -- Equivalence must hold across backends at head_dim = 256
+        -- (Qwen3.5 9B, 35B-A3B configuration) at the same tight
+        -- bounds as at head_dim = 128 — no additional drift may
+        -- creep in from whatever larger-head dispatch the backend
+        -- uses. This is a stronger form of ScoreEquivalence aimed
+        -- specifically at the production shape we care about.
         --
-        -- This is a stronger form of ScoreEquivalence. If a GPU
-        -- FA implementation accidentally uses blocks_per_row when
-        -- it should use k_stride (per the bug cited in
-        -- project_turbo_kv_rht_status memory) the drift would be
-        -- catastrophic, not fp32-ULP-scale. The PBT that
-        -- propagates this invariant would falsify instantly on
-        -- such a bug.
+        -- If a GPU FA implementation accidentally uses the wrong
+        -- stride for multi-head layouts (cf. the bug in
+        -- project_turbo_kv_rht_status memory that used
+        -- blocks_per_row where it should have used k_stride) the
+        -- drift would be catastrophic, not fp32-ULP-scale. The
+        -- PBT that propagates this invariant falsifies instantly
+        -- on such a bug.
         --
-        -- The 0.8B Paris test (head_dim=128, single-block) does
-        -- NOT exercise this path. The 9B Paris test did exercise
-        -- head_dim=256 but only on one prompt. This spec demands
-        -- the multi-block equivalence holds over the PBT-generated
-        -- input distribution.
+        -- The 0.8B Paris test (head_dim=128) does NOT exercise
+        -- this path. The 9B Paris test did exercise head_dim=256
+        -- but only on one prompt. This spec demands equivalence
+        -- over the PBT-generated input distribution.
 
     @guidance
         -- Differential-test shape for /allium:propagate:

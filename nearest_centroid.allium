@@ -1,39 +1,42 @@
 -- allium: 3
 -- nearest_centroid.allium
 
--- Scope: the per-element nearest-centroid argmin + index packing at the
--- heart of TURBO_KV_4B quantization. Pins down tie-breaking, scaling
--- order, and the 4-bit nibble packing format precisely enough that a
--- vectorized implementation must produce BIT-EXACT output matching the
--- scalar reference, element for element.
+-- Scope: the per-element nearest-centroid argmin + 4-bit index packing
+-- at the heart of TurboQuant's quantisation step (Zandieh et al., ICLR
+-- 2026, arxiv 2504.19874, §3). Pins down tie-breaking and the wire
+-- format precisely enough that a vectorised implementation must
+-- produce bit-exact output matching the scalar reference, element for
+-- element.
+--
+-- Paper input: per-element values from the post-rotation unit-sphere
+-- distribution (output of the RHT step in turbo-kv-4b.allium's
+-- QuantizeHead rule). The paper's argmin operates DIRECTLY on these
+-- rotated values against a Lloyd-Max codebook solved for the same
+-- distribution at the same head_dim — there is no pre-argmin
+-- rescaling. The llama.cpp port's `inv_std` rescaling is a known
+-- divergence from the paper (see turbo-kv-4b.allium open questions).
 --
 -- Motivated by the PHASE25 step 3 profile (llama.cpp commits cc357dc9c,
 -- fea7dc668): the scalar argmin loop in quantize_block_turbo_kv_4b
 -- dominates the quantize-path cost at 2346 ns/call with 4.3% branch
--- miss rate, and is the obvious optimization target — but any SIMD
+-- miss rate, and is the obvious optimisation target — but any SIMD
 -- rewrite has to match the scalar's index output exactly for the KV
 -- cache to stay deterministic across SIMD variants of the same type.
 --
 -- Includes:
---   - External inputs (scalar value, codebook, output packing format).
---   - ArgminFirstMatch rule: the deterministic argmin with lowest-index
---     tie-break, pinned to a specific scaling-order so SIMD variants
---     can match bit-exactly.
+--   - ArgminFirstMatch rule: the deterministic argmin with lowest-
+--     index tie-break, bit-exact across implementations.
 --   - NibblePackedIndices entity + PackNibbleIndices rule: the 4-bit
---     low-nibble-first packing format.
---   - Composition: NearestCentroidAssignment orchestrates the per-
---     element argmin and the packing.
+--     low-nibble-first wire format.
+--   - Composition: NearestCentroidAssignment orchestrates the
+--     per-element argmin and the packing.
 --
 -- Excludes:
---   - Scaling derivation (inv_std = cent_max / max_abs) — lives in
---     turbo-kv-4b.allium's QuantizeBlock rule. This spec starts from
---     already-scaled values.
+--   - Normalisation + rotation — paper §3 steps upstream of this file,
+--     owned by turbo-kv-4b.allium's QuantizeHead rule.
+--   - Dequantisation — reconstruct_codebook lives in turbo-kv-4b.allium.
 --   - The codebook's Lloyd-Max origin — the codebook is data, not
 --     behaviour.
---   - RHT / normalize / full quantize composition — all in
---     turbo-kv-4b.allium.
---   - Dequantization — reconstruct_codebook lives in
---     turbo-kv-4b.allium.
 
 -- ============================================================
 -- Entities
@@ -65,13 +68,8 @@ config {
     -- test: the whole point of this spec is that any SIMD rewrite
     -- produces byte-for-byte identical output to the scalar reference
     -- on the same inputs. Relaxing this breaks deterministic
-    -- quantization across hosts with different SIMD variants.
+    -- quantisation across hosts with different SIMD variants.
     argmin_index_rel_tol: Decimal = 0.0
-
-    -- Standard QuantizeBlock precondition requires L2_norm > 0, so
-    -- max_abs > 0, so inv_std > 0. Re-stated here as the scaling
-    -- pre-condition.
-    min_inv_std: Decimal = 0.0
 }
 
 -- ============================================================
@@ -148,28 +146,30 @@ rule PackNibbleIndices {
     )
 }
 
--- Composite: for every value in the scaled vector, pick the argmin
--- codebook entry, pack the resulting indices. Matches the scalar Step
--- 5 loop in quantize_block_turbo_kv_4b.
+-- Composite: for every value in the post-rotation unit-sphere vector,
+-- pick the argmin codebook entry; pack the resulting indices.
+-- Matches the paper's §3 compress step:
+--   indices[i] = argmin_c |rotated[i] - centroids[c]|
+--   packed     = bitpack(indices)
 rule NearestCentroidAssignment {
-    when: NearestCentroidAssignment(scaled_values, codebook)
+    when: NearestCentroidAssignment(rotated_values, codebook)
 
-    requires: scaled_values.count > 0
-    requires: scaled_values.count / 2 * 2 = scaled_values.count
+    requires: rotated_values.count > 0
+    requires: rotated_values.count / 2 * 2 = rotated_values.count
     requires: codebook.count = config.codebook_size
 
-    -- Per-value argmin: indices[i] = ArgminFirstMatch(scaled_values[i], codebook).
-    let indices = map_argmin_first_match(scaled_values.data, codebook)
-    let packed = PackNibbleIndices(indices, scaled_values.count)
+    -- Per-value argmin: indices[i] = ArgminFirstMatch(rotated_values[i], codebook).
+    let indices = map_argmin_first_match(rotated_values.data, codebook)
+    let packed = PackNibbleIndices(indices, rotated_values.count)
 
     ensures: NibblePackedIndices.created(
         bytes: packed.bytes,
-        byte_count: scaled_values.count / 2
+        byte_count: rotated_values.count / 2
     )
 
     @guidance
         -- Differential-test shape (for /allium:propagate): given a
-        -- pool of random (ScaledValueVector, FixedCodebook) pairs,
+        -- pool of random (RotatedValueVector, FixedCodebook) pairs,
         -- run both the scalar reference and the SIMD variant through
         -- NearestCentroidAssignment, and assert byte-for-byte
         -- equality of the resulting NibblePackedIndices.bytes. Since

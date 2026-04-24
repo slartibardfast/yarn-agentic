@@ -1,0 +1,228 @@
+-- allium: 3
+-- turbo_kv_residual_window.allium
+
+-- Scope: residual window KV-cache improvement — keep the most
+-- recent N tokens in fp16 uncompressed, quantise only the older
+-- tail. Composes on top of the core TurboQuant specs
+-- (turbo-kv-4b.allium, turbo-kv-3b.allium).
+--
+-- Citable sources:
+--
+--   [PAPER]       Zandieh et al., arxiv 2504.19874. Paper does
+--                 not model a residual window — it treats the full
+--                 sequence as a single quantisation batch.
+--
+--   [TONBI-V3]    tonbistudio/turboquant-pytorch compressors_v3.py.
+--                 Introduces residual_window as a core V3 concept.
+--                 Measured evidence (README needle-in-haystack on
+--                 Llama 3.2):
+--                   K4/V4 rw=128:  EXACT at 2K and 4K ctx
+--                   K4/V4 rw=0:    MISS (garbage output)
+--                   K4/V2 rw=0:    MISS
+--                 The rw=0 → MISS result is the critical evidence:
+--                 symmetric 4-bit quantisation without a residual
+--                 window fails the most basic retrieval task. The
+--                 residual window is not a minor optimisation; it
+--                 is load-bearing for 4-bit-and-below quality.
+--                 README: "What doesn't work: 3-4 bit compression
+--                 without a residual window produces garbage, same
+--                 as V2."
+--
+--   [QUANT.CPP]   Does NOT implement a residual window. Our
+--                 llama.cpp port inherits this gap. The port's
+--                 current 4-bit symmetric KV matches the
+--                 [TONBI-V3] K4/V4 rw=0 failing configuration —
+--                 the 9B +0.23 PPL observation is consistent with
+--                 this being a driver.
+--
+-- Goal: specify a residual_window parameter that, when > 0,
+-- causes the most recent `residual_window` tokens to bypass
+-- quantisation and remain in fp16. All older tokens are
+-- quantised per the core TurboQuant spec. Attention reads the
+-- concatenation of (quantised tail + fp16 window).
+--
+-- Includes: rolling-window maintenance, tail quantisation trigger,
+-- read-time concatenation of fp16 + quantised.
+-- Excludes: per-layer window-size overrides (layer-adaptive is a
+-- separate spec), asymmetric K/V bit widths (separate spec).
+
+-- ============================================================
+-- External entities
+-- ============================================================
+
+external entity Tensor {
+    data: Set<Decimal>
+    count: Integer
+}
+
+-- The KV-cache is organised as a sequence of rows, one per token
+-- position per head. Recent rows live in fp16; older rows are
+-- quantised via turbo-kv-4b.allium's QuantizeHead (or 3b).
+external entity FloatRow {
+    data: Set<Decimal>
+    count: Integer
+    position: Integer
+}
+
+external entity QuantizedHead {
+    norm: Decimal
+    inv_std: Decimal
+    indices: Set<Integer>
+}
+
+-- ============================================================
+-- Config
+-- ============================================================
+
+config {
+    -- Size of the rolling fp16 tail. [TONBI-V3] default is 128.
+    -- Larger window → better recent-token attention fidelity at
+    -- the cost of compression ratio; smaller window → more
+    -- compression at the cost of tail-quality. [TONBI-V3] README
+    -- measurements use rw=128 and report EXACT needle-retrieval
+    -- at 2K and 4K contexts on Llama 3.2.
+    residual_window: Integer = 128
+
+    -- A context length at or below which the residual window
+    -- subsumes the whole sequence (i.e. no quantisation happens).
+    -- At seq_len ≤ residual_window the entire cache is fp16.
+    -- This matches [TONBI-V3] compress_kv behaviour: "If S <= rw,
+    -- keep everything in fp16".
+    min_seq_for_quantisation: Integer = 129
+}
+
+-- ============================================================
+-- Open questions
+-- ============================================================
+
+open question "Residual window size tuning: [TONBI-V3] defaults to 128 and reports it as the knee of the quality curve at model scales around 3B. Larger models or head_dim=256 configurations (Qwen3.5 9B) may need a larger window; smaller models may tolerate less. No public measurement campaign at our target sizes."
+
+open question "Sliding vs fixed-start window: [TONBI-V3] implements the rolling-tail semantics (most recent N tokens in fp16, rest quantised). An alternative would be a fixed initial-tokens window (first N tokens in fp16 for the attention-sink / first-few-tokens phenomenon literature). This spec models the rolling-tail variant only."
+
+open question "Interaction with quant.cpp Variant F multi-block split: the core spec (turbo-kv-4b.allium) inherits the per-128-element sub-block split. The residual window acts at the TOKEN level (rows); it is orthogonal to the within-row quantisation granularity. Composition should be clean, but the interaction has not been empirically tested."
+
+-- ============================================================
+-- Composite rules
+-- ============================================================
+
+-- Incremental write (seq_len ≤ residual_window): the whole
+-- sequence fits in the fp16 window. No quantisation happens;
+-- the row is appended as fp16.
+rule AppendRowWithinWindow {
+    when: AppendRow(row, seq_len)
+
+    requires: row.count > 0
+    requires: seq_len <= config.residual_window
+
+    ensures: FloatRow.created(
+        data: row.data,
+        count: row.count,
+        position: seq_len
+    )
+}
+
+-- Incremental write (seq_len > residual_window): the window
+-- is full, so the oldest fp16 row (at position
+-- seq_len - residual_window - 1) is quantised via the core
+-- spec's QuantizeHead rule and moved to the quantised tail.
+-- The new row is appended as fp16 at the head of the window.
+--
+-- This matches [TONBI-V3] compress_kv's split semantics: older
+-- than `split_at = S - rw` is compressed, rest is fp16.
+rule AppendRowWithEviction {
+    when: AppendRow(row, seq_len)
+
+    requires: row.count > 0
+    requires: seq_len > config.residual_window
+
+    let evicted_row = oldest_fp16_row_before_append(row, seq_len, config.residual_window)
+    let quantised = QuantizeHead(evicted_row, config.seed)
+
+    ensures: FloatRow.created(
+        data: row.data,
+        count: row.count,
+        position: seq_len
+    )
+    -- QuantizeHead's own ensures clause (from the core spec)
+    -- creates the QuantizedHead entity for the evicted row.
+}
+
+-- Read (seq_len ≤ residual_window): whole sequence is in the
+-- fp16 window. Attention reads only the fp16 range.
+rule ReadKVShortSequence {
+    when: ReadKVForAttention(query_position, seq_len)
+
+    requires: seq_len > 0
+    requires: seq_len <= config.residual_window
+
+    let fp16_range = positions(0, seq_len)
+
+    ensures: result = attention_read_fp16(fp16_range)
+}
+
+-- Read (seq_len > residual_window): attention reads the
+-- quantised tail [0, seq_len - residual_window) plus the fp16
+-- window [seq_len - residual_window, seq_len).
+rule ReadKVLongSequence {
+    when: ReadKVForAttention(query_position, seq_len)
+
+    requires: seq_len > 0
+    requires: seq_len > config.residual_window
+
+    let quantised_range = positions(0, seq_len - config.residual_window)
+    let fp16_range = positions(seq_len - config.residual_window, seq_len)
+
+    ensures: result = attention_read_mixed(quantised_range, fp16_range)
+}
+
+-- ============================================================
+-- Invariants
+-- ============================================================
+
+-- At any point, the quantised tail plus the fp16 window covers
+-- the whole sequence with no overlap and no gap.
+invariant CoverageCompleteNoOverlap {
+    for q in ActiveQueries:
+        let fp16_size = min(q.seq_len, config.residual_window)
+        let quant_size = max(0, q.seq_len - config.residual_window)
+        fp16_size + quant_size = q.seq_len
+}
+
+-- Recent tokens must be fp16 — no lossy compression on the N
+-- most recent positions.
+invariant RecentTokensLossless {
+    for q in ActiveQueries:
+        for position in recent_positions(q, config.residual_window):
+            position_representation(q, position) = "fp16"
+}
+
+-- Default config bound — 0 would match our port's current state
+-- (no residual window). Must be ≥ 0.
+invariant ResidualWindowNonNegative {
+    config.residual_window >= 0
+}
+
+-- ============================================================
+-- Implementation notes
+-- ============================================================
+
+-- The [TONBI-V3] reference implementation is in
+-- tonbistudio/turboquant-pytorch/turboquant/compressors_v3.py
+-- (class TurboQuantV3, method compress_kv). Their compressed
+-- output is a dict with keys: "compressed" (quantised tail),
+-- "fp16" (recent window), "shape", "split_at" (first quantised
+-- index).
+--
+-- Our llama.cpp port has NO residual window today; the port's
+-- KV cache is fully quantised from position 0. Adopting this
+-- improvement requires: a second fp16 buffer for the window,
+-- a rolling-write path that quantises the evicted row, and an
+-- attention-read path that does one pass over the quantised
+-- tail and one over the fp16 window then concatenates.
+--
+-- Approximate implementation cost: moderate. The rolling-window
+-- machinery is a scheduler concern (where the fp16 and
+-- quantised buffers are allocated and how eviction is timed),
+-- not a numerics concern. Attention dispatch needs to handle
+-- a mixed-precision KV but that's a one-of configuration, not
+-- per-call branching.
