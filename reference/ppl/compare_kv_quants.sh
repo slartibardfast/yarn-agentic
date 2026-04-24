@@ -20,17 +20,20 @@
 set -eu
 
 # --- Pinned parameters (change here to sweep, never on the CLI) -----------
-MODEL="/opt/models/qwen3.5-0.8b/Qwen3.5-0.8B-BF16.gguf"
-CORPUS="/opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw"
+MODEL="${MODEL:-/opt/models/qwen3.5-0.8b/Qwen3.5-0.8B-BF16.gguf}"
+CORPUS="${CORPUS:-/opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw}"
 CHUNKS="${CHUNKS:-200}"
 NGL=99
 FA=on
-GPU_DEV=1     # gpu-1 = AMD RX Vega per coord/ convention
-GPU_LABEL="gpu-1"
+GPU_DEV="${GPU_DEV:-1}"     # gpu-1 = AMD RX Vega per coord/ convention
+GPU_LABEL="gpu-${GPU_DEV}"
 BENCH="build/bin/llama-perplexity"
 REPO_ROOT="$(cd "$(dirname "$0")"/../.. && pwd)"
 LLAMA_DIR="$REPO_ROOT/llama.cpp"
-RESULTS_DIR="$(cd "$(dirname "$0")" && pwd)/results"
+# RESULTS_TAG tags the subdirectory for this sweep so different models
+# don't overwrite each other's logs. Default derives from MODEL's basename.
+RESULTS_TAG="${RESULTS_TAG:-$(basename "${MODEL%.gguf}")}"
+RESULTS_DIR="$(cd "$(dirname "$0")" && pwd)/results/${RESULTS_TAG}"
 
 # KV types compared: two 16-bit references (f16, bf16) and two 4-bit
 # candidates (turbo_kv_4b, q4_0). BF16 matches the model's weight

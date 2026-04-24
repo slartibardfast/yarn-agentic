@@ -1,0 +1,505 @@
+# 2026-04-24T12:06:04Z
+# cmd: env GGML_VK_VISIBLE_DEVICES=0 /home/llm/yarn-agentic/llama.cpp/build/bin/llama-perplexity -m /opt/models/qwen3.5-9b/Qwen3.5-9B-UD-IQ3_XXS.gguf -f /opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw -ngl 99 -fa on -ctk q4_0 -ctv q4_0 --chunks 200
+# llama.cpp HEAD: 552b0e310
+common_init_result: fitting params to device memory, for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on
+llama_params_fit_impl: projected to use 4124 MiB of device memory vs. 16135 MiB of free device memory
+llama_params_fit_impl: will leave 12011 >= 1024 MiB of free device memory, no changes needed
+llama_params_fit: successfully fit params to free device memory
+llama_params_fit: fitting params to free memory took 0.42 seconds
+llama_model_load_from_file_impl: using device Vulkan0 (AMD Radeon RX 6800 XT (RADV NAVI21)) (0000:2a:00.0) - 16336 MiB free
+llama_model_loader: loaded meta data with 46 key-value pairs and 427 tensors from /opt/models/qwen3.5-9b/Qwen3.5-9B-UD-IQ3_XXS.gguf (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                               general.name str              = Qwen3.5-9B
+llama_model_loader: - kv   3:                           general.basename str              = Qwen3.5-9B
+llama_model_loader: - kv   4:                       general.quantized_by str              = Unsloth
+llama_model_loader: - kv   5:                         general.size_label str              = 9B
+llama_model_loader: - kv   6:                            general.license str              = apache-2.0
+llama_model_loader: - kv   7:                       general.license.link str              = https://huggingface.co/Qwen/Qwen3.5-9...
+llama_model_loader: - kv   8:                           general.repo_url str              = https://huggingface.co/unsloth
+llama_model_loader: - kv   9:                   general.base_model.count u32              = 1
+llama_model_loader: - kv  10:                  general.base_model.0.name str              = Qwen3.5 9B
+llama_model_loader: - kv  11:          general.base_model.0.organization str              = Qwen
+llama_model_loader: - kv  12:              general.base_model.0.repo_url str              = https://huggingface.co/Qwen/Qwen3.5-9B
+llama_model_loader: - kv  13:                               general.tags arr[str,2]       = ["unsloth", "image-text-to-text"]
+llama_model_loader: - kv  14:                         qwen35.block_count u32              = 32
+llama_model_loader: - kv  15:                      qwen35.context_length u32              = 262144
+llama_model_loader: - kv  16:                    qwen35.embedding_length u32              = 4096
+llama_model_loader: - kv  17:                 qwen35.feed_forward_length u32              = 12288
+llama_model_loader: - kv  18:                qwen35.attention.head_count u32              = 16
+llama_model_loader: - kv  19:             qwen35.attention.head_count_kv u32              = 4
+llama_model_loader: - kv  20:             qwen35.rope.dimension_sections arr[i32,4]       = [11, 11, 10, 0]
+llama_model_loader: - kv  21:                      qwen35.rope.freq_base f32              = 10000000.000000
+llama_model_loader: - kv  22:    qwen35.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  23:                qwen35.attention.key_length u32              = 256
+llama_model_loader: - kv  24:              qwen35.attention.value_length u32              = 256
+llama_model_loader: - kv  25:                     qwen35.ssm.conv_kernel u32              = 4
+llama_model_loader: - kv  26:                      qwen35.ssm.state_size u32              = 128
+llama_model_loader: - kv  27:                     qwen35.ssm.group_count u32              = 16
+llama_model_loader: - kv  28:                  qwen35.ssm.time_step_rank u32              = 32
+llama_model_loader: - kv  29:                      qwen35.ssm.inner_size u32              = 4096
+llama_model_loader: - kv  30:             qwen35.full_attention_interval u32              = 4
+llama_model_loader: - kv  31:                qwen35.rope.dimension_count u32              = 64
+llama_model_loader: - kv  32:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  33:                         tokenizer.ggml.pre str              = qwen35
+llama_model_loader: - kv  34:                      tokenizer.ggml.tokens arr[str,248320]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+llama_model_loader: - kv  35:                  tokenizer.ggml.token_type arr[i32,248320]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  36:                      tokenizer.ggml.merges arr[str,247587]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+llama_model_loader: - kv  37:                tokenizer.ggml.eos_token_id u32              = 248046
+llama_model_loader: - kv  38:            tokenizer.ggml.padding_token_id u32              = 248055
+llama_model_loader: - kv  39:                    tokenizer.chat_template str              = {%- set image_count = namespace(value...
+llama_model_loader: - kv  40:               general.quantization_version u32              = 2
+llama_model_loader: - kv  41:                          general.file_type u32              = 23
+llama_model_loader: - kv  42:                      quantize.imatrix.file str              = Qwen3.5-9B-GGUF/imatrix_unsloth.gguf
+llama_model_loader: - kv  43:                   quantize.imatrix.dataset str              = unsloth_calibration_Qwen3.5-9B.txt
+llama_model_loader: - kv  44:             quantize.imatrix.entries_count u32              = 248
+llama_model_loader: - kv  45:              quantize.imatrix.chunks_count u32              = 80
+llama_model_loader: - type  f32:  177 tensors
+llama_model_loader: - type  f16:   48 tensors
+llama_model_loader: - type q3_K:    1 tensors
+llama_model_loader: - type q5_K:    1 tensors
+llama_model_loader: - type q6_K:   24 tensors
+llama_model_loader: - type iq3_xxs:  149 tensors
+llama_model_loader: - type iq3_s:   10 tensors
+llama_model_loader: - type iq2_s:   12 tensors
+llama_model_loader: - type iq4_xs:    5 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = IQ3_XXS - 3.0625 bpw
+print_info: file size   = 3.73 GiB (3.58 BPW) 
+load: 0 unused tokens
+load: printing all EOG tokens:
+load:   - 248044 ('<|endoftext|>')
+load:   - 248046 ('<|im_end|>')
+load:   - 248063 ('<|fim_pad|>')
+load:   - 248064 ('<|repo_name|>')
+load:   - 248065 ('<|file_sep|>')
+load: special tokens cache size = 33
+load: token to piece cache size = 1.7581 MB
+print_info: arch                  = qwen35
+print_info: vocab_only            = 0
+print_info: no_alloc              = 0
+print_info: n_ctx_train           = 262144
+print_info: n_embd                = 4096
+print_info: n_embd_inp            = 4096
+print_info: n_layer               = 32
+print_info: n_head                = 16
+print_info: n_head_kv             = 4
+print_info: n_rot                 = 64
+print_info: n_swa                 = 0
+print_info: is_swa_any            = 0
+print_info: n_embd_head_k         = 256
+print_info: n_embd_head_v         = 256
+print_info: n_gqa                 = 4
+print_info: n_embd_k_gqa          = 1024
+print_info: n_embd_v_gqa          = 1024
+print_info: f_norm_eps            = 0.0e+00
+print_info: f_norm_rms_eps        = 1.0e-06
+print_info: f_clamp_kqv           = 0.0e+00
+print_info: f_max_alibi_bias      = 0.0e+00
+print_info: f_logit_scale         = 0.0e+00
+print_info: f_attn_scale          = 0.0e+00
+print_info: n_ff                  = 12288
+print_info: n_expert              = 0
+print_info: n_expert_used         = 0
+print_info: n_expert_groups       = 0
+print_info: n_group_used          = 0
+print_info: causal attn           = 1
+print_info: pooling type          = -1
+print_info: rope type             = 40
+print_info: rope scaling          = linear
+print_info: freq_base_train       = 10000000.0
+print_info: freq_scale_train      = 1
+print_info: n_ctx_orig_yarn       = 262144
+print_info: rope_yarn_log_mul     = 0.0000
+print_info: rope_finetuned        = unknown
+print_info: mrope sections        = [11, 11, 10, 0]
+print_info: ssm_d_conv            = 4
+print_info: ssm_d_inner           = 4096
+print_info: ssm_d_state           = 128
+print_info: ssm_dt_rank           = 32
+print_info: ssm_n_group           = 16
+print_info: ssm_dt_b_c_rms        = 0
+print_info: model type            = 9B
+print_info: model params          = 8.95 B
+print_info: general.name          = Qwen3.5-9B
+print_info: vocab type            = BPE
+print_info: n_vocab               = 248320
+print_info: n_merges              = 247587
+print_info: BOS token             = 11 ','
+print_info: EOS token             = 248046 '<|im_end|>'
+print_info: EOT token             = 248046 '<|im_end|>'
+print_info: PAD token             = 248055 '<|vision_pad|>'
+print_info: LF token              = 198 'Ċ'
+print_info: FIM PRE token         = 248060 '<|fim_prefix|>'
+print_info: FIM SUF token         = 248062 '<|fim_suffix|>'
+print_info: FIM MID token         = 248061 '<|fim_middle|>'
+print_info: FIM PAD token         = 248063 '<|fim_pad|>'
+print_info: FIM REP token         = 248064 '<|repo_name|>'
+print_info: FIM SEP token         = 248065 '<|file_sep|>'
+print_info: EOG token             = 248044 '<|endoftext|>'
+print_info: EOG token             = 248046 '<|im_end|>'
+print_info: EOG token             = 248063 '<|fim_pad|>'
+print_info: EOG token             = 248064 '<|repo_name|>'
+print_info: EOG token             = 248065 '<|file_sep|>'
+print_info: max token length      = 256
+load_tensors: loading model tensors, this can take a while... (mmap = true, direct_io = false)
+ggml_vulkan: Failed ggml_vk_create_buffer (No suitable memory type found: ErrorOutOfDeviceMemory)
+load_tensors: offloading output layer to GPU
+load_tensors: offloading 31 repeating layers to GPU
+load_tensors: offloaded 33/33 layers to GPU
+load_tensors:   CPU_Mapped model buffer size =   416.80 MiB
+load_tensors:      Vulkan0 model buffer size =  3402.92 MiB
+..........................................................................
+common_init_result: added <|endoftext|> logit bias = -inf
+common_init_result: added <|im_end|> logit bias = -inf
+common_init_result: added <|fim_pad|> logit bias = -inf
+common_init_result: added <|repo_name|> logit bias = -inf
+common_init_result: added <|file_sep|> logit bias = -inf
+llama_context: constructing llama_context
+llama_context: n_seq_max     = 4
+llama_context: n_ctx         = 2048
+llama_context: n_ctx_seq     = 512
+llama_context: n_batch       = 2048
+llama_context: n_ubatch      = 512
+llama_context: causal_attn   = 1
+llama_context: flash_attn    = enabled
+llama_context: kv_unified    = false
+llama_context: freq_base     = 10000000.0
+llama_context: freq_scale    = 1
+llama_context: n_ctx_seq (512) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+llama_context: Vulkan_Host  output buffer size =     3.79 MiB
+llama_kv_cache:    Vulkan0 KV buffer size =    18.00 MiB
+llama_kv_cache: size =   18.00 MiB (   512 cells,   8 layers,  4/4 seqs), K (q4_0):    9.00 MiB, V (q4_0):    9.00 MiB
+llama_kv_cache: attn_rot_k = 1, n_embd_head_k_all = 256
+llama_kv_cache: attn_rot_v = 1, n_embd_head_k_all = 256
+llama_memory_recurrent:    Vulkan0 RS buffer size =   201.00 MiB
+llama_memory_recurrent: size =  201.00 MiB (     4 cells,  32 layers,  4 seqs), R (f32):    9.00 MiB, S (f32):  192.00 MiB
+sched_reserve: reserving ...
+sched_reserve: resolving fused Gated Delta Net support:
+sched_reserve: fused Gated Delta Net (autoregressive) enabled
+sched_reserve: fused Gated Delta Net (chunked) enabled
+sched_reserve:    Vulkan0 compute buffer size =   502.28 MiB
+sched_reserve: Vulkan_Host compute buffer size =    17.29 MiB
+sched_reserve: graph nodes  = 1864
+sched_reserve: graph splits = 2
+sched_reserve: reserve took 10.09 ms, sched copies = 1
+common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+[FSUB] after loop_unroll: 71 fsub
+[FSUB] loop_top: 71 fsub
+[FSUB] before cse: 71 fsub
+[FSUB] after cse: 71 fsub
+[FSUB] after peephole_select: 71 fsub
+[FSUB] after const_fold: 71 fsub
+[FSUB] after intrinsics: 71 fsub
+[FSUB] PRE-alg: 71
+[FSUB] POST-alg: 71
+[FSUB] after phi_to_bool: 71 fsub
+[FSUB] after undef: 71 fsub
+[FSUB] after loop_unroll: 85 fsub
+[FSUB] loop_top: 85 fsub
+[FSUB] before cse: 85 fsub
+[FSUB] after cse: 85 fsub
+[FSUB] after peephole_select: 85 fsub
+[FSUB] after const_fold: 85 fsub
+[FSUB] after intrinsics: 85 fsub
+[FSUB] PRE-alg: 85
+[FSUB] POST-alg: 85
+[FSUB] after phi_to_bool: 85 fsub
+[FSUB] after undef: 85 fsub
+[FSUB] after loop_unroll: 136 fsub
+[FSUB] loop_top: 136 fsub
+[FSUB] before cse: 136 fsub
+[FSUB] after cse: 136 fsub
+[FSUB] after peephole_select: 136 fsub
+[FSUB] after const_fold: 136 fsub
+[FSUB] after intrinsics: 136 fsub
+[FSUB] PRE-alg: 136
+[FSUB] POST-alg: 136
+[FSUB] after phi_to_bool: 136 fsub
+[FSUB] after undef: 136 fsub
+[FSUB] after loop_unroll: 136 fsub
+[FSUB] loop_top: 136 fsub
+[FSUB] before cse: 136 fsub
+[FSUB] after cse: 136 fsub
+[FSUB] after peephole_select: 136 fsub
+[FSUB] after const_fold: 136 fsub
+[FSUB] after intrinsics: 136 fsub
+[FSUB] PRE-alg: 136
+[FSUB] POST-alg: 136
+[FSUB] after phi_to_bool: 136 fsub
+[FSUB] after undef: 136 fsub
+[FSUB] after loop_unroll: 136 fsub
+[FSUB] loop_top: 136 fsub
+[FSUB] before cse: 136 fsub
+[FSUB] after cse: 136 fsub
+[FSUB] after peephole_select: 136 fsub
+[FSUB] after const_fold: 136 fsub
+[FSUB] after intrinsics: 136 fsub
+[FSUB] PRE-alg: 136
+[FSUB] POST-alg: 136
+[FSUB] after phi_to_bool: 136 fsub
+[FSUB] after undef: 136 fsub
+[FSUB] after loop_unroll: 136 fsub
+[FSUB] FINAL (after opt loop): 136 fsub
+[FSUB] after shrink_vectors: 136 fsub
+[FSUB] loop_top: 136 fsub
+[FSUB] before cse: 136 fsub
+[FSUB] after cse: 136 fsub
+[FSUB] after peephole_select: 136 fsub
+[FSUB] after const_fold: 136 fsub
+[FSUB] after intrinsics: 136 fsub
+[FSUB] PRE-alg: 136
+[FSUB] POST-alg: 136
+[FSUB] after phi_to_bool: 136 fsub
+[FSUB] after undef: 136 fsub
+[FSUB] after loop_unroll: 136 fsub
+[FSUB] loop_top: 136 fsub
+[FSUB] before cse: 136 fsub
+[FSUB] after cse: 136 fsub
+[FSUB] after peephole_select: 136 fsub
+[FSUB] after const_fold: 136 fsub
+[FSUB] after intrinsics: 136 fsub
+[FSUB] PRE-alg: 136
+[FSUB] POST-alg: 136
+[FSUB] after phi_to_bool: 136 fsub
+[FSUB] after undef: 136 fsub
+[FSUB] after loop_unroll: 136 fsub
+[FSUB] loop_top: 136 fsub
+[FSUB] before cse: 136 fsub
+[FSUB] after cse: 136 fsub
+[FSUB] after peephole_select: 136 fsub
+[FSUB] after const_fold: 136 fsub
+[FSUB] after intrinsics: 136 fsub
+[FSUB] PRE-alg: 136
+[FSUB] POST-alg: 136
+[FSUB] after phi_to_bool: 136 fsub
+[FSUB] after undef: 136 fsub
+[FSUB] after loop_unroll: 136 fsub
+[FSUB] FINAL (after opt loop): 136 fsub
+[FSUB] after shrink_vectors: 136 fsub
+
+system_info: n_threads = 16 (n_threads_batch = 16) / 32 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+perplexity: tokenizing the input ..
+perplexity: tokenization took 577.361 ms
+perplexity: calculating perplexity over 200 chunks, n_ctx=512, batch_size=2048, n_seq=4
+[FSUB] after loop_unroll: 76 fsub
+[FSUB] loop_top: 76 fsub
+[FSUB] before cse: 76 fsub
+[FSUB] after cse: 76 fsub
+[FSUB] after peephole_select: 76 fsub
+[FSUB] after const_fold: 76 fsub
+[FSUB] after intrinsics: 76 fsub
+[FSUB] PRE-alg: 76
+[FSUB] POST-alg: 76
+[FSUB] after phi_to_bool: 76 fsub
+[FSUB] after undef: 76 fsub
+[FSUB] after loop_unroll: 90 fsub
+[FSUB] loop_top: 90 fsub
+[FSUB] before cse: 90 fsub
+[FSUB] after cse: 90 fsub
+[FSUB] after peephole_select: 90 fsub
+[FSUB] after const_fold: 90 fsub
+[FSUB] after intrinsics: 90 fsub
+[FSUB] PRE-alg: 90
+[FSUB] POST-alg: 90
+[FSUB] after phi_to_bool: 90 fsub
+[FSUB] after undef: 90 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] FINAL (after opt loop): 144 fsub
+[FSUB] after shrink_vectors: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] FINAL (after opt loop): 144 fsub
+[FSUB] after shrink_vectors: 144 fsub
+[FSUB] after loop_unroll: 76 fsub
+[FSUB] loop_top: 76 fsub
+[FSUB] before cse: 76 fsub
+[FSUB] after cse: 76 fsub
+[FSUB] after peephole_select: 76 fsub
+[FSUB] after const_fold: 76 fsub
+[FSUB] after intrinsics: 76 fsub
+[FSUB] PRE-alg: 76
+[FSUB] POST-alg: 76
+[FSUB] after phi_to_bool: 76 fsub
+[FSUB] after undef: 76 fsub
+[FSUB] after loop_unroll: 90 fsub
+[FSUB] loop_top: 90 fsub
+[FSUB] before cse: 90 fsub
+[FSUB] after cse: 90 fsub
+[FSUB] after peephole_select: 90 fsub
+[FSUB] after const_fold: 90 fsub
+[FSUB] after intrinsics: 90 fsub
+[FSUB] PRE-alg: 90
+[FSUB] POST-alg: 90
+[FSUB] after phi_to_bool: 90 fsub
+[FSUB] after undef: 90 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] FINAL (after opt loop): 144 fsub
+[FSUB] after shrink_vectors: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] loop_top: 144 fsub
+[FSUB] before cse: 144 fsub
+[FSUB] after cse: 144 fsub
+[FSUB] after peephole_select: 144 fsub
+[FSUB] after const_fold: 144 fsub
+[FSUB] after intrinsics: 144 fsub
+[FSUB] PRE-alg: 144
+[FSUB] POST-alg: 144
+[FSUB] after phi_to_bool: 144 fsub
+[FSUB] after undef: 144 fsub
+[FSUB] after loop_unroll: 144 fsub
+[FSUB] FINAL (after opt loop): 144 fsub
+[FSUB] after shrink_vectors: 144 fsub
+perplexity: 2.63 seconds per pass - ETA 2.18 minutes
+[1]6.1891,[2]8.4828,[3]8.1949,[4]7.9928,[5]7.8252,[6]8.1809,[7]8.4722,[8]8.9710,[9]9.4351,[10]9.7764,[11]9.6016,[12]9.7009,[13]10.2190,[14]9.7948,[15]9.6844,[16]9.7739,[17]9.1459,[18]9.2041,[19]9.1623,[20]9.1099,[21]8.8170,[22]8.7073,[23]8.3806,[24]7.9990,[25]7.8669,[26]7.6795,[27]7.5535,[28]7.4749,[29]7.4595,[30]7.4293,[31]7.3685,[32]7.3826,[33]7.3372,[34]7.4108,[35]7.5123,[36]7.6696,[37]7.7611,[38]7.7402,[39]7.7397,[40]7.8055,[41]7.8319,[42]7.8701,[43]7.8596,[44]7.8480,[45]7.9366,[46]7.8958,[47]8.0231,[48]8.1007,[49]8.0285,[50]8.0831,[51]8.0790,[52]8.1243,[53]8.1590,[54]8.1901,[55]8.1887,[56]8.2098,[57]8.2313,[58]8.2314,[59]8.2472,[60]8.2684,[61]8.2976,[62]8.3482,[63]8.3955,[64]8.4585,[65]8.5298,[66]8.5709,[67]8.6713,[68]8.7066,[69]8.7162,[70]8.6865,[71]8.7447,[72]8.7456,[73]8.7869,[74]8.7813,[75]8.7585,[76]8.7444,[77]8.7725,[78]8.7859,[79]8.7182,[80]8.6592,[81]8.6294,[82]8.6458,[83]8.6507,[84]8.6380,[85]8.6577,[86]8.7024,[87]8.7120,[88]8.7223,[89]8.6798,[90]8.6553,[91]8.6492,[92]8.6316,[93]8.6630,[94]8.6691,[95]8.6812,[96]8.6739,[97]8.6671,[98]8.6414,[99]8.6368,[100]8.6542,[101]8.6727,[102]8.6623,[103]8.6573,[104]8.6332,[105]8.6519,[106]8.6754,[107]8.7068,[108]8.7723,[109]8.7625,[110]8.8237,[111]8.8715,[112]8.8939,[113]8.9385,[114]8.9895,[115]9.0133,[116]8.9837,[117]8.9755,[118]8.9723,[119]8.9255,[120]8.9248,[121]8.8997,[122]8.8688,[123]8.8480,[124]8.8144,[125]8.7913,[126]8.7616,[127]8.7340,[128]8.6850,[129]8.6460,[130]8.6140,[131]8.5889,[132]8.5972,[133]8.5928,[134]8.5917,[135]8.6014,[136]8.5727,[137]8.5523,[138]8.5516,[139]8.5666,[140]8.5676,[141]8.5810,[142]8.5909,[143]8.5770,[144]8.5781,[145]8.5360,[146]8.5170,[147]8.4852,[148]8.4619,[149]8.4088,[150]8.3837,[151]8.3780,[152]8.3501,[153]8.3192,[154]8.3038,[155]8.2783,[156]8.2363,[157]8.2125,[158]8.1883,[159]8.1506,[160]8.1302,[161]8.1245,[162]8.1020,[163]8.0776,[164]8.0760,[165]8.1026,[166]8.0916,[167]8.1245,[168]8.1280,[169]8.1706,[170]8.1870,[171]8.2337,[172]8.2772,[173]8.3018,[174]8.3594,[175]8.3888,[176]8.4249,[177]8.4603,[178]8.4678,[179]8.4714,[180]8.4805,[181]8.5081,[182]8.5191,[183]8.5361,[184]8.5394,[185]8.5412,[186]8.5588,[187]8.5681,[188]8.5721,[189]8.5911,[190]8.6138,[191]8.6260,[192]8.6266,[193]8.6438,[194]8.6740,[195]8.7005,[196]8.7099,[197]8.6922,[198]8.6784,[199]8.6625,[200]8.6723,
+Final estimate: PPL = 8.6723 +/- 0.10016
+
+llama_perf_context_print:        load time =    1366.59 ms
+llama_perf_context_print: prompt eval time =  121501.57 ms / 102400 tokens (    1.19 ms per token,   842.79 tokens per second)
+llama_perf_context_print:        eval time =       0.00 ms /     1 runs   (    0.00 ms per token,      inf tokens per second)
+llama_perf_context_print:       total time =  129996.81 ms / 102401 tokens
+llama_perf_context_print:    graphs reused =         50
+llama_memory_breakdown_print: | memory breakdown [MiB]                 | total    free    self   model   context   compute    unaccounted |
+llama_memory_breakdown_print: |   - Vulkan0 (RX 6800 XT (RADV NAVI21)) | 16368 = 12206 + (4124 =  3402 +     219 +     502) +          37 |
+llama_memory_breakdown_print: |   - Host                               |                   434 =   416 +       0 +      17                |
