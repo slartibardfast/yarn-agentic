@@ -1,0 +1,264 @@
+-- allium: 3
+-- turbo_kv_4b_gpu.allium
+
+-- Scope: Vulkan compute-shader contract for TURBO_KV_4B — the four
+-- shaders in llama.cpp/ggml/src/ggml-vulkan/vulkan-shaders/ must
+-- implement the CPU scalar reference's quantize / dequantize /
+-- get_rows / set_rows operations to within the ULP bounds below.
+--
+-- After the PHASE25 fp32-scales repack (block_turbo_kv_4b = { float
+-- norm; float inv_std; uint8 mse_indices[64]; }) the CPU and Vulkan
+-- paths agree byte-for-byte on indices and to ~1 ULP fp32 on scales
+-- and dequantized elements. Pre-repack they agreed only within an
+-- fp16 round-trip bound; this spec encodes the tighter post-repack
+-- contract so that future shader edits cannot silently regress.
+--
+-- Includes:
+--   - External entities for the data shapes the CPU spec and the
+--     Vulkan backend share (TurboBlock, FloatTensor, IndexTensor).
+--   - ULP / byte-identity tolerance config.
+--   - VulkanTurboKv4bShaders contract with a signature per shader
+--     and four @invariant declarations pinning the CPU-equivalence
+--     property for each.
+--   - @guidance documenting the differential-test shape that propagates
+--     from this spec via /allium:propagate.
+--
+-- Excludes:
+--   - CPU-side quantize / dequantize semantics — owned by
+--     turbo-kv-4b.allium. This spec only asserts that the Vulkan
+--     output matches it.
+--   - Vulkan backend's attention / flash-attention path — a separate
+--     concern; attention dispatch is through ggml_flash_attn_ext,
+--     not the shaders spec'd here.
+--   - Workgroup layout, subgroup size, push-constant encoding — all
+--     internal to the shader and invisible to the spec-level
+--     equivalence property.
+--   - Non-Vulkan GPU backends (CUDA, ROCm, Metal) — not yet
+--     implemented for this type.
+
+-- ============================================================
+-- External entities — shared with turbo-kv-4b.allium
+-- ============================================================
+
+-- 72-byte quantized block. Same shape as TurboBlock in
+-- turbo-kv-4b.allium; re-declared external here because .allium
+-- files don't share entity declarations. The CPU spec owns the
+-- field semantics (norm = ||x||, inv_std = cent_max / max_abs,
+-- indices ∈ [0,15]); this file only references the fields to
+-- express the equivalence contract.
+external entity TurboBlock {
+    norm: Decimal
+    inv_std: Decimal
+    indices: Set<Integer>
+}
+
+external entity FloatTensor {
+    data: Set<Decimal>
+    count: Integer
+}
+
+-- A row-index tensor used by GET_ROWS and SET_ROWS. In ggml this is
+-- a 1-D int tensor; elements index into the row dimension of a
+-- higher-rank tensor.
+external entity IndexTensor {
+    indices: Set<Integer>
+    count: Integer
+}
+
+-- ============================================================
+-- Config — tolerance bounds
+-- ============================================================
+
+config {
+    -- Indices byte-identity: the scalar nearest-centroid argmin is
+    -- deterministic given the scaled values (inv_std * rotated). With
+    -- inv_std matching between CPU and GPU to within scale_rel_tol
+    -- (below), the resulting indices match byte-for-byte. Zero
+    -- tolerance — any index-byte drift means a real bug.
+    indices_byte_tolerance: Integer = 0
+
+    -- norm / inv_std scale tolerance. CPU computes sum_of_squares via
+    -- a fp64 accumulator with a single final fp32 round (PHASE25); GPU
+    -- computes it via fp32 subgroupAdd (non-associative tree
+    -- reduction). The two differ by up to a few fp32 ULPs on typical
+    -- inputs. Observed delta on test-turbo-kv-set-rows: 1 ULP between
+    -- the CPY and SET_ROWS shader paths. 0.00001 is ~30× that worst-case;
+    -- bound is intentionally loose so the test doesn't flake.
+    scale_rel_tol: Decimal = 0.00001
+
+    -- Per-element reconstruction tolerance. The dequant path is the
+    -- same fp32 operations on both sides (codebook[i] * scale * norm +
+    -- inverse RHT); the only divergence is the butterfly order inside
+    -- the RHT, which can drift by a few ULPs on fp32 values near the
+    -- dequant magnitude. Observed worst case on
+    -- test-turbo-kv-gpu-roundtrip: max 1e-6 absolute, RMSE 0.
+    element_abs_tol: Decimal = 0.00001
+    element_rel_tol: Decimal = 0.00001
+
+    -- Block size (informational — matches turbo-kv-4b.allium's
+    -- config.block_size. Not cross-referenced: this file is a contract
+    -- between the CPU and Vulkan paths, not a re-derivation of the
+    -- block layout.)
+    block_size: Integer = 128
+}
+
+-- ============================================================
+-- Contract: the four Vulkan compute shaders
+-- ============================================================
+
+-- Each shader in vulkan-shaders/ is called through the ggml-vulkan
+-- backend's op dispatch and must produce output that matches the
+-- CPU scalar reference within the tolerances above. The @invariant
+-- declarations below are prose-only because the equivalence claim
+-- is about cross-backend output comparison, not an expression over
+-- one backend's entities.
+
+contract VulkanTurboKv4bShaders {
+    -- cpy_f32_turbo_kv_4b.comp : F32 input tensor → TurboBlock stream.
+    -- Called through ggml_compute_forward_cpy when the destination
+    -- type is TURBO_KV_4B and both tensors live on a Vulkan backend.
+    vulkan_quantize_block: (input: FloatTensor) -> TurboBlock
+
+    -- dequant_turbo_kv_4b.comp : TurboBlock stream → F32 tensor.
+    -- Called through the op_get_rows / op_cpy dispatch when the
+    -- source type is TURBO_KV_4B and the destination is F32/F16.
+    vulkan_dequantize_block: (block: TurboBlock) -> FloatTensor
+
+    -- get_rows_turbo_kv_4b.comp : slice selected rows from a
+    -- TurboBlock-quantized source + dequantize to F32. Called through
+    -- ggml_compute_forward_get_rows for Vulkan-resident tensors.
+    vulkan_get_rows: (blocks: Set<TurboBlock>, indices: IndexTensor) -> FloatTensor
+
+    -- set_rows_turbo_kv_4b.comp : quantize F32 source rows and scatter
+    -- them into a TurboBlock-backed destination at positions given by
+    -- an index tensor. Used by the multi-GPU KV scatter path and by
+    -- the ggml_compute_forward_set_rows op.
+    vulkan_set_rows: (input: FloatTensor, indices: IndexTensor) -> Set<TurboBlock>
+
+    @invariant QuantizeEquivalence
+        -- For any FloatTensor x satisfying turbo-kv-4b.allium's
+        -- QuantizeBlock precondition (L2_norm(x.data) > 0), the
+        -- Vulkan cpy_f32 shader's output and the CPU scalar
+        -- quantize_row_turbo_kv_4b_ref's output agree on:
+        --
+        --   (a) All 64 bytes of mse_indices — byte-identical, with
+        --       tolerance 0. This is the tightest claim in the
+        --       contract. It relies on (b) matching closely enough
+        --       that the per-element argmin agrees.
+        --
+        --   (b) block.norm — agree within scale_rel_tol. Divergence
+        --       source: CPU accumulates sum_of_squares in fp64 then
+        --       rounds once to fp32; GPU does a fp32 subgroupAdd
+        --       tree. Up to a few fp32 ULPs on typical inputs.
+        --
+        --   (c) block.inv_std — agree within scale_rel_tol. Same
+        --       divergence source as (b), plus the `max_abs(rotated)`
+        --       reduction which also uses subgroupMax on the GPU and
+        --       sequential max on the CPU (max is associative on
+        --       non-NaN fp32, so this step contributes no drift).
+
+    @invariant DequantizeEquivalence
+        -- For any TurboBlock b, the Vulkan dequant shader's output
+        -- and the CPU scalar dequantize_row_turbo_kv_4b's output
+        -- agree element-wise within:
+        --   abs_err <= config.element_abs_tol
+        --   OR rel_err <= config.element_rel_tol
+        --
+        -- Divergence source: the butterfly order inside the Vulkan
+        -- inverse RHT differs from the CPU implementation's (subgroup-
+        -- cooperative stride pattern vs walsh_hadamard_avx2's stride
+        -- doubling loop), producing sum-tree drift of a few fp32 ULPs.
+        -- The codebook[i] * scale multiplication and the final * norm
+        -- rescale are per-element and contribute no drift.
+
+    @invariant GetRowsEquivalence
+        -- get_rows is a sliced dequantize: the Vulkan shader's
+        -- output at row r and column c equals the CPU dequantize of
+        -- the block at position indices[r] evaluated at column c,
+        -- within element_abs_tol / element_rel_tol. Equivalently,
+        -- get_rows(blocks, indices) = dequantize(blocks)[indices, :].
+        -- The slice is by reference (no per-row copy into a temp),
+        -- so the tolerance budget is identical to
+        -- DequantizeEquivalence.
+
+    @invariant SetRowsEquivalence
+        -- set_rows(input, indices) produces a TurboBlock stream
+        -- where the block at destination position indices[r] equals
+        -- the Vulkan quantize of input row r, within the same
+        -- tolerances as QuantizeEquivalence. Positions not named by
+        -- `indices` are untouched by this op and are outside the
+        -- contract (the backend's dispatch handles them).
+
+    @guidance
+        -- Differential-test shape for /allium:propagate:
+        --
+        --   1. Host test binary requires a Vulkan backend at build
+        --      time. Place it in a separate file from
+        --      test-turbo-kv-pbt.cpp (which is CPU-only) so a
+        --      GPU-less CI host can still run scalar PBT.
+        --
+        --   2. For each property, generate a random FloatTensor
+        --      (or a quantized block for DequantizeEquivalence) of
+        --      size N * block_size for N in {1, 2, 4, 8} to exercise
+        --      both single-block and multi-block dispatch paths.
+        --      Ensure L2_norm(x.data) > 0 (spec precondition).
+        --
+        --   3. Compute the CPU reference via quantize_row_turbo_kv_4b_ref
+        --      or dequantize_row_turbo_kv_4b from ggml-turbo-kv.c.
+        --      These are the scalar ggml-base entry points; they
+        --      must NOT be routed through any SIMD dispatch.
+        --
+        --   4. Drive the Vulkan dispatch via the ggml backend's op
+        --      interface — construct a graph with the appropriate op
+        --      (CPY / GET_ROWS / SET_ROWS), compile with the Vulkan
+        --      backend, read back. Do NOT call shader entry points
+        --      directly; route through ggml so the push_constants,
+        --      descriptor sets, and workgroup dispatch match what
+        --      production uses.
+        --
+        --   5. Compare per the tolerances above. The
+        --      QuantizeEquivalence indices check is byte-for-byte
+        --      memcmp on the 64-byte mse_indices array; the norm /
+        --      inv_std / element checks use abs-OR-rel tolerance
+        --      mirroring mul_mat_cpu.allium's SIMDEquivalence.
+        --
+        --   6. GPU allocation follows the repo's coord/ protocol:
+        --      acquire gpu-0 (6800 XT) via flock + state file before
+        --      running; release on exit. Vulkan tests that run
+        --      without this protocol will race against other agents
+        --      in the shared environment.
+        --
+        -- Minimum per-run sample count: 100 per RapidCheck standard.
+        -- Expected runtime per property on a 6800 XT with ~1 ms
+        -- per Vulkan dispatch: <1 s for 100 samples × a handful of
+        -- sizes, well within CI budget.
+}
+
+-- ============================================================
+-- Implementation notes
+-- ============================================================
+
+-- Shader files (llama.cpp/ggml/src/ggml-vulkan/vulkan-shaders/):
+--   cpy_f32_turbo_kv_4b.comp       — VulkanQuantize
+--   dequant_turbo_kv_4b.comp       — VulkanDequantize
+--   get_rows_turbo_kv_4b.comp      — VulkanGetRows
+--   set_rows_turbo_kv_4b.comp      — VulkanSetRows
+--   turbo_kv_4b_rht.glsl           — shared RHT + codebook helpers
+--                                    included by all four shaders
+--
+-- Existing integration tests (one input each; this spec generalises):
+--   tests/test-turbo-kv-gpu-quantize.cpp    — QuantizeEquivalence
+--   tests/test-turbo-kv-gpu-roundtrip.cpp   — DequantizeEquivalence
+--   tests/test-turbo-kv-set-rows.cpp        — SetRowsEquivalence
+--                                             (via SR-vs-CPY parity)
+--   tests/test-turbo-kv-vulkan.cpp          — misc single-input checks
+--
+-- There is NO integration test today that exercises
+-- GetRowsEquivalence directly. The propagated PBT property would be
+-- that shader's first dedicated coverage.
+--
+-- Vulkan MUL_MAT for TURBO_KV_4B is intentionally NOT covered by this
+-- spec: `test-backend-ops -b Vulkan -o MUL_MAT -p turbo_kv` reports
+-- "not supported" because the KV-cache type routes through
+-- flash-attention, not mul_mat. A separate spec would be needed for
+-- the FA path once that matures.
