@@ -32,6 +32,7 @@
 - [Phase 23: TURBO_4B Weight Quantization](PHASE23.md)
 - [Phase 24: TURBO_KV_4B — Formal Spec → Test Obligations](PHASE24.md)
 - [Phase 25: TURBO_KV_4B AVX2 Kernel Design — Non-AVX-512 Microarchitecture Targets](PHASE25.md)
+- [Phase 26: TURBO_KV_4B — SOTA Gap Audit (Allium Weed Pass)](PHASE26.md)
 
 # Qwen3.5 MTP Tool Calling
 
