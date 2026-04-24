@@ -108,6 +108,7 @@ Rules:
 - "Follow-up" is appropriate for genuinely future work — a different step, a next phase, a speculative improvement, a cleanup PR for a flag after a soak period. It is never appropriate for the current step's own stated requirements.
 - Commit messages, PHASE logs, and status reports must describe what was delivered AND what the current step still requires. If the step is not done, say so.
 - "Known follow-up", "deferred", "left as a follow-up", and equivalents in the context of the current step are cover language. Do not use them. Name the gap as a subtask and leave the parent step open.
+- Test before offering `/schedule` for post-work follow-up: would the current step still be `[x]` with binding verification if this scheduled work were never done? If yes, it is legitimate future work — offer the schedule. If no, it is a current-step gap — make it a subtask, keep the box open.
 
 ## 5. Audited PLAN.md and PHASEx.md
 
