@@ -45,6 +45,30 @@ by `extract.py`.
 - **ADDPS/D SUBPS/D** on Zen 2/3 is a single row covering both ADD and
   SUB, both widths, with ops column `v,v/m`.
 
+## How to verify the projection on other silicon
+
+`verify_projection.sh` runs `bench-turbo-kv-quantize` 5× on the current
+host, takes the median, detects the uarch from `/proc/cpuinfo`, and
+compares against the projected value from this table. Exits 0 if
+within ±20 % (bench noise is typically ±10 % so ±20 % is generous).
+
+```bash
+# Run on the host under test (build bench-turbo-kv-quantize first)
+./reference/agner/verify_projection.sh
+
+# Override detection if the heuristic misfires:
+./reference/agner/verify_projection.sh --uarch=AlderLake
+```
+
+Intel family/model → uarch mapping covers Haswell through Raptor Lake,
+AMD family/model covers Zen 1 through Zen 4. Zen 4 is reported as
+AVX-512 (out of scope for PHASE25's AVX2-only kernel).
+
+Alder Lake / Raptor Lake measurements would in particular validate the
+IceLake proxy assumption for Golden Cove; the projection expects ~301
+ns/call for those targets (Zen 2 baseline 311 ns, ~3 % faster via
+improved VADDPS/VPSRLW/VCVTDQ2PS throughput).
+
 ## How to re-extract
 
 ```bash
