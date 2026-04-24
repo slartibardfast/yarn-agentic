@@ -1,0 +1,229 @@
+-- allium: 3
+-- nearest_centroid.allium
+
+-- Scope: the per-element nearest-centroid argmin + index packing at the
+-- heart of TURBO_KV_4B quantization. Pins down tie-breaking, scaling
+-- order, and the 4-bit nibble packing format precisely enough that a
+-- vectorized implementation must produce BIT-EXACT output matching the
+-- scalar reference, element for element.
+--
+-- Motivated by the PHASE25 step 3 profile (llama.cpp commits cc357dc9c,
+-- fea7dc668): the scalar argmin loop in quantize_block_turbo_kv_4b
+-- dominates the quantize-path cost at 2346 ns/call with 4.3% branch
+-- miss rate, and is the obvious optimization target — but any SIMD
+-- rewrite has to match the scalar's index output exactly for the KV
+-- cache to stay deterministic across SIMD variants of the same type.
+--
+-- Includes:
+--   - External inputs (scalar value, codebook, output packing format).
+--   - ArgminFirstMatch rule: the deterministic argmin with lowest-index
+--     tie-break, pinned to a specific scaling-order so SIMD variants
+--     can match bit-exactly.
+--   - NibblePackedIndices entity + PackNibbleIndices rule: the 4-bit
+--     low-nibble-first packing format.
+--   - Composition: NearestCentroidAssignment orchestrates the per-
+--     element argmin and the packing.
+--
+-- Excludes:
+--   - Scaling derivation (inv_std = cent_max / max_abs) — lives in
+--     turbo-kv-4b.allium's QuantizeBlock rule. This spec starts from
+--     already-scaled values.
+--   - The codebook's Lloyd-Max origin — the codebook is data, not
+--     behaviour.
+--   - RHT / normalize / full quantize composition — all in
+--     turbo-kv-4b.allium.
+--   - Dequantization — reconstruct_codebook lives in
+--     turbo-kv-4b.allium.
+
+-- ============================================================
+-- Entities
+-- ============================================================
+
+-- The output format: byte-packed 4-bit indices, two per byte, low
+-- nibble first (index at even position goes in the low nibble, odd in
+-- the high). Matches the `block_turbo_kv_4b.mse_indices` layout.
+--
+-- Scalar values and the codebook are passed to rules as untyped
+-- parameters — turbo-kv-4b.allium's Tensor + turbo_kv_4b_codebook
+-- binding supplies the concrete semantics. No re-declaration here
+-- because the argmin is the only thing we're pinning down in this
+-- file; wrapping its inputs in fresh entity types would just add
+-- unused-entity noise.
+entity NibblePackedIndices {
+    bytes: Set<Integer>
+    byte_count: Integer
+}
+
+-- ============================================================
+-- Config
+-- ============================================================
+
+config {
+    codebook_size: Integer = 16
+
+    -- Bit-exactness is MANDATED for the scalar-vs-SIMD differential
+    -- test: the whole point of this spec is that any SIMD rewrite
+    -- produces byte-for-byte identical output to the scalar reference
+    -- on the same inputs. Relaxing this breaks deterministic
+    -- quantization across hosts with different SIMD variants.
+    argmin_index_rel_tol: Decimal = 0.0
+
+    -- Standard QuantizeBlock precondition requires L2_norm > 0, so
+    -- max_abs > 0, so inv_std > 0. Re-stated here as the scaling
+    -- pre-condition.
+    min_inv_std: Decimal = 0.0
+}
+
+-- ============================================================
+-- Core rules
+-- ============================================================
+
+-- The deterministic argmin with first-match tie-break. This is THE
+-- argmin, not "an" argmin: two implementations given the same inputs
+-- must return identical indices, including when multiple centroids
+-- are equidistant.
+--
+-- The tie-break rule (lowest index wins) emerges from the scalar
+-- implementation's strict `<` comparison: `if (d < best_dist) update;`
+-- means an equal distance does NOT update `best`, so the FIRST
+-- encountered centroid with the minimum distance stays chosen.
+-- Distilling that C-level detail into the spec makes it binding: any
+-- SIMD rewrite must implement the same tie-break, either by folding
+-- a lexicographic (distance, index) min-reduce or by equivalent
+-- construction.
+rule ArgminFirstMatch {
+    when: ArgminFirstMatch(value, codebook)
+
+    requires: codebook.count > 0
+
+    -- The argmin: choose the codebook index c that minimizes
+    -- |value - codebook[c]|. If multiple codebook entries tie, the
+    -- lowest-indexed one wins.
+    let result = first_index_minimizing_abs_distance(value, codebook.entries)
+
+    -- Argmin property: result is a valid minimiser.
+    ensures: result >= 0
+    ensures: result < codebook.count
+
+    @guarantee ArgminCorrectness
+        -- |value - codebook[result]| <= |value - codebook[c]| for every
+        -- c in [0, codebook.count). In prose because the universal
+        -- quantifier is awkward in expression form with the
+        -- opaque codebook.entries indexing.
+
+    @guarantee FirstMatchTieBreak
+        -- For every c in [0, result): |value - codebook[result]| <
+        -- |value - codebook[c]|. Strict less-than, not <=. This
+        -- captures the scalar code's first-match semantics: result
+        -- wins strictly over every earlier index.
+}
+
+-- Pack a sequence of 4-bit codebook indices into bytes. Low nibble
+-- holds the even-position index, high nibble holds the odd-position
+-- index. Matches `block_turbo_kv_4b.mse_indices` exactly.
+--
+-- The layout is part of the block's wire format, so any SIMD rewrite
+-- of the packing step must produce the same bytes. An in-place store
+-- loop is the simplest scalar way; a SIMD version could build two
+-- 16-element index vectors (low, high), shift the high by 4, OR them,
+-- and store. Either way the output bytes must match.
+rule PackNibbleIndices {
+    when: PackNibbleIndices(indices, count)
+
+    requires: count > 0
+    requires: count / 2 * 2 = count
+
+    -- Each index must be a valid 4-bit value. The codebook size is
+    -- 16, so this also doubles as the IndicesInBounds invariant's
+    -- local precondition.
+    requires: indices.count = count
+
+    -- For each i in [0, count/2):
+    --   byte[i] = indices[2*i] | (indices[2*i + 1] << 4)
+    let packed = pack_nibble_pairs(indices)
+
+    ensures: NibblePackedIndices.created(
+        bytes: packed,
+        byte_count: count / 2
+    )
+}
+
+-- Composite: for every value in the scaled vector, pick the argmin
+-- codebook entry, pack the resulting indices. Matches the scalar Step
+-- 5 loop in quantize_block_turbo_kv_4b.
+rule NearestCentroidAssignment {
+    when: NearestCentroidAssignment(scaled_values, codebook)
+
+    requires: scaled_values.count > 0
+    requires: scaled_values.count / 2 * 2 = scaled_values.count
+    requires: codebook.count = config.codebook_size
+
+    -- Per-value argmin: indices[i] = ArgminFirstMatch(scaled_values[i], codebook).
+    let indices = map_argmin_first_match(scaled_values.data, codebook)
+    let packed = PackNibbleIndices(indices, scaled_values.count)
+
+    ensures: NibblePackedIndices.created(
+        bytes: packed.bytes,
+        byte_count: scaled_values.count / 2
+    )
+
+    @guidance
+        -- Differential-test shape (for /allium:propagate): given a
+        -- pool of random (ScaledValueVector, FixedCodebook) pairs,
+        -- run both the scalar reference and the SIMD variant through
+        -- NearestCentroidAssignment, and assert byte-for-byte
+        -- equality of the resulting NibblePackedIndices.bytes. Since
+        -- ArgminFirstMatch mandates deterministic tie-breaking and
+        -- PackNibbleIndices mandates the wire format, correct SIMD
+        -- implementations must pass with 0 tolerance.
+        --
+        -- The only allowable slack is if a SIMD implementation
+        -- deliberately precomputes a scaled codebook (i.e. stores
+        -- codebook_scaled[c] = codebook[c] / something) — that
+        -- changes the fp op order and can induce 1-ULP distance
+        -- differences that flip argmin at tie boundaries. Such a
+        -- rewrite VIOLATES this spec; it would need its own
+        -- separate contract.
+}
+
+-- ============================================================
+-- Invariants
+-- ============================================================
+
+-- DeterministicArgmin isn't expressible as an entity-iteration
+-- invariant here (the inputs are rule parameters, not instances of
+-- a tracked entity). The property is instead enforced by the
+-- differential-test shape described in NearestCentroidAssignment's
+-- @guidance: scalar and SIMD implementations must produce
+-- byte-for-byte identical NibblePackedIndices for the same inputs.
+-- If determinism is violated on either side, that test catches it.
+
+invariant PackingBoundsRespected {
+    for p in NibblePackedIndices:
+        for b in p.bytes:
+            b >= 0 and b < 256
+}
+
+-- ============================================================
+-- Implementation notes
+-- ============================================================
+
+-- Black-box helpers used in the rules above:
+--   first_index_minimizing_abs_distance — the scalar-reference argmin
+--   map_argmin_first_match              — element-wise ArgminFirstMatch
+--   pack_nibble_pairs                   — the wire-format packer
+--
+-- C reference: llama.cpp/ggml/src/ggml-turbo-kv.c:278-293 — the Step 5
+-- inner loop of quantize_block_turbo_kv_4b.
+--
+-- Deliberately NOT modelled (out of scope):
+--   - The fp32 value of each distance: only the argmin INDEX matters
+--     for equivalence. Two implementations can compute distances with
+--     different fp32 representations as long as the resulting argmin
+--     is identical. The strict tie-break rule in ArgminFirstMatch
+--     captures the only case where distance value matters for index
+--     choice.
+--   - Branch-free vs branchy implementation: the scalar code uses
+--     branchy min-tracking; a SIMD version uses pair-wise-min-with-
+--     index reduction. Both must satisfy the rules above regardless
+--     of control-flow shape.
