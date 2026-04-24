@@ -13,7 +13,7 @@ K-side residual window on `TURBO_KV_4B`. CPU + Vulkan FA dispatch. `--cache-resi
 Each step mirrors PHASE27's numbered implementation plan. Loop iterations update this list.
 
 - [x] **Step 1.** Add `residual_window` to cparams + CLI flag + clamp-to-n_ctx warning.
-- [ ] **Step 2.** Allocate fp16 side-buffer in `llama-kv-cache.cpp` at context init.
+- [x] **Step 2.** Allocate fp16 side-buffer in `llama-kv-cache.cpp` at context init.
 - [ ] **Step 3.** Rolling-write path on KV-cache append. Quantise-on-eviction.
 - [ ] **Step 4.** Eviction correctness — quantised slot matches `quantize_row_turbo_kv_4b_ref`.
 - [ ] **Step 5.** Two-pass CPU FA dispatch. Online-softmax merge across passes.
@@ -34,3 +34,4 @@ Each iteration appends a single line noting what landed.
 
 - Iteration 1: loop started; PHASE28.md stub created; T3.2 prose fix in `turbo_kv_4b_attention.allium` (`allium check`: 0 errors).
 - Iteration 2: Step 1 landed on llama.cpp master (`b746a733a`) — `residual_window` wired through `llama_cparams`, `llama_context_params`, `common_params`, `--cache-residual-window` flag, clamp-to-n_ctx warning. `--help` smoke confirms flag + default 128. Runtime clamp smoke deferred (llama-cli stderr is noisy during prompt eval; will verify once Step 2 gives a cleaner integration point). Also: cleanup commit (`afa8baf9c`) strips host-planning references from the four turbo_kv PBT skip-stubs per `feedback_no_host_concerns_in_code`.
+- Iteration 3: Step 2 landed on llama.cpp master (`1bcd5b179`) — fp16 rolling-tail tensor per layer allocated via `ggml_new_tensor_3d(GGML_TYPE_F16, n_embd_k_gqa, residual_window, n_stream)` when `residual_window > 0`, nullptr otherwise. Constructor signature on `llama_kv_cache` gains `residual_window` before the filter/reuse callbacks; callers in `llama-model.cpp`, `llama-memory-hybrid.cpp`, and `llama-kv-cache-iswa.cpp` updated. iSWA and hybrid paths pass 0 (follow-on work flagged in inline comments — those paths don't overlap with current TURBO_KV target configs). Smoke: `llama-cli --cache-residual-window 0` and `... --cache-residual-window 128 --cache-type-k turbo_kv_4b` both load and begin decoding without crash. Loop stopped at 36/60 min to avoid landing a partial Step 3.
