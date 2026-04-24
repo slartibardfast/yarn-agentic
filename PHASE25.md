@@ -105,44 +105,61 @@ All three were silent: none tripped `test-backend-ops -b CPU` (which compares th
 
 ## Instruction availability
 
-All 15 instructions below are in AVX2 or earlier. Every AVX2-capable CPU in scope implements all of them. There is no ISA-driven kernel split.
+The kernel splits into two inference-hot paths: the **per-attention-score** path (`turbo_kv_4b_avx2_single_block_dot`, called per K position during attention scoring) and the **per-KV-write** path (`quantize_block_turbo_kv_4b`, `turbo_kv_rht_forward`, `turbo_kv_rotate_query`, called once per token per layer during prefill and decode). Both paths matter for end-to-end throughput — attention scoring gets called more often during prefill of long contexts, but quantize gets called every decode step too (KV rollouts are one write per layer per new token).
 
-| # | Instruction | Introduced in | Role in TURBO |
-|---|-------------|---------------|---------------|
-| 1 | VPERM2I128 | AVX2 | RHT butterfly lane swap |
-| 2 | VPERMD | AVX2 | RHT sign mask application (32-bit lane-crossing shuffle) |
-| 3 | VPERMQ | AVX2 | RHT butterfly (64-bit lane-crossing shuffle) |
-| 4 | VPERMPD | AVX2 | RHT butterfly (64-bit float permute) |
-| 5 | VPERM2F128 | AVX | 128-bit lane permute |
-| 6 | VPMOVZXBW | SSE4.1 / AVX2 YMM | Bit unpack: u8 → u16 |
-| 7 | VPMOVSXBW | SSE4.1 / AVX2 YMM | Sign-extend unpack: i8 → i16 |
-| 8 | VPMOVMSKB | SSE2 / AVX2 YMM | Extract byte bitmask from YMM |
-| 9 | VPSHUFB | SSSE3 / AVX2 YMM | Table-driven byte shuffle (codebook lookup) |
-| 10 | VPSLLVD | AVX2 | Variable left shift (bit unpack) |
-| 11 | VCVTDQ2PD | SSE2 / AVX2 YMM | int32 → float64 (norm computation) |
-| 12 | VEXTRACTF128 | AVX | Extract XMM from YMM |
-| 13 | VINSERTF128 | AVX | Insert XMM into YMM |
-| 14 | VRSQRTPS | SSE / AVX2 YMM | Reciprocal square root (normalization) |
-| 15 | VBLENDVPS / VBLENDVPD | AVX | Mask-driven conditional blend (quantization clamp) |
+Profiling so far (see below) has covered the vec_dot path only; the quantize path needs its own bench + perf pass before step 4 extraction. The primary table below is therefore the *profiled* vec_dot hot path; the secondary section is the quantize/RHT candidate set that needs its own ranking.
+
+All instructions are in AVX2 or earlier. Every AVX2-capable CPU in scope implements all of them — there is no ISA-driven kernel split.
+
+### Primary: vec_dot hot path (~85% of per-call cycles, profiled)
+
+| # | Instruction | Introduced in | Role in vec_dot | Profiled % on Zen 2 |
+|---|-------------|---------------|-----------------|---------------------|
+| 1 | VMULPS | AVX | Codebook int8 × per-block scale → fp32 | 12.78 |
+| 2 | VFMADD231PS | FMA (AVX2-era) | q_rot × scaled_cb → accumulator | 10.37 |
+| 3 | VHADDPS | SSE3 / AVX | Horizontal reduce accumulators → 1 fp | 8.24 |
+| 4 | VADDPS | AVX | Merge 8 XMM accumulators pairwise | 6.23 |
+| 5 | VINSERTI128 | AVX2 | Combine 128-bit lanes at reduce | 5.02 |
+| 6 | VPMOVSXBD | SSE4.1 / AVX2 YMM | Codebook int8 → int32 | 4.90 |
+| 7 | VFMADD213SS | FMA (AVX2-era) | Final scalar: norm × mse_dot | 4.55 |
+| 8 | VCVTDQ2PS | SSE2 / AVX2 YMM | int32 → fp32 pre-scale | 4.51 |
+| 9 | VMOVDQU | SSE2 / AVX2 YMM | Load 16 bytes of mse_indices | 3.74 |
+| 10 | VFMADD132PS | FMA (AVX2-era) | Fused multiply-add, alternate operand order | 2.65 |
+| 11 | VPSRLW | SSE2 / AVX2 YMM | High-nibble extraction (shift right words) | ~1.85 |
+| 12 | VPSHUFB | SSSE3 / AVX2 YMM | Table-driven codebook lookup (32-entry) | ~0 (absorbed by dispatch) |
+| 13 | VPAND | SSE2 / AVX2 YMM | Low-nibble mask (0x0F) | ~0 |
+
+VPSHUFB appearing at ~0% is a good sign, not a bad one — the codebook lookup designed as the kernel's centerpiece is so fast on Zen 2 that the out-of-order dispatch pipeline absorbs it behind the FMA-family work. It stays in the hot-path list because it's structurally critical (removing it breaks the kernel).
+
+### Availability matrix
 
 ```
 Instruction          Haswell  SKL-client  ADL/RPL  Zen 1/+  Zen 2  Zen 3
-VPERM2I128               ✓         ✓          ✓        ✓       ✓      ✓
-VPERMD                   ✓         ✓          ✓        ✓       ✓      ✓
-VPERMQ                   ✓         ✓          ✓        ✓       ✓      ✓
-VPERMPD                  ✓         ✓          ✓        ✓       ✓      ✓
-VPERM2F128               ✓         ✓          ✓        ✓       ✓      ✓
-VPMOVZXBW                ✓         ✓          ✓        ✓       ✓      ✓
-VPMOVSXBW                ✓         ✓          ✓        ✓       ✓      ✓
-VPMOVMSKB                ✓         ✓          ✓        ✓       ✓      ✓
+VMULPS                   ✓         ✓          ✓        ✓       ✓      ✓
+VFMADD231PS              ✓         ✓          ✓        ✓       ✓      ✓
+VHADDPS                  ✓         ✓          ✓        ✓       ✓      ✓
+VADDPS                   ✓         ✓          ✓        ✓       ✓      ✓
+VINSERTI128              ✓         ✓          ✓        ✓       ✓      ✓
+VPMOVSXBD                ✓         ✓          ✓        ✓       ✓      ✓
+VFMADD213SS              ✓         ✓          ✓        ✓       ✓      ✓
+VCVTDQ2PS                ✓         ✓          ✓        ✓       ✓      ✓
+VMOVDQU                  ✓         ✓          ✓        ✓       ✓      ✓
+VFMADD132PS              ✓         ✓          ✓        ✓       ✓      ✓
+VPSRLW                   ✓         ✓          ✓        ✓       ✓      ✓
 VPSHUFB                  ✓         ✓          ✓        ✓       ✓      ✓
-VPSLLVD                  ✓         ✓          ✓        ✓       ✓      ✓
-VCVTDQ2PD                ✓         ✓          ✓        ✓       ✓      ✓
-VEXTRACTF128             ✓         ✓          ✓        ✓       ✓      ✓
-VINSERTF128              ✓         ✓          ✓        ✓       ✓      ✓
-VRSQRTPS                 ✓         ✓          ✓        ✓       ✓      ✓
-VBLENDVPS/PD             ✓         ✓          ✓        ✓       ✓      ✓
+VPAND                    ✓         ✓          ✓        ✓       ✓      ✓
 ```
+
+### Secondary: quantize + RHT paths (pending separate profile)
+
+These instructions live in `quantize_block_turbo_kv_4b`, `turbo_kv_rht_forward` / `turbo_kv_rht_inverse`, and `turbo_kv_rotate_query`. They run **per K/V cache write** (during prefill, once per token per layer; during decode, once per token per layer for the K side), not per attention score. For a 32-layer model decoding at 50 t/s that's still ~1600 quantize calls and ~1600 query-rotations per second — enough to matter for end-to-end throughput, just not the vec_dot-level bottleneck.
+
+A separate micro-bench + profile pass on `quantize_block_turbo_kv_4b` is the honest way to rank these; the list below is the *candidate set*, not a hot-path ranking.
+
+- **RHT butterfly + sign mask:** `VPERM2I128`, `VPERMD`, `VPERMQ`, `VPERMPD`, `VPERM2F128` — AVX / AVX2 lane permutes in `walsh_hadamard_sse` and the SSE4.1 `apply_sign_flip` path.
+- **Decode + scale:** `VPSHUFB` (also in vec_dot), `VPSRLW`, `VPAND` — nibble extraction and codebook lookup; shared with the vec_dot decode pipeline.
+- **Norm computation:** sqrtf intrinsic (scalar), `VPSLLVD` (if bit-unpack optimization is added later — currently unused).
+- **Never referenced in the current kernel:** `VPMOVZXBW`, `VPMOVSXBW` (the kernel skips byte→word and goes direct to byte→dword via `VPMOVSXBD`), `VCVTDQ2PD` (kernel is single-precision, uses `VCVTDQ2PS`), `VPMOVMSKB`, `VEXTRACTF128`, `VINSERTF128` (superseded by the AVX2 `*I128` variants in the vec_dot path), `VRSQRTPS` (the scalar path uses libc `sqrtf` / `1.0f / ...`), `VBLENDVPS/PD`. Listed in the original PHASE25 draft aspirationally; not in scope for any step 4 Agner extraction unless a future change brings them back.
 
 ## Throughput variation — qualitative, to be quantified
 
@@ -216,9 +233,10 @@ if ( cpu_has_avx512f)    return scalar_quantize_row_turbo_kv_4b(...);  // scope 
 
 1. **DONE** — Single-kernel AVX2 baseline implemented in `llama.cpp/ggml/src/ggml-cpu/arch/x86/turbo_kv_4b_avx2.h` + dispatch in `ggml-cpu/ggml-cpu.c`. Landed across four llama.cpp submodule commits (`0d7f16ffe`, `4a0297f56`, `588dd9bdd`, `70036900a`); the three bugs found along the way are documented in the Implementation progress section above. **Open sub-item:** the `sqrtf(dim)` fallback at `ggml-turbo-kv.c:311-312` is still present and still unmotivated — tracked but not resolved here. The tightened `requires: block.inv_std > 0.0` in the spec makes it dead code under valid input; either replace with `1.0f` or leave the defensive behaviour with a comment explaining what it's defensive against. Low urgency.
 2. **DONE** — PBT coverage against both specs. 26 properties in `tests/test-turbo-kv-pbt.cpp` directly test 30 of 46 obligations; 2 more are structurally implied; 14 `rule_failure.*` obligations are consciously skipped per the `feedback_simd_needs_independent_reference` memory entry (defensive clamps outside the spec contract). All 26 × 100 RapidCheck runs pass every build. `test-backend-ops -b CPU -o MUL_MAT` also passes 1113/1113 including 10 `turbo_kv_4b` cases — but that gate alone would not have caught the three kernel bugs (it compares CPU backend against itself with `use_ref` toggled, which doesn't bypass SIMD).
-3. **Active** — Profile the baseline on this Zen 2 host. Identify which of the 15 core instructions from the Instruction availability matrix actually dominate cycle count for the `turbo_kv_4b_avx2_single_block_dot` hot path. Expected candidates based on the kernel's structure: `_mm256_shuffle_epi8` (codebook lookup, once per 32 elements), `_mm_cvtepi8_epi32` (int8 → int32 conversion, 8× per iteration), `_mm_add_ps` / `_mm_mul_ps` (FMA-equivalent accumulation). Expect 2-4 instructions to account for >80% of cycles.
-4. For the instructions flagged hot in step 3 (and only those), extract per-uarch latency, reciprocal throughput, and port-binding data from Agner Fog `instruction_tables.ods` for all 6 targets. Commit as a structured data file alongside this doc, with source row numbers cited.
-5. Combine the Zen 2 hot-path counters with the Agner figures to extrapolate expected per-target performance. Introduce a variant kernel only if the extrapolation predicts a target would fall below the goal.
+3. **Partially done** — vec_dot hot path profiled on Zen 2 via `tests/bench-turbo-kv-4b-avx2` and `perf record` (llama.cpp submodule commit `cc357dc9c`). 141 cycles/call, IPC 2.46; the 13 primary hot-path instructions now live in the Instruction availability § with profiled %s. The reframed matrix supersedes the earlier 15-instruction aspirational list.
+   - **Follow-up sub-step:** profile `quantize_block_turbo_kv_4b` the same way. It runs per token per layer during both prefill and decode (not "once per eviction" — that was wrong in an earlier draft). The Secondary section of Instruction availability is its *candidate set*, not a profiled ranking. Write a sibling micro-bench (`bench-turbo-kv-quantize.cpp`?) and rank the RHT/quantize-path instructions before step 4.
+4. For the instructions flagged hot in step 3 (vec_dot path — done; quantize/RHT path — pending), extract per-uarch latency, reciprocal throughput, and port-binding data from Agner Fog `instruction_tables.ods` for all 6 targets. Commit as a structured data file alongside this doc, with source row numbers cited. Scope to the union of both profiled hot paths once both exist — no point extracting figures for instructions that profile at ~0% on both paths.
+5. Combine the Zen 2 hot-path counters (both paths) with the Agner figures to extrapolate expected per-target performance. Introduce a variant kernel only if the extrapolation predicts a target would fall below the goal.
 
 ## Notes
 
