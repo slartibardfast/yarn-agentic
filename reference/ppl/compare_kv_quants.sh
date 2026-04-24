@@ -22,7 +22,7 @@ set -eu
 # --- Pinned parameters (change here to sweep, never on the CLI) -----------
 MODEL="/opt/models/qwen3.5-0.8b/Qwen3.5-0.8B-BF16.gguf"
 CORPUS="/opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw"
-CHUNKS=200
+CHUNKS="${CHUNKS:-200}"
 NGL=99
 FA=on
 GPU_DEV=1     # gpu-1 = AMD RX Vega per coord/ convention
@@ -32,9 +32,12 @@ REPO_ROOT="$(cd "$(dirname "$0")"/../.. && pwd)"
 LLAMA_DIR="$REPO_ROOT/llama.cpp"
 RESULTS_DIR="$(cd "$(dirname "$0")" && pwd)/results"
 
-# KV types known to work today (add new ones here, keep the order stable so
-# the results table is consistent across runs):
-DEFAULT_KV_TYPES=(f16 turbo_kv_4b q4_0)
+# KV types compared: two 16-bit references (f16, bf16) and two 4-bit
+# candidates (turbo_kv_4b, q4_0). BF16 matches the model's weight
+# precision and training precision for Qwen 3.5; F16 is the historical
+# llama.cpp production baseline. Keeping the order stable so the summary
+# table is consistent across historical runs.
+DEFAULT_KV_TYPES=(f16 bf16 turbo_kv_4b q4_0)
 
 # --- Parse args ----------------------------------------------------------
 if [[ $# -eq 0 ]]; then
