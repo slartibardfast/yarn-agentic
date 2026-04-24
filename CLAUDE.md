@@ -98,6 +98,17 @@ For any task with more than one step, state a brief numbered plan before startin
 
 Strong success criteria (example: "test X passes") let you loop and self-correct without asking the user again. Weak success criteria (example: "make it work") force you to guess what "work" means. When success criteria are weak, ask the user to clarify before starting.
 
+### No "follow-up" cover
+
+Every gap between what was shipped and what the task required is a subtask on the OPEN checkbox, not a footnote on a CLOSED one.
+
+Rules:
+- If the step's stated target does not exercise the code path, the step is incomplete. Example: PHASE28 is scoped "TURBO_KV_4B" and the implementation is gated off for that cache type — the step is open, not closed with a known limitation.
+- If the feature regresses at default settings, the step is incomplete. Example: works at `-t 1`, breaks at `-t 8` — not a "multi-thread follow-up", an unfinished Step 5.
+- "Follow-up" is appropriate for genuinely future work — a different step, a next phase, a speculative improvement, a cleanup PR for a flag after a soak period. It is never appropriate for the current step's own stated requirements.
+- Commit messages, PHASE logs, and status reports must describe what was delivered AND what the current step still requires. If the step is not done, say so.
+- "Known follow-up", "deferred", "left as a follow-up", and equivalents in the context of the current step are cover language. Do not use them. Name the gap as a subtask and leave the parent step open.
+
 ## 5. Audited PLAN.md and PHASEx.md
 
 All changes to PLAN.md and PHASEx.md files MUST be committed and pushed immediately.
@@ -106,6 +117,20 @@ Rules:
 - Every edit to PLAN.md or any PHASEx.md file (e.g. PHASE1.md, PHASE2.md) triggers a git commit and git push. Do not batch these with other changes.
 - After completing a plan step in code, update the relevant plan file to reflect what was actually implemented, then commit and push that update as a separate commit.
 - PLAN.md and PHASEx.md files live in the top-level repository only. Never place plan files inside nested project repos. Nested repos contain the working codebase; planning documents are kept outside of them.
+
+### Checkbox semantics
+
+PLAN.md and PHASEx.md use three marks with explicit meanings:
+
+- `[ ]` — not started, OR in progress, OR done but unverified against the step's stated claim. Default state. Bias toward this when in doubt.
+- `[~]` — genuine partial. The step has landed enough to be usable and the remaining work is explicitly tracked as subtasks under the same checkbox. Not a softer `[x]`; use only when partial delivery is intentional and scoped.
+- `[x]` — done. The user-visible path the step enables works when a user flips the default flag, AND the verification evidence binds on the step's actual claim. Not "infrastructure landed." Not "works in the narrow config I tested." Not "works with `-t 1` but regresses at `-t 8`."
+
+Rules:
+- Prefer `[ ]` over `[x]` when ambiguous. Leaving a box open and revisiting is cheap; re-opening a closed box once the record says "done" is expensive.
+- When in doubt between `[~]` and `[x]`, use `[~]` and list the remaining subtasks inline under the checkbox.
+- Closing a box requires verification evidence that binds on the step's actual claim. "Binds" means the verification would have caught a regression in the thing the step promised to deliver — the target named in scope, the configuration the feature gates on, the inputs the step said it would handle. Evidence from an adjacent easier case that doesn't exercise the claim does not close the box.
+- A step that was marked `[x]` and later found to be incomplete is reopened to `[ ]` with a dated note in the iteration log — not silently downgraded.
 
 ## 6. Maintain MEMORY.md
 
