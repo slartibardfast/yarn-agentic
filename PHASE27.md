@@ -123,12 +123,15 @@ The spec allows global `residual_window`. Per-layer overrides (e.g. "early layer
 Each step has an explicit verification check per CLAUDE.md §4.
 
 1. **Add `residual_window` to cparams** → verify by
-   - `llama_model_default_params()` returns `residual_window = 0`
-   - CLI flag parsing adds the value to `common_params`
+   - `llama_context_default_params()` returns `residual_window = 128` (Q1 decision)
+   - CLI flag parsing accepts explicit `--cache-residual-window 0` to disable
+   - CLI flag parsing clamps any value > `n_ctx` to `n_ctx` with a warning (Q2 decision)
    - Test: `llama-cli --cache-residual-window 128 ...` echoes the value in startup log
-2. **Allocate fp16 side-buffer in `llama-kv-cache.cpp`** → verify by
-   - `llama_kv_cache_init` allocates `residual_window * head_dim * n_heads_kv * 2 bytes` per layer when `residual_window > 0`
+   - Test: `llama-cli --cache-residual-window 999999 -c 2048 ...` logs the clamp and proceeds
+2. **Allocate fp16 side-buffer in `llama-kv-cache.cpp` at init** (Q3 decision) → verify by
+   - `llama_kv_cache_init` allocates the full `residual_window * head_dim * n_heads_kv * 2 bytes` per layer up front when `residual_window > 0`
    - Assert no allocation when `residual_window == 0` (byte-exact regression check vs today's binary)
+   - No reallocation path exists in the append hot loop (grep check)
 3. **Rolling write path on `kv_cache_seq_add` / equivalent append** → verify by
    - Append 200 tokens at rw=128; assert positions [0, 72) are quantised, positions [72, 200) are fp16
    - Assert fp16 slot values match the original fp32 data within fp16 precision
@@ -139,10 +142,16 @@ Each step has an explicit verification check per CLAUDE.md §4.
    - `test-turbo-kv-residual-window-pbt.cpp`'s `invariant.CoverageCompleteNoOverlap` converts from SKIP to PASS
 6. **Two-pass attention read (Vulkan)** → verify by
    - `test-turbo-kv-attention-pbt` re-run with `residual_window=128` shows CPU ≡ Vulkan within tolerance
-7. **9B IQ3_XXS PPL gate** → verify by
+7. **GGUF state save/load with fp16 window** (Q4 decision) → verify by
+   - Save state with `--cache-residual-window 128` at `seq_len = 500`; load into a fresh context; assert the first 128 positions of attention output at the next token match byte-for-byte against a no-save-load control run.
+   - Assert `kv.residual_window` metadata key is present and equals 128 on save.
+   - Assert per-layer window buffer section is written and its byte count matches `residual_window * head_dim * n_heads_kv * 2`.
+   - Cross-config reject: save with `rw=128`, load with `rw=64` → context init returns an error citing the mismatch.
+   - Backward compat: load a pre-PHASE28 saved state (no `kv.residual_window` key) → proceeds with an empty window, logs an info message.
+8. **9B IQ3_XXS PPL gate** → verify by
    - `reference/ppl/compare_kv_quants.sh` run against Qwen3.5-9B-UD-IQ3_XXS with `--cache-type-k turbo_kv_4b --cache-residual-window 128`
    - Gate: PPL above F16 baseline must be ≤ +0.05 (down from today's +0.23). If > +0.05, the per-token-weighted-magnitude evidence says something else is also broken — do not ship, open a follow-on investigation.
-8. **Skip-to-rc::check conversion** → verify by
+9. **Skip-to-rc::check conversion** → verify by
    - `test-turbo-kv-residual-window-pbt`: SKIP count drops from 18 to 0 (or to a smaller set explicitly deferred to later phases — that set must be named)
 
 ## Test strategy
@@ -155,19 +164,19 @@ Additional coverage to add in PHASE28 (not in the skip-stub today):
 - **Ring-buffer invariant.** Property: after any sequence of appends, `window_head + residual_window - 1 ≡ seq_len - 1  (mod residual_window)`.
 - **Eviction consistency.** Property: after an eviction, the quantised-and-dequantised value of the evicted row matches the original fp32 within `reconstruction_rel_error = 0.1`.
 
-## Open questions (need user decision before PHASE28 starts)
+## Open questions — resolved 2026-04-24
 
-**Q1 — Default value of `--cache-residual-window`.** Spec default is 128. Port default should be:
-- (a) 0 (disabled) — safest for compatibility; users who want the quality win opt in.
-- (b) 128 — ships the quality win by default; any user running `--cache-type-k turbo_kv_4b` today without `--cache-residual-window` gets the better behaviour on upgrade.
+**Q1 — Default value of `--cache-residual-window`: 128 (SOTA by default).** Any user running `--cache-type-k turbo_kv_4b` gets the quality win on upgrade. Memory cost (~9 MB/seq at head_dim=256) is accepted as part of the correct configuration. Rationale: the port today implicitly runs the quality-broken `rw=0` configuration; making the correct configuration the default is the fix.
 
-The risk of (b) is allocating ~9 MB per sequence that a user didn't ask for. The risk of (a) is that users running the 9B IQ3_XXS configuration continue to eat +0.23 PPL without knowing. My recommendation: **ship (b)** because the port already implicitly runs a quality-broken configuration; making the correct configuration the default is the fix.
+**Q2 — Behaviour when `residual_window > n_ctx`: clamp to `n_ctx` and log a warning.** The effective window becomes the whole sequence (no quantisation at all — equivalent to running without `turbo_kv_4b`). User sees `[warn] --cache-residual-window=N exceeds n_ctx=M; clamping to n_ctx (no KV quantisation will occur)`.
 
-**Q2 — Behaviour when `residual_window > n_ctx`.** Clamp to `n_ctx` or error? Recommend clamp, log a warning.
+**Q3 — Memory allocation timing: allocate full size at context init.** Deterministic memory footprint, no reallocation during inference. The small short-session saving from grow-on-demand is not worth the hot-path reallocation branch.
 
-**Q3 — Memory allocation timing.** Allocate the full `residual_window * head_dim * n_heads_kv` at context init, or grow on demand up to the window size? Allocate-on-init is simpler; grow-on-demand saves a few MB in very short sessions. Recommend allocate-on-init.
-
-**Q4 — GGUF cache persistence.** `llama-kv-cache.cpp` has state save/load paths. Out-of-phase to include the fp16 window? Recommend: PHASE28 skips serialising the window (on load, rebuild by decompressing the tail — lossy, but acceptable for a first cut). Persistent-window support is its own sub-phase.
+**Q4 — GGUF cache persistence: persist the window bytes-for-bytes.** Full reload fidelity. Requires PHASE28 to add a new saved-state section for the fp16 window plus metadata keys. Scope implications:
+- New GGUF metadata key: `kv.residual_window = N` (uint32_t). Readers that don't understand the key ignore it (standard GGUF behaviour).
+- Per-layer state section: `kv.layer.L.residual_window = bytes` (raw fp16 buffer + a `window_head` uint32_t ring-buffer pointer).
+- Saved-state format is additive. Loading a pre-PHASE28 saved state: no key present → assume window is empty, attention falls back to all-quantised for positions outside the new window until it refills naturally.
+- Loading a PHASE28 saved state at a later configuration (e.g. different `residual_window` or `--cache-type-k` switched off): reject load with a clear error citing the mismatch. Same behaviour as today's cache-type mismatch.
 
 ## Files expected to change (PHASE28)
 
@@ -182,6 +191,8 @@ The risk of (b) is allocating ~9 MB per sequence that a user didn't ask for. The
 - `tools/server/*` — server param plumbing
 - `tests/test-turbo-kv-residual-window-pbt.cpp` — SKIP → rc::check conversions
 - `reference/ppl/compare_kv_quants.sh` — add an rw=128 row to the sweep
+- `src/llama-kv-cache.cpp` state write/read paths — Q4 GGUF window persistence
+- `tests/test-save-load-state.cpp` or equivalent — save/load round-trip with rw > 0
 
 ## Risk register
 
