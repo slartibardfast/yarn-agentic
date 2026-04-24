@@ -78,20 +78,45 @@ config {
     indices_byte_tolerance: Integer = 0
 
     -- norm / inv_std scale tolerance. CPU computes sum_of_squares via
-    -- a fp64 accumulator with a single final fp32 round (PHASE25); GPU
-    -- computes it via fp32 subgroupAdd (non-associative tree
-    -- reduction). The two differ by up to a few fp32 ULPs on typical
-    -- inputs. Observed delta on test-turbo-kv-set-rows: 1 ULP between
-    -- the CPY and SET_ROWS shader paths. 0.00001 is ~30× that worst-case;
-    -- bound is intentionally loose so the test doesn't flake.
-    scale_rel_tol: Decimal = 0.00001
+    -- a fp64 accumulator with a single final fp32 round (PHASE25), so
+    -- its output is effectively exact at fp32 precision. GPU computes
+    -- it via fp32 subgroupAdd which is a pairwise tree reduction;
+    -- relative error is bounded by log2(n) × fp32_epsilon for n=128:
+    --   log2(128) × 2^-23 ≈ 7 × 1.19e-7 ≈ 8e-7 on sum_sq
+    -- After the subsequent sqrt and the RHT pipeline that inv_std
+    -- inherits drift from, the bound on inv_std is around the same
+    -- order: ~8e-7 relative. Observed worst case on a single Zen 2 +
+    -- RX 6800 XT test: 1 ULP on inv_std ≈ 12.49 = ~1e-7 relative, an
+    -- order of magnitude below the theoretical bound.
+    --
+    -- Bound set to 1e-6 — ~12× the theoretical pairwise-sum bound. A
+    -- tighter 1e-7 bound would match the observed single-input delta
+    -- but risk flaking on adversarial inputs where the sum tree hits
+    -- its worst case. A looser 1e-5 would be 100× the theoretical
+    -- drift — enough to hide real shader bugs that introduce 1-10 ULP
+    -- of additional drift per operation.
+    scale_rel_tol: Decimal = 0.000001
 
-    -- Per-element reconstruction tolerance. The dequant path is the
-    -- same fp32 operations on both sides (codebook[i] * scale * norm +
-    -- inverse RHT); the only divergence is the butterfly order inside
-    -- the RHT, which can drift by a few ULPs on fp32 values near the
-    -- dequant magnitude. Observed worst case on
-    -- test-turbo-kv-gpu-roundtrip: max 1e-6 absolute, RMSE 0.
+    -- Per-element reconstruction tolerance, abs-OR-rel semantics
+    -- (following mul_mat_cpu.allium's SIMDEquivalence pattern).
+    --
+    -- The dequant path is the same fp32 operations on both sides
+    -- (codebook[i] * scale * norm + inverse RHT). Divergence sources:
+    --   (a) The scale = 1/inv_std inherits the ~8e-7 relative drift
+    --       from inv_std.
+    --   (b) The inverse RHT butterfly has ~log2(n) × ε ≈ 1e-6
+    --       relative drift over 7 stages on fp32 values of typical
+    --       magnitude.
+    --
+    -- element_rel_tol = 1e-5 is 10× the combined theoretical bound —
+    -- safety margin for pathological input distributions. Observed
+    -- worst case on test-turbo-kv-gpu-roundtrip: max 1e-6 absolute,
+    -- RMSE 0.
+    --
+    -- element_abs_tol = 1e-5 covers the near-zero regime where rel_err
+    -- explodes even under tiny absolute drift. Dequantized values span
+    -- roughly ±3·norm after the inverse RHT, so "near zero" here
+    -- means values below ~0.1; the abs check handles those.
     element_abs_tol: Decimal = 0.00001
     element_rel_tol: Decimal = 0.00001
 
@@ -142,20 +167,27 @@ contract VulkanTurboKv4bShaders {
         -- quantize_row_turbo_kv_4b_ref's output agree on:
         --
         --   (a) All 64 bytes of mse_indices — byte-identical, with
-        --       tolerance 0. This is the tightest claim in the
-        --       contract. It relies on (b) matching closely enough
-        --       that the per-element argmin agrees.
+        --       tolerance 0. The scalar nearest-centroid argmin is
+        --       deterministic given identical scaled rotated values.
+        --       When (b) and (c) hold at their ~1 ULP bound the
+        --       scaled values agree to within 1-2 ULP, which is not
+        --       enough to flip the argmin except at codebook-midpoint
+        --       ties — and ArgminFirstMatch's first-match tie-break
+        --       resolves those identically on both sides. This is
+        --       the tightest claim in the contract.
         --
         --   (b) block.norm — agree within scale_rel_tol. Divergence
         --       source: CPU accumulates sum_of_squares in fp64 then
-        --       rounds once to fp32; GPU does a fp32 subgroupAdd
-        --       tree. Up to a few fp32 ULPs on typical inputs.
+        --       rounds once to fp32; GPU does a fp32 subgroupAdd tree.
+        --       Bounded by log2(n) × fp32_epsilon ≈ 8e-7 relative.
         --
-        --   (c) block.inv_std — agree within scale_rel_tol. Same
-        --       divergence source as (b), plus the `max_abs(rotated)`
-        --       reduction which also uses subgroupMax on the GPU and
-        --       sequential max on the CPU (max is associative on
-        --       non-NaN fp32, so this step contributes no drift).
+        --   (c) block.inv_std — agree within scale_rel_tol. The
+        --       max_abs(rotated) reduction uses subgroupMax on the
+        --       GPU and sequential max on the CPU. Max is associative
+        --       on non-NaN fp32 so the reduction contributes zero
+        --       drift, BUT the rotated values themselves inherit (b)'s
+        --       drift via normalize, so the total on inv_std is the
+        --       same order as on norm.
 
     @invariant DequantizeEquivalence
         -- For any TurboBlock b, the Vulkan dequant shader's output
