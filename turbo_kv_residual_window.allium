@@ -251,16 +251,24 @@ rule ReadKVRecentFromOverlay {
         -- AppendOverlayRow's storage policy mirrors cpy_k
         -- verbatim, so the overlay inherits the main cache's
         -- RoPE state per cache type:
-        --   - post-RoPE store (standard f16/bf16 K caches):
-        --     Pass B reads the position-ordered overlay slice
-        --     directly; no extra RoPE step.
-        --   - pre-RoPE store (turbo_kv_4b and split-K caches,
-        --     where cpy_k stores pre-RoPE K and the main-cache
-        --     read path applies on-the-fly RoPE): Pass B
-        --     applies the same on-the-fly RoPE recipe used by
-        --     the main-cache read path, keyed on the position
-        --     tensor for the recent-window slice, before the
-        --     attention kernel.
+        --   - post-RoPE store (f16, bf16, and turbo_kv_4b): the
+        --     overlay holds post-RoPE K; Pass B reads the
+        --     position-ordered slice directly with no extra RoPE
+        --     step. This is the supported and tested two-pass
+        --     configuration.
+        --   - pre-RoPE store (split-K caches, where cpy_k stores
+        --     pre-RoPE K and the main-cache read path applies
+        --     on-the-fly RoPE): two-pass dispatch falls back to
+        --     single-pass FA. A correct two-pass + LSE merge for
+        --     pre-RoPE storage requires the rope-on-the-fly to
+        --     compose with the merge in a way that has not been
+        --     achieved (the equivalent attempt for turbo_kv_4b
+        --     produced numerically incorrect attention with PPL
+        --     +0.84 over single-pass; see PHASE28.md iter 21 for
+        --     the bisection record). turbo_kv_4b was redesigned
+        --     to post-RoPE storage to side-step this; split-K is
+        --     deferred until either an equivalent redesign or a
+        --     rope/merge composition fix.
         -- The behavioural property: overlay-served attention is
         -- numerically equivalent to main-cache-served attention
         -- for the same set of attended positions, modulo the
