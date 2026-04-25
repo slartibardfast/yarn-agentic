@@ -245,6 +245,26 @@ rule ReadKVRecentFromOverlay {
         -- [DV+2, n_head, n_tokens] with the extra rows holding
         -- M and S. Merge implementable with existing ggml ops
         -- once LSE is exposed (no new merge op required).
+        --
+        -- RoPE state alignment: Pass B's K must arrive at the
+        -- attention kernel in the same RoPE state as Q.
+        -- AppendOverlayRow's storage policy mirrors cpy_k
+        -- verbatim, so the overlay inherits the main cache's
+        -- RoPE state per cache type:
+        --   - post-RoPE store (standard f16/bf16 K caches):
+        --     Pass B reads the position-ordered overlay slice
+        --     directly; no extra RoPE step.
+        --   - pre-RoPE store (turbo_kv_4b and split-K caches,
+        --     where cpy_k stores pre-RoPE K and the main-cache
+        --     read path applies on-the-fly RoPE): Pass B
+        --     applies the same on-the-fly RoPE recipe used by
+        --     the main-cache read path, keyed on the position
+        --     tensor for the recent-window slice, before the
+        --     attention kernel.
+        -- The behavioural property: overlay-served attention is
+        -- numerically equivalent to main-cache-served attention
+        -- for the same set of attended positions, modulo the
+        -- main cache's quantisation error.
 }
 
 -- Aspirational companion: attended positions older than the
@@ -351,8 +371,6 @@ open question "Sliding vs fixed-start window: [TONBI-V3] implements the rolling-
 open question "Interaction with quant.cpp Variant F multi-block split: the core spec (turbo-kv-4b.allium) inherits the per-128-element sub-block split. The residual window acts at the token level (rows); it is orthogonal to the within-row quantisation granularity. Composition should be clean, but the interaction has not been empirically tested."
 
 open question "Auto-resolution placement: ResolveOverlayDtypeAuto is modelled as a rule because config defaults in Allium support only arithmetic over references and literals, and the auto-resolve logic inspects model weight types. A cleaner framing might be a dedicated config-default expression form, or a separate resolution phase. Left as a rule for now."
-
-open question "Overlay representation at the RoPE boundary: the overlay stores whatever k_cur holds at the point cpy_k would have stored it. On standard K caches this is post-RoPE; on pre-RoPE-store caches (turbo-kv-4b stores pre-RoPE and RoPE-at-read) it is pre-RoPE. Whether the attention read path should standardise on one representation — and what MTP rollback must preserve — is unresolved."
 
 open question "Read-path structure: should attention over a recent-overlay plus quantised-tail cache use two-pass FA with LSE merge (one pass per source, merged softmax denominators), or single-pass with an assembled-K tensor spliced at query time? Merge granularity and cross-backend portability are at stake. Not yet prototyped."
 
