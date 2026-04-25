@@ -29,6 +29,363 @@ Small self-contained work adjacent to residual window, done during idle time in 
 
 - [x] T3.2 — stale `@guidance` prose fix in `turbo_kv_4b_attention.allium` (PHASE26 Tier 3.2).
 
+## Step 6 detailed plan — Two-pass Vulkan FA dispatch
+
+This section is written so a downstream agent unfamiliar with llama.cpp's Vulkan backend can execute the plan end-to-end without further architectural decisions. Read this section in full before touching code. Where it says "verify by", do that verification — every substep has an explicit binding gate.
+
+### Why this work, in one paragraph
+
+Step 5 (CPU) closed the two-pass FA + LSE-merge read path that lets the residual-window overlay coexist with `turbo_kv_4b`-quantised main-cache attention. The closing claim was 3-chunk Wiki PPL parity on Qwen3.5 0.8B: rw=0 (17.6640) vs rw=128 turbo_kv_4b (17.6637), thread-invariant across `-t 1/4/8`. Step 6 ports that read path to Vulkan. The narrow blocker is that the Vulkan FA op asserts `ne0 == HSV` and so refuses to emit the LSE output shape `ne0 = HSV+2` (VKQ unscaled in rows `[0..HSV)`, online-softmax max `M` at row `HSV`, denominator `S` at row `HSV+1`).
+
+### Critical reframing — why we do NOT disable Vulkan split-K
+
+Vulkan FA's existing **split-K** path is *not* a competing "splitting" that Step 6 should disable. Split-K is **intra-op GPU parallelism over the K dimension**. The two-pass FA is **op-graph-level partitioning of visible positions via masks**. They are orthogonal axes. Disabling split-K under LSE would make each LSE op run in a single workgroup grid; Pass A sees the long-tail K and would lose most of the GPU. Better: the split-K reduce shader (`flash_attn_split_k_reduce.comp`) already does **online-softmax merge of per-workgroup `(M, S, VKQ_unscaled)` partials** — exactly the LSE math. The right port is to add an `lse_mode` flag that **skips the final divide-by-S step** in two write-out sites:
+- the reduce shader (when `split_k > 1`), and
+- the primary shader's direct-to-dst path (when `split_k == 1`).
+
+That is the single conceptual change Step 6 is built around.
+
+### Closing condition
+
+Step 6 → `[x]` only when ALL of the following bind:
+1. The CPU regression panel is unchanged: f16+rw=128 PPL on CPU still 17.6352, turbo_kv_4b+rw=128 on CPU still 17.6637, `test-flash-attn-lse-merge` 9/9 on CPU.
+2. `ctest -R 'flash-attn-lse'` passes on **both** CPU and Vulkan.
+3. `ctest -R 'turbo-kv-residual-window-pbt'` is 28 PASS / 0 SKIP / 0 FAIL on **both** CPU and Vulkan.
+4. Harness end-to-end runs on Vulkan with rw=128 + turbo_kv_4b + `--check-window` exits 0 with per-layer touched-slot counts matching `min(append_n, rw)`.
+5. **PPL parity gate on Vulkan**: Qwen3.5 0.8B BF16, 3-chunk Wiki, `-fa on -ngl 99 --device Vulkan1`. f16+rw=0 baseline ≈ f16+rw=128 ≈ turbo_kv_4b+rw=128, all three within ±0.05 PPL of the baseline, deterministic across two consecutive runs.
+6. Iteration log captures evidence for each substep landing.
+
+If gate (5) fails on the binding claim (turbo_kv_4b + rw=128), Step 6 stays open with a 6.11 subtask isolating cause. Same discipline as iter 15b's reopen.
+
+### Vulkan tropes a downstream agent must know
+
+These conventions are how llama.cpp's Vulkan backend works in practice. Internalize them before editing:
+
+- **Push constants vs spec constants vs descriptor sets.** Push constants are a small (≤128 bytes by spec, sometimes 256 on some HW) per-dispatch payload set on the C++ side via `vkCmdPushConstants`; in shaders read via `layout(push_constant) uniform parameter { ... } p;`. Spec (specialization) constants are compile-time values baked into SPIR-V at pipeline-create time; in GLSL `layout(constant_id = N) const TYPE name = default;`. Descriptor sets bind buffers/images. **Convention in llama.cpp Vulkan**: structural variants (head_dim, dtype, mask shape, gqa_ratio) are **spec constants** and produce separate pipeline objects; runtime feature gates (sink presence, mask presence, `lse_mode`) are **push constants** in a single pipeline. `lse_mode` is therefore a push-constant field — adding it does **not** double the FA pipeline count.
+
+- **The FLASH_ATTN_EXT op_params slot map.**
+  - Slot 0..2 (floats): `scale`, `max_bias`, `logit_softcap` — set via `ggml_set_op_params(tensor, &floats, 12)`.
+  - Slot 3 (i32): precision (`GGML_PREC_F32` or default) — set via `ggml_flash_attn_ext_set_prec()`.
+  - Slot 4 (i32): `lse` flag (1 = LSE mode, 0 = standard) — set via `ggml_set_op_params_i32(result, 4, 1)` inside `ggml_flash_attn_ext_lse()` in `ggml.c:5495`.
+  - Read on the kernel side via `ggml_get_op_params_i32(dst, 4)`.
+
+- **LSE output layout** (canonical reference; CPU implements this; Vulkan must match):
+  - Tensor shape: `{ HSV+2, n_heads, n_queries, batch }` (slot 0 of `ne[]` is `HSV+2`).
+  - Per (head, query): row `[0..HSV)` holds **unscaled** VKQ (i.e. the online-softmax numerator before division by S); row `HSV` holds `M` (running max); row `HSV+1` holds `S` (running denominator). Quote from CPU implementation: `ggml-cpu/ops.cpp:8217-8220` and `:8582`.
+  - The "unscaled" qualifier is critical. The standard FA op outputs `O = numerator / S`. LSE outputs `numerator` (unscaled) and `S` separately, so the merge graph can re-do the online-softmax across two FA results.
+
+- **Vulkan FA shader file map** (`ggml/src/ggml-vulkan/vulkan-shaders/`):
+  - `flash_attn_base.glsl` — shared header (constants, push-constant struct, helper functions, layout decls).
+  - `flash_attn.comp` — scalar fallback path, also the entry point that selects coopmat at compile time via `#ifdef`.
+  - `flash_attn_cm1.comp` — coopmat1 path (older cooperative-matrix extension).
+  - `flash_attn_cm2.comp` — coopmat2 path (newer extension).
+  - `flash_attn_mask_opt.comp` — variant for specific mask shapes.
+  - `flash_attn_split_k_reduce.comp` — the per-row reduce that combines split-K partials. **Small (~120 lines), clean — read it in full before editing.**
+
+- **Per-workgroup write-out in primary shader (split_k > 1 path).** Already LSE-format-compatible — quotes from `flash_attn.comp`:
+  - Line 541 (or 519 for GQA): writes `Of[r][d]` (= unscaled VKQ partial).
+  - Line 547 (or 528): writes `Lf[r]` (= S partial).
+  - Line 548 (or 529): writes `Mf[r]` (= M partial).
+  - The split-K buffer layout is documented at `ggml-vulkan.cpp:9306-9310`: `[HSV, ne1, k, ne2, ne3]` for VKQ, then `[ne1, k, ne2, ne3]` for L and M (concatenated), all backed by `ctx->prealloc_split_k`. **No change is needed in this path** — partial writes already produce LSE-format data; the reduce shader's job changes.
+
+- **Direct-to-dst write in primary shader (split_k == 1 path).** This is the path that must learn LSE. From `flash_attn.comp:554` onward:
+  1. Sink-handling block (lines 555–574) — must execute regardless of `lse_mode`. Sinks shift M and rescale L; LSE outputs must reflect this.
+  2. `Lfrcp` computation (lines 576–579) — when `lse_mode`, **do not invert** L. Either skip this block or compute and never apply.
+  3. The post-`Lfrcp` divide of VKQ by L — when `lse_mode`, **do not apply**. Write VKQ untouched.
+  4. Write rows `[0..HSV)` as today (with the divide skipped), then add two writes: M to row `HSV`, L to row `HSV+1`, per (head, query).
+
+- **Reduce shader.** ~120 lines at `flash_attn_split_k_reduce.comp`. The 4 lines that need attention:
+  - Line 95: `L = (L == 0.0) ? 0.0 : 1.0 / L;` — when `lse_mode`, skip the inversion (keep `L` as the un-inverted denominator = S).
+  - Line 114: `O *= L;` — when `lse_mode`, skip.
+  - Line 119: writes `O` to `data_d[(i3 * p.ne2 + i2) * p.ne1 * D + D * n + d]` — the stride `p.ne1 * D` assumes `ne0 == D`. When `lse_mode`, dst's `ne0` is `D+2`, so stride must be `p.ne1 * (D + 2)`.
+  - Add: when `lse_mode`, also write `m_max` to `data_d[(i3*p.ne2+i2)*p.ne1*(D+2) + (D+0)*p.ne1 + n]` and `L` (un-inverted) to the next row. Guard by a `if (gl_WorkGroupID.y == 0 && tid == 0)` (one workgroup writes M/S per row, no race).
+
+- **Subgroup uniformity and conditional writes.** From the persisted memory `feedback_barrier_design.md`: zero-init shared memory before conditional writes; ensure subgroup uniformity for branches. `lse_mode` is a push constant, uniform across the entire dispatch — every thread takes the same branch, no divergence concern. The new conditional writes for M/S in the reduce shader add no shared-memory access, so no barrier discipline change.
+
+- **Build pipeline (GLSL → SPIR-V).** llama.cpp builds shaders during cmake configure/build via `glslc`. Shader sources live in `vulkan-shaders/`. On a shader edit, run `cmake --build build -j` from `llama.cpp/`; cmake re-detects the changed source. If the build cache becomes stale (rare), `rm -rf llama.cpp/build/ggml/src/ggml-vulkan/vulkan-shaders-gen/` and rebuild. SPIR-V compile errors print full file:line. **Pitfall**: forgetting to rebuild after a shader edit — the pipeline cache will still serve the old SPIR-V.
+
+- **Common dispatcher pitfalls.**
+  - **Push-constant struct must match between C++ and GLSL.** If the C++ `vk_flash_attn_push_constants` adds a `uint32_t lse_mode;` field, the GLSL `layout(push_constant) uniform parameter { ... }` block must add it at the **same byte offset**. Append at the end of both, in the same order.
+  - **Push-constant size budget**: the existing struct is ≤128 bytes. Adding one `uint32_t` (4 bytes) is safe.
+  - **Alignment**: scalar fields (uint, float) align to 4 bytes; vec2/vec3/vec4 align to 8/16/16. Append `uint32_t lse_mode` at the end — safe.
+  - **Forgetting to set the new field at dispatch time** = silent zero. Do a one-shot debug print in the dispatcher for the iteration that introduces the field.
+
+- **Test framework conventions (from llama.cpp/CLAUDE.md).** Prefer `test-backend-ops` (`tests/test-backend-ops.cpp`) when the framework can express the test. For LSE specifically, the existing `test-flash-attn-lse{,-merge}.cpp` tests are CPU-only standalone — extend them to multi-backend rather than duplicating into `test-backend-ops`, because the merge-graph composition is awkward to express through the framework's per-op test surface.
+
+- **Existing diagnostic infrastructure to be aware of.**
+  - `LLAMA_DIAG_5B_*` env-var bisection switches were removed in iter 21 — do not look for them.
+  - `GGML_VK_PERF_LOGGER=1` — enables Vulkan dispatch-level profiling. Use during 6.10 if PPL gate fails to localize.
+  - `--device Vulkan1` selects Vega; `Vulkan0` selects 6800 XT (output of `llama-perplexity --list-devices` is authoritative).
+
+### Pre-work — read-only investigations, must answer before substeps
+
+PW1 — PW3 are read-only. Each gets a one-paragraph entry in the iteration log when answered.
+
+- **PW1 — Cast on Vulkan.** The merge graph in `llama.cpp/src/llama-graph.cpp` (~line 2149–2152) inserts a `ggml_cast` to recast Pass B's K from F32 (the type `ggml_get_rows` always emits on CPU) back to the overlay's native float type. The recon agent reported `GGML_OP_CAST` is **not** dispatched on Vulkan (no `case GGML_OP_CAST:` in `ggml-vulkan.cpp`). **Verify by**: read `llama-graph.cpp:2149` and the surrounding `build_input_window_reorder` function; trace the graph for the target config (`--device Vulkan1 --cache-type-k turbo_kv_4b --cache-residual-window 128`) by running `tests/test-turbo-kv-residual-window-harness --device Vulkan1 --rw 128 --type-k turbo_kv_4b --append 50` and watching for unsupported-op errors or scheduler fallback messages. **If the cast fires and Vulkan does not support it**: STOP. Surface this as a blocker; the resolution is either a refactor of `build_input_window_reorder` to ensure dtype already matches (skipping the cast for our combo) or adding `GGML_OP_CAST` Vulkan support (separate workstream). Do not work around silently.
+
+- **PW2 — `ggml_get_rows` dtype on Vulkan.** CPU's `ggml_get_rows` emits F32 unconditionally — that's why the cast in PW1 exists. On Vulkan, does `ggml_get_rows` preserve source dtype, or also emit F32? **Verify by**: read the Vulkan dispatcher for `GGML_OP_GET_ROWS` at `ggml-vulkan.cpp:10486` and inspect output type construction. If preserved, the recast becomes a no-op the scheduler should optimise out. If F32, PW1's question is acute.
+
+- **PW3 — Which shader variant dispatches for our shape.** Qwen3.5 0.8B has GQA 14:2 with head_dim 128. Which of `flash_attn.comp` / `flash_attn_cm1.comp` / `flash_attn_cm2.comp` does the dispatcher select on Vulkan0 (RDNA2 6800 XT) and Vulkan1 (Vega 10)? **Verify by**: read the variant-selection block in `ggml_vk_flash_attn` (`ggml-vulkan.cpp:~9126`); if opaque from a code read, plan to add a one-shot `fprintf(stderr, "[FA-VARIANT] ...")` in the dispatcher in 6.2 and run a single FA op on each device. Whichever variants dispatch are the ones substep 6.5 must extend; the others can be deferred.
+
+### Substeps — execute in order
+
+Each substep is independently committable. Iteration log gets one line per substep landing.
+
+#### 6.1 — Lift `ne0 == HSV` assertion in Vulkan FA dispatcher
+
+**File**: `llama.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp`, function `ggml_vk_flash_attn` (~line 9126); assertion at line 9155.
+
+**Change**:
+```cpp
+const bool lse_mode = (ggml_get_op_params_i32(dst, 4) == 1);
+const int64_t ne0_expected = lse_mode ? (HSV + 2) : HSV;
+GGML_ASSERT(dst->ne[0] == ne0_expected);
+```
+
+**Verify by**: build (`cmake --build llama.cpp/build -j`); construct a minimal LSE op via `ggml_flash_attn_ext_lse` against a Vulkan backend; dispatch enters `ggml_vk_flash_attn` without asserting. Output is incorrect at this point — that's expected; this substep only lifts the gate.
+
+#### 6.2 — Plumb `lse_mode` through push constants
+
+**Files and changes**:
+1. `ggml-vulkan.cpp:1114-1117` (block `vk_flash_attn_push_constants`) — append `uint32_t lse_mode;`.
+2. `ggml-vulkan.cpp:1628-1635` (block `vk_op_flash_attn_split_k_reduce_push_constants`) — append `uint32_t lse_mode; uint32_t ne0_dst;` (the dst stride `ne0_dst` is needed by the reduce shader because, under LSE, output stride changes from `D` to `D+2`; see "Reduce shader" trope above).
+3. `ggml-vulkan.cpp` dispatcher pc construction sites (~line 9379–9415, both `split_k > 1` and `split_k == 1` branches) — populate the new fields from `lse_mode` (read at top of dispatcher per 6.1) and dst stride.
+4. Shader push-constant blocks — append matching fields in:
+   - `flash_attn_base.glsl` (the shared header included by `flash_attn{,_cm1,_cm2,_mask_opt}.comp`).
+   - `flash_attn_split_k_reduce.comp` (lines 13–20, the `parameter` block).
+
+**Behaviour change**: none yet. The flag is plumbed but unused.
+
+**Verify by**: rebuild; existing FA ops still pass (`ctest -R 'flash-attn'` on CPU still 9/9, on Vulkan still passes); add a one-shot `fprintf(stderr, "[FA-VK] lse=%u var=%s split_k=%u\n", ...)` in the dispatcher; run `tests/test-flash-attn-lse --backend Vulkan` (extending it minimally first if needed) — confirm the print reports `lse=1` when LSE op dispatched. Remove the print when 6.7's multi-backend test lands.
+
+**Bookkeeping**: PW3's variant-print lives here for one iteration, removed at Step close.
+
+#### 6.3 — Reduce shader: LSE branch
+
+**File**: `ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_split_k_reduce.comp` (~120 lines; read it whole).
+
+**Change**:
+1. Replace line 95 (`L = (L == 0.0) ? 0.0 : 1.0 / L;`) with:
+   ```glsl
+   if (p.lse_mode == 0) {
+       L = (L == 0.0) ? 0.0 : 1.0 / L;
+   }
+   // when lse_mode == 1, L stays as the un-inverted denominator (= S in CPU naming)
+   ```
+2. Replace line 114 (`O *= L;`) with:
+   ```glsl
+   if (p.lse_mode == 0) {
+       O *= L;
+   }
+   ```
+3. Replace the dst stride at line 119 to use `p.ne0_dst`:
+   ```glsl
+   data_d[(i3 * p.ne2 + i2) * p.ne1 * p.ne0_dst + p.ne0_dst * n + d] = O;
+   ```
+4. Add an LSE-only writeback after the existing write, gated on `p.lse_mode == 1` and `gl_WorkGroupID.y == 0 && tid == 0` (so exactly one thread per (n, batch) writes M and S):
+   ```glsl
+   if (p.lse_mode == 1 && gl_WorkGroupID.y == 0 && tid == 0) {
+       uint base = (i3 * p.ne2 + i2) * p.ne1 * p.ne0_dst + p.ne0_dst * n;
+       data_d[base + D + 0] = m_max;  // M
+       data_d[base + D + 1] = L;       // S (un-inverted)
+   }
+   ```
+
+**Subtlety on indexing**: the existing reduce flattens `(d, n, i2, i3)` with stride `D`. For LSE the stride is `D+2`. The fix above replaces `D` with `p.ne0_dst` everywhere; `p.ne0_dst = D + 2` when `lse_mode`, else `D`. Audit every `D` in this shader after editing — there should be only the index arithmetic uses; inner-loop semantics use `D` as a count (unchanged).
+
+**Verify by**: rebuild shaders; dispatch a Vulkan FA_LSE op with `split_k > 1` (e.g. small KV-per-WG forces split-K via the dispatcher's `split_k = shader_core_count * 2 / total_wgs` formula); compare against CPU FA_LSE on identical input element-wise. Tolerance ~5e-4 abs (matches CPU FA_LSE vs FA gap). Per-element diff > tolerance = bug; report which element diverged (head, query, channel) for triage.
+
+#### 6.4 — Primary shader split_k==1 LSE branch (`flash_attn.comp`)
+
+**File**: `flash_attn.comp` from line 554 (post-split-K-write `return`) through the final dst write at ~line 600+.
+
+**Change**: when `p.lse_mode == 1` (push constant; available because of 6.2):
+1. Sink-handling block (lines 555–574) — execute unchanged. Sinks shift M and rescale L; LSE outputs must reflect this.
+2. `Lfrcp` computation (lines 576–579) — wrap in `if (p.lse_mode == 0) { ... }` (compute only when scaling will be applied).
+3. The VKQ × `Lfrcp` multiply that follows — wrap in `if (p.lse_mode == 0) { ... }` (skip the divide when LSE).
+4. The dst write of VKQ rows — extend the row count: when `p.lse_mode`, after writing rows `[0..HSV)` per (query, head), also write `Mf[r]` at row `HSV` and `Lf[r]` (post-sink) at row `HSV+1`. Guard the M/S writes by `d_tid == 0 && col_tid == 0` (one thread per (query, head) writes the scalars; matches the existing pattern at line 545).
+
+**Subtlety**: the dst tensor stride is no longer `p.ne1 * HSV`; it's `p.ne1 * HSV` when `lse_mode == 0` and `p.ne1 * (HSV + 2)` when `lse_mode == 1`. This shader currently computes destination indices directly from `HSV`. When LSE, replace with the actual `ne0` stride — pass it as a push constant or compute from `HSV + 2 * lse_mode`.
+
+**Verify by**: rebuild; dispatch a Vulkan FA_LSE op shape that bypasses split-K (small KV count, single workgroup); compare against CPU element-wise at ~5e-4 abs tolerance.
+
+#### 6.5 — Coopmat variants (gated on PW3)
+
+**Files**: `flash_attn_cm1.comp`, `flash_attn_cm2.comp`. **Skip if PW3 confirms neither variant dispatches on Vulkan0 or Vulkan1 for our shape** — most likely both lack coopmat support for this head_dim/dtype combo.
+
+**Change**: mirror 6.3 + 6.4 patterns in each variant. The coopmat output is held in a cooperative matrix; the unscaled VKQ is the value before final scaling by L — same data already computed before the divide.
+
+**Verify by**: per-variant numerical comparison vs CPU at the same tolerance. Force the variant via the dispatcher's selection knob (typically a CMake feature flag; check `vulkan-shaders/CMakeLists.txt`).
+
+#### 6.6 — Force fp32 accumulation when LSE
+
+**File**: `ggml-vulkan.cpp`, FA dispatcher.
+
+**Change**: when `lse_mode == 1`, override the precision selector to `GGML_PREC_F32`. M is exponent-scale-sensitive; coopmat fp16 accumulation can drift the merge result.
+
+**Verify by**: dispatch LSE op at long context (e.g. KV=2048); compare vs CPU at fp32; agreement within 5e-4 abs. If 6.5 was skipped (no coopmat dispatch), this substep is a no-op for our hardware but still lands as a defensive guard.
+
+#### 6.7 — Multi-backend `test-flash-attn-lse{,-merge}`
+
+**Files**:
+- `llama.cpp/tests/test-flash-attn-lse.cpp`
+- `llama.cpp/tests/test-flash-attn-lse-merge.cpp`
+
+**Change**: wrap each test case in a backend loop following the pattern in `test-turbo-kv-attention-pbt.cpp:22`. Pseudocode:
+```cpp
+for (auto * backend : { ggml_backend_cpu_init(), ggml_backend_vk_init(0) }) {
+    if (!backend) continue;
+    for (auto & tc : test_cases) {
+        run(backend, tc);
+    }
+    ggml_backend_free(backend);
+}
+```
+Use `ggml_backend_vk_init(0)` for the first available Vulkan device; for tests that need a specific device, use `ggml_backend_vk_init(ggml_backend_vk_dev_to_index("Vulkan1"))` or equivalent — check existing tests for the canonical pattern. Tolerance: keep CPU at ~1e-7 short-context; relax Vulkan to 5e-4 abs (matches FA_LSE-vs-FA gap).
+
+**Verify by**: `cd llama.cpp/build && ctest -R 'flash-attn-lse'` passes on both CPU and Vulkan; both binaries report the backend they ran against in their output for log-grep clarity.
+
+#### 6.8 — Vulkan numerical sub-check in `test-turbo-kv-residual-window-pbt`
+
+**File**: `llama.cpp/tests/test-turbo-kv-residual-window-pbt.cpp`.
+
+**Change**: the existing five `ReadKVRecentFromOverlay` PBT obligations are structural — they re-derive the visibility predicate from `set_input_kq_mask_pass_a`/`_pass_b` over a grid of (rw, max_pos). Add **one numerical sub-check** under that obligation: build a small `build_attn_mha_two_pass`-equivalent graph (FA_LSE × 2 + merge) on Vulkan; compare to single-pass FA on the merged K/V. Total stays 28 obligations; this is a numerical leg of an existing one. Tolerance: ~5e-4 abs.
+
+**Verify by**: `ctest -R 'turbo-kv-residual-window-pbt'` reports 28/0/0 on both CPU and Vulkan.
+
+#### 6.9 — Harness end-to-end on Vulkan
+
+**File**: `llama.cpp/tests/test-turbo-kv-residual-window-harness.cpp` — no source change; usage check.
+
+**Verify by**:
+```
+cd llama.cpp/build
+./bin/test-turbo-kv-residual-window-harness \
+    -m /opt/models/qwen3.5-0.8b/Qwen3.5-0.8B-Q8_0-MTP.gguf \
+    --device Vulkan1 -ngl 99 \
+    --rw 128 --type-k turbo_kv_4b \
+    --append 200 --check-window
+```
+Exits 0; per-layer touched-slot counts == 128 (= `min(append_n=200, rw=128)`).
+
+#### 6.10 — PPL parity gate on Vulkan (binding gate)
+
+**Setup**: claim `gpu-1` (Vega) per `coord/` flock protocol before running. `gpu-0` (6800 XT) is reserved for `llama-server.service` — needs explicit user authorisation; **do not claim without asking**.
+
+**Configs** (Qwen3.5 0.8B BF16; 3-chunk Wiki; `-fa on -ngl 99 --device Vulkan1`):
+
+| Config | `--cache-type-k` | rw |
+|---|---|---|
+| A | f16 | 0 |
+| B | f16 | 128 |
+| C | turbo_kv_4b | 128 |
+
+Wikitext source: `/home/llm/models/wikitext-2-raw-test.txt` (the *real* plain-UTF-8 file; **NOT** `/opt/models/wikitext-2-raw-v1-test.txt` which is a Parquet file and crashes the tokenizer with "invalid codepoint"). Use `--chunks 3` (or whatever count gives ~3 chunk boundaries). Run each config twice consecutively for determinism check.
+
+**Closing gate**: A ≈ B ≈ C within ±0.05 PPL of A. B-vs-A drift > 0.05 = overlay correctness regression. C-vs-A drift > 0.05 = post-RoPE codebook + overlay regression. Two-run determinism: same PPL to ≥4 decimal places.
+
+**Verify by**: outputs and exact PPL numbers go in iteration log entry. If gate fails, do NOT close 6.11. Open a 6.11.x subtask isolating cause (mask divergence / shader tile-order / coopmat fp16 residue / cast fallback to CPU silently).
+
+**Release** `gpu-1` to IDLE in `coord/gpu-1.state` after the runs.
+
+#### 6.11 — Close
+
+PHASE28.md Step 6 → `[x]` only when 6.1–6.10 all green and the closing condition list above binds. Iteration log captures each substep landing as a single line. Remove the one-shot debug prints from 6.2 / PW3.
+
+### Files touched (canonical list)
+
+Edits during Step 6 — kept inventory so a downstream agent can cross-check git diff:
+
+- `llama.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp` — push-constant blocks (~1114, ~1628), dispatcher (~9126, ~9155, ~9379–9415).
+- `llama.cpp/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl` — push-constant struct.
+- `llama.cpp/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp` — line 554+ (split_k==1 branch).
+- `llama.cpp/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_split_k_reduce.comp` — lines 13–20 (push-constant block), 95, 100–119 (writeback).
+- `llama.cpp/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp` — gated on PW3.
+- `llama.cpp/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm2.comp` — gated on PW3.
+- `llama.cpp/tests/test-flash-attn-lse.cpp` — backend loop wrapper.
+- `llama.cpp/tests/test-flash-attn-lse-merge.cpp` — backend loop wrapper.
+- `llama.cpp/tests/test-turbo-kv-residual-window-pbt.cpp` — numerical Vulkan case under existing obligation.
+- `PHASE28.md` (this file) — iteration log entries; checkbox flip on Step 6.
+
+Read-only references (do not edit during Step 6):
+- `llama.cpp/ggml/src/ggml.c:5460-5504` (`ggml_flash_attn_ext_lse` API).
+- `llama.cpp/ggml/src/ggml-cpu/ops.cpp:8217-8226, 8580-8596` (CPU LSE write layout).
+- `llama.cpp/src/llama-graph.cpp:~2149-2152` (PW1 read site).
+
+### Build and test commands (paste-friendly)
+
+```
+# 1. Rebuild after code or shader edit
+cd /home/llm/yarn-agentic/llama.cpp/build
+cmake --build . -j
+
+# 2. CPU regression (fast, run after every edit)
+ctest -R 'flash-attn-lse|turbo-kv' --output-on-failure
+
+# 3. Vulkan tests (after substeps 6.1-6.7)
+ctest -R 'flash-attn-lse' --output-on-failure
+ctest -R 'turbo-kv-residual-window-pbt' --output-on-failure
+
+# 4. Harness on Vulkan (substep 6.9)
+./bin/test-turbo-kv-residual-window-harness \
+    -m /opt/models/qwen3.5-0.8b/Qwen3.5-0.8B-Q8_0-MTP.gguf \
+    --device Vulkan1 -ngl 99 \
+    --rw 128 --type-k turbo_kv_4b \
+    --append 200 --check-window
+
+# 5. PPL gate (substep 6.10) — claim gpu-1 first via coord/
+./bin/llama-perplexity \
+    -m /opt/models/qwen3.5-0.8b/Qwen3.5-0.8B-Q8_0-MTP.gguf \
+    --device Vulkan1 -ngl 99 -fa on \
+    --cache-type-k f16 --cache-type-v f16 --cache-residual-window 0 \
+    -f /home/llm/models/wikitext-2-raw-test.txt --chunks 3
+# (repeat with --cache-type-k f16 ... --cache-residual-window 128 for B,
+#  and --cache-type-k turbo_kv_4b ... --cache-residual-window 128 for C)
+```
+
+### Risk register
+
+- **R1 — `ggml_cast` not on Vulkan.** PW1 is the answer. If it fires for our config, Step 6 stops and we discuss a refactor or cast op support. Severity: hard blocker.
+- **R2 — Reduce shader stride math under HSV+2.** Lines 103, 119 use `p.D` as the dst stride. `p.ne0_dst` push constant addresses this. Don't forget `o_offset` reads from the **split-K buffer** still use `p.D` (those stride into the input partial, which is HSV-sized) — only the dst writes change.
+- **R3 — Coopmat variant divergence.** Each cooperative-matrix shader has its own write-out unpacking. Each must independently learn LSE. Mitigation: do scalar (6.3 + 6.4) first; gate 6.5 on PW3.
+- **R4 — Stride assumptions downstream of FA.** Views / permutes / reshapes consuming the FA output assume `ne0 == HSV`. With `HSV+2` they break silently. Mitigation: search `ggml_view`/`ggml_permute`/`ggml_reshape` adjacent to FA output consumption; `build_attn_mha_two_pass` and `build_fa_lse_merge` are dtype/dim-agnostic at the op level (sub/exp/mul/get_rows on the LSE outputs).
+- **R5 — Coopmat fp16 accumulation.** M is exponent-scale-sensitive. 6.6 forces fp32 when LSE.
+- **R6 — Disabling split-K accidentally.** Substeps 6.1 / 6.2 must NOT change the `lse_mode == 0` path. Regression panel (CPU PPL, CPU FA test) catches it; Vulkan single-pass FA on a non-LSE op with `split_k > 1` should still take the existing path unchanged.
+- **R7 — Tolerance brittleness Vega vs RDNA2.** Tile shapes differ; numerical results may need per-device tolerance. Mitigation: 5e-4 abs is the existing FA_LSE-vs-FA tolerance; if Vega needs looser, document why explicitly in iteration log.
+- **R8 — Pipeline cache stale after shader edit.** If a numerical test fails mysteriously after a shader edit, suspect cache. Mitigation: `rm -rf llama.cpp/build/ggml/src/ggml-vulkan/vulkan-shaders-gen/*-spv` and rebuild.
+- **R9 — Push constant byte-offset mismatch.** If C++ struct and GLSL `parameter` block disagree on field order, every dispatch reads garbage with no error. Mitigation: when adding fields, append at the end of both, in the same order. Match the names too — divergent names compile but signal intent drift.
+
+### Open questions
+
+- **OQ1 — Cast dependency** (PW1).
+- **OQ2 — PPL tolerance on Vulkan.** ±0.05 was Step 5's CPU bound; coopmat fp16-accumulation paths may need ±0.1. Decide before 6.10, document in log.
+- **OQ3 — Should `qwen_pp512_rw128` test case extend to Vulkan inline as a sentinel?** Or is the harness-driven PPL the only inline gate? Decide as 6.7 lands.
+- **OQ4 — `test-backend-ops` integration.** llama.cpp/CLAUDE.md prefers it. The LSE op_param sweep and the merge-graph composition fit awkwardly. Revisit if 6.7 ends up duplicating significant infra.
+
+### Iteration log entry template
+
+For each substep landing, append one line to "## Loop log" of the form:
+```
+- Iteration N: substep 6.X landed (llama.cpp master `<sha>`). <what changed in one sentence>. <verification evidence in one sentence>. <regression panel state>.
+```
+Match the prose style of iterations 22 / 23 for consistency.
+
+### Estimated complexity
+
+Wall-clock per substep (focused work, not including review/discussion):
+
+- 6.1, 6.2, 6.6: ~1h each (dispatcher + push-constant edits).
+- 6.3: ~3h (reduce shader edit + roundtrip debug).
+- 6.4: ~3h (primary scalar shader edit).
+- 6.5: ~3–6h **per** coopmat variant if PW3 confirms — gate on PW3.
+- 6.7: ~2h per test.
+- 6.8: ~2h.
+- 6.9: ~30min active + harness wallclock.
+- 6.10: ~30min active + ~15min PPL run wallclock per config × 6 runs (3 configs × 2) ≈ 90 min wallclock.
+- 6.11: trivial.
+
+Total: ~1.5 days minimum, ~3 days realistic, dominated by 6.3/6.4/6.5 shader debug and 6.10 PPL wallclock.
+
 ## Loop log
 
 Each iteration appends a single line noting what landed.
