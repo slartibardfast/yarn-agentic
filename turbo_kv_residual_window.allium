@@ -44,14 +44,20 @@
 -- per stream per layer. The overlay is redundant storage, not
 -- the authoritative copy.
 --
--- Implemented today: the cparams flag, per-layer allocation at
--- context init, the graph-build overlay write on cpy_k, and the
--- dtype auto-resolution. Aspirational and flagged as such below:
--- the attention read path consuming the overlay, the Vulkan port
--- of the overlay write + read, and GGUF state persistence across
--- session save/load. Rules for the aspirational paths appear
--- below with @guidance annotations marking them as not yet
--- witnessed by code.
+-- The overlay is read by the attention path via a two-pass
+-- flash-attention with an online-softmax merge: Pass B reads
+-- the position-ordered overlay slice for the last
+-- residual_window positions; Pass A reads the main quantised
+-- cache for older positions; the two are merged at query
+-- granularity. Pass B requires the overlay to hold post-RoPE
+-- K, which constrains every cache type that wants to feed the
+-- overlay to store post-RoPE K (turbo_kv_4b included).
+--
+-- Still aspirational and flagged below: rewind handling on
+-- SequencePositionsRemoved (concrete callers include MTP
+-- draft rejection and prompt rewind), Vulkan port of the
+-- overlay write + read, and overlay persistence across
+-- session save/load.
 
 -- ============================================================
 -- External Entities
@@ -162,6 +168,192 @@ rule AppendOverlayRow {
         -- bytes matches config.overlay_dtype after resolution.
 }
 
+-- The five rules below capture the OverlayConsistentAfterMutation
+-- obligation across the sequence-mutating operations that re-bind
+-- positions to cells. AppendOverlayRow writes are correct as long
+-- as the (cell, position) binding from the most recent write is
+-- still in effect; any operation that breaks that binding requires
+-- the overlay to be reconciled before the next read.
+--
+-- Common hazard: a single ring slot is written by multiple
+-- positions of the form p mod residual_window == slot. The most
+-- recent write displaces earlier ones. When a mutation removes
+-- the most-recent writer's position from the cache, redirects it
+-- to a different cell, or copies it without updating the
+-- destination's overlay, the slot's bytes no longer correspond
+-- to the position currently expected at that slot — silently
+-- incorrect attention for surviving positions whose slot collides.
+--
+-- Strategy selection is shared across all five rules and is
+-- recorded as an open question (RECONCILIATION STRATEGIES below
+-- on ReconcileOverlayOnSequenceRemoval).
+--
+-- Concrete callers driving each rule:
+--   ReconcileOverlayOnSequenceRemoval — MTP draft rejection,
+--     prompt rewind, kv-cache compaction.
+--   ReconcileOverlayOnSequenceShift — context-window slide once
+--     n_ctx is exhausted (positions shift left); prompt-prefix
+--     trim with re-positioning.
+--   ReconcileOverlayOnSequenceDivide — sliding-window scaled
+--     compaction; some sequence-merge schemes.
+--   ReconcileOverlayOnSequenceCopy — beam search clone; speculative
+--     decode forking; multi-sequence prompt sharing.
+--   ReconcileOverlayOnSequenceKeep — single-sequence retention
+--     after multi-sequence eval; eviction of all but one.
+
+-- Reverse of AppendOverlayRow for sequence-position removal.
+-- After SequencePositionsRemoved(stream, p_min, p_max), cells
+-- in [p_min, p_max] have been removed from `stream`'s view of
+-- the cache. Overlay slots last written by those positions
+-- still hold their bytes. The reconciliation obligation: no
+-- subsequent read returns K from a removed position.
+rule ReconcileOverlayOnSequenceRemoval {
+    when: SequencePositionsRemoved(stream, p_min, p_max)
+
+    requires: config.residual_window > 0
+    requires: p_min <= p_max
+
+    ensures: OverlayConsistentAfterMutation(stream: stream)
+
+    @guidance
+        -- RECONCILIATION STRATEGIES (shared across all five
+        -- ReconcileOverlay* rules; each correct, with different
+        -- cost profiles):
+        --
+        --   (A) RESTORE FROM MAIN: for each ring slot whose
+        --       last-effective writer position is no longer
+        --       bound to the post-mutation cache, look up the
+        --       most recent SURVIVING position whose
+        --       pos mod residual_window == slot (in the
+        --       post-mutation cache), dequant its K from main,
+        --       requantise (if overlay dtype differs) and
+        --       store into the slot. Cheap when the affected
+        --       set is small (e.g. typical MTP draft rejection
+        --       k≤8). Cost: dequant + write per affected slot.
+        --
+        --   (B) PER-SLOT VALIDITY: maintain a parallel "slot
+        --       fresh" bitmap. Reconciliation clears bits for
+        --       affected slots; AppendOverlayRow sets them on
+        --       write; the read path falls back to main-cache
+        --       K (Pass A's boundary-cut path) for slots whose
+        --       bit is clear. Cost: bitmap maintenance, more
+        --       complex Pass B mask construction.
+        --
+        --   (C) FULL REBUILD: clear the entire affected stream's
+        --       overlay; the next residual_window decodes refill
+        --       it. The attention read path must tolerate a
+        --       partial overlay (mask unfilled slots) until
+        --       refill. Cost: degraded attention quality during
+        --       refill.
+        --
+        --   (D) RESTRICT: forbid the mutation from reaching the
+        --       recent window (caller error if affected positions
+        --       overlap [seq_len - residual_window, seq_len]).
+        --       Cost: limits caller behaviour (e.g. caps MTP
+        --       draft batch size, restricts context-shift reach).
+}
+
+-- After SequencePositionsShifted(stream, p_min, p_max, delta),
+-- cells in [p_min, p_max] now hold position old_pos + delta;
+-- their K data is unchanged at the cell level. The overlay's
+-- slot↔position mapping (slot = pos mod residual_window) is
+-- stale because the slot used by old_pos is generally not the
+-- slot for old_pos + delta. The reconciliation obligation:
+-- subsequent reads return correct K for the post-shift positions.
+rule ReconcileOverlayOnSequenceShift {
+    when: SequencePositionsShifted(stream, p_min, p_max, delta)
+
+    requires: config.residual_window > 0
+    requires: p_min <= p_max
+
+    ensures: OverlayConsistentAfterMutation(stream: stream)
+
+    @guidance
+        -- See ReconcileOverlayOnSequenceRemoval for strategies.
+        -- Shift-specific note: strategy (A) requires moving K
+        -- bytes between slots (slot for old_pos → slot for
+        -- old_pos + delta) for every shifted cell whose new
+        -- position falls in the post-shift recent window. When
+        -- |delta| is a multiple of residual_window, the slot
+        -- mapping is preserved and no overlay work is needed
+        -- (rare in practice).
+}
+
+-- After SequencePositionsDivided(stream, p_min, p_max, divisor),
+-- cells in [p_min, p_max] now hold position old_pos / divisor.
+-- Multiple cells may collapse to the same target position
+-- (lossy compression of the position axis). Same staleness as
+-- shift, plus possible position collisions.
+rule ReconcileOverlayOnSequenceDivide {
+    when: SequencePositionsDivided(stream, p_min, p_max, divisor)
+
+    requires: config.residual_window > 0
+    requires: p_min <= p_max
+    requires: divisor > 0
+
+    ensures: OverlayConsistentAfterMutation(stream: stream)
+
+    @guidance
+        -- See ReconcileOverlayOnSequenceRemoval for strategies.
+        -- Divide-specific note: position collisions mean the
+        -- post-mutation cache may have fewer distinct positions
+        -- than before; slot occupancy may be sparser than the
+        -- pre-mutation overlay suggests. Strategy (A) needs to
+        -- pick a tie-breaker (e.g. last writer wins, or the
+        -- main cache's effective head wins). Strategy (C) full
+        -- rebuild side-steps the tie-breaker question.
+}
+
+-- After SequenceCopied(src_stream, dst_stream, p_min, p_max),
+-- cells in [p_min, p_max] of src_stream are now also bound to
+-- dst_stream at the same positions. dst_stream's overlay has
+-- not seen any AppendOverlayRow for those positions; reads
+-- against dst_stream's overlay would return whatever bytes
+-- the slots happen to hold (initial zero or previous wrap).
+rule ReconcileOverlayOnSequenceCopy {
+    when: SequenceCopied(src_stream, dst_stream, p_min, p_max)
+
+    requires: config.residual_window > 0
+    requires: p_min <= p_max
+
+    ensures: OverlayConsistentAfterMutation(stream: dst_stream)
+
+    @guidance
+        -- See ReconcileOverlayOnSequenceRemoval for strategies.
+        -- Copy-specific note: strategy (A) becomes "copy the
+        -- corresponding overlay slots from src_stream's overlay
+        -- to dst_stream's overlay" — cheaper than re-quantising
+        -- from main, since both overlays share the same dtype
+        -- and the source slots are already correct. Strategy
+        -- (B) per-slot validity must propagate the bitmap too.
+}
+
+-- After SequenceKept(seq_id), all sequences except seq_id are
+-- removed. Streams other than the kept seq_id's stream lose
+-- all their cells. Their overlay slots remain populated with
+-- K from removed cells, which would corrupt subsequent reads
+-- if those streams are later re-used.
+rule ReconcileOverlayOnSequenceKeep {
+    when: SequenceKept(seq_id)
+
+    requires: config.residual_window > 0
+
+    ensures: OverlayConsistentAfterKeep(kept_seq_id: seq_id)
+
+    @guidance
+        -- See ReconcileOverlayOnSequenceRemoval for strategies.
+        -- Keep-specific notes: the kept seq_id's stream is
+        -- unchanged; every other stream needs reconciliation
+        -- because all its positions are now removed. Strategy
+        -- (C) full rebuild is the natural fit for the dropped
+        -- streams since "all positions removed" leaves nothing
+        -- to restore from. The single OverlayConsistentAfterKeep
+        -- ensure covers the obligation for all streams jointly;
+        -- splitting per-dropped-stream emits would require
+        -- modelling a Streams collection in this spec, which
+        -- is currently abstracted away.
+}
+
 -- Auto-resolution of config.overlay_dtype when the CLI passes
 -- the "auto" sentinel: inspect the model's native K projection
 -- float type and pick BF16 if any model weights are BF16, F16
@@ -189,17 +381,12 @@ rule ResolveOverlayDtypeAuto {
         -- in config defaults instead.
 }
 
--- Aspirational attention-read rule: reconcile the main
--- (quantised) cache with the overlay for the most recent
--- residual_window positions. At query time, for each attended
--- position in the last residual_window of the sequence, the
--- attention read prefers the overlay K over the dequantised
--- main cache K. Positions older than residual_window are
--- served from the main cache only.
---
--- NOT YET IMPLEMENTED. Writes into the overlay happen on every
--- decode, but the FA / attention read path does not consult
--- the overlay yet.
+-- Attention-read rule: reconcile the main (quantised) cache
+-- with the overlay for the most recent residual_window positions.
+-- At query time, for each attended position in the last
+-- residual_window of the sequence, the attention read serves K
+-- from the overlay (lossless, fp16/bf16). Positions older than
+-- residual_window are served from the main cache only.
 rule ReadKVRecentFromOverlay {
     when: ReadKVForAttention(query_position, attended_position, stream, seq_len)
 
@@ -214,8 +401,7 @@ rule ReadKVRecentFromOverlay {
     )
 
     @guidance
-        -- Aspirational read-path rule. Selected implementation
-        -- direction (not yet in code): two-pass flash-attention
+        -- Implementation direction: two-pass flash-attention
         -- with online-softmax merge.
         --   Pass A: FA over positions in [0, seq_len -
         --     residual_window), K = main quantised cache, V = V
@@ -259,24 +445,25 @@ rule ReadKVRecentFromOverlay {
         --   - pre-RoPE store (split-K caches, where cpy_k stores
         --     pre-RoPE K and the main-cache read path applies
         --     on-the-fly RoPE): two-pass dispatch falls back to
-        --     single-pass FA. A correct two-pass + LSE merge for
-        --     pre-RoPE storage requires the rope-on-the-fly to
-        --     compose with the merge in a way that has not been
-        --     achieved (the equivalent attempt for turbo_kv_4b
-        --     produced numerically incorrect attention with PPL
-        --     +0.84 over single-pass; see PHASE28.md iter 21 for
-        --     the bisection record). turbo_kv_4b was redesigned
-        --     to post-RoPE storage to side-step this; split-K is
-        --     deferred until either an equivalent redesign or a
-        --     rope/merge composition fix.
+        --     single-pass FA. A correct two-pass + LSE merge
+        --     for pre-RoPE storage requires the rope-on-the-fly
+        --     output to compose with the merge in a way that
+        --     has not been achieved — the apparent symbolic
+        --     equivalence (rope applied per-pass produces the
+        --     same K@RoPE for matched positions) does not
+        --     translate to numerical agreement at the merge
+        --     boundary. Cache types that want overlay support
+        --     therefore standardise on post-RoPE storage; pre-
+        --     RoPE-store cache types remain on single-pass FA.
         -- The behavioural property: overlay-served attention is
         -- numerically equivalent to main-cache-served attention
         -- for the same set of attended positions, modulo the
         -- main cache's quantisation error.
 }
 
--- Aspirational companion: attended positions older than the
--- residual window are served from the quantised main cache.
+-- Companion to ReadKVRecentFromOverlay: attended positions older
+-- than the residual window are served from the quantised main
+-- cache (Pass A in the two-pass dispatch).
 rule ReadKVTailFromMainCache {
     when: ReadKVForAttention(query_position, attended_position, stream, seq_len)
 
@@ -289,11 +476,13 @@ rule ReadKVTailFromMainCache {
     )
 
     @guidance
-        -- Aspirational. When residual_window = 0 the
-        -- ReadKVRecentFromOverlay rule's requires fails for
-        -- every position, and this rule covers the whole
-        -- sequence (equivalent to the currently implemented
-        -- behaviour where every read is from the main cache).
+        -- Implementation: Pass A's mask in the two-pass dispatch
+        -- excludes cells with pos > seq_len - residual_window via
+        -- a stream-wide boundary cut applied after the base
+        -- causal mask (set_input_kq_mask_pass_a). When
+        -- residual_window = 0, ReadKVRecentFromOverlay's
+        -- requires fails for every position and this rule covers
+        -- the whole sequence — single-pass FA on the main cache.
 }
 
 -- ============================================================
@@ -382,7 +571,7 @@ open question "Auto-resolution placement: ResolveOverlayDtypeAuto is modelled as
 
 open question "Read-path structure: should attention over a recent-overlay plus quantised-tail cache use two-pass FA with LSE merge (one pass per source, merged softmax denominators), or single-pass with an assembled-K tensor spliced at query time? Merge granularity and cross-backend portability are at stake. Not yet prototyped."
 
-open question "Rollback semantics: seq_rm (sequence-position removal) currently does not touch the overlay. Rolled-back positions retain stale ring-buffer data until overwritten. This is harmless today (no reader) but becomes observable once the attention-read path consumes the overlay. MTP draft-rejection and prompt rewind are the concrete callers that force a decision."
+open question "Reconciliation strategy selection — partially resolved per-operation. Removal: strategy (A) restore-from-main is selected (small affected set on the typical MTP rejection caller, k≤8; preserves overlay quality post-rewind). Shift / Divide / Copy / Keep: the strategy choice is deferred. Until decided, the implementation must guard those operations behind a hard error when residual_window > 0 and the operation reaches the recent window — so the gap fails loudly rather than silently corrupting attention. Lifting the guard requires either selecting a strategy per operation or generalising restore-from-main to non-removal mutations (Shift/Divide need a slot-move; Copy needs a cross-stream overlay copy; Keep is best served by full rebuild of dropped streams)."
 
 open question "Persistence across session save/load: should the overlay participate in state_write / state_read on llama_memory_i? The in-memory ring buffer is lost across session-resume and server checkpoints today. Implications for long-running server deployments and multi-turn evaluation harnesses."
 
