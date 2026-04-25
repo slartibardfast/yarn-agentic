@@ -21,7 +21,7 @@ Each step mirrors PHASE27's numbered implementation plan plus a Step 0 harness f
 - [ ] **Step 6.** Two-pass Vulkan FA dispatch. Re-run `test-turbo-kv-attention-pbt` at `rw=128`.
 - [ ] **Step 7.** GGUF state save/load with fp16 window (Q4 decision).
 - [ ] **Step 8.** 9B IQ3_XXS PPL gate: ≤ +0.05 above F16 baseline.
-- [ ] **Step 9.** Convert 18 SKIPs in `test-turbo-kv-residual-window-pbt.cpp` to `rc::check`.
+- [x] **Step 9.** Convert 18 SKIPs in `test-turbo-kv-residual-window-pbt.cpp` to `rc::check`. _Closed via iter 10 + 15 + 22 + 23: PBT regenerated from overlay-model spec, all attention-read SKIPs flipped to PASS, 5 reconcile obligations added; final state 28 PASS / 0 SKIP / 0 FAIL._
 
 ## Out-of-plan items landed
 
