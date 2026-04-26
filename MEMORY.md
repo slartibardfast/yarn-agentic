@@ -966,3 +966,18 @@ driver. **Out of scope for step 6**; track separately. Investigation
 hooks: try with `--device CPU` to see whether dequant agrees on CPU, and
 run `test-backend-ops -b Vulkan0 -o MUL_MAT -t TURBO_KV_4B` (or whatever
 the registered type test is) to bisect at the op level.
+
+## 2026-04-26 — Qwen3.6-35B-A3B tokenizer hash registered as qwen35 (UNVERIFIED)
+
+`convert_hf_to_gguf.py` rejected the 35B-A3B safetensors with
+`NotImplementedError: BPE pre-tokenizer was not recognized` (chkhsh
+`1444df51289cfa8063b96f0e62b1125440111bc79a52003ea14b6eac7016fd5f`). I
+added a one-line entry mapping that hash to `res = "qwen35"` (the same
+pre-tokenizer family used by Qwen3.5-9B-Instruct, which IS registered).
+Conversion then completed successfully — `/opt/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-BF16.gguf`
+(67 GB BF16, 753 tensors). **Tokenization parity vs the HF
+`transformers` tokenizer is not yet verified.** If outputs look garbled
+in inference tests, this is the first place to look — Qwen 3.6 may use
+slightly different pre-tokenizer rules from 3.5. Cross-check by encoding
+a few strings through both `tokenizers.AutoTokenizer.from_pretrained(
+"Qwen/Qwen3.6-35B-A3B")` and llama.cpp's runtime, comparing token IDs.
