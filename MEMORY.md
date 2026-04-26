@@ -912,3 +912,18 @@ Loader entries are backed up at `*.bak.<timestamp>`. Recovery if
 ppfeaturemask wedges: boot the archinstall entry
 `2026-03-03_20-22-53_linux-lts.conf` (no overrides) or restore the
 backup.
+
+## 2026-04-26 — Vulkan FA-LSE: coopmat2-capable Ampere refuses LSE at supports_op
+
+Built llama.cpp on RTX 3060 Ti host (Arch, CUDA 13.2, Vulkan 1.4.341).
+`test-backend-ops -b Vulkan0 -o FLASH_ATTN_EXT` reports 4624/4624 supported
+cases pass, but every `lse=1` case prints `not supported [Vulkan0]`. The
+gate at `ggml/src/ggml-vulkan/ggml-vulkan.cpp:15898-15902` refuses LSE
+when `device->coopmat2` is true; the 3060 Ti reports `matrix cores:
+NV_coopmat2`, so the dispatcher never reaches the cm1 LSE shader on
+Ampere. **TRANSFER.md (2026-04-26 snapshot) was wrong** to predict that
+the 3060 Ti would exercise cm1 — coopmat2 capability is checked at the
+device level and short-circuits before per-shape shader selection. To
+close substep 6.5's runtime claim, port cm2 first (task #40), or add a
+runtime knob to disable cm2 selection. PHASE28.md iter 32 records the
+correction; substep 6.5 box stays `[ ]`.
