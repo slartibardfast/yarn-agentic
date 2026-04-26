@@ -948,3 +948,21 @@ non-GQA branch needs careful binding against `flash_attn.comp:811` and
 the dst layout from `ggml_flash_attn_ext_lse` (shape
 `[HSV+4, n_heads, n_queries, n_seqs]`). Add shader debug-printf
 instrumentation BEFORE attempting again.
+
+## 2026-04-26 — Ampere Vulkan turbo_kv_4b dequant regression vs Vega
+
+While running substep 6.6's PPL gate on the RTX 3060 Ti, every config that
+uses `--cache-type-k turbo_kv_4b` regresses badly: rw=0 PPL=30.59 and
+rw=128 PPL=35.18 against a baseline of 17.28 (bf16/f16 KV). f16+rw=128
+matches rw=0 within Δ=0.001, so the FA residual-window two-pass path
+itself is correct on Ampere. The CPU-side `TURBO_KV_4B_DEBUG` validator
+also flags MISMATCHes (small absolute errors, e.g. 0.08–0.21 against
+ref values ~135) — same dequant disagreement that Vega doesn't surface.
+Vega reference logs (`reference/ppl/results/Qwen3.5-0.8B-BF16/turbo_kv_4b.log`)
+recorded turbo_kv_4b PPL ~17.66, so this is a NVIDIA-Vulkan-specific
+regression, not a code change in this session. Likely a per-shape quant
+kernel issue or a packing-layout mismatch surfaced by Ampere's Vulkan
+driver. **Out of scope for step 6**; track separately. Investigation
+hooks: try with `--device CPU` to see whether dequant agrees on CPU, and
+run `test-backend-ops -b Vulkan0 -o MUL_MAT -t TURBO_KV_4B` (or whatever
+the registered type test is) to bisect at the op level.
