@@ -844,3 +844,71 @@ median-of-5 is the right reading, not a single run.
 per-uarch projection. Landed as `2ee704b` + earlier commits; see
 llama.cpp commits `4ad8efd1e` (RHT + fusion + signmask LUT) and
 `6e0fb3e2f` (fp32 repack + fp64 L2_norm).
+
+## 2026-04-26 — Host hard-hung; replaced zram with disk swap + systemd-oomd
+
+Host (yarn.d07yx58.net, RX 6800 XT) hard-hung sometime after
+2026-04-26 10:20 UTC after a ~12 h uptime. Root cause from boot-1
+journal:
+
+1. Apr 25 22:48 → Apr 26 00:10 — `llama-gguf` crashed 6× and
+   systemd-coredump couldn't store any of them ("No space left on
+   device" — root partition full at the time).
+2. Apr 26 01:29 → 01:33 — kernel WARN-style stack traces in amdgpu
+   display code (`dc_state_create_copy`,
+   `update_planes_and_stream_state`, `amdgpu_dm_atomic_commit_tail`)
+   coincident with **"Write-error on swap-device 253:0"**. Block
+   device 253:0 is `/dev/zram0` — the compressed-RAM swap. zram had
+   nothing left to compress into → the page allocator failed inside
+   the display path.
+3. Apr 26 01:50 → 04:32 — repeated `amdgpu: Freeing queue vital
+   buffer ... queue evicted` (compute queues being torn down).
+4. Apr 26 04:32 → 10:20:08 — kernel ring buffer silent. Only
+   NetworkManager DHCP renewals in userspace.
+5. Apr 26 10:20:08 — last journal entry. **No shutdown sequence.**
+   12-minute gap before next boot. Hard hang, not a panic (a panic
+   would have flushed something).
+
+The fix landed in this session:
+
+- **Removed zram entirely.** Compressed RAM-backed swap is a foot-gun
+  on a 64 GiB box that runs llama-server / quantize / convert
+  workloads — when it can't compress further it doesn't gracefully
+  fall through to disk swap, it returns ENOMEM mid-allocation, which
+  crashes the kernel WARN handler for amdgpu display code among
+  others. Removed `/etc/systemd/zram-generator.conf` and
+  `modprobe -r zram`. Sole swap is now `/dev/nvme0n1p5` (64 GiB,
+  prio -2, GPT-auto-mounted).
+- **Enabled `systemd-oomd`** with `SwapUsedLimit=80%`,
+  `DefaultMemoryPressureLimit=60%`, `DefaultMemoryPressureDurationSec=20s`.
+  Drop-ins on `user.slice` and `user-1001.slice` set
+  `ManagedOOMSwap=kill` + `ManagedOOMMemoryPressure=kill` — so when
+  the inference cgroup blows up, the cgroup gets killed cleanly
+  before the kernel goes into a death spiral.
+- **Sysctl tuning** in `/etc/sysctl.d/99-llm-host.conf`:
+  `vm.min_free_kbytes=524288` (was 67584 — 66 MiB → 512 MiB),
+  `vm.watermark_scale_factor=50` (was 10 — 1% → 5%). These give the
+  page allocator real headroom for atomic allocations, which is
+  exactly what failed in the WARN trace.
+- **`MemoryMax=60G` cap on `llama-server.service`** via user-level
+  drop-in (`~/.config/systemd/user/llama-server.service.d/memcap.conf`).
+  Hard cgroup ceiling — the unit gets SIGKILLed at 60 GiB long before
+  global pressure builds.
+- **`amdgpu.ppfeaturemask=0xffff5fff`** in both `arch-lts.conf` and
+  `arch-zen.conf` loader entries (was `0xffffffff`). Drops only
+  GFXOFF (bit 15, 0x8000) and DCEFCLK DPM (bit 13, 0x2000); keeps
+  OverDrive and GFX DCS. GFXOFF is the most-cited RDNA2 hang root
+  cause and DCEFCLK DPM directly touches the display path that
+  WARNed. Takes effect on next reboot. **Reboot pending.**
+
+**Lesson:** zram is fine on memory-constrained desktops. On a server
+with on-disk swap available, it's a worse failure mode — failed
+compression returns mid-allocation rather than spilling to disk, and
+the kernel handlers above zram aren't audited for ENOMEM-during-WARN.
+Use plain on-disk swap + systemd-oomd PSI policies + cgroup
+`MemoryMax` instead.
+
+Loader entries are backed up at `*.bak.<timestamp>`. Recovery if
+ppfeaturemask wedges: boot the archinstall entry
+`2026-03-03_20-22-53_linux-lts.conf` (no overrides) or restore the
+backup.
