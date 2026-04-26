@@ -1,192 +1,113 @@
 # Phase 20: Vulkan Token Generation Performance
 
-## Status: IN PROGRESS — subgroup reduction complete, MMVQ port next
+## Status: COMPLETE (hybrid Mamba/MoE ops) — dense-model MMVQ deprioritized
 
 ## Problem
 
-Vulkan token generation is 2-6x slower than ROCm on identical hardware.
+Vulkan token generation was 2-6x slower than ROCm on identical hardware for dense models, and 150-720x slower for hybrid Mamba/MoE models due to missing ops forcing CPU fallback.
 
-### Measured performance (6800 XT, 512 GB/s peak)
-
-| Model | ROCm tok/s | Vulkan tok/s | BW utilization | Gap |
-|-------|-----------|-------------|----------------|-----|
-| TinyLlama 1.1B Q2_K | 380 | 62 | 4.8% | 6.1x |
-| Llama-2-7B Q8_0 | 69 | 31 | 42% | 2.2x |
-
-### Measured performance (Vega, 484 GB/s HBM2 peak)
+### Starting baselines (6800 XT)
 
 | Model | ROCm tok/s | Vulkan tok/s | Gap |
 |-------|-----------|-------------|-----|
-| TinyLlama 1.1B Q2_K | 244 | 31 | 7.9x |
+| TinyLlama 1.1B Q2_K | 380 | 62 | 6.1x |
+| Llama-2-7B Q8_0 | 69 | 31 | 2.2x |
+| Qwen3.5-35B-A3B IQ3_XXS | — | 0.31 | 322 graph splits |
 
-## Root Cause: Missing MMVQ (Integer Dot Product) Path
+## Sub-phases
 
-Upstream llama.cpp Vulkan has two mul_mat_vec strategies:
+### 20a: Subgroup Reduction (done, marginal)
 
-1. **Dequant path** (what the fork uses): dequantize weights → F32, load F32 activations, FMA accumulate
-2. **MMVQ path** (missing from fork): load quantized weights directly, quantize activations to Q8_1, use `dotPacked4x8EXT` (DP4A) for 4×int8 per instruction
+Added `subgroupAdd` reduction variants to mul_mat_vec shaders, replacing shared memory tree reduction. Performance impact negligible — the reduction step is not the bottleneck.
 
-The MMVQ path reads ~8× less data per element and uses ~4× fewer instructions. On AMD with k≥2048, upstream selects MMVQ for all K-quant types. The 6800 XT supports `VK_KHR_shader_integer_dot_product` (`int dot: 1`).
+### 20c: f16acc mul_mat_vec for Vega RPM
 
-### Why the dequant path is slow
+Exploited Vega's Rapid Packed Math (f16vec2 `v_pk_fma_f16` instructions) for the dequant mul_mat_vec path. Inner FMA loop uses f16vec2 packed arithmetic; accumulation and reduction in f32. ISA confirmed: 1175 `v_pk_fma_f16` instructions emitted on Vega.
 
-For Llama-2-7B Q8_0 token generation:
-- Total weight reads per token: 7.02 GB
-- At 512 GB/s: 13.7 ms theoretical minimum
-- ROCm achieves 14.5 ms (95% bandwidth utilization)
-- Vulkan dequant path achieves 32.3 ms (42% utilization)
+### 20g: MoE Root Cause Analysis
 
-The dequant path wastes bandwidth by expanding quantized weights to F32 in shader registers before multiply-accumulate. MMVQ keeps data in int8 throughout, reading less from memory and using the dedicated DP4A hardware.
+Profiled Qwen3.5-35B-A3B-UD-IQ3_XXS. Found **322 graph splits per token** — caused by 6 missing/broken Vulkan ops in the hybrid Mamba/MoE layers. GPU compute was healthy (~15 ms/token); the bottleneck was CPU fallback sync overhead (~3.2 sec/token). Initial hypothesis blamed `GROUPED_TOPK` — later proved wrong (Qwen3.5 uses `ARGSORT` for routing, not `GROUPED_TOPK`).
 
-### Why small models are even worse
+Real breakdown of CPU ops per inference graph:
 
-TinyLlama (459 MiB Q2_K) has small weight matrices (~1.4 MB per 2048×2048). Each dispatch can't amortize Vulkan's ~3-5 µs per-dispatch overhead. With 511 graph nodes per token, dispatch overhead consumes ~2 ms of the 16 ms total. ROCm's HIP has ~10× lower dispatch overhead.
+| Count | Op | Status |
+|---|---|---|
+| 120 | `L2_NORM` | Missing |
+| 80 | `MUL_MULTI_ADD` | Missing |
+| 60 | `UNARY` (softplus) | Missing |
+| 60 | `SSM_CONV` | Missing |
+| 60 | `DELTA_NET` | Missing |
+| 40 | `FUSED_MUL_UNARY` | Shape mismatch in supports_op |
 
-## Implementation Plan
+### 20h: MOE_FUSED_UP_GATE Vulkan Shader
 
-### Step 1: MMVQ Shaders (for RDNA2 and other DP4A hardware)
+Extended the existing dense `mul_mm_fused_up_gate.comp` with a `MUL_MAT_ID` build flag for the MoE path. Backported full IQ family (IQ1_S..IQ4_XS) into the dense fused_up_gate gen. Fixed a buffer subbuffer scoping bug where multi-token MoE dispatches read zeros for tokens > 0 because the B binding only covered one token's worth of data.
 
-Port upstream's MMVQ shader infrastructure:
+Result: pp256 0.71 → 3.47 t/s (fused MoE now at parity with unfused).
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `mul_mat_vecq.comp` | ~143 | Main MMVQ shader — loads Q8_1 B data, calls `mmvq_dot_product` |
-| `mul_mat_vecq_funcs.glsl` → `.comp` | ~494 | Per-type `repack()` and `mmvq_dot_product()` using `dotPacked4x8EXT` |
+### 20i: GROUPED_TOPK Shader
 
-Key functions per quant type:
-- `repack(ib, iqs)` — load quantized A weights, rearrange for DP4A alignment
-- `mmvq_dot_product(ib, iqs)` — `dotPacked4x8EXT(a_packed, b_packed)` + scale correction
-- `get_dm(ib)` / `get_d(ib)` — load per-block scale factors
+Single fused compute shader, one workgroup per token row, all stages in shared memory. Correct and needed for DeepSeek-V3/BailingMoE-style models, but did NOT move the Qwen3.5 needle (wrong root cause in 20g).
 
-Types to implement (matching upstream AMD heuristic):
-- Q4_0, Q4_1, Q5_0, Q5_1, Q8_0 (legacy quants)
-- Q2_K, Q3_K, Q4_K, Q5_K (K-quants, k≥2048)
-- IQ types where applicable
+### 20j–20m: Qwen3.5 Op Ports
 
-### Step 2: Q8_1 Quantization Pipeline
+| Sub-phase | Op | Source | CPU instances cleared | Splits |
+|---|---|---|---|---|
+| 20j | `L2_NORM` (non-contig) | Upstream PR #19604 — uncommented local shader + replaced contiguous-only variant | 120 | 322 → 262 |
+| 20k | `UNARY` SOFTPLUS | Upstream PR #17319 — new pipeline arrays + CREATE_UNARY wiring | 60 | 262 → 202 |
+| 20l | `MUL_MULTI_ADD` | Greenfield (ik-only op) — one workgroup per (k_block, token) | 80 | 202 → 122 |
+| 20m | `FUSED_MUL_UNARY` broadcast | Local fix — new `fused_mul_sigmoid.comp`, BCAST define for scalar-broadcast, supports_op extended for `nelements(src0) == 1` | 40 | 122 (compute moved to GPU, no split reduction — ops were adjacent to SSM CPU stretches) |
 
-Add GPU-side F32 → Q8_1 quantization:
-- `quantize_q8_1.comp` shader (upstream already has this)
-- Pipeline creation and pre-allocated Q8_1 buffer
-- Dispatch Q8_1 quantization before MMVQ mul_mat_vec
+### 20n: SSM_CONV Full Coverage
 
-### Step 3: C++ Dispatch Logic
+Ported all 5 SSM_CONV CUDA kernels from ik PR #1251 to Vulkan. Three dispatch tiers:
 
-Port upstream's `quantize_y` decision:
-```
-quantize_y = device->integer_dot_product
-          && src1->type == GGML_TYPE_F32
-          && ggml_is_contiguous(src1)
-          && (ne11 * ne10) % 4 == 0
-          && ggml_vk_should_use_mmvq(device, ne01, ne11, ne10, src0->type)
-```
+- **Single-sequence fast path**: 3 SPVs, parallel over (row, token)
+- **Multi-sequence slow path**: 6 SPVs, serial per-row with recurrence/fanout handling
+- **Multi-sequence unique-fast path**: 7 SPVs, GPU-side `fast_path_ok` atomic flag
 
-AMD heuristic from upstream:
-- Use MMVQ when k ≥ 2048 for most types
-- Q8_0: use MMVQ only on GCN (Vega), not on RDNA2
-- Q3_K, Q6_K: skip MMVQ (2-byte alignment issues)
+Total: 6 shader files, 16 SPV variants, ~700 LOC.
 
-### Step 4: Pipeline Array Extension
+Result: splits 122 → 62, pp256 3.47 → 12.69 t/s (+266%).
 
-Add `pipeline_dequant_mul_mat_vec_q8_1_f32[type][cols]` array alongside existing `_f32_f32` and `_f16_f32` arrays.
+### 20o: DELTA_NET
 
-### Step 5: Vega (GCN5) — Packed FP16 Path
+Custom Vulkan shader for ik fork's 6-arg `ggml_delta_net` (transposed state layout, different from upstream `ggml_gated_delta_net`). One workgroup per (head, seq); each thread holds one row of state in registers. HEAD_DIM baked at SPV-gen time (64, 128). Two reduction strategies: shmem (universal) and subgroup-add (Vega wave64 + h64).
 
-Vega has NO DP4A hardware (`int dot: 0`). The MMVQ path won't help Vega. Instead, exploit Vega-specific features:
+Result: splits 62 → **2**, pp256 12.69 → **146.41 t/s**, tg64 0.46 → **18.18 t/s**.
 
-**Rapid Packed Math (RPM):**
-- Vega processes two FP16 values per instruction via `f16vec2` (`v_pk_*` ISA)
-- Current dequant path works in F32 — switching to FP16 packed math doubles throughput
-- Requires `VK_KHR_shader_float16_int8` (supported on RADV)
+### 20p: f16acc Overflow Fix
 
-**Implementation:**
-- New `mul_mat_vec_f16pack.comp` variant that:
-  - Dequantizes to `float16_t` instead of `float`
-  - Accumulates using `f16vec2` packed operations
-  - Uses `float` only for the final reduction (avoid precision loss)
-- Selected when `!integer_dot_product && fp16` (Vega, Polaris)
+Phase 20c's f16acc set `FLOAT_TYPE=float16_t`, causing the entire accumulation chain to be f16. Q4_K/Q5_K/Q6_K overflowed (6-bit or 8-bit scale × dot exceeds f16 range). Fix: promoted 3 scale-multiply sites to `float`, changed `FLOAT_TYPE=float` for all f16acc variants. Inner f16vec2 FMAs unchanged (1175 `v_pk_fma_f16` confirmed). 32 new stress tests (B in [-50,50]) for 8 quant types.
 
-**VGPR Budgeting:**
-- GCN5 has 256 VGPRs per SIMD unit
-- Target ≤32 VGPRs per thread for maximum occupancy (8 wavefronts/SIMD)
-- f16vec2 halves register pressure vs F32 — more accumulators fit in 32 regs
+## Results
 
-**Wave64 Exploitation:**
-- Vega's native wavefront is 64 lanes
-- Each subgroupAdd covers 64 elements — 2× the work per reduction vs RDNA2's wave32
-- Shader should be tuned for 64-wide access patterns (coalesced 64×4B = 256B cache lines)
+### Qwen3.5-35B-A3B-UD-IQ3_XXS on 6800 XT
 
-### Step 6: Benchmark and Tune
+| Metric | Before Phase 20 | After Phase 20 | Improvement |
+|---|---:|---:|---|
+| pp256 t/s | 0.71 | 146.41 | 206x |
+| tg64 t/s | 0.31 | 18.18 | 58x |
+| Graph splits/tok | 322 | 2 | -99.4% |
 
-For each GPU × quant type combination:
-1. Measure tok/s and bandwidth utilization
-2. Compare against ROCm baseline
-3. Tune NUM_ROWS, BLOCK_SIZE, and K_PER_ITER for optimal occupancy
+### Deployment (Q4_K_M, dual-GPU layer-split)
 
-Target: exceed ROCm on 7B Q8_0 token gen (>69 tok/s on 6800 XT) by combining DP4A efficiency with Vulkan's lower memory overhead.
+| Metric | Value |
+|---|---|
+| pp256 | 117 t/s |
+| tg64 | 11.3 t/s |
+| Graph splits | 3 |
 
-## Completed Work
+### Remaining bottleneck
 
-### Subgroup Reduction (done, marginal impact)
+82% of wall time is CPU dispatch overhead (1482 dispatches x ~51 us each). GPU compute is only 16 ms. The Vulkan ops themselves (DELTA_NET 19 us, SSM_CONV 8 us, fusions 4 us) are negligible.
 
-Added `subgroupAdd` reduction variants to mul_mat_vec shaders, replacing shared memory tree reduction. Requires `require_full_subgroups=true` + `required_subgroup_size`. Correctness verified (926/926 tests pass). Performance impact negligible — the reduction step is not the bottleneck.
+## MMVQ Investigation (deprioritized)
 
-### Bandwidth Analysis (done)
+The original MMVQ port for dense-model DP4A acceleration hit NaN on every dispatch despite byte-identical shader SPIR-V to upstream. Extensive debugging ruled out shader code, Q8_1 format, NUM_ROWS, reduction variant, descriptor range, and binding count. Remaining suspects were fork buffer management patterns and push constant struct layout. Deprioritized when focus shifted to hybrid Mamba/MoE op coverage, which delivered far larger gains.
 
-Profiled mul_mat_vec with test-backend-ops perf:
-- Large matrices (m=128K, k=3K): kernel saturates bandwidth (~2100 GB/s effective)
-- Realistic matrices (m=4K, k=4K): ~42% bandwidth on 6800 XT
-- Small matrices (m=16, k=256): dispatch-overhead dominated (~9 GB/s)
+## Test Coverage
 
-## Architecture-Specific Strategy Summary
-
-| GPU | Architecture | DP4A | Strategy | Expected Improvement |
-|-----|-------------|------|----------|---------------------|
-| RX 6800 XT | RDNA2 | Yes | MMVQ (dotPacked4x8EXT) | 2-3× (close to ROCm) |
-| RX Vega | GCN5 | No | Packed FP16 (f16vec2 RPM) | 1.5-2× |
-| Polaris | GCN4 | No | Packed FP16 (limited RPM) | 1.2-1.5× |
-| NVIDIA | Turing+ | Yes | MMVQ (existing upstream) | Already optimized |
-
-## Verify by
-
-- 7B Q8_0 token gen on 6800 XT: >60 tok/s (from 31, target exceeding ROCm's 69)
-- TinyLlama Q2_K on 6800 XT: >150 tok/s (from 62)
-- TinyLlama Q2_K on Vega: >60 tok/s (from 31, via FP16 path)
-- 926/926 backend-ops tests pass on both GPUs
-- Perplexity unchanged (no precision regression)
-
-## References
-
-- Upstream MMVQ: `llama.cpp/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp`
-- Upstream MMVQ funcs: `llama.cpp/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl`
-- Upstream quantize_y: `llama.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp` line ~7647
-- Upstream should_use_mmvq: same file, search `ggml_vk_should_use_mmvq`
-- AMD GCN5 ISA: Rapid Packed Math `v_pk_*` instructions
-- Vulkan DP4A: `VK_KHR_shader_integer_dot_product` / `dotPacked4x8EXT`
-- Benchmark data: [BENCHMARKS.md](BENCHMARKS.md)
-
-## Debugging Log: MMVQ NaN (2026-03-21)
-
-### Confirmed facts
-- Upstream Vulkan MMVQ passes ALL tests on same 6800 XT hardware
-- Our fork's MMVQ shader SPIR-V is functionally identical to upstream's
-- Every MMVQ dispatch produces NaN; every non-MMVQ dispatch passes
-- NaN persists after: x4 quantize format, NUM_ROWS=1, shmem-only reduction, VK_WHOLE_SIZE for Y buffer, 3 bindings instead of 5
-- Disabling MMVQ (should_use_mmvq returns false) → 0 failures
-
-### Ruled out
-- Shader code difference (byte-for-byte identical)
-- Q8_1 buffer format (x4 vs plain — both produce NaN)
-- NUM_ROWS spec constant (changed to 1, still NaN)
-- Subgroup reduction variant (tried shmem-only, still NaN)
-- Y descriptor range (VK_WHOLE_SIZE, still NaN)
-- Binding count mismatch (3 vs 5 — dequant also has this, works fine)
-
-### Remaining suspects
-1. **Fork's buffer management pattern**: Fork uses `vk_buffer` + explicit offset/size at dispatch. Upstream uses `vk_subbuffer` with `ggml_vk_tensor_subbuffer()`. The implicit conversion to `vk::DescriptorBufferInfo` may differ.
-2. **Push constant field mismatch**: Our fork's `vk_mat_vec_push_constants` struct may have different field layout than upstream's. Fields like `fusion_flags` and `base_work_group_y` might be at different offsets.
-3. **Pipeline descriptor set layout**: The way the fork creates descriptor set layouts from pipeline bindings may differ from upstream, causing descriptors to be bound to wrong slots.
-4. **The quantize_q8_1 dispatch itself**: The Q8_1 data written by the quantize shader may be wrong — need to read back and verify.
-
-### Next step
-Do a byte-level comparison of the push constant struct layout between fork and upstream, and verify the Q8_1 quantize output by reading back the buffer.
+- 1309+ backend-ops tests pass on both Vega 64 and 6800 XT
+- 19 DELTA_NET, 13 SSM_CONV, 7 GROUPED_TOPK, 40 MOE_FUSED_UP_GATE cases
+- 32 f16acc stress tests (Q4_K/Q5_K/Q6_K overflow regression coverage)
