@@ -927,3 +927,24 @@ device level and short-circuits before per-shape shader selection. To
 close substep 6.5's runtime claim, port cm2 first (task #40), or add a
 runtime knob to disable cm2 selection. PHASE28.md iter 32 records the
 correction; substep 6.5 box stays `[ ]`.
+
+## 2026-04-26 — cm2 LSE port aborted; dispatcher fallback to cm1 chosen instead
+
+Attempted a per-line port of `flash_attn_cm2.comp` to add an LSE writeback
+branch (per iter 28 audit: scalar epilogue gated on
+`gl_LocalInvocationIndex == 0`, vec4-aligned HSV+4 dst). Build was clean
+but `test-backend-ops` flagged NMSE ~46 across all 38 lse=1 cases on the
+3060 Ti — large enough to be a layout/index bug, not numerical drift.
+Without shader-side `printf` instrumentation the bug was not isolable in
+reasonable time. **Pivoted**: reverted the cm2 shader edits and added a
+dispatcher rule in `get_fa_tuning_params` that downgrades FA_COOPMAT2 to
+FA_COOPMAT1 (or scalar) when `lse_mode` is set. The cm1 LSE branch is
+the verified one and is now exercised on Ampere via this fallback. Lesson
+for the future cm2 LSE port (if perf demands it): the cooperative tensor
+store at `coopMatStoreTensorNV` is the structurally invasive piece; a
+per-element scalar epilogue around `coopMatPerElementNV` mirroring the
+GQA path is the right shape, but `gqa_iq1`-driven address math in the
+non-GQA branch needs careful binding against `flash_attn.comp:811` and
+the dst layout from `ggml_flash_attn_ext_lse` (shape
+`[HSV+4, n_heads, n_queries, n_seqs]`). Add shader debug-printf
+instrumentation BEFORE attempting again.
