@@ -981,3 +981,18 @@ in inference tests, this is the first place to look — Qwen 3.6 may use
 slightly different pre-tokenizer rules from 3.5. Cross-check by encoding
 a few strings through both `tokenizers.AutoTokenizer.from_pretrained(
 "Qwen/Qwen3.6-35B-A3B")` and llama.cpp's runtime, comparing token IDs.
+
+## 2026-04-26 — Qwen3.6-35B-A3B BF16 GGUF smoke-verified on CPU
+
+CPU-only `llama-cli` smoke against `/opt/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-BF16.gguf`
+with prompt "The capital of France is" produced coherent English
+(thinking-style reasoning prelude) — confirming the tokenizer hash
+registered as `qwen35` is functionally correct at the round-trip level.
+Throughput on Xeon (no GPU offload): prompt 23.8 t/s, generation 9.0 t/s.
+8 GB VRAM is too small for full BF16 offload; partial `-ngl` or a
+quantized GGUF (Q4_K_M ≈ 17 GB) is needed for GPU acceleration. NOTE:
+`-no-cnv` is rejected by `llama-cli` ("--no-conversation is not supported
+by llama-cli; please use llama-completion instead"); the run wedged in
+interactive mode and produced a 1.1 GB log of empty `> ` prompts before
+being killed. Future smokes: use `llama-completion` for one-shot
+generation, or pipe a `/exit` command into `llama-cli` stdin.
