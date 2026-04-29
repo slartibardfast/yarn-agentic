@@ -72,3 +72,5 @@ If MTP throughput is still < Vega reference after Steps 1–6 close, the gap is 
 ## Loop log
 
 Each iteration appends one line: what landed, evidence binding, regression panel state.
+
+- iter 1 (2026-04-29): **Step 1 closes.** CUDA0 baseline gate on RTX 3060 Ti. `test-backend-ops -b CUDA0` sweep across FLASH_ATTN_EXT / CPY / GET_ROWS / SET_ROWS / MUL_MAT / FUSED / MOE_FUSED_UP_GATE / FUSED_RMS_NORM / SSM_CONV / SSM_SCAN: every non-turbo op returns Backend CUDA0: OK. turbo_kv_4b / turbo_2b/3b/4b/5b types print "not supported" cleanly (no FAIL, no crash). Hybrid SSM/MoE/FUSED ops are all native on CUDA — no PHASE3-equivalent split-fix needed. **PPL on Qwen3.5-0.8B-BF16, --device CUDA0 -fa on -ctk f16 -ctv f16 -c 2048 --chunks 3 = 17.3021** (vs CPU 17.29, Vulkan 17.29; within chunk stderr ±0.94). `sched_reserve: graph splits = 2` for the 0.8B model — Vulkan needed PHASE3 to land fused ops to get from 118 splits down to similar. **Gap audit confirms the exploration report**: missing op-supports for the four quant families (TURBO_KV_4B cache type ops; TURBO_*B weight MUL_MAT; TQ_V_4B FA-vector instantiations; FA-LSE writeback). Next: Step 2 — TURBO_KV_4B CUDA port.
