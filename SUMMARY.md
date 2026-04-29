@@ -35,6 +35,7 @@
 - [Phase 26: TURBO_KV_4B — SOTA Gap Audit (Allium Weed Pass)](PHASE26.md)
 - [Phase 27: TURBO_KV_4B — Residual Window Implementation Design](PHASE27.md)
 - [Phase 28: TURBO_KV_4B — Residual Window Implementation](PHASE28.md)
+- [Phase 29: CUDA/HIP Backend Gaps for Tight Qwen3.5 MTP](PHASE29.md)
 - [Phase 30: turbo_kv_4b Cross-Architecture Vulkan Regression Debug](PHASE30.md)
 
 # Qwen3.5 MTP Tool Calling
