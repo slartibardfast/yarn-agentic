@@ -2,7 +2,11 @@
 
 ## Status
 
-**Open.** Umbrella phase for all pending CUDA/HIP work. Triggered by the focus shift after PHASE30 closed Ampere-side correctness for `turbo_kv_4b` on Vulkan. Goal: bring the CUDA backend on the RTX 3060 Ti (Ampere) to parity with the Vulkan path that drives Qwen3.5-9B-mtp-q4km at 36–38 t/s and 65–95% spec-decode acceptance on Vega.
+**ABANDONED 2026-05-01.** Per user direction, all in-flight TurboQuant work in this tree is abandoned. Steps 1–3 had landed (committed on `llama.cpp` master and parked under `defunct/phase29` branch). Step 4 (TQ_V_4B FA-V) was code-complete but unverified; parked under `defunct/phase29-iter7-tq_v_4b-fa-v`. Steps 5–7 were not started.
+
+**Successor:** PHASE31 — MTP-only production focus on `ik_llama.cpp`, no turboquant. If turboquant work is revived later, the user-named reference fork is `slartibardfast/llama-cpp-turboquant` (turbo2/3/4 quants, CUDA arch list `75;80;86;89;120;121`, RTX 3080 tested) — adopt their kernels rather than continuing this phase.
+
+**Original framing (kept for record):** Umbrella phase for all pending CUDA/HIP work. Triggered by the focus shift after PHASE30 closed Ampere-side correctness for `turbo_kv_4b` on Vulkan. Goal: bring the CUDA backend on the RTX 3060 Ti (Ampere) to parity with the Vulkan path that drives Qwen3.5-9B-mtp-q4km at 36–38 t/s and 65–95% spec-decode acceptance on Vega.
 
 ## Scope
 
@@ -72,6 +76,8 @@ If MTP throughput is still < Vega reference after Steps 1–6 close, the gap is 
 ## Loop log
 
 Each iteration appends one line: what landed, evidence binding, regression panel state.
+
+- iter 7 (2026-05-01): **PHASE ABANDONED.** Per user direction: drop all our TurboQuant work; MTP becomes sole focus on `ik_llama.cpp`. Steps 1–3 commits remain on `llama.cpp` master (and labelled `defunct/phase29`); the in-flight Step 4 TQ_V_4B FA-V (built but unverified) committed to `defunct/phase29-iter7-tq_v_4b-fa-v`. Steps 5–7 not started. Future TurboQuant reference: `slartibardfast/llama-cpp-turboquant` (turbo2/3/4, sm_75+ confirmed). Successor phase: PHASE31 (MTP-only production on `ik_llama.cpp`).
 
 - iter 6 (2026-04-29): **Step 4 closes (pivoted).** TQ_V_4B FA-V deferred — its cross-lane RHT can't fit CUDA's per-thread fattn-vec template without a custom block-cooperative FA kernel, AND TQ_V_4B isn't on the MTP hot path. Pivoted to the actually-recommended V-cache quant per `phases/qwen35-mtp/PROFILING.md`: **IQ4_NL** (no observed fingerprint divergence from f16, half the V footprint). Added `dequantize_V_iq4_nl` mirroring q4_0 with kvalues_iq4nl codebook lookup; registered in `get_dequantize_V`; extended `EXTERN_DECL_FATTN_VEC_CASES` and added `FATTN_VEC_CASES_ALL_D(F16, IQ4_NL)` in the default build branch; lifted the K!=V refusal at `fattn.cu:380` for the specific F16-K + IQ4_NL-V pair; new explicit `fattn-vec-instance-f16-iq4_nl.cu` listed in CMakeLists. Submodule commit `db231ec0d`. Results: `llama-perplexity --device CUDA0 -ctk f16 -ctv iq4_nl -fa on` on Qwen3.5-0.8B-BF16 = **PPL 17.4349** (f16/f16 baseline 17.30; +0.13 matches PROFILING.md "no observed divergence" claim); graph splits = 2 (FA accepts the mixed pair, no CPU fallback). K=IQ4_NL not added (would need vec_dot_fattn_vec_KQ_iq4_nl with non-trivial dp4a-via-codebook; symmetric config not documented). Next: Step 5 — FA-LSE writeback.
 
