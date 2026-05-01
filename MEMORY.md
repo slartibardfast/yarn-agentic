@@ -996,3 +996,27 @@ by llama-cli; please use llama-completion instead"); the run wedged in
 interactive mode and produced a 1.1 GB log of empty `> ` prompts before
 being killed. Future smokes: use `llama-completion` for one-shot
 generation, or pipe a `/exit` command into `llama-cli` stdin.
+
+## 2026-05-01 — TurboQuant work abandoned in this tree; MTP becomes sole focus
+
+User redirect on 2026-05-01 ended all our TurboQuant development in this
+tree. PHASE29 (CUDA TURBO_KV_4B / TURBO_*B / TQ_V_4B / IQ4_NL FA-V) is
+abandoned with iters 1–6 left on `llama.cpp` master and labelled
+`defunct/phase29`; iter 7 (TQ_V_4B FA-V code-complete but unverified) is
+parked at `defunct/phase29-iter7-tq_v_4b-fa-v`. PHASE30 (Vulkan
+turbo_kv_4b subgroup-portable rewrite) is abandoned with closing-
+condition (b) Vega regression check never run; labelled `defunct/phase30`.
+
+**Future TurboQuant reference is `slartibardfast/llama-cpp-turboquant`** —
+turbo2/3/4 quants, CUDA arch list `75;80;86;89;120;121` (sm_75 floor
+confirmed), RTX 3080 tested at 75 tok/s on Qwen3-8B. If TurboQuant work
+is revived later, adopt their kernels rather than rebuilding ours.
+
+**MTP becomes sole focus.** Production target is `ik_llama.cpp`
+(MTP already wired via `src/llama-build-context.cpp::build_mtp_tail()`,
+`src/llama-context.h`, `src/llama-delta-net.cpp`). KV cache stays at
+default f16 — no quantization in the production line for now. Successor
+phase: PHASE31 (MTP-only production on 3060 Ti). Other surveyed
+community efforts (`AmesianX/TurboQuant`, `atomicmilkshake/llama-cpp-turboquant`,
+`ikawrakow/ik_llama.cpp#1509`, `ggml-org/llama.cpp#20969`) are noted in
+PHASE31's reference section but not adopted.
