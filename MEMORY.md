@@ -1020,3 +1020,30 @@ phase: PHASE31 (MTP-only production on 3060 Ti). Other surveyed
 community efforts (`AmesianX/TurboQuant`, `atomicmilkshake/llama-cpp-turboquant`,
 `ikawrakow/ik_llama.cpp#1509`, `ggml-org/llama.cpp#20969`) are noted in
 PHASE31's reference section but not adopted.
+
+## 2026-05-01 — MTP works correctness-good on 3060 Ti; throughput negative under --cpu-moe
+
+PHASE31 iter 1 closed Steps 1–4 on Qwen3.6-35B-A3B-Q4_K_M / RTX 3060 Ti
+(8 GB VRAM, --cpu-moe partial offload). Findings:
+
+- **PPL parity**: baseline (-no-mtp) and -mtp produce **byte-identical**
+  per-chunk perplexity on wikitext-2 test (16 chunks @ n_ctx=512: 7.0974
+  ± 0.278 in both runs). MTP head doesn't disturb main logits.
+- **Draft acceptance**: 85.3% (58/68) via llama-server speculative path.
+- **Throughput**: MTP is **−25%** in tg under --cpu-moe (server: baseline
+  20.22 t/s, MTP 15.17 t/s). High acceptance can't amortize draft cost
+  when both draft and verify pay full CPU-MoE cost. This is the published
+  "12% overhead" tax (commit fd77f898) compounded by CPU-MoE serial
+  compute. **Real uplift requires full GPU residency** (not achievable on
+  8 GB VRAM with 35B-A3B).
+- **Bug found and fixed**: ik_llama.cpp CUDA `OP_DELTA_NET` op-supports
+  declared true unconditionally, but `ggml-cuda/delta-net.cu:258`
+  asserts dst has `output_size + state_size` elements while
+  `ggml_delta_net_ext` sizes dst with `state_size * n_tokens` when
+  `op_params[2]` (emit_intermediates) is set. With
+  `src/llama-delta-net.cpp:402` hardcoding `emit_intermediates=true`,
+  the assertion fired any time prompt-eval batched n_tokens > 1.
+  Fix: gate CUDA on `op->op_params[2] == 0 || op->src[0]->ne[1] == 1`.
+  CPU handles n_tokens>1+emit; GPU still runs decode-time (n_tokens=1).
+  Branch: `fix/cuda-delta-net-emit-intermediates` on slartibardfast/
+  ik_llama.cpp (commit f9bb0efa); PR awaiting open.
