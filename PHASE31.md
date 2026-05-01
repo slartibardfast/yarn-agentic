@@ -39,21 +39,21 @@ Out of scope:
 
 ## Step checklist
 
-- [ ] **Step 1 — Build ik_llama on 3060 Ti.**
+- [x] **Step 1 — Build ik_llama on 3060 Ti.**
   - `cd ik_llama.cpp && cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j`
   - Smoke baseline (no MTP): `./build/bin/llama-cli -m <gguf> --device CUDA0 -ngl 99 -p "test"` produces coherent text.
   - Verify by: build clean, baseline inference returns non-empty non-garbage output.
 
-- [ ] **Step 2 — Quantize Qwen3.6-35B-A3B-BF16 → Q4_K_M.**
+- [x] **Step 2 — Quantize Qwen3.6-35B-A3B-BF16 → Q4_K_M.**
   - `./build/bin/llama-quantize /opt/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-BF16.gguf /opt/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-Q4_K_M.gguf q4_k_m`
   - Verify by: output gguf written; `gguf-py` re-read confirms `nextn_predict_layers=1` preserved.
 
-- [ ] **Step 3 — MTP smoke run on 3060 Ti.**
+- [x] **Step 3 — MTP smoke run on 3060 Ti.**
   - `./build/bin/llama-cli -m Qwen3.6-35B-A3B-Q4_K_M.gguf --device CUDA0 -ngl <max-fitting> -fa on --mtp on -c 2048 -p "The capital of France is" -n 64`
   - Determine `-ngl` such that VRAM stays under 7.5 GB (leave headroom). Q4_K_M of 35B is ~17 GB; with 8 GB VRAM expect to offload only ~10 main layers + MTP head + output projection.
   - Verify by: non-NaN logits, coherent continuation, exit cleanly.
 
-- [ ] **Step 4 — MTP PPL parity.**
+- [x] **Step 4 — MTP PPL parity.**
   - `./build/bin/llama-perplexity -m <Q4_K_M-gguf> -f /opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw --device CUDA0 -ngl <max-fitting> -fa on -c 4096 --chunks 16` with `--mtp on` and again without.
   - Verify by: `|PPL_mtp - PPL_baseline| < 0.05` (or document why MTP doesn't share PPL with non-MTP — MTP changes the prediction sequence).
 
@@ -91,4 +91,6 @@ Phase 31 closes when:
 
 ## Loop log
 
-(empty — append on iteration close)
+- iter 1 (2026-05-01): **Steps 1–4 close.** Build clean (475/475 targets, native sm_86) on RTX 3060 Ti. Quantize Qwen3.6-35B-A3B-BF16 (67 GB) → Q4_K_M (21.7 GB) succeeded; MTP heads (`blk.40.nextn.{shared_head_norm,enorm,hnorm}`) preserved. **Bug found and fixed:** CUDA `delta-net.cu:258` asserts `ggml_nelements(dst) == output_size + state_size` but `ggml_delta_net_ext` sizes `dst` with `state_size * n_tokens` when `op_params[2]` (emit_intermediates) is set — and `src/llama-delta-net.cpp:402` hardcodes `emit_intermediates=true`. CUDA op-supports declared `GGML_OP_DELTA_NET` true unconditionally → assert fires whenever prompt eval batches >1 token through the MTP graph. Fixed in `ggml/src/ggml-cuda.cu` op-supports: `return op->op_params[2] == 0 || op->src[0]->ne[1] == 1;` — keeps CUDA for `emit_intermediates=false` and the `n_tokens=1` decode case, falls back to CPU for the n_tokens>1 emit path. **Smoke (llama-cli, 64-token --ignore-eos, prompt "Tell a short story about a robot..."):** baseline 20.09 t/s tg / 21.24 t/s pp; MTP 19.12 t/s tg / 21.03 t/s pp. **PPL on wikitext-2 test, 16 chunks @ n_ctx=512:** baseline 7.0974 ± 0.278; MTP 7.0974 ± 0.278 — **byte-identical chunk-by-chunk**, MTP head doesn't disturb main logits. **Server (apples-to-apples completion, n_predict=128, temp=0):** baseline 20.22 t/s tg / 22.57 t/s pp; MTP 15.17 t/s tg / 19.84 t/s pp; **draft acceptance 85.3% (58/68)**. Despite high acceptance, MTP is **−25% in tg** in this configuration — the `--cpu-moe` partial offload puts every draft and every verification through CPU MoE compute, which dominates and is not amortized by acceptance savings. **Conclusion for 8 GB VRAM + 35B-A3B:** MTP is correctness-good and well-implemented but is throughput-negative under partial offload. Throughput uplift needs a configuration where draft cost is meaningfully cheaper than verify cost — i.e., full GPU residency or a smaller MTP-capable model. No bug in our MTP wiring; this is the published "12% overhead" tax (commit `fd77f898`) compounded by CPU-MoE serial compute.
+
+- iter 2 placeholder — Steps 5–6 close-out follow.
