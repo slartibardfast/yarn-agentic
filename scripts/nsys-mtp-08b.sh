@@ -30,6 +30,7 @@ run_traced() {
     nsys profile \
         --output "${trace_dir}/trace" \
         --trace cuda,nvtx,cublas \
+        --cuda-graph-trace=node \
         --sample none \
         --cpuctxsw none \
         --kill=sigterm \
