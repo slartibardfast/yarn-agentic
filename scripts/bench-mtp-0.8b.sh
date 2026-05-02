@@ -36,12 +36,16 @@ run_mode() {
     cleanup_servers
 
     echo "=== mode=$mode ==="
+    # n_max=1: chaining drafts past the first hurts on Qwen3.5-0.8B because per-draft
+    # acceptance decays geometrically (α≈0.6 chained → 60%; n_max=1 → 85% accept on the
+    # one draft). Verified via scripts/bench-mtp-sweep.sh.
     "$BIN" \
         -m "$MODEL" \
         --device CUDA0 \
         -ngl 99 \
         -fa on \
         $mtp_flag \
+        --draft 1 \
         -c 4096 \
         --threads 16 \
         --batch-size 2048 \
