@@ -1047,3 +1047,32 @@ PHASE31 iter 1 closed Steps 1–4 on Qwen3.6-35B-A3B-Q4_K_M / RTX 3060 Ti
   CPU handles n_tokens>1+emit; GPU still runs decode-time (n_tokens=1).
   Branch: `fix/cuda-delta-net-emit-intermediates` on slartibardfast/
   ik_llama.cpp (commit f9bb0efa); PR awaiting open.
+
+---
+
+## 2026-05-02 — Quadro replication of PHASE31 MTP
+
+**Hardware**: 2× Quadro RTX 6000 (TU102, sm_75, 24 GB each). Production binary at /home/llm/ik_llama.cpp tracks `ikawrakow/main` at `453a027`; tg = 84 t/s on Qwen3.6-35B-A3B Q8_0 on this hardware is the perf reference ceiling (full GPU offload, split-mode graph).
+
+**Fork branch tip is unusable on Turing.** Built peer's `fix/cuda-delta-net-emit-intermediates` (f9bb0efa) at slartibardfast/ik_llama.cpp:main = a0d0e06e + 1 commit. Run on Quadro full-GPU yielded **2.4 t/s tg baseline** — a ~20× regression vs. production. Bisect of which commit broke perf was avoided in favour of a clean extraction (see below). The regression sits in the ~95 unrelated WIP commits (TURBO_KV_4B / Vulkan / Mesa GPU-driver debugging / FWHT / batch-invariance) the fork accumulated — that work was tested on AMD 6800 XT Vulkan and sm_86 Ampere only; sm_75 falls out of fast paths on it.
+
+**Published "1.74×" did not generalize.** Commit `fd77f898 perf: eliminate MTP graph splits — 10.2 → 17.8 t/s` body specifies the measurement was on **0.8B F16 + AMD 6800 XT Vulkan**. Combined with peer iter-1 finding **−25% on Qwen3.6-35B-A3B on 3060 Ti --cpu-moe**, no actual measurement of MTP throughput uplift on Qwen3.6-35B-A3B exists, on any hardware. The handoff treated 1.74× as the PHASE31 target without flagging the model/hardware mismatch.
+
+**Clean extraction onto upstream HEAD.** Branched `mtp-extract` from `ikawrakow/main` HEAD `a8aecbf1`. Six commits:
+1. `f51b3011 llama-model: add 4 nextn tensor mappings to LLM_ARCH_QWEN35MOE` — the missing tensor-name mapping table that was the only reason upstream HEAD failed to load fork-MTP-quantized MoE files.
+2. `773b0648` — peer's +5-line delta-net op-supports gate (carried forward).
+3. `f23a34a5 examples/quantize: read GGUF-format imatrix files` — +125 lines so legacy `llama-quantize` reads modern GGUF imatrix (e.g. Unsloth's `imatrix_unsloth.gguf_file`); legacy expected only the old `.dat` binary format.
+4. `89aa1e7b qwen35moe: enable MTP layer loading mirroring qwen35 dense` — read `nextn_predict_layers`, set `n_layer_kv_from_start`, force MTP layer non-recurrent in `recurrent_layer_arr`, accept `n_layer=41` as 35B-A3B MTP variant, load `nextn.{eh_proj,enorm,hnorm,shared_head_norm}` at the MTP layer.
+5. `72408097 build_qwen35moe: mirror build_qwen35 dense MTP structure` — limit main loop to `n_layer - nextn_predict_layers`, branch on `cparams.mtp_op_type` to call `build_qwen35_mtp`, emit `result_mtp_embd`.
+6. `ad74bc2e llama.cpp: gate MTP on QWEN35MOE alongside QWEN35` — extend the four `model.arch == LLM_ARCH_QWEN35` MTP gates to also accept QWEN35MOE.
+
+**Baseline result on `mtp-extract`**: `-no-mtp` boots cleanly. Three-run **tg = 90.4 / 91.9 / 95.1 t/s, pp = 232 t/s** on Qwen3.6-35B-A3B-IQ4_KS-imat (19.66 GB on disk), full GPU offload (CUDA0,CUDA1, split-mode graph, batch 4096, ubatch 2048, ctx 4096) — about 10% faster than production Q8 because IQ4_KS at 4.25 bpw moves less memory bandwidth than Q8 at 8.5 bpw.
+
+**MTP path open**: `-mtp` boot reaches `ggml_cuda_set_peer_access` then crashes with `std::out_of_range: map::at` somewhere in the MTP-aware KV-cache or compute-graph init path — likely cross-device buft placement (analogous to fork's `24f64b1e perf: fix cross-device MTP — co-locate MTP + output on last-main-layer GPU`). The four QWEN35MOE gates we added haven't fully taught the runtime that MoE-MTP is a valid configuration; at least one more lookup site is rejecting it. Step 5 close pending.
+
+**Apples-to-apples quant recipe** for this model is in repo as `/opt/models/Qwen3.6-35B-A3B-IQ4_KS-imat.gguf`: BF16 source → IQ4_KS for the bulk (imatrix-driven via Unsloth's `unsloth_calibration_Qwen3.6-35B-A3B.txt`, 76 chunks × 11008 tokens), `--custom-q ssm_out\.weight=q8_0` to keep ssm_out at non-IQK type so split-mode-graph's `split_recurrent_tensors` accepts it (per-row-meta types are rejected there at `llama-load-tensors.cpp:3859`), output.weight at q6_K via no-imatrix fallback, nextn.* tensors preserved at f16/f32 since Unsloth's imatrix lacked entries for them.
+
+**Files of interest**:
+- `mtp-extract/inventory.md` — 121 fork commits classified (25 mtp_core, 13 mixed, 1 mtp_test, 1 mtp_doc, 79 out_scope, 2 merge).
+- `mtp-extract/classify.py` — small Python tool that produced the inventory.
+- `slartibardfast/ik_llama.cpp:mtp-extract` — the 6 commits, ready for review.
