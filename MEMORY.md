@@ -1076,3 +1076,22 @@ PHASE31 iter 1 closed Steps 1–4 on Qwen3.6-35B-A3B-Q4_K_M / RTX 3060 Ti
 - `mtp-extract/inventory.md` — 121 fork commits classified (25 mtp_core, 13 mixed, 1 mtp_test, 1 mtp_doc, 79 out_scope, 2 merge).
 - `mtp-extract/classify.py` — small Python tool that produced the inventory.
 - `slartibardfast/ik_llama.cpp:mtp-extract` — the 6 commits, ready for review.
+
+## 2026-05-02 — PHASE31 Step 5 closed [~] (binding negative). 27B has no MTP heads.
+
+**Correction to 2026-05-02 entry above** (the "MTP path open" / `std::out_of_range: map::at` crash claim): there is **no boot crash**. Re-run on `mtp-extract` today: `-mtp` boots cleanly on `Qwen3.6-35B-A3B-IQ4_KS-imat.gguf` full-GPU split-mode-graph; `/v1/chat/completions` works end-to-end; draft-accept metrics populate. The four QWEN35MOE gate patches plus the build-graph rework are sufficient — there is no missing cross-device buft placement step. The earlier crash report was a misdiagnosis from incomplete log capture.
+
+**Bench (Quadro RTX 6000 sm_75, dual GPU, ctx 4096, batch 1024, ubatch 256, greedy seed=1234, prompt "Write a 200-word essay about why birds are interesting:")**:
+- Baseline `-no-mtp`, three runs × 256 tokens: 91.4 / 92.2 / 94.3 t/s — **avg 92.6 t/s**.
+- MTP `-mtp`, three runs × 256 tokens: 45.15 / 45.23 / 45.27 t/s — **avg 45.2 t/s**, draft acceptance 0.381 (77/202).
+- MTP `-mtp`, single run × 1024 tokens: 48.9 t/s, draft acceptance 0.461 (374/812).
+
+**Conclusion**: MTP is **0.49–0.53× baseline** on Quadro RTX 6000 sm_75 full-GPU. Per-step cost with MTP is ≈2.76× baseline forward pass; draft acceptance is real but not high enough to amortize. The published "10.2 → 17.8 t/s = 1.74×" from `fd77f898` (0.8B F16 + AMD 6800 XT Vulkan) does **not** generalize to Qwen3.6-35B-A3B IQ4_KS on sm_75 CUDA. Combined with iter-1's 3060 Ti+cpu-moe finding (−25%), MTP is throughput-negative on every CUDA configuration we've measured for this model class.
+
+**MTP code on `mtp-extract` is correctness-good** (clean boot, real draft acceptance, end-to-end inference, no NaN). The negative is hardware-economic, not a bug.
+
+**Why: 27B dense MTP is moot.** Qwen 3.6 27B official HF release ships **no MTP heads** (verified via `model.safetensors.index.json`: 64 transformer layers, single `lm_head`, no `nextn`). Re-quantizing from BF16 wouldn't help — the BF16 itself doesn't contain nextn weights. Local `Qwen3.6-27B-Q4_K_M.gguf` confirms no `nextn.*` keys in metadata. **27B dense baseline tg = 38.2 t/s** on `mtp-extract` (proves the dense `qwen35` path is intact through our MoE refactor). MTP for dense Qwen 3.6 would require Qwen training and releasing nextn heads upstream first.
+
+**How to apply**: do not re-test MTP on this hardware/model combination expecting >1×. If MTP throughput becomes interesting again, the configurations that warrant a re-measure are: (a) sm_120/121 hardware where the MTP-tail kernel cost may amortize, (b) a future MoE model with much higher per-token forward cost (so 38% acceptance buys more), or (c) cheaper draft path (e.g., a small dedicated MTP-only sub-model rather than a head sharing the main forward).
+
+**Bench script**: `/tmp/bench_mtp.sh` (parametric `on|off`); 27B variant: `/tmp/bench_27b.sh`. **Profile**: `/home/llm/profiles/qwen3.6-35b-mtp-iq4ks.sh` (env-toggle MTP=on|off).
