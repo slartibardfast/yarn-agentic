@@ -2,7 +2,7 @@
 
 ## Status
 
-**Open.** Iter 1 (2026-05-01) closed Steps 1–4 on the 3060 Ti. **Step 5 (throughput uplift) does not bind on 8 GB VRAM with `--cpu-moe`** — measurement showed −25% tg, the opposite of the claim. Phase remains open; binding the uplift requires hardware that fits the model fully on GPU. See `HANDOFF.md` for the peer (Quadro ≥ 24 GB) instructions. Successor to PHASE29 / PHASE30 (both abandoned per user direction 2026-05-01). Sole focus: get MTP working end-to-end on `ik_llama.cpp`. **No turboquant.**
+**Open.** Iter 1 (2026-05-01) closed Steps 1–4 on the 3060 Ti (8 GB VRAM, partial offload, MTP −25% tg). Iter 3 (2026-05-02) closed Step 5 `[~]` on dual Quadro RTX 6000 sm_75 with full GPU offload — MTP runs end-to-end on the `mtp-extract` branch (clean upstream + 6 cherry-picks) but throughput is **0.49–0.53× baseline**, draft acceptance real (38–46%) but per-step overhead ~2.76× the baseline forward pass. Uplift target not met for this hardware/model class; subtasks open on 27B dense and sm_120/121 hardware. Successor to PHASE29 / PHASE30 (both abandoned per user direction 2026-05-01). Sole focus: MTP end-to-end on `ik_llama.cpp`. **No turboquant.**
 
 ## Context
 
@@ -69,19 +69,19 @@ Out of scope:
 ## Closing condition
 
 Phase 31 closes when:
-1. Steps 1–5 all `[x]` with binding evidence (on the 3060 Ti or a peer host with sufficient VRAM).
-2. End-to-end MTP run on Q4_K_M-quantized Qwen3.6-35B-A3B returns coherent text and acceptance > 50%.
-3. Throughput **uplift** (MTP tg > baseline tg) measured and documented. The 3060 Ti's 8 GB VRAM forces `--cpu-moe`, which makes MTP throughput-negative — the bind needs ≥ 24 GB VRAM (full GPU offload). See `HANDOFF.md`.
+1. Steps 1–5 all `[x]` with binding evidence on the target hardware/model class.
+2. End-to-end MTP run on Qwen3.6-35B-A3B returns coherent text and acceptance > 50%.
+3. Throughput **uplift** (MTP tg > baseline tg) measured. **Currently negative** at iter 3 on Quadro RTX 6000 full-GPU (0.49–0.53× baseline); 35B-A3B IQ4_KS on sm_75 CUDA cannot amortize the MTP per-step overhead.
 
 ## Open work (not yet bound)
 
-These items are explicitly open, not deferred or hidden behind cover language. Each blocks Phase 31 closure.
+These items are explicitly open, not deferred or hidden behind cover language. Each blocks Phase 31 closure or is intentionally inherited from abandoned predecessor phases.
 
-- **Step 5 — Throughput uplift number.** Never bound: the 3060 Ti measurement showed MTP **−25%** tg under `--cpu-moe` partial offload. The fix is a host with ≥ 24 GB VRAM (RTX A6000 / RTX 6000 Ada / Quadro RTX 8000 etc.) running with full GPU offload. `HANDOFF.md` is the peer playbook.
-- **Larger-context PPL parity.** Verified at c=512 / 16 chunks. Closing-condition wording asked for c=4096 / 16 chunks — not run because compute-buffer OOMs at c=4096 on 8 GB. Defers to peer host.
-- **PR for `fix/cuda-delta-net-emit-intermediates`.** Branch pushed to `slartibardfast/ik_llama.cpp` at commit `f9bb0efa`; PR not opened. URL in HANDOFF.md. Without merge, downstream consumers of `slartibardfast/ik_llama.cpp main` still hit the assert in MTP graphs with `n_tokens > 1`.
-- **Submodule pointer for ik_llama.cpp** in this top-level repo stays at `a0d0e06e` (pre-fix). Do not advance it until the fix is merged on `slartibardfast/ik_llama.cpp main`; otherwise production users of this top-level repo would silently take an unmerged branch.
-- **CUDA delta-net kernel extension to handle `emit_intermediates=true && n_tokens > 1` natively.** Current fix conservatively falls back to CPU for that path. A real GPU kernel for the multi-state-copy emit would unlock prompt-eval acceleration during MTP graph builds. Not on PHASE31's critical path; spawn-as-needed phase.
+- **Step 5 subtask — 27B dense MTP.** Different MTP topology (single dense layer vs MoE expert routing per draft step) may amortize per-step overhead differently. Blocked on a BF16 27B-MTP source on disk.
+- **Step 5 subtask — sm_120 / sm_121 hardware.** Delta-net + MTP-tail kernel cost per step may be smaller relative to baseline forward pass on Blackwell-class hardware. No binding measurement until access to such a host.
+- **Larger-context PPL parity.** Verified at c=512 / 16 chunks. Closing-condition wording asked for c=4096 / 16 chunks — c=4096 OOMs on 8 GB VRAM (3060 Ti); on Quadro 24 GB×2 the run was not repeated.
+- **PR for `mtp-extract` branch upstream.** The 6 commits on `slartibardfast/ik_llama.cpp:mtp-extract` (clean from `ikawrakow/main` HEAD `a8aecbf1`) are upstream-PR-quality and worth landing independently of any throughput claim. PR not yet opened.
+- **CUDA delta-net kernel extension for `emit_intermediates=true && n_tokens > 1`.** Current fix (`773b0648`) conservatively falls back to CPU. A real GPU kernel for the multi-state-copy emit would unlock prompt-eval acceleration during MTP graph builds. Not on PHASE31's critical path.
 - **Inherited from PHASE29 (abandoned, not closed):** Steps 4 (TQ_V_4B FA-V verify), 5 (FA-LSE writeback), 6 (MTP tightness on Qwen3.5-9B), 7 (HIP parity sweep). Code for Step 4 lives on `defunct/phase29-iter7-tq_v_4b-fa-v` in `llama.cpp/`. None will be closed unless TurboQuant work resumes (in which case adopt `slartibardfast/llama-cpp-turboquant` rather than continuing PHASE29).
 - **Inherited from PHASE30 (abandoned, not closed):** Step 6 closing condition (b) — Vega regression check on `gpu-1`. Wave32-portable shaders shipped at `cc9e876ed` (labelled `defunct/phase30`) but the cross-architecture verification was never run. Re-opens only if Vulkan turbo work resumes.
 
