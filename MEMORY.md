@@ -1095,3 +1095,21 @@ PHASE31 iter 1 closed Steps 1–4 on Qwen3.6-35B-A3B-Q4_K_M / RTX 3060 Ti
 **How to apply**: do not re-test MTP on this hardware/model combination expecting >1×. If MTP throughput becomes interesting again, the configurations that warrant a re-measure are: (a) sm_120/121 hardware where the MTP-tail kernel cost may amortize, (b) a future MoE model with much higher per-token forward cost (so 38% acceptance buys more), or (c) cheaper draft path (e.g., a small dedicated MTP-only sub-model rather than a head sharing the main forward).
 
 **Bench script**: `/tmp/bench_mtp.sh` (parametric `on|off`); 27B variant: `/tmp/bench_27b.sh`. **Profile**: `/home/llm/profiles/qwen3.6-35b-mtp-iq4ks.sh` (env-toggle MTP=on|off).
+
+## 2026-05-03 — PHASE32 canary: FP16 mtp.fc preserves draft acceptance
+
+Build 24-token greedy smoke on Qwen3.5-0.8B with `bench-mtp-0.8b.sh`-equivalent server config (port 18181):
+
+| Variant | Tier | mtp.fc | Trunk | α(top-1) |
+|---------|------|--------|-------|---------:|
+| V0 (BF16 baseline) | — | BF16 | BF16 | 0.848 (iter-7) |
+| V-F1.T1 | T1 | BF16 | FP16 | 0.91667 |
+| V-F1a.T1 (canary) | T1 | **FP16** | FP16 | 0.91667 |
+
+**HC1 GREEN at T1.** FP16 `mtp.fc.weight` is functionally indistinguishable from BF16 in greedy decoding on this 0.8B sample — published "INT4 mtp.fc → 0% accept" finding (Lorbus / sakamakismile / AEON-7) does **not** carry to FP16. Both V-F1 and V-F1a hit the **same** acceptance rate, both *exceeding* the BF16 baseline.
+
+**Tool 3 dry-run absmax distribution on Qwen3.5-0.8B BF16**: 195 BF16 weight tensors, max absmax 0.598. **Zero Band-C tensors.** T1 ships with no BF16 fallback, no kernel work, no GGUF format extension required. Repo path of the absmax TSV: `/tmp/absmax-0.8b-vf1a.tsv` (informational; reproducible from `scripts/recast_bf16_to_fp16.py --tier dry-run`).
+
+**How to apply**: at the 0.8B canary, T1 is the cheapest passing tier — escalation to T2-T5 is unnecessary for 0.8B. For 35B-A3B the absmax distribution must be re-run because MoE expert weights have a wider distribution than dense. **Do not assume zero Band C generalises**.
+
+**Reproducibility**: `scripts/recast_bf16_to_fp16.py` + policy YAML `scripts/policy/v-f1a.yaml` produce the V-F1a.T1 GGUF; `scripts/validate_gguf_mtp.sh` runs the smoke. Build commit `62f1e50`. PHASE32 status commit `781fd84`.
