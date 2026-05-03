@@ -4,6 +4,39 @@
 acceptance on Qwen3-Next-family models, then ship 1-3 SoTA quants per target
 under `slartibardfast0/...`.
 
+## Status
+
+| Phase | State |
+|-------|-------|
+| A.1.1  download Intel/Qwen3.5-0.8B-int4-AutoRound | done |
+| A.1.2  Tool 3 T1 + Tool 6 written | done |
+| A.1.3  V0 KLD reference dump | open |
+| A.1.4-5  V-F1.T1 build + smoke + bench | smoke done; bench pending |
+| A.1.6-7  V-F1a.T1 CANARY build + smoke + bench | smoke done; bench pending |
+| A.2  Full sweep at T_min | open |
+
+## Canary preliminary result (smoke, 24-token greedy)
+
+`Qwen3.5-0.8B`, `bench-mtp-0.8b.sh`-equivalent server config:
+
+| Variant | Tier | mtp.fc | Trunk | α(top-1) | Note |
+|---------|------|--------|-------|---------:|------|
+| V0 (BF16 baseline) | — | BF16 | BF16 | 0.848 | iter-7 measurement |
+| **V-F1**  | **T1** | BF16 | FP16 | **0.91667** | smoke (one prompt) |
+| **V-F1a** (canary) | **T1** | **FP16** | FP16 | **0.91667** | smoke (one prompt) |
+
+**HC1 (canary) GREEN at T1:** FP16 mtp.fc is functionally indistinguishable
+from BF16 mtp.fc on greedy decoding (24/24 tokens identical, identical α).
+Published "INT4 → 0% accept" failure does NOT carry to FP16.
+
+**T1 absmax distribution on 0.8B:** 195 BF16 weight tensors, all in Band A
+(max absmax 0.598 — three orders below the FP16_HALF_RANGE threshold of
+32768). **Zero Band-C tensors** — T1 ships with no BF16 fallback, no kernel
+work, and no GGUF format extension.
+
+A 5-run bench + KLD measurement is the next step; the smoke result is
+strong enough that the **full Stage A sweep can launch at T1**.
+
 ## Research Hypotheses (stated IN ADVANCE; data-decides)
 
 ### Two orthogonal axes
