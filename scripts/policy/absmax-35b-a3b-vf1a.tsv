@@ -1,0 +1,754 @@
+name	src_type	out_type	band	absmax	n_elem	note
+token_embd.weight	BF16	BF16	A	0.296875	508559360	dry-run band A
+blk.0.attn_qkv.weight	BF16	BF16	A	0.384766	16777216	dry-run band A
+blk.0.attn_gate.weight	BF16	BF16	A	0.287109	8388608	dry-run band A
+blk.0.ssm_out.weight	BF16	BF16	A	0.427734	8388608	dry-run band A
+blk.0.ffn_gate_exps.weight	BF16	BF16	A	0.145508	268435456	dry-run band A
+blk.0.ffn_up_exps.weight	BF16	BF16	A	0.101074	268435456	dry-run band A
+blk.1.attn_qkv.weight	BF16	BF16	A	0.277344	16777216	dry-run band A
+blk.1.attn_gate.weight	BF16	BF16	A	0.292969	8388608	dry-run band A
+blk.1.ssm_out.weight	BF16	BF16	A	0.609375	8388608	dry-run band A
+blk.1.ffn_down_exps.weight	BF16	BF16	A	0.174805	268435456	dry-run band A
+blk.1.ffn_gate_exps.weight	BF16	BF16	A	0.120117	268435456	dry-run band A
+blk.1.ffn_up_exps.weight	BF16	BF16	A	0.0878906	268435456	dry-run band A
+blk.0.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.0.ssm_a	F32	F32	-	0	32	passthrough
+blk.0.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.0.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.0.ssm_alpha.weight	BF16	BF16	A	0.131836	65536	dry-run band A
+blk.0.ssm_beta.weight	BF16	BF16	A	0.0786133	65536	dry-run band A
+blk.0.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.0.ffn_down_exps.weight	BF16	BF16	A	0.192383	268435456	dry-run band A
+blk.0.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.0.ffn_down_shexp.weight	BF16	BF16	A	0.3125	1048576	dry-run band A
+blk.0.ffn_gate_shexp.weight	BF16	BF16	A	0.204102	1048576	dry-run band A
+blk.0.ffn_up_shexp.weight	BF16	BF16	A	0.135742	1048576	dry-run band A
+blk.0.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.0.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.1.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.1.ssm_a	F32	F32	-	0	32	passthrough
+blk.1.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.1.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.1.ssm_alpha.weight	BF16	BF16	A	0.138672	65536	dry-run band A
+blk.1.ssm_beta.weight	BF16	BF16	A	0.158203	65536	dry-run band A
+blk.1.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.1.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.1.ffn_down_shexp.weight	BF16	BF16	A	0.408203	1048576	dry-run band A
+blk.1.ffn_gate_shexp.weight	BF16	BF16	A	0.164062	1048576	dry-run band A
+blk.1.ffn_up_shexp.weight	BF16	BF16	A	0.179688	1048576	dry-run band A
+blk.1.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.1.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.2.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.2.ssm_a	F32	F32	-	0	32	passthrough
+blk.2.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.2.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.2.ssm_alpha.weight	BF16	BF16	A	0.178711	65536	dry-run band A
+blk.2.ssm_beta.weight	BF16	BF16	A	0.15332	65536	dry-run band A
+blk.2.attn_qkv.weight	BF16	BF16	A	0.265625	16777216	dry-run band A
+blk.2.attn_gate.weight	BF16	BF16	A	0.291016	8388608	dry-run band A
+blk.2.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.2.ssm_out.weight	BF16	BF16	A	0.667969	8388608	dry-run band A
+blk.2.ffn_down_exps.weight	BF16	BF16	A	0.287109	268435456	dry-run band A
+blk.2.ffn_gate_exps.weight	BF16	BF16	A	0.121582	268435456	dry-run band A
+blk.2.ffn_up_exps.weight	BF16	BF16	A	0.0864258	268435456	dry-run band A
+blk.2.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.2.ffn_down_shexp.weight	BF16	BF16	A	0.449219	1048576	dry-run band A
+blk.2.ffn_gate_shexp.weight	BF16	BF16	A	0.219727	1048576	dry-run band A
+blk.2.ffn_up_shexp.weight	BF16	BF16	A	0.145508	1048576	dry-run band A
+blk.2.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.2.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.3.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.3.ffn_down_exps.weight	BF16	BF16	A	0.519531	268435456	dry-run band A
+blk.3.ffn_gate_exps.weight	BF16	BF16	A	0.177734	268435456	dry-run band A
+blk.3.ffn_up_exps.weight	BF16	BF16	A	0.216797	268435456	dry-run band A
+blk.3.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.3.ffn_down_shexp.weight	BF16	BF16	A	0.419922	1048576	dry-run band A
+blk.3.ffn_gate_shexp.weight	BF16	BF16	A	0.198242	1048576	dry-run band A
+blk.3.ffn_up_shexp.weight	BF16	BF16	A	0.133789	1048576	dry-run band A
+blk.3.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.3.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.3.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.3.attn_k.weight	BF16	BF16	A	0.188477	1048576	dry-run band A
+blk.3.attn_output.weight	BF16	BF16	A	0.585938	8388608	dry-run band A
+blk.3.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.3.attn_q.weight	BF16	BF16	A	0.341797	16777216	dry-run band A
+blk.3.attn_v.weight	BF16	BF16	A	0.152344	1048576	dry-run band A
+blk.4.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.4.ssm_a	F32	F32	-	0	32	passthrough
+blk.4.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.4.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.4.ssm_alpha.weight	BF16	BF16	A	0.15625	65536	dry-run band A
+blk.4.ssm_beta.weight	BF16	BF16	A	0.197266	65536	dry-run band A
+blk.4.attn_qkv.weight	BF16	BF16	A	0.273438	16777216	dry-run band A
+blk.4.attn_gate.weight	BF16	BF16	A	0.277344	8388608	dry-run band A
+blk.4.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.4.ssm_out.weight	BF16	BF16	A	0.738281	8388608	dry-run band A
+blk.4.ffn_down_exps.weight	BF16	BF16	A	0.228516	268435456	dry-run band A
+blk.4.ffn_gate_exps.weight	BF16	BF16	A	0.239258	268435456	dry-run band A
+blk.4.ffn_up_exps.weight	BF16	BF16	A	0.12793	268435456	dry-run band A
+blk.4.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.4.ffn_down_shexp.weight	BF16	BF16	A	0.435547	1048576	dry-run band A
+blk.4.ffn_gate_shexp.weight	BF16	BF16	A	0.152344	1048576	dry-run band A
+blk.4.ffn_up_shexp.weight	BF16	BF16	A	0.130859	1048576	dry-run band A
+blk.4.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.4.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.5.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.5.ssm_a	F32	F32	-	0	32	passthrough
+blk.5.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.5.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.5.ssm_alpha.weight	BF16	BF16	A	0.148438	65536	dry-run band A
+blk.5.ssm_beta.weight	BF16	BF16	A	0.151367	65536	dry-run band A
+blk.5.attn_qkv.weight	BF16	BF16	A	0.328125	16777216	dry-run band A
+blk.5.attn_gate.weight	BF16	BF16	A	0.287109	8388608	dry-run band A
+blk.5.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.5.ssm_out.weight	BF16	BF16	A	0.746094	8388608	dry-run band A
+blk.5.ffn_down_exps.weight	BF16	BF16	A	0.227539	268435456	dry-run band A
+blk.5.ffn_gate_exps.weight	BF16	BF16	A	0.196289	268435456	dry-run band A
+blk.5.ffn_up_exps.weight	BF16	BF16	A	0.12793	268435456	dry-run band A
+blk.5.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.5.ffn_down_shexp.weight	BF16	BF16	A	0.390625	1048576	dry-run band A
+blk.5.ffn_gate_shexp.weight	BF16	BF16	A	0.147461	1048576	dry-run band A
+blk.5.ffn_up_shexp.weight	BF16	BF16	A	0.110352	1048576	dry-run band A
+blk.5.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.5.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.6.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.6.ssm_a	F32	F32	-	0	32	passthrough
+blk.6.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.6.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.6.ssm_alpha.weight	BF16	BF16	A	0.165039	65536	dry-run band A
+blk.6.ssm_beta.weight	BF16	BF16	A	0.166992	65536	dry-run band A
+blk.6.attn_qkv.weight	BF16	BF16	A	0.388672	16777216	dry-run band A
+blk.6.attn_gate.weight	BF16	BF16	A	0.273438	8388608	dry-run band A
+blk.6.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.6.ssm_out.weight	BF16	BF16	A	0.660156	8388608	dry-run band A
+blk.6.ffn_down_exps.weight	BF16	BF16	A	0.277344	268435456	dry-run band A
+blk.6.ffn_gate_exps.weight	BF16	BF16	A	0.234375	268435456	dry-run band A
+blk.6.ffn_up_exps.weight	BF16	BF16	A	0.111816	268435456	dry-run band A
+blk.6.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.6.ffn_down_shexp.weight	BF16	BF16	A	0.341797	1048576	dry-run band A
+blk.6.ffn_gate_shexp.weight	BF16	BF16	A	0.145508	1048576	dry-run band A
+blk.6.ffn_up_shexp.weight	BF16	BF16	A	0.10498	1048576	dry-run band A
+blk.6.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.6.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.7.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.7.ffn_down_exps.weight	BF16	BF16	A	0.330078	268435456	dry-run band A
+blk.7.ffn_gate_exps.weight	BF16	BF16	A	0.193359	268435456	dry-run band A
+blk.7.ffn_up_exps.weight	BF16	BF16	A	0.142578	268435456	dry-run band A
+blk.7.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.7.ffn_down_shexp.weight	BF16	BF16	A	0.439453	1048576	dry-run band A
+blk.7.ffn_gate_shexp.weight	BF16	BF16	A	0.231445	1048576	dry-run band A
+blk.7.ffn_up_shexp.weight	BF16	BF16	A	0.291016	1048576	dry-run band A
+blk.7.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.7.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.7.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.7.attn_k.weight	BF16	BF16	A	0.310547	1048576	dry-run band A
+blk.7.attn_output.weight	BF16	BF16	A	0.621094	8388608	dry-run band A
+blk.7.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.7.attn_q.weight	BF16	BF16	A	0.294922	16777216	dry-run band A
+blk.7.attn_v.weight	BF16	BF16	A	0.176758	1048576	dry-run band A
+blk.10.attn_qkv.weight	BF16	BF16	A	0.251953	16777216	dry-run band A
+blk.10.attn_gate.weight	BF16	BF16	A	0.304688	8388608	dry-run band A
+blk.10.ssm_out.weight	BF16	BF16	A	0.828125	8388608	dry-run band A
+blk.10.ffn_down_exps.weight	BF16	BF16	A	0.244141	268435456	dry-run band A
+blk.8.attn_qkv.weight	BF16	BF16	A	0.304688	16777216	dry-run band A
+blk.8.attn_gate.weight	BF16	BF16	A	0.351562	8388608	dry-run band A
+blk.8.ssm_out.weight	BF16	BF16	A	0.640625	8388608	dry-run band A
+blk.8.ffn_down_exps.weight	BF16	BF16	A	0.269531	268435456	dry-run band A
+blk.8.ffn_gate_exps.weight	BF16	BF16	A	0.199219	268435456	dry-run band A
+blk.8.ffn_up_exps.weight	BF16	BF16	A	0.154297	268435456	dry-run band A
+blk.9.attn_qkv.weight	BF16	BF16	A	0.285156	16777216	dry-run band A
+blk.9.attn_gate.weight	BF16	BF16	A	0.269531	8388608	dry-run band A
+blk.9.ssm_out.weight	BF16	BF16	A	0.71875	8388608	dry-run band A
+blk.9.ffn_down_exps.weight	BF16	BF16	A	0.216797	268435456	dry-run band A
+blk.9.ffn_gate_exps.weight	BF16	BF16	A	0.161133	268435456	dry-run band A
+blk.9.ffn_up_exps.weight	BF16	BF16	A	0.194336	268435456	dry-run band A
+blk.10.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.10.ssm_a	F32	F32	-	0	32	passthrough
+blk.10.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.10.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.10.ssm_alpha.weight	BF16	BF16	A	0.226562	65536	dry-run band A
+blk.10.ssm_beta.weight	BF16	BF16	A	0.152344	65536	dry-run band A
+blk.10.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.10.ffn_gate_exps.weight	BF16	BF16	A	0.265625	268435456	dry-run band A
+blk.10.ffn_up_exps.weight	BF16	BF16	A	0.166992	268435456	dry-run band A
+blk.10.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.10.ffn_down_shexp.weight	BF16	BF16	A	0.457031	1048576	dry-run band A
+blk.10.ffn_gate_shexp.weight	BF16	BF16	A	0.134766	1048576	dry-run band A
+blk.10.ffn_up_shexp.weight	BF16	BF16	A	0.292969	1048576	dry-run band A
+blk.10.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.10.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.8.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.8.ssm_a	F32	F32	-	0	32	passthrough
+blk.8.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.8.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.8.ssm_alpha.weight	BF16	BF16	A	0.18457	65536	dry-run band A
+blk.8.ssm_beta.weight	BF16	BF16	A	0.149414	65536	dry-run band A
+blk.8.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.8.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.8.ffn_down_shexp.weight	BF16	BF16	A	0.441406	1048576	dry-run band A
+blk.8.ffn_gate_shexp.weight	BF16	BF16	A	0.225586	1048576	dry-run band A
+blk.8.ffn_up_shexp.weight	BF16	BF16	A	0.113281	1048576	dry-run band A
+blk.8.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.8.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.9.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.9.ssm_a	F32	F32	-	0	32	passthrough
+blk.9.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.9.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.9.ssm_alpha.weight	BF16	BF16	A	0.201172	65536	dry-run band A
+blk.9.ssm_beta.weight	BF16	BF16	A	0.167969	65536	dry-run band A
+blk.9.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.9.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.9.ffn_down_shexp.weight	BF16	BF16	A	0.425781	1048576	dry-run band A
+blk.9.ffn_gate_shexp.weight	BF16	BF16	A	0.182617	1048576	dry-run band A
+blk.9.ffn_up_shexp.weight	BF16	BF16	A	0.138672	1048576	dry-run band A
+blk.9.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.9.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.11.ffn_gate_exps.weight	BF16	BF16	A	0.220703	268435456	dry-run band A
+blk.11.ffn_up_exps.weight	BF16	BF16	A	0.133789	268435456	dry-run band A
+blk.11.attn_k.weight	BF16	BF16	A	0.209961	1048576	dry-run band A
+blk.11.attn_output.weight	BF16	BF16	A	0.636719	8388608	dry-run band A
+blk.11.attn_q.weight	BF16	BF16	A	0.255859	16777216	dry-run band A
+blk.11.attn_v.weight	BF16	BF16	A	0.167969	1048576	dry-run band A
+blk.12.attn_qkv.weight	BF16	BF16	A	0.28125	16777216	dry-run band A
+blk.12.attn_gate.weight	BF16	BF16	A	0.240234	8388608	dry-run band A
+blk.12.ssm_out.weight	BF16	BF16	A	0.738281	8388608	dry-run band A
+blk.12.ffn_gate_exps.weight	BF16	BF16	A	0.214844	268435456	dry-run band A
+blk.12.ffn_up_exps.weight	BF16	BF16	A	0.122559	268435456	dry-run band A
+blk.13.attn_qkv.weight	BF16	BF16	A	0.429688	16777216	dry-run band A
+blk.13.attn_gate.weight	BF16	BF16	A	0.339844	8388608	dry-run band A
+blk.13.ssm_out.weight	BF16	BF16	A	0.78125	8388608	dry-run band A
+blk.13.ffn_down_exps.weight	BF16	BF16	A	0.298828	268435456	dry-run band A
+blk.13.ffn_gate_exps.weight	BF16	BF16	A	0.219727	268435456	dry-run band A
+blk.13.ffn_up_exps.weight	BF16	BF16	A	0.15918	268435456	dry-run band A
+blk.11.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.11.ffn_down_exps.weight	BF16	BF16	A	0.219727	268435456	dry-run band A
+blk.11.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.11.ffn_down_shexp.weight	BF16	BF16	A	0.511719	1048576	dry-run band A
+blk.11.ffn_gate_shexp.weight	BF16	BF16	A	0.147461	1048576	dry-run band A
+blk.11.ffn_up_shexp.weight	BF16	BF16	A	0.232422	1048576	dry-run band A
+blk.11.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.11.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.11.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.11.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.12.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.12.ssm_a	F32	F32	-	0	32	passthrough
+blk.12.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.12.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.12.ssm_alpha.weight	BF16	BF16	A	0.19043	65536	dry-run band A
+blk.12.ssm_beta.weight	BF16	BF16	A	0.170898	65536	dry-run band A
+blk.12.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.12.ffn_down_exps.weight	BF16	BF16	A	0.228516	268435456	dry-run band A
+blk.12.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.12.ffn_down_shexp.weight	BF16	BF16	A	0.523438	1048576	dry-run band A
+blk.12.ffn_gate_shexp.weight	BF16	BF16	A	0.179688	1048576	dry-run band A
+blk.12.ffn_up_shexp.weight	BF16	BF16	A	0.235352	1048576	dry-run band A
+blk.12.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.12.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.13.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.13.ssm_a	F32	F32	-	0	32	passthrough
+blk.13.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.13.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.13.ssm_alpha.weight	BF16	BF16	A	0.1875	65536	dry-run band A
+blk.13.ssm_beta.weight	BF16	BF16	A	0.143555	65536	dry-run band A
+blk.13.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.13.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.13.ffn_down_shexp.weight	BF16	BF16	A	0.535156	1048576	dry-run band A
+blk.13.ffn_gate_shexp.weight	BF16	BF16	A	0.15918	1048576	dry-run band A
+blk.13.ffn_up_shexp.weight	BF16	BF16	A	0.207031	1048576	dry-run band A
+blk.13.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.13.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.14.attn_qkv.weight	BF16	BF16	A	0.382812	16777216	dry-run band A
+blk.14.attn_gate.weight	BF16	BF16	A	0.320312	8388608	dry-run band A
+blk.14.ssm_out.weight	BF16	BF16	A	0.707031	8388608	dry-run band A
+blk.14.ffn_down_exps.weight	BF16	BF16	A	0.242188	268435456	dry-run band A
+blk.14.ffn_gate_exps.weight	BF16	BF16	A	0.212891	268435456	dry-run band A
+blk.14.ffn_up_exps.weight	BF16	BF16	A	0.114258	268435456	dry-run band A
+blk.15.ffn_gate_exps.weight	BF16	BF16	A	0.200195	268435456	dry-run band A
+blk.15.ffn_up_exps.weight	BF16	BF16	A	0.133789	268435456	dry-run band A
+blk.15.attn_k.weight	BF16	BF16	A	0.202148	1048576	dry-run band A
+blk.15.attn_output.weight	BF16	BF16	A	0.707031	8388608	dry-run band A
+blk.15.attn_q.weight	BF16	BF16	A	0.253906	16777216	dry-run band A
+blk.15.attn_v.weight	BF16	BF16	A	0.217773	1048576	dry-run band A
+blk.16.attn_qkv.weight	BF16	BF16	A	0.404297	16777216	dry-run band A
+blk.16.attn_gate.weight	BF16	BF16	A	0.25	8388608	dry-run band A
+blk.16.ssm_out.weight	BF16	BF16	A	0.742188	8388608	dry-run band A
+blk.16.ffn_gate_exps.weight	BF16	BF16	A	0.237305	268435456	dry-run band A
+blk.16.ffn_up_exps.weight	BF16	BF16	A	0.128906	268435456	dry-run band A
+blk.14.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.14.ssm_a	F32	F32	-	0	32	passthrough
+blk.14.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.14.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.14.ssm_alpha.weight	BF16	BF16	A	0.174805	65536	dry-run band A
+blk.14.ssm_beta.weight	BF16	BF16	A	0.166016	65536	dry-run band A
+blk.14.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.14.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.14.ffn_down_shexp.weight	BF16	BF16	A	0.443359	1048576	dry-run band A
+blk.14.ffn_gate_shexp.weight	BF16	BF16	A	0.147461	1048576	dry-run band A
+blk.14.ffn_up_shexp.weight	BF16	BF16	A	0.220703	1048576	dry-run band A
+blk.14.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.14.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.15.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.15.ffn_down_exps.weight	BF16	BF16	A	0.419922	268435456	dry-run band A
+blk.15.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.15.ffn_down_shexp.weight	BF16	BF16	A	0.53125	1048576	dry-run band A
+blk.15.ffn_gate_shexp.weight	BF16	BF16	A	0.140625	1048576	dry-run band A
+blk.15.ffn_up_shexp.weight	BF16	BF16	A	0.296875	1048576	dry-run band A
+blk.15.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.15.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.15.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.15.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.16.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.16.ssm_a	F32	F32	-	0	32	passthrough
+blk.16.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.16.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.16.ssm_alpha.weight	BF16	BF16	A	0.15332	65536	dry-run band A
+blk.16.ssm_beta.weight	BF16	BF16	A	0.12793	65536	dry-run band A
+blk.16.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.16.ffn_down_exps.weight	BF16	BF16	A	0.251953	268435456	dry-run band A
+blk.16.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.16.ffn_down_shexp.weight	BF16	BF16	A	0.527344	1048576	dry-run band A
+blk.16.ffn_gate_shexp.weight	BF16	BF16	A	0.130859	1048576	dry-run band A
+blk.16.ffn_up_shexp.weight	BF16	BF16	A	0.162109	1048576	dry-run band A
+blk.16.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.16.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.17.attn_qkv.weight	BF16	BF16	A	0.322266	16777216	dry-run band A
+blk.17.attn_gate.weight	BF16	BF16	A	0.306641	8388608	dry-run band A
+blk.17.ssm_out.weight	BF16	BF16	A	0.75	8388608	dry-run band A
+blk.17.ffn_down_exps.weight	BF16	BF16	A	0.431641	268435456	dry-run band A
+blk.17.ffn_gate_exps.weight	BF16	BF16	A	0.302734	268435456	dry-run band A
+blk.17.ffn_up_exps.weight	BF16	BF16	A	0.137695	268435456	dry-run band A
+blk.18.attn_qkv.weight	BF16	BF16	A	0.330078	16777216	dry-run band A
+blk.18.attn_gate.weight	BF16	BF16	A	0.3125	8388608	dry-run band A
+blk.18.ssm_out.weight	BF16	BF16	A	0.660156	8388608	dry-run band A
+blk.18.ffn_down_exps.weight	BF16	BF16	A	0.337891	268435456	dry-run band A
+blk.19.ffn_gate_exps.weight	BF16	BF16	A	0.244141	268435456	dry-run band A
+blk.19.ffn_up_exps.weight	BF16	BF16	A	0.147461	268435456	dry-run band A
+blk.19.attn_k.weight	BF16	BF16	A	0.216797	1048576	dry-run band A
+blk.19.attn_output.weight	BF16	BF16	A	0.671875	8388608	dry-run band A
+blk.19.attn_q.weight	BF16	BF16	A	0.396484	16777216	dry-run band A
+blk.19.attn_v.weight	BF16	BF16	A	0.223633	1048576	dry-run band A
+blk.17.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.17.ssm_a	F32	F32	-	0	32	passthrough
+blk.17.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.17.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.17.ssm_alpha.weight	BF16	BF16	A	0.169922	65536	dry-run band A
+blk.17.ssm_beta.weight	BF16	BF16	A	0.163086	65536	dry-run band A
+blk.17.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.17.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.17.ffn_down_shexp.weight	BF16	BF16	A	0.53125	1048576	dry-run band A
+blk.17.ffn_gate_shexp.weight	BF16	BF16	A	0.136719	1048576	dry-run band A
+blk.17.ffn_up_shexp.weight	BF16	BF16	A	0.136719	1048576	dry-run band A
+blk.17.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.17.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.18.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.18.ssm_a	F32	F32	-	0	32	passthrough
+blk.18.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.18.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.18.ssm_alpha.weight	BF16	BF16	A	0.160156	65536	dry-run band A
+blk.18.ssm_beta.weight	BF16	BF16	A	0.125977	65536	dry-run band A
+blk.18.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.18.ffn_gate_exps.weight	BF16	BF16	A	0.207031	268435456	dry-run band A
+blk.18.ffn_up_exps.weight	BF16	BF16	A	0.142578	268435456	dry-run band A
+blk.18.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.18.ffn_down_shexp.weight	BF16	BF16	A	0.392578	1048576	dry-run band A
+blk.18.ffn_gate_shexp.weight	BF16	BF16	A	0.207031	1048576	dry-run band A
+blk.18.ffn_up_shexp.weight	BF16	BF16	A	0.167969	1048576	dry-run band A
+blk.18.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.18.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.19.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.19.ffn_down_exps.weight	BF16	BF16	A	0.382812	268435456	dry-run band A
+blk.19.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.19.ffn_down_shexp.weight	BF16	BF16	A	0.515625	1048576	dry-run band A
+blk.19.ffn_gate_shexp.weight	BF16	BF16	A	0.191406	1048576	dry-run band A
+blk.19.ffn_up_shexp.weight	BF16	BF16	A	0.138672	1048576	dry-run band A
+blk.19.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.19.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.19.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.19.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.20.attn_qkv.weight	BF16	BF16	A	0.410156	16777216	dry-run band A
+blk.20.attn_gate.weight	BF16	BF16	A	0.326172	8388608	dry-run band A
+blk.20.ssm_out.weight	BF16	BF16	A	0.785156	8388608	dry-run band A
+blk.20.ffn_down_exps.weight	BF16	BF16	A	0.333984	268435456	dry-run band A
+blk.20.ffn_gate_exps.weight	BF16	BF16	A	0.227539	268435456	dry-run band A
+blk.20.ffn_up_exps.weight	BF16	BF16	A	0.131836	268435456	dry-run band A
+blk.21.attn_qkv.weight	BF16	BF16	A	0.515625	16777216	dry-run band A
+blk.21.attn_gate.weight	BF16	BF16	A	0.355469	8388608	dry-run band A
+blk.21.ssm_out.weight	BF16	BF16	A	0.863281	8388608	dry-run band A
+blk.21.ffn_down_exps.weight	BF16	BF16	A	0.382812	268435456	dry-run band A
+blk.22.attn_qkv.weight	BF16	BF16	A	0.330078	16777216	dry-run band A
+blk.22.attn_gate.weight	BF16	BF16	A	0.365234	8388608	dry-run band A
+blk.22.ssm_out.weight	BF16	BF16	A	0.929688	8388608	dry-run band A
+blk.22.ffn_gate_exps.weight	BF16	BF16	A	0.213867	268435456	dry-run band A
+blk.22.ffn_up_exps.weight	BF16	BF16	A	0.165039	268435456	dry-run band A
+blk.20.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.20.ssm_a	F32	F32	-	0	32	passthrough
+blk.20.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.20.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.20.ssm_alpha.weight	BF16	BF16	A	0.204102	65536	dry-run band A
+blk.20.ssm_beta.weight	BF16	BF16	A	0.144531	65536	dry-run band A
+blk.20.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.20.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.20.ffn_down_shexp.weight	BF16	BF16	A	0.511719	1048576	dry-run band A
+blk.20.ffn_gate_shexp.weight	BF16	BF16	A	0.227539	1048576	dry-run band A
+blk.20.ffn_up_shexp.weight	BF16	BF16	A	0.132812	1048576	dry-run band A
+blk.20.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.20.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.21.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.21.ssm_a	F32	F32	-	0	32	passthrough
+blk.21.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.21.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.21.ssm_alpha.weight	BF16	BF16	A	0.174805	65536	dry-run band A
+blk.21.ssm_beta.weight	BF16	BF16	A	0.170898	65536	dry-run band A
+blk.21.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.21.ffn_gate_exps.weight	BF16	BF16	A	0.267578	268435456	dry-run band A
+blk.21.ffn_up_exps.weight	BF16	BF16	A	0.15625	268435456	dry-run band A
+blk.21.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.21.ffn_down_shexp.weight	BF16	BF16	A	0.496094	1048576	dry-run band A
+blk.21.ffn_gate_shexp.weight	BF16	BF16	A	0.241211	1048576	dry-run band A
+blk.21.ffn_up_shexp.weight	BF16	BF16	A	0.198242	1048576	dry-run band A
+blk.21.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.21.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.22.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.22.ssm_a	F32	F32	-	0	32	passthrough
+blk.22.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.22.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.22.ssm_alpha.weight	BF16	BF16	A	0.166992	65536	dry-run band A
+blk.22.ssm_beta.weight	BF16	BF16	A	0.144531	65536	dry-run band A
+blk.22.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.22.ffn_down_exps.weight	BF16	BF16	A	0.345703	268435456	dry-run band A
+blk.22.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.22.ffn_down_shexp.weight	BF16	BF16	A	0.355469	1048576	dry-run band A
+blk.22.ffn_gate_shexp.weight	BF16	BF16	A	0.202148	1048576	dry-run band A
+blk.22.ffn_up_shexp.weight	BF16	BF16	A	0.320312	1048576	dry-run band A
+blk.22.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.22.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.23.ffn_down_exps.weight	BF16	BF16	A	0.421875	268435456	dry-run band A
+blk.23.ffn_gate_exps.weight	BF16	BF16	A	0.306641	268435456	dry-run band A
+blk.23.ffn_up_exps.weight	BF16	BF16	A	0.157227	268435456	dry-run band A
+blk.23.attn_k.weight	BF16	BF16	A	0.234375	1048576	dry-run band A
+blk.23.attn_output.weight	BF16	BF16	A	0.695312	8388608	dry-run band A
+blk.23.attn_q.weight	BF16	BF16	A	0.410156	16777216	dry-run band A
+blk.23.attn_v.weight	BF16	BF16	A	0.236328	1048576	dry-run band A
+blk.24.attn_qkv.weight	BF16	BF16	A	0.355469	16777216	dry-run band A
+blk.24.attn_gate.weight	BF16	BF16	A	0.3125	8388608	dry-run band A
+blk.24.ssm_out.weight	BF16	BF16	A	0.804688	8388608	dry-run band A
+blk.24.ffn_down_exps.weight	BF16	BF16	A	0.227539	268435456	dry-run band A
+blk.24.ffn_gate_exps.weight	BF16	BF16	A	0.230469	268435456	dry-run band A
+blk.24.ffn_up_exps.weight	BF16	BF16	A	0.140625	268435456	dry-run band A
+blk.25.attn_qkv.weight	BF16	BF16	A	0.310547	16777216	dry-run band A
+blk.25.attn_gate.weight	BF16	BF16	A	0.310547	8388608	dry-run band A
+blk.25.ssm_out.weight	BF16	BF16	A	0.894531	8388608	dry-run band A
+blk.25.ffn_down_exps.weight	BF16	BF16	A	0.239258	268435456	dry-run band A
+blk.23.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.23.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.23.ffn_down_shexp.weight	BF16	BF16	A	0.53125	1048576	dry-run band A
+blk.23.ffn_gate_shexp.weight	BF16	BF16	A	0.176758	1048576	dry-run band A
+blk.23.ffn_up_shexp.weight	BF16	BF16	A	0.225586	1048576	dry-run band A
+blk.23.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.23.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.23.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.23.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.24.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.24.ssm_a	F32	F32	-	0	32	passthrough
+blk.24.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.24.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.24.ssm_alpha.weight	BF16	BF16	A	0.195312	65536	dry-run band A
+blk.24.ssm_beta.weight	BF16	BF16	A	0.188477	65536	dry-run band A
+blk.24.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.24.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.24.ffn_down_shexp.weight	BF16	BF16	A	0.84375	1048576	dry-run band A
+blk.24.ffn_gate_shexp.weight	BF16	BF16	A	0.19043	1048576	dry-run band A
+blk.24.ffn_up_shexp.weight	BF16	BF16	A	0.170898	1048576	dry-run band A
+blk.24.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.24.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.25.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.25.ssm_a	F32	F32	-	0	32	passthrough
+blk.25.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.25.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.25.ssm_alpha.weight	BF16	BF16	A	0.211914	65536	dry-run band A
+blk.25.ssm_beta.weight	BF16	BF16	A	0.145508	65536	dry-run band A
+blk.25.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.25.ffn_gate_exps.weight	BF16	BF16	A	0.263672	268435456	dry-run band A
+blk.25.ffn_up_exps.weight	BF16	BF16	A	0.126953	268435456	dry-run band A
+blk.25.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.25.ffn_down_shexp.weight	BF16	BF16	A	0.480469	1048576	dry-run band A
+blk.25.ffn_gate_shexp.weight	BF16	BF16	A	0.176758	1048576	dry-run band A
+blk.25.ffn_up_shexp.weight	BF16	BF16	A	0.170898	1048576	dry-run band A
+blk.25.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.25.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.26.attn_qkv.weight	BF16	BF16	A	0.476562	16777216	dry-run band A
+blk.26.attn_gate.weight	BF16	BF16	A	0.355469	8388608	dry-run band A
+blk.26.ssm_out.weight	BF16	BF16	A	0.679688	8388608	dry-run band A
+blk.26.ffn_gate_exps.weight	BF16	BF16	A	0.253906	268435456	dry-run band A
+blk.26.ffn_up_exps.weight	BF16	BF16	A	0.145508	268435456	dry-run band A
+blk.27.ffn_gate_exps.weight	BF16	BF16	A	0.333984	268435456	dry-run band A
+blk.27.ffn_up_exps.weight	BF16	BF16	A	0.149414	268435456	dry-run band A
+blk.27.attn_k.weight	BF16	BF16	A	0.232422	1048576	dry-run band A
+blk.27.attn_output.weight	BF16	BF16	A	0.660156	8388608	dry-run band A
+blk.27.attn_q.weight	BF16	BF16	A	0.333984	16777216	dry-run band A
+blk.27.attn_v.weight	BF16	BF16	A	0.255859	1048576	dry-run band A
+blk.28.attn_qkv.weight	BF16	BF16	A	0.566406	16777216	dry-run band A
+blk.28.attn_gate.weight	BF16	BF16	A	0.384766	8388608	dry-run band A
+blk.28.ssm_out.weight	BF16	BF16	A	0.769531	8388608	dry-run band A
+blk.28.ffn_down_exps.weight	BF16	BF16	A	0.361328	268435456	dry-run band A
+blk.28.ffn_gate_exps.weight	BF16	BF16	A	0.330078	268435456	dry-run band A
+blk.28.ffn_up_exps.weight	BF16	BF16	A	0.137695	268435456	dry-run band A
+blk.26.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.26.ssm_a	F32	F32	-	0	32	passthrough
+blk.26.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.26.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.26.ssm_alpha.weight	BF16	BF16	A	0.186523	65536	dry-run band A
+blk.26.ssm_beta.weight	BF16	BF16	A	0.165039	65536	dry-run band A
+blk.26.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.26.ffn_down_exps.weight	BF16	BF16	A	0.238281	268435456	dry-run band A
+blk.26.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.26.ffn_down_shexp.weight	BF16	BF16	A	0.333984	1048576	dry-run band A
+blk.26.ffn_gate_shexp.weight	BF16	BF16	A	0.130859	1048576	dry-run band A
+blk.26.ffn_up_shexp.weight	BF16	BF16	A	0.28125	1048576	dry-run band A
+blk.26.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.26.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.27.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.27.ffn_down_exps.weight	BF16	BF16	A	0.308594	268435456	dry-run band A
+blk.27.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.27.ffn_down_shexp.weight	BF16	BF16	A	0.486328	1048576	dry-run band A
+blk.27.ffn_gate_shexp.weight	BF16	BF16	A	0.207031	1048576	dry-run band A
+blk.27.ffn_up_shexp.weight	BF16	BF16	A	0.143555	1048576	dry-run band A
+blk.27.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.27.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.27.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.27.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.28.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.28.ssm_a	F32	F32	-	0	32	passthrough
+blk.28.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.28.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.28.ssm_alpha.weight	BF16	BF16	A	0.208008	65536	dry-run band A
+blk.28.ssm_beta.weight	BF16	BF16	A	0.149414	65536	dry-run band A
+blk.28.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.28.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.28.ffn_down_shexp.weight	BF16	BF16	A	0.470703	1048576	dry-run band A
+blk.28.ffn_gate_shexp.weight	BF16	BF16	A	0.263672	1048576	dry-run band A
+blk.28.ffn_up_shexp.weight	BF16	BF16	A	0.145508	1048576	dry-run band A
+blk.28.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.28.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.29.attn_qkv.weight	BF16	BF16	A	0.433594	16777216	dry-run band A
+blk.29.attn_gate.weight	BF16	BF16	A	0.330078	8388608	dry-run band A
+blk.29.ssm_out.weight	BF16	BF16	A	0.839844	8388608	dry-run band A
+blk.29.ffn_down_exps.weight	BF16	BF16	A	0.245117	268435456	dry-run band A
+blk.30.attn_qkv.weight	BF16	BF16	A	0.341797	16777216	dry-run band A
+blk.30.attn_gate.weight	BF16	BF16	A	0.435547	8388608	dry-run band A
+blk.30.ssm_out.weight	BF16	BF16	A	0.882812	8388608	dry-run band A
+blk.30.ffn_gate_exps.weight	BF16	BF16	A	0.257812	268435456	dry-run band A
+blk.30.ffn_up_exps.weight	BF16	BF16	A	0.142578	268435456	dry-run band A
+blk.31.ffn_down_exps.weight	BF16	BF16	A	0.357422	268435456	dry-run band A
+blk.31.ffn_gate_exps.weight	BF16	BF16	A	0.244141	268435456	dry-run band A
+blk.31.ffn_up_exps.weight	BF16	BF16	A	0.15332	268435456	dry-run band A
+blk.31.attn_k.weight	BF16	BF16	A	0.22168	1048576	dry-run band A
+blk.31.attn_output.weight	BF16	BF16	A	0.832031	8388608	dry-run band A
+blk.31.attn_q.weight	BF16	BF16	A	0.384766	16777216	dry-run band A
+blk.31.attn_v.weight	BF16	BF16	A	0.267578	1048576	dry-run band A
+blk.29.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.29.ssm_a	F32	F32	-	0	32	passthrough
+blk.29.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.29.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.29.ssm_alpha.weight	BF16	BF16	A	0.151367	65536	dry-run band A
+blk.29.ssm_beta.weight	BF16	BF16	A	0.137695	65536	dry-run band A
+blk.29.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.29.ffn_gate_exps.weight	BF16	BF16	A	0.259766	268435456	dry-run band A
+blk.29.ffn_up_exps.weight	BF16	BF16	A	0.15625	268435456	dry-run band A
+blk.29.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.29.ffn_down_shexp.weight	BF16	BF16	A	0.472656	1048576	dry-run band A
+blk.29.ffn_gate_shexp.weight	BF16	BF16	A	0.21582	1048576	dry-run band A
+blk.29.ffn_up_shexp.weight	BF16	BF16	A	0.339844	1048576	dry-run band A
+blk.29.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.29.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.30.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.30.ssm_a	F32	F32	-	0	32	passthrough
+blk.30.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.30.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.30.ssm_alpha.weight	BF16	BF16	A	0.178711	65536	dry-run band A
+blk.30.ssm_beta.weight	BF16	BF16	A	0.167969	65536	dry-run band A
+blk.30.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.30.ffn_down_exps.weight	BF16	BF16	A	0.271484	268435456	dry-run band A
+blk.30.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.30.ffn_down_shexp.weight	BF16	BF16	A	0.357422	1048576	dry-run band A
+blk.30.ffn_gate_shexp.weight	BF16	BF16	A	0.228516	1048576	dry-run band A
+blk.30.ffn_up_shexp.weight	BF16	BF16	A	0.177734	1048576	dry-run band A
+blk.30.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.30.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.31.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.31.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.31.ffn_down_shexp.weight	BF16	BF16	A	0.464844	1048576	dry-run band A
+blk.31.ffn_gate_shexp.weight	BF16	BF16	A	0.261719	1048576	dry-run band A
+blk.31.ffn_up_shexp.weight	BF16	BF16	A	0.162109	1048576	dry-run band A
+blk.31.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.31.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.31.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.31.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.32.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.32.ssm_a	F32	F32	-	0	32	passthrough
+blk.32.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.32.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.32.ssm_alpha.weight	BF16	BF16	A	0.216797	65536	dry-run band A
+blk.32.ssm_beta.weight	BF16	BF16	A	0.158203	65536	dry-run band A
+blk.32.attn_qkv.weight	BF16	BF16	A	0.589844	16777216	dry-run band A
+blk.32.attn_gate.weight	BF16	BF16	A	0.337891	8388608	dry-run band A
+blk.32.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.32.ssm_out.weight	BF16	BF16	A	0.863281	8388608	dry-run band A
+blk.32.ffn_down_exps.weight	BF16	BF16	A	0.279297	268435456	dry-run band A
+blk.32.ffn_gate_exps.weight	BF16	BF16	A	0.277344	268435456	dry-run band A
+blk.32.ffn_up_exps.weight	BF16	BF16	A	0.197266	268435456	dry-run band A
+blk.32.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.32.ffn_down_shexp.weight	BF16	BF16	A	0.46875	1048576	dry-run band A
+blk.32.ffn_gate_shexp.weight	BF16	BF16	A	0.217773	1048576	dry-run band A
+blk.32.ffn_up_shexp.weight	BF16	BF16	A	0.248047	1048576	dry-run band A
+blk.32.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.32.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.33.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.33.ssm_a	F32	F32	-	0	32	passthrough
+blk.33.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.33.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.33.ssm_alpha.weight	BF16	BF16	A	0.178711	65536	dry-run band A
+blk.33.ssm_beta.weight	BF16	BF16	A	0.133789	65536	dry-run band A
+blk.33.attn_qkv.weight	BF16	BF16	A	0.484375	16777216	dry-run band A
+blk.33.attn_gate.weight	BF16	BF16	A	0.357422	8388608	dry-run band A
+blk.33.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.33.ssm_out.weight	BF16	BF16	A	0.957031	8388608	dry-run band A
+blk.33.ffn_down_exps.weight	BF16	BF16	A	0.382812	268435456	dry-run band A
+blk.33.ffn_gate_exps.weight	BF16	BF16	A	0.308594	268435456	dry-run band A
+blk.33.ffn_up_exps.weight	BF16	BF16	A	0.189453	268435456	dry-run band A
+blk.33.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.33.ffn_down_shexp.weight	BF16	BF16	A	0.378906	1048576	dry-run band A
+blk.33.ffn_gate_shexp.weight	BF16	BF16	A	0.203125	1048576	dry-run band A
+blk.33.ffn_up_shexp.weight	BF16	BF16	A	0.179688	1048576	dry-run band A
+blk.33.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.33.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.34.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.34.ssm_a	F32	F32	-	0	32	passthrough
+blk.34.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.34.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.34.ssm_alpha.weight	BF16	BF16	A	0.177734	65536	dry-run band A
+blk.34.ssm_beta.weight	BF16	BF16	A	0.15332	65536	dry-run band A
+blk.34.attn_qkv.weight	BF16	BF16	A	0.345703	16777216	dry-run band A
+blk.34.attn_gate.weight	BF16	BF16	A	0.324219	8388608	dry-run band A
+blk.34.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.34.ssm_out.weight	BF16	BF16	A	0.859375	8388608	dry-run band A
+blk.34.ffn_down_exps.weight	BF16	BF16	A	0.324219	268435456	dry-run band A
+blk.34.ffn_gate_exps.weight	BF16	BF16	A	0.369141	268435456	dry-run band A
+blk.34.ffn_up_exps.weight	BF16	BF16	A	0.214844	268435456	dry-run band A
+blk.34.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.34.ffn_down_shexp.weight	BF16	BF16	A	0.373047	1048576	dry-run band A
+blk.34.ffn_gate_shexp.weight	BF16	BF16	A	0.209961	1048576	dry-run band A
+blk.34.ffn_up_shexp.weight	BF16	BF16	A	0.185547	1048576	dry-run band A
+blk.34.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.34.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.35.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.35.ffn_down_exps.weight	BF16	BF16	A	0.380859	268435456	dry-run band A
+blk.35.ffn_gate_exps.weight	BF16	BF16	A	0.402344	268435456	dry-run band A
+blk.35.ffn_up_exps.weight	BF16	BF16	A	0.213867	268435456	dry-run band A
+blk.35.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.35.ffn_down_shexp.weight	BF16	BF16	A	0.417969	1048576	dry-run band A
+blk.35.ffn_gate_shexp.weight	BF16	BF16	A	0.244141	1048576	dry-run band A
+blk.35.ffn_up_shexp.weight	BF16	BF16	A	0.206055	1048576	dry-run band A
+blk.35.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.35.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.35.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.35.attn_k.weight	BF16	BF16	A	0.298828	1048576	dry-run band A
+blk.35.attn_output.weight	BF16	BF16	A	0.617188	8388608	dry-run band A
+blk.35.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.35.attn_q.weight	BF16	BF16	A	0.433594	16777216	dry-run band A
+blk.35.attn_v.weight	BF16	BF16	A	0.373047	1048576	dry-run band A
+blk.36.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.36.ssm_a	F32	F32	-	0	32	passthrough
+blk.36.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.36.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.36.ssm_alpha.weight	BF16	BF16	A	0.216797	65536	dry-run band A
+blk.36.ssm_beta.weight	BF16	BF16	A	0.125977	65536	dry-run band A
+blk.36.attn_qkv.weight	BF16	BF16	A	0.451172	16777216	dry-run band A
+blk.36.attn_gate.weight	BF16	BF16	A	0.392578	8388608	dry-run band A
+blk.36.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.36.ssm_out.weight	BF16	BF16	A	2.14062	8388608	dry-run band A
+blk.36.ffn_down_exps.weight	BF16	BF16	A	0.291016	268435456	dry-run band A
+blk.36.ffn_gate_exps.weight	BF16	BF16	A	0.425781	268435456	dry-run band A
+blk.36.ffn_up_exps.weight	BF16	BF16	A	0.232422	268435456	dry-run band A
+blk.36.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.36.ffn_down_shexp.weight	BF16	BF16	A	0.462891	1048576	dry-run band A
+blk.36.ffn_gate_shexp.weight	BF16	BF16	A	0.255859	1048576	dry-run band A
+blk.36.ffn_up_shexp.weight	BF16	BF16	A	0.296875	1048576	dry-run band A
+blk.36.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.36.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.37.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.37.ssm_a	F32	F32	-	0	32	passthrough
+blk.37.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.37.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.37.ssm_alpha.weight	BF16	BF16	A	0.177734	65536	dry-run band A
+blk.37.ssm_beta.weight	BF16	BF16	A	0.147461	65536	dry-run band A
+blk.37.attn_qkv.weight	BF16	BF16	A	0.621094	16777216	dry-run band A
+blk.37.attn_gate.weight	BF16	BF16	A	0.396484	8388608	dry-run band A
+blk.37.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.37.ssm_out.weight	BF16	BF16	A	0.632812	8388608	dry-run band A
+blk.37.ffn_down_exps.weight	BF16	BF16	A	0.273438	268435456	dry-run band A
+blk.37.ffn_gate_exps.weight	BF16	BF16	A	0.378906	268435456	dry-run band A
+blk.37.ffn_up_exps.weight	BF16	BF16	A	0.263672	268435456	dry-run band A
+blk.37.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.37.ffn_down_shexp.weight	BF16	BF16	A	0.392578	1048576	dry-run band A
+blk.37.ffn_gate_shexp.weight	BF16	BF16	A	0.261719	1048576	dry-run band A
+blk.37.ffn_up_shexp.weight	BF16	BF16	A	0.208984	1048576	dry-run band A
+blk.37.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.37.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.38.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.38.ssm_a	F32	F32	-	0	32	passthrough
+blk.38.ssm_conv1d.weight	F32	F32	-	0	32768	passthrough
+blk.38.ssm_dt.bias	F32	F32	-	0	32	passthrough
+blk.38.ssm_alpha.weight	BF16	BF16	A	0.186523	65536	dry-run band A
+blk.38.ssm_beta.weight	BF16	BF16	A	0.149414	65536	dry-run band A
+blk.38.attn_qkv.weight	BF16	BF16	A	0.730469	16777216	dry-run band A
+blk.38.attn_gate.weight	BF16	BF16	A	0.410156	8388608	dry-run band A
+blk.38.ssm_norm.weight	F32	F32	-	0	128	passthrough
+blk.38.ssm_out.weight	BF16	BF16	A	0.589844	8388608	dry-run band A
+blk.38.ffn_down_exps.weight	BF16	BF16	A	0.255859	268435456	dry-run band A
+blk.38.ffn_gate_exps.weight	BF16	BF16	A	0.394531	268435456	dry-run band A
+blk.38.ffn_up_exps.weight	BF16	BF16	A	0.359375	268435456	dry-run band A
+blk.38.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.38.ffn_down_shexp.weight	BF16	BF16	A	0.396484	1048576	dry-run band A
+blk.38.ffn_gate_shexp.weight	BF16	BF16	A	0.226562	1048576	dry-run band A
+blk.38.ffn_up_shexp.weight	BF16	BF16	A	0.197266	1048576	dry-run band A
+blk.38.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.38.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.39.ffn_gate_exps.weight	BF16	BF16	A	0.375	268435456	dry-run band A
+blk.39.ffn_up_exps.weight	BF16	BF16	A	0.306641	268435456	dry-run band A
+blk.40.ffn_gate_exps.weight	BF16	BF16	A	0.275391	268435456	dry-run band A
+blk.40.ffn_up_exps.weight	BF16	BF16	A	0.523438	268435456	dry-run band A
+output.weight	BF16	BF16	A	0.300781	508559360	dry-run band A
+blk.39.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.39.ffn_down_exps.weight	BF16	BF16	A	0.652344	268435456	dry-run band A
+blk.39.ffn_gate_inp.weight	F32	F32	-	0	524288	passthrough
+blk.39.ffn_down_shexp.weight	BF16	BF16	A	0.304688	1048576	dry-run band A
+blk.39.ffn_gate_shexp.weight	BF16	BF16	A	0.193359	1048576	dry-run band A
+blk.39.ffn_up_shexp.weight	BF16	BF16	A	0.294922	1048576	dry-run band A
+blk.39.ffn_gate_inp_shexp.weight	F32	F32	-	0	2048	passthrough
+blk.39.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.39.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.39.attn_k.weight	BF16	BF16	A	0.229492	1048576	dry-run band A
+blk.39.attn_output.weight	BF16	BF16	A	0.542969	8388608	dry-run band A
+blk.39.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.39.attn_q.weight	BF16	BF16	A	0.421875	16777216	dry-run band A
+blk.39.attn_v.weight	BF16	BF16	A	0.386719	1048576	dry-run band A
+output_norm.weight	F32	F32	-	0	2048	passthrough
+blk.40.nextn.eh_proj.weight	BF16	BF16	A	0.410156	8388608	dry-run band A
+blk.40.attn_norm.weight	F32	F32	-	0	2048	passthrough
+blk.40.ffn_down_exps.weight	BF16	BF16	A	0.777344	268435456	dry-run band A
+blk.40.ffn_gate_inp.weight	BF16	BF16	-	0	524288	policy-preserve
+blk.40.ffn_down_shexp.weight	BF16	BF16	A	0.337891	1048576	dry-run band A
+blk.40.ffn_gate_shexp.weight	BF16	BF16	A	0.142578	1048576	dry-run band A
+blk.40.ffn_up_shexp.weight	BF16	BF16	A	0.194336	1048576	dry-run band A
+blk.40.ffn_gate_inp_shexp.weight	BF16	BF16	A	0.0088501	2048	dry-run band A
+blk.40.post_attention_norm.weight	F32	F32	-	0	2048	passthrough
+blk.40.attn_k_norm.weight	F32	F32	-	0	256	passthrough
+blk.40.attn_k.weight	BF16	BF16	A	0.232422	1048576	dry-run band A
+blk.40.attn_output.weight	BF16	BF16	A	1.84375	8388608	dry-run band A
+blk.40.attn_q_norm.weight	F32	F32	-	0	256	passthrough
+blk.40.attn_q.weight	BF16	BF16	A	0.386719	16777216	dry-run band A
+blk.40.attn_v.weight	BF16	BF16	A	0.25	1048576	dry-run band A
+blk.40.nextn.shared_head_norm.weight	F32	F32	-	0	2048	passthrough
+blk.40.nextn.enorm.weight	F32	F32	-	0	2048	passthrough
+blk.40.nextn.hnorm.weight	F32	F32	-	0	2048	passthrough

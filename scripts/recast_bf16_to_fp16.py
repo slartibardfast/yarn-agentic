@@ -99,6 +99,46 @@ def bf16_to_fp32(arr: np.ndarray, logical_shape: list[int]) -> np.ndarray:
     return arr.astype(np.float32)
 
 
+def bf16_absmax(arr: np.ndarray) -> float:
+    """Compute the BF16 tensor's absmax in O(elements) time but O(1) extra memory
+    relative to the input mmap — never materialize a full FP32 buffer.
+
+    For BF16 stored as uint16, |x| has the sign bit (bit 15) cleared, leaving
+    a 15-bit magnitude. Larger magnitude bit-patterns correspond to larger |x|
+    in the BF16 ordering (sign-magnitude with the same exponent/mantissa
+    semantics as FP32 high-half). So the largest absmax bit-pattern across
+    the tensor identifies the largest |x|, which we then upcast.
+    """
+    if arr.dtype == np.float32:
+        return float(np.abs(arr).max()) if arr.size else 0.0
+    if arr.dtype == np.float16:
+        return float(np.abs(arr.astype(np.float32)).max()) if arr.size else 0.0
+    if arr.dtype == np.uint8:
+        u16 = arr.view(np.uint16)
+        if u16.size == 0:
+            return 0.0
+        # Stream the abs-max in chunks to bound transient memory.
+        # Each chunk allocates a small uint16 array equal to its size.
+        chunk = 1 << 22  # ~4M uint16 per chunk = 8 MiB transient
+        flat = u16.reshape(-1)
+        max_bits = 0
+        for off in range(0, flat.size, chunk):
+            seg = flat[off : off + chunk]
+            seg_max = int((seg & np.uint16(0x7FFF)).max())
+            if seg_max > max_bits:
+                max_bits = seg_max
+        # max_bits is a BF16 bit-pattern (sign=0); upcast that single value.
+        fp32 = np.uint32(max_bits) << 16
+        return float(np.array([fp32], dtype=np.uint32).view(np.float32)[0])
+    if arr.dtype == np.uint16:
+        if arr.size == 0:
+            return 0.0
+        max_bits = int((arr & np.uint16(0x7FFF)).max())
+        fp32 = np.uint32(max_bits) << 16
+        return float(np.array([fp32], dtype=np.uint32).view(np.float32)[0])
+    return float(np.abs(arr.astype(np.float32)).max()) if arr.size else 0.0
+
+
 def classify_band(absmax: float) -> str:
     if absmax <= FP16_HALF_RANGE:
         return "A"
@@ -198,10 +238,15 @@ def recast_tensor(
             GGMLQuantizationType.BF16, src_arr, band="-", absmax=0.0, note="policy-preserve"
         )
 
-    fp32 = bf16_to_fp32(src_arr, logical_shape)
-    absmax = float(np.abs(fp32).max()) if fp32.size else 0.0
+    # For dry-run we only need absmax — avoid materializing FP32 (4× memory).
+    # For T1 with no Band C path engaged, we also avoid materialization until needed.
+    absmax = bf16_absmax(src_arr)
+    fp32 = None  # only materialized when actually casting
 
     if absmax == 0.0:
+        # Trivial case — emit a same-size FP16 zero tensor.
+        if fp32 is None:
+            fp32 = bf16_to_fp32(src_arr, logical_shape)
         out = fp32.astype(np.float16)
         return TensorAction(GGMLQuantizationType.F16, out, "A", 0.0, "zero-tensor")
 
@@ -210,10 +255,12 @@ def recast_tensor(
     # --- Tier dispatch ---
 
     if tier == "dry-run":
-        if band == "A" or band == "B":
-            return TensorAction(GGMLQuantizationType.F16, fp32.astype(np.float16),
-                                band, absmax, f"dry-run band {band}")
-        return TensorAction(GGMLQuantizationType.BF16, src_arr, "C", absmax, "dry-run band C")
+        # Dry-run never writes a GGUF; we don't need the cast array at all.
+        return TensorAction(src_type, src_arr, band, absmax, f"dry-run band {band}")
+
+    # Materialize FP32 only when we need to cast.
+    if fp32 is None:
+        fp32 = bf16_to_fp32(src_arr, logical_shape)
 
     if tier == "T1":
         if band in ("A", "B"):
