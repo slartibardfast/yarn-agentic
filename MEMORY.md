@@ -1134,3 +1134,25 @@ All five tiers pass the 0.05 mean-KLD ship gate by 200×. T2 and T3 are byte-ide
 **How to apply**: any code that walks `model.tensors_by_name` and modifies tensor data MUST dedup by pointer, never by name. Tied-embedding aliasing is a real production case (Qwen3.5-0.8B uses it). The greedy-smoke prompt happened to dodge the activation pattern that exposed the bug — never trust a single greedy prompt as full validation. KLD over a long, diverse text corpus is a much more sensitive gate.
 
 **Reproducibility**: data + raw logs at `/opt/models/recast-out/{kld-vs-v0-0.8b.tsv,logs/}`. PHASE32 commit 6664137. ik_llama recast hook commits 2aa2b550 → 1e9ec632. All recast artifacts under `/opt/models/recast-out/` (never `/tmp` per project rule).
+
+## 2026-05-03 — PHASE32 reframe: FP16 trunk wins; mtp.fc cast is a tie
+
+After running V-F1 (BF16 mtp.fc + FP16 trunk) at all 5 tiers as a control matched against V-F1a (FP16 mtp.fc + FP16 trunk):
+
+| Cell | mtp_tg | α | ratio |
+|------|-------:|--:|------:|
+| iter-7 V0 BF16 | 156.9 | 0.848 | 1.282× |
+| **V-F1.T1** | **194.16** | **0.861** | **1.406×** |
+| V-F1a.T3 | 193.90 | 0.861 | 1.400× |
+| V-F1a.T2 | 193.45 | 0.861 | 1.395× |
+| V-F1a.T1 | 192.54 | 0.848 | 1.394× |
+
+5-run stderr ~0.5 t/s; V-F1.T1, V-F1a.T2/T3 cluster within noise. The BIG win is the FP16 trunk: +9.7% throughput / +1.5pp acceptance vs iter-7 BF16. The mtp.fc cast (BF16 → FP16) is a **statistical tie** at 0.8B — neither clearly wins.
+
+**HC1 canary verdict**: FP16 mtp.fc is SAFE. The "INT4 → 0% accept" failure does NOT carry to FP16. But casting it is a design preference (file size, simplicity), not a correctness or performance gate.
+
+**Pareto pick at 0.8B**: V-F1.T1 (BF16 mtp.fc preserved, FP16 trunk, no rescale). Simplest viable recipe; matches the published BF16-preservation list with only the trunk cast. V-F1a.T3 is a near-tie alternative.
+
+**How to apply**: when reporting PHASE32 outcomes externally, lead with "FP16 trunk recovers iter-7 ceiling" not "FP16 mtp.fc beats BF16". The mtp.fc question is answered (safe to cast, not strictly better) but the headline is the trunk.
+
+**Reproducibility**: data + raw logs at `/opt/models/recast-out/{kld-vs-v0-0.8b-V-F1{,a}.tsv,bench-tiers-0.8b-V-F1{,a}.tsv,logs/}`. PHASE32 commit b239b8d.
