@@ -8,7 +8,8 @@ set -uo pipefail
 
 OUT_DIR=/opt/models/recast-out
 REF=$OUT_DIR/v0-bf16-0.8b.kld
-TSV=$OUT_DIR/kld-vs-v0-0.8b.tsv
+VARIANT=${VARIANT:-V-F1a}
+TSV=$OUT_DIR/kld-vs-v0-0.8b-${VARIANT}.tsv
 TEXT=/opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw
 BIN=/home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-perplexity
 
@@ -18,9 +19,9 @@ mkdir -p "$OUT_DIR/logs"
 echo -e "tier\tmean_kl\tmedian_kl\tp99_kl\tmax_kl\tsame_top_p\tppl_q" > "$TSV"
 
 for tier in T1 T2 T3 T4 T5; do
-    gguf="$OUT_DIR/Qwen3.5-0.8B-V-F1a-$tier.gguf"
+    gguf="$OUT_DIR/Qwen3.5-0.8B-${VARIANT}-$tier.gguf"
     if [ ! -f "$gguf" ]; then echo "missing $gguf" >&2; continue; fi
-    log="$OUT_DIR/logs/kld-vs-v0-$tier.log"
+    log="$OUT_DIR/logs/kld-vs-v0-${VARIANT}-$tier.log"
     echo "==> $tier vs V0  (log $log)"
     "$BIN" -m "$gguf" -f "$TEXT" \
         --device CUDA0 -ngl 999 -c 2048 \

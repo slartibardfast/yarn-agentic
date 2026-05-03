@@ -5,9 +5,10 @@
 set -uo pipefail
 
 OUT_DIR=/opt/models/recast-out
-TSV=$OUT_DIR/bench-tiers-0.8b.tsv
+VARIANT=${VARIANT:-V-F1a}
+TSV=$OUT_DIR/bench-tiers-0.8b-${VARIANT}.tsv
 BIN=/home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-server
-PORT=18181
+PORT=${PORT:-18181}
 PROMPT="The history of artificial intelligence began in earnest in"
 N_PREDICT=${N_PREDICT:-256}
 RUNS=${RUNS:-5}
@@ -24,9 +25,9 @@ echo -e "tier\tmtp\trun_avg_tg\trun_avg_pp\taccept_rate" > "$TSV"
 
 run_mode() {
     local gguf=$1 tier=$2 mtp_flag=$3 mtp_label=$4
-    local log="$OUT_DIR/logs/bench-$tier-$mtp_label.log"
+    local log="$OUT_DIR/logs/bench-${VARIANT}-$tier-$mtp_label.log"
     "$BIN" -m "$gguf" \
-        --device CUDA0 -ngl 999 -fa on $mtp_flag \
+        --device "${BENCH_DEV:-CUDA0}" -ngl 999 -fa on $mtp_flag \
         --draft 1 -c 4096 \
         --no-mmap \
         --threads 16 --batch-size 2048 --ubatch-size 512 \
@@ -77,9 +78,9 @@ run_mode() {
 }
 
 for tier in T1 T2 T3 T4 T5; do
-    gguf="$OUT_DIR/Qwen3.5-0.8B-V-F1a-$tier.gguf"
+    gguf="$OUT_DIR/Qwen3.5-0.8B-${VARIANT}-$tier.gguf"
     if [ ! -f "$gguf" ]; then echo "missing $gguf"; continue; fi
-    echo "=== bench V-F1a.$tier ==="
+    echo "=== bench ${VARIANT:-V-F1a}.$tier ==="
     run_mode "$gguf" "$tier" "-no-mtp" "nomtp"
     run_mode "$gguf" "$tier" "-mtp"    "mtp"
 done

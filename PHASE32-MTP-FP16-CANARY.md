@@ -101,9 +101,11 @@ All five are within ULP-noise of V0 BF16. Same-top-token agreement is
 98.97-98.99% across the board.
 
 **Headline:** at the 0.8B canary, ALL five cast-method tiers preserve
-distribution to within ULP of the BF16 reference. The implementation is
-correct. The five tiers will diverge meaningfully only when Band-C
-tensors exist (35B-A3B / 27B / 80B with wider absmax distributions).
+distribution to within ULP of the BF16 reference (V-F1 and V-F1a both
+collapse to the same numbers in non-MTP PPL because eh_proj is
+dormant). The implementation is correct. The five tiers will diverge
+meaningfully only when Band-C tensors exist (35B-A3B / 27B / 80B with
+wider absmax distributions).
 
 ### 5-run bench (Qwen3.5-0.8B V-F1a, n_predict=256, --draft 1, --no-mmap)
 
@@ -123,19 +125,38 @@ temp=0; the bench runs both `-no-mtp` and `-mtp` at each tier.
 by a tiny margin: T3 hits **1.400×** (+11.8% vs baseline). T2 and T3 are
 also tied for highest acceptance at α=0.861 (vs baseline 0.848 / +1.5pp).
 
-The headline result of PHASE32: FP16 mtp.fc isn't merely safe — it's
-actively faster than BF16 mtp.fc on sm_75. The v0 baseline numbers come
-from prior iter-7 measurements at the same config; the absolute tg
-delta (~16.6 t/s nomtp baseline → 138-139 t/s) suggests the recast V-F1a
-trunk is ALSO faster on sm_75 than V0's mixed BF16/FP16 path, because
-sm_75 has FP16 tensor cores but no native BF16. **Casting the trunk to
-FP16 is the bigger win than the mtp.fc tier choice.**
+### V-F1 (BF16 mtp.fc) vs V-F1a (FP16 mtp.fc) — controlled comparison
 
-Combined with the KLD-flat-vs-V0 result (mean KLD < 0.000242 across all
-tiers), the recommendation for shipping at 0.8B is clear:
-  - **V-F1a.T3** is the Pareto-optimal cell on this canary
-  - V-F1a.T1 also viable (no kernel work; ULP-only divergence from T3)
-  - Defer T4/T5 to models where Band C is non-empty
+| Tier | V-F1 nomtp | V-F1 mtp | V-F1 ratio | V-F1 α | V-F1a mtp | V-F1a ratio | V-F1a α |
+|------|----------:|---------:|-----------:|-------:|----------:|------------:|--------:|
+| T1   | 138.10 | **194.16** | **1.406×** | 0.861 | 192.54 | 1.394× | 0.848 |
+| T2   | 138.65 | 191.99 | 1.385× | 0.848 | 193.45 | 1.395× | 0.861 |
+| T3   | 138.51 | 191.66 | 1.384× | 0.848 | 193.90 | 1.400× | 0.861 |
+| T4   | 138.20 | 192.19 | 1.391× | 0.861 | 191.07 | 1.382× | 0.848 |
+| T5   | 137.91 | 190.45 | 1.381× | 0.835 | 190.78 | 1.383× | 0.848 |
+
+**Best single cell: V-F1.T1** at 194.16 t/s, α=0.861, ratio=1.406×.
+Within 5-run noise (typical stderr ~0.5 t/s) of V-F1a.T3 (193.90 t/s),
+V-F1a.T2 (193.45), and a few others. The leaders cluster within ~1 t/s.
+
+**V-F1 vs V-F1a: statistical tie, slight V-F1 edge.**
+The earlier "FP16 mtp.fc is the win" framing (drawn from V-F1a alone) was
+optimistic. Apples-to-apples shows the BIG win is the FP16 trunk
+(1.282× → 1.40×, +9.7% vs iter-7 BF16 baseline; sm_75 has FP16 tensor
+cores, no native BF16). The mtp.fc cast choice is a secondary effect
+near the noise floor.
+
+**HC1 (canary) verdict:** FP16 mtp.fc is **safe** (KLD ~equal, α within
+noise). The published "INT4 → 0% accept" failure does not carry to FP16.
+Whether to cast it is a design preference, not a correctness gate.
+
+**Pareto-optimal cell on this canary: V-F1.T1** (BF16 mtp.fc preserved,
+FP16 trunk, no rescale anywhere — the simplest viable recipe; matches
+the published BF16-preservation list with only the trunk cast).
+V-F1a.T3 is a near-tie alternative if the FP16 mtp.fc is desired for
+storage compactness or for confirming H1 in the model card.
+
+T4/T5 deferred to models where Band C is non-empty.
 
 ## Research Hypotheses (stated IN ADVANCE; data-decides)
 
