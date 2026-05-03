@@ -33,10 +33,79 @@ it survives FP16, the broader BF16-preservation list almost certainly does too.
 |---|------|---------|
 | 1 | `scripts/autoround_to_q4_0_gguf.py` (saved) | AutoRound INT4 sym W4G128 → Q4_0 GGUF (lossless repack) |
 | 2 | `scripts/splice_mtp_tensors.py` (NEW) | Append BF16 MTP tensors from source GGUF/safetensors into a target GGUF; update `nextn_predict_layers` |
-| 3 | `scripts/recast_bf16_to_fp16.py` (NEW) | Per-tensor selective cast: clamp ±65504 + numpy RNE; takes a YAML/JSON precision policy |
+| 3 | `scripts/recast_bf16_to_fp16.py` (NEW) | Per-tensor **absmax-aware** selective cast: see Tool 3 spec below; takes a YAML/JSON precision policy |
 | 4 | `scripts/mixed_quant_synthesis.py` (NEW) | Compose Q4_0 trunk (Tool 1) + selective-uplifted tensors (Q5_K/Q6_K via llama-quantize / FP16 via Tool 3) + BF16-preserved tensors → single mixed-precision GGUF |
 | 5 | `scripts/kld_compare.sh` (NEW) | Wrap `llama-perplexity --kl-divergence-base/--kl-divergence` against wikitext-2 |
 | 6 | `scripts/validate_gguf_mtp.sh` (NEW) | Smoke: load test, `nextn_predict_layers=1` check, accept ≥ 0.5, coherent output, deterministic |
+
+### Tool 3 spec (absmax-aware in-advance recast — non-lazy)
+
+```python
+def recast_tensor_bf16_to_fp16(bf16_arr, name, policy="preserve_bf16"):
+    """
+    Measure-then-decide. Never clamp without first checking range.
+    Returns (out_arr, out_dtype, scale_metadata).
+    """
+    fp32 = bf16_arr.astype(np.float32)             # lossless upcast (BF16 = FP32 high half)
+    absmax = float(np.abs(fp32).max())
+    n_pos_inf_in = int((fp32 == np.inf).sum())     # rare; likely BF16 has Inf encodings
+    n_neg_inf_in = int((fp32 == -np.inf).sum())
+
+    if absmax == 0.0:                              # all zeros — trivial
+        return bf16_arr.astype(np.float16), "F16", None
+
+    FP16_MAX        = 65504.0
+    FP16_HALF_RANGE = 32768.0
+
+    if absmax <= FP16_HALF_RANGE:
+        # Band A: comfortably in FP16 range; clean RNE cast, no clamp engages.
+        out = fp32.astype(np.float16)
+        log(f"{name}: absmax={absmax:.6g}, FP16-safe → cast")
+        assert not np.isinf(out).any(), f"{name} produced Inf despite absmax ≤ 32768"
+        return out, "F16", None
+
+    if absmax <= FP16_MAX:
+        # Band B: within FP16 range but near edge; values near absmax lose 1+ ULP.
+        out = fp32.astype(np.float16)
+        log(f"{name}: absmax={absmax:.6g}, FP16-borderline (>50% of range) → cast with edge-precision warning")
+        new_inf = int(np.isinf(out).sum()) - n_pos_inf_in - n_neg_inf_in
+        assert new_inf == 0, f"{name} produced {new_inf} new Inf in cast (round-up at boundary)"
+        return out, "F16", None
+
+    # Band C: absmax > FP16_MAX. Cannot fit cleanly without information loss.
+    if policy == "preserve_bf16":
+        log(f"{name}: absmax={absmax:.6g} EXCEEDS FP16_max — preserved at BF16")
+        return bf16_arr, "BF16", None             # dynamically extends BF16-preservation list
+
+    if policy == "scale_aware":
+        # Pre-rescale into FP16 range; store scale as metadata for runtime application.
+        # NOTE: requires kernel-level scale support — not currently in ik_llama.cpp.
+        # Effective only when we add the load-time-multiply hook.
+        scale = absmax / 65000.0                   # small safety margin from 65504
+        rescaled = fp32 / scale
+        out = rescaled.astype(np.float16)
+        log(f"{name}: absmax={absmax:.6g} EXCEEDS FP16_max — pre-rescaled by /{scale:.6g}")
+        return out, "F16", {"scale": scale}        # caller persists scale into GGUF KV
+
+    if policy == "clamp":
+        # Lazy fallback. Explicitly opt-in only.
+        clamped = np.clip(fp32, -FP16_MAX, FP16_MAX)
+        out = clamped.astype(np.float16)
+        log(f"{name}: absmax={absmax:.6g} CLAMPED at ±FP16_max (lazy policy, info loss in tail)")
+        return out, "F16", None
+
+    raise ValueError(f"unknown policy {policy}")
+```
+
+**Default policy: `preserve_bf16` for Band C.** Makes the BF16 list data-driven
+(the static list in the cast policy table is the *minimum*; outlier tensors
+auto-extend it). The per-tensor absmax distribution is a deliverable —
+captured into the model card as the **first published BF16 distribution
+profile for Qwen3.6**.
+
+**Critical: the pre-cast measurement is itself the work product.** Run Tool 3
+in dry-run mode first, dump per-tensor absmax to `/tmp/absmax-<target>.tsv`
+for inspection BEFORE any cast happens. Only then commit to actual recast.
 
 ## Variant matrix (Stage A — 0.8B canary + sweep)
 
