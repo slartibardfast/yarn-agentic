@@ -470,13 +470,26 @@ def main() -> int:
 
     writer = None
     if args.tier != "dry-run":
-        writer = GGUFWriter(args.output, arch=arch)
+        # Streaming write: no temp_file accumulation. Pass 1 registers
+        # tensor_info only; pass 2 calls writer.write_tensor_data() directly,
+        # which writes each tensor straight to the final file and frees it.
+        # This keeps peak disk = output size (not 2× via temp) and peak
+        # memory = O(one tensor) — fits 35B-class models.
+        writer = GGUFWriter(args.output, arch=arch, use_temp_file=False)
         copy_kvs(reader, writer)
 
-    # First pass: classify + collect actions; emit per-tensor log.
+    # ---- Pass 1: classify only. Compute metadata (per-tensor scale,
+    #              per-channel scales, Hadamard sizes); register tensor_info
+    #              with the writer (no data yet). Pass 2 streams the data
+    #              into the final file directly.
     tsv_rows: list[tuple] = []
-    actions: list[tuple[str, TensorAction]] = []
     band_count = {"A": 0, "B": 0, "C": 0, "-": 0}
+    plan: list[tuple] = []  # (name, src_type, kind, extra)
+    per_tensor_scales: dict[str, float] = {}
+    hadamard_sizes: dict[str, int] = {}
+    pc_names: list[str] = []
+    pc_lengths: list[int] = []
+    pc_values: list[float] = []
 
     for t in reader.tensors:
         try:
@@ -486,7 +499,6 @@ def main() -> int:
         logical_shape = [int(d) for d in t.shape]
         action = recast_tensor(t.name, t.data, src_type, logical_shape, policy, args.tier,
                                force_rescale=args.force_rescale)
-        actions.append((t.name, action))
         band_count[action.band] += 1
         if args.verbose or action.band == "C":
             print(
@@ -494,23 +506,34 @@ def main() -> int:
                 f"  absmax={action.absmax:.6g}  ({action.note})",
                 file=sys.stderr,
             )
-        tsv_rows.append(
-            (
-                t.name,
-                src_type.name,
-                action.out_dtype.name,
-                action.band,
-                f"{action.absmax:.6g}",
-                int(np.prod(t.shape)),
-                action.note,
-            )
-        )
+        tsv_rows.append((
+            t.name, src_type.name, action.out_dtype.name, action.band,
+            f"{action.absmax:.6g}", int(np.prod(t.shape)), action.note,
+        ))
+        # Collect KV metadata
+        if action.per_tensor_scale != 1.0:
+            per_tensor_scales[t.name] = float(action.per_tensor_scale)
+        if action.hadamard_d:
+            hadamard_sizes[t.name] = int(action.hadamard_d)
+        if action.per_channel_scales is not None:
+            pc_names.append(t.name)
+            pc_lengths.append(int(action.per_channel_scales.size))
+            pc_values.extend(float(v) for v in action.per_channel_scales)
+        # Drop the heavy out_arr (action.out_arr); we'll recast in pass 2.
+        if action.out_dtype == GGMLQuantizationType.BF16:
+            plan.append((t.name, src_type, "bf16_passthrough", None))
+        elif src_type == GGMLQuantizationType.F32 and action.out_dtype == GGMLQuantizationType.F32:
+            plan.append((t.name, src_type, "f32_passthrough", None))
+        elif src_type != GGMLQuantizationType.BF16:
+            plan.append((t.name, src_type, "raw_passthrough", None))
+        else:
+            plan.append((t.name, src_type, "cast_f16",
+                         (action.per_tensor_scale, action.hadamard_d)))
 
     if args.absmax_tsv:
         write_tsv(args.absmax_tsv, tsv_rows)
         print(f"absmax tsv → {args.absmax_tsv}", file=sys.stderr)
 
-    # Summary
     n_total = sum(band_count.values())
     print(
         f"summary: A={band_count['A']}  B={band_count['B']}  C={band_count['C']}  "
@@ -519,7 +542,7 @@ def main() -> int:
     )
     n_C = band_count["C"]
     if n_C and args.tier == "T1":
-        n_BF16_relevant = sum(1 for _, a in actions if a.note != "passthrough")
+        n_BF16_relevant = sum(1 for _, _, kind, _ in plan if kind in ("cast_f16", "bf16_passthrough"))
         if n_BF16_relevant > 0:
             pct_C = 100.0 * n_C / n_BF16_relevant
             print(
@@ -531,79 +554,108 @@ def main() -> int:
     if args.tier == "dry-run":
         return 0
 
-    # --- Tier metadata: emit before tensor adds ---
-    #
-    # KV keys recognised by the ik_llama loader patch:
-    #   recast.tier              : str — one of {T1,T2,T3,T4,T5}
-    #   recast.force_rescale     : bool — set by --force-rescale; informational
-    #   recast.scales.names      : str[]  — tensor names with per-tensor scale (T2/T3/T5)
-    #   recast.scales.values     : f32[]  — corresponding scale values
-    #   recast.hadamard.names    : str[]  — tensor names rotated (T5)
-    #   recast.hadamard.values   : u32[]  — corresponding Hadamard sizes
-    # Per-channel scales (T4) are emitted as sibling tensors "<name>.recast_scale".
+    # ---- Emit tier KV metadata (BEFORE tensor adds — KV section comes first
+    #      in the GGUF layout).
     writer.add_string("recast.tier", args.tier)
     if args.force_rescale:
         writer.add_bool("recast.force_rescale", True)
-
-    per_tensor_scales: dict[str, float] = {}
-    hadamard_sizes: dict[str, int] = {}
-    pc_names: list[str] = []
-    pc_lengths: list[int] = []
-    pc_values: list[float] = []
-    for name, action in actions:
-        if action.per_tensor_scale != 1.0:
-            per_tensor_scales[name] = float(action.per_tensor_scale)
-        if action.hadamard_d:
-            hadamard_sizes[name] = int(action.hadamard_d)
-        if action.per_channel_scales is not None:
-            pc_names.append(name)
-            pc_lengths.append(int(action.per_channel_scales.size))
-            pc_values.extend(float(v) for v in action.per_channel_scales)
     if per_tensor_scales:
         writer.add_array("recast.scales.names", list(per_tensor_scales.keys()))
         writer.add_array("recast.scales.values", [float(v) for v in per_tensor_scales.values()])
-        print(f"  recast.scales: {len(per_tensor_scales)} tensors with scale != 1.0", file=sys.stderr)
+        print(f"  recast.scales: {len(per_tensor_scales)} tensors", file=sys.stderr)
     if hadamard_sizes:
         writer.add_array("recast.hadamard.names", list(hadamard_sizes.keys()))
         writer.add_array("recast.hadamard.values", [int(v) for v in hadamard_sizes.values()])
         print(f"  recast.hadamard: {len(hadamard_sizes)} tensors rotated", file=sys.stderr)
     if pc_names:
-        # Flat layout: names[i] has pc_values[offset[i]:offset[i]+lengths[i]]
-        # offset[i] = sum(lengths[0..i-1])
         writer.add_array("recast.per_channel.names", pc_names)
         writer.add_array("recast.per_channel.lengths", [int(v) for v in pc_lengths])
         writer.add_array("recast.per_channel.values", [float(v) for v in pc_values])
-        print(f"  recast.per_channel: {len(pc_names)} tensors, {len(pc_values)} total scale entries", file=sys.stderr)
+        print(f"  recast.per_channel: {len(pc_names)} tensors, {len(pc_values)} entries", file=sys.stderr)
 
-    # Second pass: write tensors. Use add_tensor with raw_dtype.
-    for name, action in actions:
-        out_arr = action.out_arr
-        if action.out_dtype == GGMLQuantizationType.BF16:
-            # Pass-through: keep raw uint8 bytes from the reader.
-            if out_arr.dtype != np.uint8:
-                raise RuntimeError(
-                    f"{name}: BF16 out has dtype {out_arr.dtype}, expected uint8 raw bytes"
-                )
-            writer.add_tensor(name, out_arr, raw_dtype=GGMLQuantizationType.BF16)
-        elif action.out_dtype == GGMLQuantizationType.F16:
-            if out_arr.dtype != np.float16:
-                raise RuntimeError(
-                    f"{name}: F16 out has dtype {out_arr.dtype}, expected float16"
-                )
-            writer.add_tensor(name, out_arr)
-        elif action.out_dtype == GGMLQuantizationType.F32:
-            writer.add_tensor(name, out_arr)
-        else:
-            writer.add_tensor(name, out_arr, raw_dtype=action.out_dtype)
+    # ---- Register tensor_info (sizes only, no data) so the writer
+    #      can compute the file layout before any tensor data is written.
+    #      The writer writes shape in REVERSED order to land in GGUF
+    #      col-major convention. So we pass shape in NUMPY row-major
+    #      order (= reversed(reader t.shape) since reader exposes the
+    #      GGUF col-major shape directly).
+    for t in reader.tensors:
+        name = t.name
+        plan_entry = next((p for p in plan if p[0] == name), None)
+        if plan_entry is None:
+            continue
+        _, src_type, kind, _extra = plan_entry
+        # gguf-py reader exposes t.shape as the GGUF-stored col-major shape.
+        # The writer's add_tensor_info expects numpy row-major order (it
+        # internally writes reversed to land in col-major). Convert here.
+        gguf_shape = [int(d) for d in t.shape]                  # col-major (e.g. [2048, 248320])
+        numpy_shape = list(reversed(gguf_shape))                # row-major (e.g. [248320, 2048])
+        n_elem = int(np.prod(numpy_shape))
+        if kind == "cast_f16":
+            writer.add_tensor_info(name, numpy_shape, np.dtype(np.float16),
+                                    n_elem * 2, raw_dtype=GGMLQuantizationType.F16)
+        elif kind == "bf16_passthrough":
+            # gguf-py writer expects byte-shape for uint8 raw types.
+            # Source data shape is numpy row-major already (uint8 with last-dim doubled
+            # for BF16 = 2 bytes/elem).
+            writer.add_tensor_info(name, list(t.data.shape), np.dtype(np.uint8),
+                                    int(t.data.nbytes), raw_dtype=GGMLQuantizationType.BF16)
+        elif kind == "f32_passthrough":
+            writer.add_tensor_info(name, numpy_shape, np.dtype(np.float32),
+                                    n_elem * 4, raw_dtype=GGMLQuantizationType.F32)
+        elif kind == "raw_passthrough":
+            # Source quantized data — pass its native byte shape.
+            writer.add_tensor_info(name, list(t.data.shape), np.dtype(np.uint8),
+                                    int(t.data.nbytes), raw_dtype=src_type)
 
-        # T4 per-channel scales are emitted as flat KV arrays (recast.per_channel.*),
-        # not as sibling tensors — siblings would be loaded as unmatched extras.
-
+    # ---- Write header + KV + tensor_info to the output file.
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
-    writer.write_tensors_to_file()
+    writer.write_ti_data_to_file()
+
+    # ---- Pass 2: stream cast + write_tensor_data() per tensor.
+    #              write_tensor_data writes directly to the final file and
+    #              expects tensors in the SAME ORDER as add_tensor_info.
+    n_written = 0
+    for t in reader.tensors:
+        name = t.name
+        plan_entry = next((p for p in plan if p[0] == name), None)
+        if plan_entry is None:
+            continue
+        _, src_type, kind, extra = plan_entry
+        if kind == "bf16_passthrough":
+            writer.write_tensor_data(np.asarray(t.data))
+        elif kind == "f32_passthrough":
+            writer.write_tensor_data(np.asarray(t.data))
+        elif kind == "raw_passthrough":
+            writer.write_tensor_data(np.asarray(t.data))
+        elif kind == "cast_f16":
+            scale, hadamard_d = extra
+            logical_shape = [int(d) for d in t.shape]
+            fp32 = bf16_to_fp32(t.data, logical_shape)
+            if hadamard_d:
+                in_dim = fp32.shape[1] if fp32.ndim >= 2 else 0
+                d = int(hadamard_d)
+                if in_dim and d <= in_dim:
+                    if d == in_dim:
+                        fp32 = _walsh_hadamard_rows(fp32)
+                    else:
+                        fp32 = fp32.copy()
+                        fp32[:, :d] = _walsh_hadamard_rows(fp32[:, :d])
+            if scale != 1.0:
+                fp32 = fp32 / np.float32(scale)
+            out = fp32.astype(np.float16)
+            del fp32
+            if np.isinf(out).any():
+                raise ValueError(f"{name}: produced Inf in pass-2 cast (scale={scale}, hadamard_d={hadamard_d})")
+            writer.write_tensor_data(out)
+            del out
+        n_written += 1
+        if args.verbose and n_written % 50 == 0:
+            print(f"  wrote {n_written}/{len(plan)} tensors", file=sys.stderr)
+
     writer.close()
-    print(f"wrote {args.output}", file=sys.stderr)
+    print(f"wrote {args.output}  ({n_written} tensors)", file=sys.stderr)
     return 0
 
 
