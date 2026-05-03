@@ -50,6 +50,7 @@ fi
 "$BIN" -m "$GGUF" \
     --device CUDA0 -ngl 999 -fa on -mtp \
     --draft 1 -c 2048 --threads 16 --batch-size 2048 --ubatch-size 512 \
+    --no-mmap \
     --no-context-shift --metrics --port "$PORT" --host 127.0.0.1 \
     > "$LOG" 2>&1 &
 SRV=$!
