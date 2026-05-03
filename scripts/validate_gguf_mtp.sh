@@ -35,7 +35,10 @@ fi
 BIN=/home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-server
 PROMPT="The history of artificial intelligence began in earnest in"
 N_PREDICT=24
-LOG=$(mktemp -t validate-mtp-XXXXXX.log)
+# All outputs land on /opt — never /tmp for inference artifacts.
+LOG_DIR=${VALIDATE_LOG_DIR:-/opt/models/recast-out/logs}
+mkdir -p "$LOG_DIR"
+LOG=$(mktemp "$LOG_DIR/validate-mtp-XXXXXX.log")
 trap 'rm -f "$LOG"' EXIT
 
 echo "==> validate $GGUF (port $PORT)"

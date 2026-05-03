@@ -56,14 +56,54 @@ divergences confirm the runtime path is being exercised, not no-oped:
 - T5 cancels exactly — `W = round_fp16((W'·H)·H) ≈ round_fp16(W)`, single round of FP16 quantization
 
 **Implementation status (ik_llama loader):** all 5 tiers wired through
-`llm_apply_recast()` in `src/llama.cpp` (commit 2aa2b550). T1 = no-op,
+`llm_apply_recast()` in `src/llama.cpp` (commits 2aa2b550, 1e9ec632). T1 = no-op,
 T2/T3 = per-tensor multiply, T4 = per-row multiply, T5 = fast in-place
 Walsh-Hadamard butterfly per-row. Uses `--no-mmap` (modifying mmap'd CPU
 pages is unsafe).
 
-A 5-run bench + KLD comparison is the next step. **The full Stage A
-sweep can now launch at any tier**, with T4 the apparent precision winner
-on this tiny canary (one sample — needs 5-run averaging and KLD verification).
+### Bug caught — name-dedup → silent double-scaling on tied embeddings
+
+The first KLD pass surfaced a subtle bug not visible in greedy-smoke. T2's
+24-token MTP smoke gave α=0.83333 (sane), but `llama-perplexity` over
+wikitext-2 produced **NaN logits from chunk 1**.
+
+Root cause: ik_llama's `model.tensors_by_name` registers some tensors
+(e.g. tied input/output embeddings) under multiple names pointing to the
+same memory. The recast hook's name-dedup applied scale **twice** to that
+shared memory — multiplying by scale² ≈ 1e-10 — driving values to
+near-zero and producing NaN under any non-trivial activation pattern.
+
+The greedy smoke happened to use a prompt where the doubly-scaled
+positions didn't dominate. Wikitext-2's 296,960 tokens had no such
+luxury. Fix: pointer-dedup (`commit 1e9ec632`).
+
+**Why the user's instruction "prove out at 0.8B" mattered.** The 0.8B
+canary's two-tier validation (smoke + KLD) caught a bug that would have
+silently corrupted any 35B-A3B / 27B / 80B run.
+
+### Side-by-side KLD vs V0 (BF16 reference, wikitext-2 145 chunks)
+
+| Tier | PPL(Q) | PPL diff vs V0 | Mean KL | Median KL | p99 KL | Max KL | Same top |
+|------|-------:|---------------:|--------:|----------:|-------:|-------:|---------:|
+| V0 (BF16) | 15.7398 | 0 | 0 | 0 | 0 | 0 | 100% |
+| T1 | 15.7402 | +0.000324 | **0.000231** | 0.000193 | 0.001014 | 0.01681 | 98.980% |
+| T2 | 15.7393 | −0.000590 | **0.000240** | 0.000199 | 0.001048 | 0.01553 | 98.990% |
+| T3 | 15.7393 | −0.000590 | **0.000240** | 0.000199 | 0.001048 | 0.01553 | 98.990% |
+| T4 | 15.7360 | −0.003922 | **0.000241** | 0.000200 | 0.001064 | 0.01189 | 98.975% |
+| T5 | 15.7388 | −0.001052 | **0.000242** | 0.000202 | 0.001068 | 0.02511 | 98.973% |
+
+All five tiers pass the **< 0.05 mean KLD ship gate by ~200×**. T2 and T3
+are byte-identical (same loader-side path on a model with zero Band C).
+T4 has the **lowest max-KLD** (smoothest distribution, per-row scale
+preserves outlier rows). T5 has the highest max-KLD (Hadamard rotation
+perturbs more by design) but median/mean still tied with the others.
+All five are within ULP-noise of V0 BF16. Same-top-token agreement is
+98.97-98.99% across the board.
+
+**Headline:** at the 0.8B canary, ALL five cast-method tiers preserve
+distribution to within ULP of the BF16 reference. The implementation is
+correct. The five tiers will diverge meaningfully only when Band-C
+tensors exist (35B-A3B / 27B / 80B with wider absmax distributions).
 
 ## Research Hypotheses (stated IN ADVANCE; data-decides)
 

@@ -55,7 +55,10 @@ case "$mode" in
     compare)
         if [ ! -f "$kld" ]; then echo "no kld ref: $kld" >&2; exit 2; fi
         echo "==> KLD compare: $gguf vs ref $kld"
-        log=$(mktemp -t kld-compare-XXXXXX.log)
+        # All logs in /opt/models/recast-out (never /tmp).
+        LOG_DIR=${KLD_LOG_DIR:-/opt/models/recast-out/logs}
+        mkdir -p "$LOG_DIR"
+        log=$(mktemp "$LOG_DIR/kld-compare-XXXXXX.log")
         trap 'rm -f "$log"' EXIT
         "$BIN" -m "$gguf" -f "$TEXT" \
             --device "$DEV" -ngl "$NGL" -c "$CTX" \
