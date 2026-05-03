@@ -1113,3 +1113,24 @@ Build 24-token greedy smoke on Qwen3.5-0.8B with `bench-mtp-0.8b.sh`-equivalent 
 **How to apply**: at the 0.8B canary, T1 is the cheapest passing tier — escalation to T2-T5 is unnecessary for 0.8B. For 35B-A3B the absmax distribution must be re-run because MoE expert weights have a wider distribution than dense. **Do not assume zero Band C generalises**.
 
 **Reproducibility**: `scripts/recast_bf16_to_fp16.py` + policy YAML `scripts/policy/v-f1a.yaml` produce the V-F1a.T1 GGUF; `scripts/validate_gguf_mtp.sh` runs the smoke. Build commit `62f1e50`. PHASE32 status commit `781fd84`.
+
+## 2026-05-03 — PHASE32 T2-T5 KLD proof + name-dedup bug post-mortem
+
+Side-by-side KLD vs BF16 V0 on Qwen3.5-0.8B V-F1a (wikitext-2, 145 chunks):
+
+| Tier | Mean KL | Max KL | Same top | PPL diff |
+|------|--------:|-------:|---------:|---------:|
+| V0 (BF16) | 0 | 0 | 100% | 0 |
+| T1 | 0.000231 | 0.0168 | 98.980% | +0.0003 |
+| T2 | 0.000240 | 0.0155 | 98.990% | -0.0006 |
+| T3 | 0.000240 | 0.0155 | 98.990% | -0.0006 |
+| T4 | 0.000241 | 0.0119 | 98.975% | -0.0039 |
+| T5 | 0.000242 | 0.0251 | 98.973% | -0.0011 |
+
+All five tiers pass the 0.05 mean-KLD ship gate by 200×. T2 and T3 are byte-identical (same loader path on a model with zero Band-C tensors). T4 has the lowest max-KLD (per-row preservation). T5 highest max-KLD (Hadamard outlier perturbation by design).
+
+**Bug caught only by KLD pass, NOT by greedy smoke**: T2 24-token greedy gave α=0.83333 (looked sane) while wikitext-2 145-chunk PPL produced -nan from chunk 1. Cause: ik_llama's `model.tensors_by_name` registers tied-embedding tensors under multiple NAMES pointing to the SAME memory; the recast hook's name-dedup applied scale TWICE → multiplied by scale² ≈ 1e-10 → values driven to ~zero → NaN under any non-trivial activation. Fix: pointer-dedup (ik_llama commit 1e9ec632).
+
+**How to apply**: any code that walks `model.tensors_by_name` and modifies tensor data MUST dedup by pointer, never by name. Tied-embedding aliasing is a real production case (Qwen3.5-0.8B uses it). The greedy-smoke prompt happened to dodge the activation pattern that exposed the bug — never trust a single greedy prompt as full validation. KLD over a long, diverse text corpus is a much more sensitive gate.
+
+**Reproducibility**: data + raw logs at `/opt/models/recast-out/{kld-vs-v0-0.8b.tsv,logs/}`. PHASE32 commit 6664137. ik_llama recast hook commits 2aa2b550 → 1e9ec632. All recast artifacts under `/opt/models/recast-out/` (never `/tmp` per project rule).
