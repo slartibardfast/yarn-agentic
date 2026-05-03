@@ -1,0 +1,19 @@
+# V-F1a (CANARY): trunk → FP16, mtp.fc → FP16 too. Everything else as V-F1.
+# Drops `nextn.eh_proj.weight` from the BF16-preserve list.
+preserve_bf16:
+  # MTP norms — already F32 in 0.8B GGUF; keep them out of the FP16 path regardless.
+  - "\\.nextn\\..*norm.*\\.weight$"
+  # Hybrid GDN / Mamba SSM recurrence-critical
+  - "\\.ssm_a$"
+  - "\\.ssm_dt\\.bias$"
+  - "\\.ssm_conv1d\\.weight$"
+  - "\\.ssm_norm\\.weight$"
+  # MoE router (no MoE in 0.8B; harmless here, present for parity with 35B-A3B)
+  - "\\.ffn_gate_inp\\.weight$"
+  - "\\.shared_expert_gate\\.weight$"
+  # Vision tower
+  - "^model\\.visual\\."
+  - "^v\\."
+
+cast_fp16:
+  - ".*"

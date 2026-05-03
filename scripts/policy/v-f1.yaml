@@ -1,0 +1,23 @@
+# V-F1: trunk → FP16, MTP block + GDN/SSM-recurrence + norms preserved BF16.
+# Block 24 of Qwen3.5-0.8B is the MTP head; preserve its `nextn` tensors.
+# This policy is variant-V-F1; a sibling v-f1a.yaml drops `eh_proj` from preserve_bf16.
+preserve_bf16:
+  # MTP fusion projection (the canary precision-sensitive tensor)
+  - "\\.nextn\\.eh_proj\\.weight$"
+  # MTP norms — already F32 in 0.8B GGUF; keep them out of the FP16 path regardless.
+  - "\\.nextn\\..*norm.*\\.weight$"
+  # Hybrid GDN / Mamba SSM recurrence-critical
+  - "\\.ssm_a$"
+  - "\\.ssm_dt\\.bias$"
+  - "\\.ssm_conv1d\\.weight$"
+  - "\\.ssm_norm\\.weight$"
+  # MoE router (no MoE in 0.8B; harmless here, present for parity with 35B-A3B)
+  - "\\.ffn_gate_inp\\.weight$"
+  - "\\.shared_expert_gate\\.weight$"
+  # Vision tower (text-only inference; vision tensors stay BF16 to avoid surprises)
+  - "^model\\.visual\\."
+  - "^v\\."
+
+# Cast everything not preserved.
+cast_fp16:
+  - ".*"
