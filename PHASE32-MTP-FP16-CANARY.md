@@ -105,6 +105,38 @@ distribution to within ULP of the BF16 reference. The implementation is
 correct. The five tiers will diverge meaningfully only when Band-C
 tensors exist (35B-A3B / 27B / 80B with wider absmax distributions).
 
+### 5-run bench (Qwen3.5-0.8B V-F1a, n_predict=256, --draft 1, --no-mmap)
+
+5-run averages of `bench-mtp-0.8b.sh`-equivalent server config. Greedy
+temp=0; the bench runs both `-no-mtp` and `-mtp` at each tier.
+
+| Tier | nomtp tg (t/s) | mtp tg (t/s) | ratio | accept α |
+|------|--------------:|------------:|------:|---------:|
+| iter-7 V0 BF16 baseline | 122.4 | 156.9 | **1.282×** | 0.848 |
+| T1 | 139.22 | 192.54 | **1.383×** | 0.848 |
+| T2 | 138.81 | 193.45 | **1.394×** | 0.861 |
+| **T3** | **138.50** | **193.90** | **1.400×** | **0.861** |
+| T4 | 138.49 | 191.07 | 1.380× | 0.848 |
+| T5 | 138.22 | 190.78 | 1.380× | 0.848 |
+
+**Every tier exceeds the iter-7 BF16 baseline ratio of 1.282×** — and not
+by a tiny margin: T3 hits **1.400×** (+11.8% vs baseline). T2 and T3 are
+also tied for highest acceptance at α=0.861 (vs baseline 0.848 / +1.5pp).
+
+The headline result of PHASE32: FP16 mtp.fc isn't merely safe — it's
+actively faster than BF16 mtp.fc on sm_75. The v0 baseline numbers come
+from prior iter-7 measurements at the same config; the absolute tg
+delta (~16.6 t/s nomtp baseline → 138-139 t/s) suggests the recast V-F1a
+trunk is ALSO faster on sm_75 than V0's mixed BF16/FP16 path, because
+sm_75 has FP16 tensor cores but no native BF16. **Casting the trunk to
+FP16 is the bigger win than the mtp.fc tier choice.**
+
+Combined with the KLD-flat-vs-V0 result (mean KLD < 0.000242 across all
+tiers), the recommendation for shipping at 0.8B is clear:
+  - **V-F1a.T3** is the Pareto-optimal cell on this canary
+  - V-F1a.T1 also viable (no kernel work; ULP-only divergence from T3)
+  - Defer T4/T5 to models where Band C is non-empty
+
 ## Research Hypotheses (stated IN ADVANCE; data-decides)
 
 ### Two orthogonal axes
