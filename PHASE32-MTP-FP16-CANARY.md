@@ -34,8 +34,36 @@ Published "INT4 → 0% accept" failure does NOT carry to FP16.
 32768). **Zero Band-C tensors** — T1 ships with no BF16 fallback, no kernel
 work, and no GGUF format extension.
 
-A 5-run bench + KLD measurement is the next step; the smoke result is
-strong enough that the **full Stage A sweep can launch at T1**.
+## All-tier side-by-side (T1-T5 proof-out on V-F1a)
+
+`Qwen3.5-0.8B`, V-F1a (FP16 trunk + FP16 mtp.fc), `--force-rescale` to make
+T2-T5 fire their runtime paths despite zero real Band C. Each tier built via
+`scripts/recast_bf16_to_fp16.py --tier T<N> --force-rescale`, smoked via
+`scripts/validate_gguf_mtp.sh` (24-token greedy, MTP=on, --no-mmap).
+
+| Tier | Method | scales applied | rotations applied | α(top-1) | vs T1 |
+|------|--------|---------------:|------------------:|---------:|------:|
+| T1   | RNE cast (no rescale) | 0 | 0 | 0.91667 | — |
+| T2   | per-tensor scale, load-time | 195 | 0 | 0.83333 | −0.083 |
+| T3   | per-tensor scale, compute-time emit | 195 | 0 | 0.83333 | −0.083 |
+| T4   | per-channel scale | 195 (per-channel) | 0 | **1.00000** | **+0.083** |
+| T5   | Walsh-Hadamard rotation | 195 (post-rotate) | 195 | 0.91667 | 0.000 |
+
+All five tiers BUILD, LOAD, and PRODUCE coherent text. The numerical
+divergences confirm the runtime path is being exercised, not no-oped:
+- T2/T3 lose 1 ULP per value via the FP16 round-trip (compress + recover)
+- T4 preserves more information by giving each output row its own scale
+- T5 cancels exactly — `W = round_fp16((W'·H)·H) ≈ round_fp16(W)`, single round of FP16 quantization
+
+**Implementation status (ik_llama loader):** all 5 tiers wired through
+`llm_apply_recast()` in `src/llama.cpp` (commit 2aa2b550). T1 = no-op,
+T2/T3 = per-tensor multiply, T4 = per-row multiply, T5 = fast in-place
+Walsh-Hadamard butterfly per-row. Uses `--no-mmap` (modifying mmap'd CPU
+pages is unsafe).
+
+A 5-run bench + KLD comparison is the next step. **The full Stage A
+sweep can now launch at any tier**, with T4 the apparent precision winner
+on this tiny canary (one sample — needs 5-run averaging and KLD verification).
 
 ## Research Hypotheses (stated IN ADVANCE; data-decides)
 
