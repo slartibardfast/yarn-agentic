@@ -906,3 +906,56 @@ blocks that respect the V-col-perm chunk size.
 inline self-check verifies block-0 fp16 d == permuted scales[0,0]
 and codes byte-equal to permuted codes[:32, 0] on the first emit
 of each lossless path; both passed.
+
+---
+
+## Stage 2 — V-F1.T1.qq (Q4_0_AR16 V-col-perm-on-codes)
+
+Stage 2 closes the last fall-through. The V-col reorder permutes
+the in-dim in 16-element-aligned chunks; Q4_0's 32-element blocks
+were the obstacle. Stage 2 introduces `GGML_TYPE_Q4_0_AR16` (id 159,
+10 bytes/block: fp16 d + 8 bytes interleaved nibbles) co-designed
+for sm_75: one block matches one HMMA `m16n8k16` k-step exactly.
+
+V-F1.T1.qq routes the 48 `linear_attn.out_proj.qweight` tensors
+through `repack_w4g128_with_v_col_perm`, emitting Q4_0_AR16 codes
+permuted in-dim by 16-chunk and scales replicated per AutoRound
+group. All 407 .qweight tensors carry verbatim Intel calibration.
+
+### Stage 2 emit summary
+
+```
+[Tool 1] Self-check passed on first V-row-perm emit (blk.0.attn_qkv.weight, kind=in_proj_qkv)
+[Tool 1] Self-check passed on first V-col-perm emit (blk.0.ssm_out.weight, kind=out_proj)
+[Tool 1] Self-check passed on first lossless emit (blk.0.ffn_down.weight)
+[Tool 1] Emitted 263 lossless Q4_0 trunk + 96 V-row-perm Q4_0 + 48 V-col-perm Q4_0_AR16. Skipped 0 unmapped/incomplete.
+```
+
+### Verification
+
+| Gate | Result |
+|------|--------|
+| Smoke (`validate_gguf_mtp_27b.sh`) | ALL OK; coherent + deterministic + α=0.917 |
+| α correctness (`bench-mtp-correctness-27b.sh`) | 0.78431 ≥ 0.50 floor |
+| PPL @ ubergarm (n_ctx=512, 580 chunks, --no-mmap) | 7.0169 ± 0.046 |
+| File size | 17.93 GiB |
+| BPW (ratio-to-BF16, 50.10 GiB ref) | 5.72 |
+| Lossless .qweight count | 407 / 407 |
+
+PPL bit-identical to V-F1.T1.q (and to V-F1.T1). α within
+single-prompt noise of V-F1.T1.q's 0.784 (the two are equal here).
+Stage 2 vs Stage 1: −1.93 GiB / −0.62 BPW with bit-identical PPL.
+
+### Phase 2 bug + fix (process note)
+
+Phase 2 caught a Python↔C/CUDA byte-layout disagreement: Tool 1
+packed bytes split-halves (Q4_0 convention) while the spec, C
+kernel, and CUDA kernel use interleaved nibbles. Self-checks
+passed self-consistently because both writer and reader were
+wrong; runtime decode produced gibberish. Lesson: spec-parity
+tests must bind on a literal byte ↔ code-vector cross-check
+that is independent of any helper, not a Python helper that
+mirrors the implementation's layout choice. The fix landed as
+a literal-bytes test (`test_q4_0_ar16_byte_layout_literal`)
+that pins `0x10 0x32 0x54 0x76 0x98 0xBA 0xDC 0xFE` for codes
+[-8..7] at scale=1.
