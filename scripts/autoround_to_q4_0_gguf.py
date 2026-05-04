@@ -187,6 +187,11 @@ def is_v_row_perm_candidate(qweight_name: str) -> bool:
     return any(qweight_name.endswith(s) for s in V_ROW_PERM_QWEIGHT_SUFFIXES)
 
 
+def is_v_col_perm_candidate(qweight_name: str) -> bool:
+    """V-col-reorder tensors — losslessly repacked to Q4_0_AR16 with col-permuted codes/scales."""
+    return any(qweight_name.endswith(s) for s in V_COL_PERM_QWEIGHT_SUFFIXES)
+
+
 def _v_row_perm_indices(num_k_heads: int, num_v_heads: int, head_v_dim: int) -> np.ndarray:
     """
     Build the V-row reorder permutation as a flat 1-D index array for the V slice.
@@ -290,6 +295,133 @@ def repack_w4g128_with_v_row_perm(
 
 
 # ---------------------------------------------------------------------------
+# V-col-perm repack: Q4_0_AR16 (16-element blocks) lossless on the V col
+# permutation, which moves whole 16-element chunks of the IN dim. Mirrors
+# upstream's _LinearAttentionVReorderBase._transform_nvfp4_weight col_perm
+# computation (llama.cpp/convert_hf_to_gguf.py:5366-5371).
+# ---------------------------------------------------------------------------
+
+
+def _v_col_perm_indices(num_k_heads: int, num_v_heads: int, head_v_dim: int) -> np.ndarray:
+    """
+    Build the V-col reorder permutation as a flat 1-D index array along the IN dim.
+
+    Mirrors `_LinearAttentionVReorderBase._reorder_v_heads(arange(...), dim=1, ...)`:
+    starting from arange(num_v_heads * head_v_dim) viewed as
+        [G0_v0 .. G0_v{r-1}, G1_v0 .. G1_v{r-1}, ...] (grouped, head_v_dim wide each)
+    target order is
+        [G0_v0, G1_v0, ..., G0_v1, G1_v1, ...] (tiled).
+
+    Result is int64 of length `num_v_heads * head_v_dim`. The 16-aligned-chunk
+    invariant is asserted: each consecutive 16-element slice of the result is
+    of the form `[s, s+1, ..., s+15]` with `s % 16 == 0`. This is what makes
+    Q4_0_AR16 (block_size = 16) lossless on the col permutation.
+    """
+    num_v_per_k = num_v_heads // num_k_heads
+    n = num_v_heads * head_v_dim
+
+    # _reorder_v_heads on a (1, n) tensor along dim=1: reshape last dim to
+    # (num_k_heads, num_v_per_k, head_v_dim), swap the leading two axes.
+    idx = np.arange(n, dtype=np.int64).reshape(num_k_heads, num_v_per_k, head_v_dim)
+    col_perm = idx.transpose(1, 0, 2).reshape(n)
+
+    # 16-aligned-chunk invariant. head_v_dim is typically 128 in Qwen3-Next,
+    # so the group_starts are multiples of head_v_dim and within-chunk order
+    # is +0..+15.
+    if n % 16 != 0:
+        raise ValueError(f"col_perm length {n} not a multiple of 16")
+    chunks = col_perm.reshape(-1, 16)
+    if not (chunks[:, 0] % 16 == 0).all():
+        raise AssertionError("col_perm chunk starts not 16-aligned")
+    expected = chunks[:, 0:1] + np.arange(16, dtype=np.int64)
+    if not np.array_equal(chunks, expected):
+        raise AssertionError("col_perm within-chunk order not contiguous +0..+15")
+
+    return col_perm
+
+
+def repack_w4g128_with_v_col_perm(
+    qweight: torch.Tensor,
+    scales: torch.Tensor,
+    *,
+    num_k_heads: int,
+    num_v_heads: int,
+    head_v_dim: int,
+    group_size: int = 128,
+) -> tuple[bytes, tuple[int, int], np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Lossless V-col-reorder repack to Q4_0_AR16 bytes. Permutes 16-element
+    chunks of the IN dim of the AutoRound code tensor + replicates AutoRound's
+    per-128 group scale across 8 child Q4_0_AR16 blocks (block_size = 16).
+
+    Returns:
+        (blob, (out_features, in_features), col_perm, codes_perm_in_out, scales_perm_per_block)
+    where the auxiliary arrays are returned for the inline self-check and the
+    bit-equivalence proof. blob layout: row-major over [out, n_blocks] of 10
+    bytes each (2-byte fp16 d, 8-byte qs half-split: qs[j] low = code[j],
+    high = code[j + 8]).
+    """
+    if group_size % 16 != 0 or group_size < 16:
+        raise ValueError(f"group_size must be a multiple of 16, got {group_size}")
+    n_blocks_per_group = group_size // 16  # 8 Q4_0_AR16 blocks per AutoRound group
+
+    codes_in_out = unpack_autogptq_int4(qweight)               # [in, out] uint8 in [0,15]
+    in_f, out_f = codes_in_out.shape
+    if in_f % 16 != 0:
+        raise ValueError(f"in_features={in_f} not divisible by 16 (Q4_0_AR16 block size)")
+    if in_f % group_size != 0:
+        raise ValueError(f"in_features={in_f} not divisible by group_size={group_size}")
+
+    sc_groups_out = scales.detach().cpu().numpy().astype(np.float16)  # [n_groups, out]
+    n_groups = in_f // group_size
+    if sc_groups_out.shape != (n_groups, out_f):
+        raise ValueError(
+            f"scales shape {sc_groups_out.shape}, expected ({n_groups}, {out_f}) "
+            f"for in_f={in_f} group_size={group_size}"
+        )
+
+    col_perm = _v_col_perm_indices(num_k_heads, num_v_heads, head_v_dim)
+    if col_perm.shape[0] != in_f:
+        raise ValueError(
+            f"col_perm length {col_perm.shape[0]} != in_features {in_f} "
+            f"(num_v_heads={num_v_heads} * head_v_dim={head_v_dim})"
+        )
+
+    # Apply col-perm along IN dim (axis 0 of the [in, out] codes tensor).
+    codes_perm_in_out = codes_in_out[col_perm, :]                  # [in, out]
+
+    # Per-Q4_0_AR16-block scale array: replicate each AutoRound group's scale
+    # across its n_blocks_per_group child blocks (no rounding, byte-copy).
+    n_blocks = in_f // 16
+    scales_per_block_out = np.repeat(sc_groups_out, n_blocks_per_group, axis=0)  # [n_blocks, out]
+
+    # Block-level permutation: each row of col_perm.reshape(-1, 16) is a
+    # contiguous 16-chunk; the chunk's source block index is start // 16.
+    block_perm = (col_perm.reshape(-1, 16)[:, 0] // 16).astype(np.int64)         # [n_blocks]
+    scales_perm_per_block = scales_per_block_out[block_perm, :]                  # [n_blocks, out]
+
+    # Byte-pack directly using AutoRound's calibrated codes/scales — do NOT
+    # round-trip through Q4_0_AR16.quantize_blocks (which would re-quantize
+    # from fp32 and lose calibration). Half-split nibble layout per Phase 1.C:
+    #   qs[j] = code[j] | (code[j + 8] << 4),  j in [0, 8)
+    # Tensor data layout: blocks row-major over [out_features, n_blocks] of 10 bytes.
+    codes_out_in = codes_perm_in_out.T                              # [out, in]
+    cb = codes_out_in.reshape(out_f, n_blocks, 16)
+    lo = cb[:, :, :8]                                               # in positions 0..7
+    hi = cb[:, :, 8:]                                               # in positions 8..15
+    qs = (lo | (hi.astype(np.uint8) << 4)).astype(np.uint8)         # [out, n_blocks, 8]
+
+    # scales_perm_per_block is [n_blocks, out]; we want [out, n_blocks] for emit.
+    # .T is a non-contiguous view; need a contiguous copy before the uint8 reinterpret.
+    sc_out_blocks = np.ascontiguousarray(scales_perm_per_block.T)   # [out, n_blocks] fp16
+    packed = np.empty((out_f, n_blocks, 10), dtype=np.uint8)
+    packed[:, :, 0:2] = sc_out_blocks.view(np.uint8).reshape(out_f, n_blocks, 2)
+    packed[:, :, 2:10] = qs
+
+    return packed.tobytes(), (out_f, in_f), col_perm, codes_perm_in_out, scales_perm_per_block
+
+
+# ---------------------------------------------------------------------------
 # Self-check (Step 1.5): verify first emitted block round-trips bit-exactly
 # ---------------------------------------------------------------------------
 
@@ -320,6 +452,45 @@ def _self_check_block0(qweight: torch.Tensor, scales: torch.Tensor, blob: bytes)
     if not np.array_equal(decoded, expected):
         raise AssertionError(
             f"[Tool 1 self-check] block-0 codes mismatch:\n"
+            f"  got     ={decoded.tolist()}\n"
+            f"  expected={expected.tolist()}"
+        )
+
+
+def _self_check_block0_q4_0_ar16(
+    blob: bytes,
+    codes_perm_in_out: np.ndarray,
+    scales_perm_per_block: np.ndarray,
+):
+    """
+    First Q4_0_AR16 block of out=0 must satisfy:
+      bytes 0..2:  fp16 d == scales_perm_per_block[0, 0]
+      bytes 2..10: 8 nibble-pairs encoding codes_perm_in_out[:16, 0]
+                   under half-split layout (qs[j] = c[j] | (c[j+8] << 4)).
+    """
+    if len(blob) < 10:
+        raise AssertionError(f"[Tool 1 self-check] blob shorter than one Q4_0_AR16 block ({len(blob)} bytes)")
+    block0 = np.frombuffer(blob[:10], dtype=np.uint8)
+
+    scale_fp16 = np.frombuffer(block0[:2].tobytes(), dtype=np.float16)[0]
+    expected_scale = np.float16(scales_perm_per_block[0, 0])
+    if scale_fp16 != expected_scale:
+        raise AssertionError(
+            f"[Tool 1 self-check Q4_0_AR16] block-0 scale mismatch: "
+            f"got {scale_fp16}, expected {expected_scale}"
+        )
+
+    qs = block0[2:10]
+    lo = qs & 0x0F
+    hi = (qs >> 4) & 0x0F
+    decoded = np.empty(16, dtype=np.uint8)
+    decoded[0:8] = lo
+    decoded[8:16] = hi
+
+    expected = codes_perm_in_out[:16, 0].astype(np.uint8)
+    if not np.array_equal(decoded, expected):
+        raise AssertionError(
+            f"[Tool 1 self-check Q4_0_AR16] block-0 codes mismatch:\n"
             f"  got     ={decoded.tolist()}\n"
             f"  expected={expected.tolist()}"
         )
@@ -455,10 +626,12 @@ def patch_convert(convert_module):
 
         losslessly_handled: list[str] = []
         v_row_perm_handled: list[str] = []
+        v_col_perm_handled: list[str] = []
         v_reorder_dequanted: list[str] = []
         skipped_unmapped: list[str] = []
         self_checked = False
         v_row_self_checked = False
+        v_col_self_checked = False
 
         qweight_keys = [k for k in list(self.model_tensors.keys()) if k.endswith(".qweight")]
 
@@ -580,8 +753,60 @@ def patch_convert(convert_module):
                 for suf in (".qweight", ".qzeros", ".scales", ".g_idx"):
                     self.model_tensors.pop(base + suf, None)
                 v_row_perm_handled.append(gguf_name)
+            elif is_v_col_perm_candidate(qw_name):
+                # ---- V-COL-PERM PATH: lossless Q4_0_AR16 with col-permuted codes/scales ----
+                # The V-col reorder permutes the IN dim in 16-element-aligned chunks.
+                # Q4_0_AR16's block_size = 16 makes this lossless: we permute whole
+                # blocks (codes + replicated AutoRound scale) and emit raw_dtype Q4_0_AR16.
+                if any(v is None for v in (num_k_heads, num_v_heads, head_v_dim)):
+                    raise RuntimeError(
+                        f"V-col-perm tensor {qw_name!r} requires linear_num_key_heads / "
+                        f"linear_num_value_heads / linear_value_head_dim in hparams "
+                        f"(or text_config); got k={num_k_heads} v={num_v_heads} hv={head_v_dim}"
+                    )
+
+                map_input = _strip_lm_prefix(base)
+                try:
+                    gguf_name = self.map_tensor_name(map_input + ".weight")
+                except (ValueError, KeyError):
+                    skipped_unmapped.append(qw_name)
+                    continue
+
+                qweight_t = _materialize(self.model_tensors[qw_name]())
+                scales_t = _materialize(self.model_tensors[scales_key]())
+
+                blob, (out_f, in_f), col_perm, codes_perm_in_out, scales_perm_per_block = (
+                    repack_w4g128_with_v_col_perm(
+                        qweight_t, scales_t,
+                        num_k_heads=num_k_heads, num_v_heads=num_v_heads,
+                        head_v_dim=head_v_dim,
+                        group_size=group_size,
+                    )
+                )
+
+                if not v_col_self_checked:
+                    _self_check_block0_q4_0_ar16(blob, codes_perm_in_out, scales_perm_per_block)
+                    print(
+                        f"[Tool 1] Self-check passed on first V-col-perm emit "
+                        f"({gguf_name}, kind=out_proj)",
+                        file=sys.stderr,
+                    )
+                    v_col_self_checked = True
+
+                n_blocks_per_row = in_f // 16
+                bytes_per_row = n_blocks_per_row * 10
+                arr = np.frombuffer(blob, dtype=np.uint8).reshape(out_f, bytes_per_row)
+                self.gguf_writer.add_tensor(
+                    gguf_name,
+                    arr,
+                    raw_dtype=gguf.GGMLQuantizationType.Q4_0_AR16,
+                )
+
+                for suf in (".qweight", ".qzeros", ".scales", ".g_idx"):
+                    self.model_tensors.pop(base + suf, None)
+                v_col_perm_handled.append(gguf_name)
             else:
-                # ---- V-COL-REORDER REMNANT (out_proj): dequant→FP32→FP16 emit ----
+                # ---- V-COL-REORDER REMNANT (defensive fallback): dequant→FP32→FP16 emit ----
                 # Col-perm crosses Q4_0 32-block boundaries; cannot do losslessly
                 # on codes. Replace with FP32 dequant lambda; modify_tensors handles
                 # the V-col reorder + FP16 emit.
@@ -600,11 +825,17 @@ def patch_convert(convert_module):
                     self.model_tensors.pop(base + suf, None)
                 v_reorder_dequanted.append(base + ".weight")
 
+        summary_parts = [
+            f"{len(losslessly_handled)} lossless Q4_0 trunk",
+            f"{len(v_row_perm_handled)} V-row-perm Q4_0",
+            f"{len(v_col_perm_handled)} V-col-perm Q4_0_AR16",
+        ]
+        if v_reorder_dequanted:
+            summary_parts.append(f"{len(v_reorder_dequanted)} V-col-reorder dequants (fallback)")
         print(
-            f"[Tool 1] Emitted {len(losslessly_handled)} lossless Q4_0 trunk + "
-            f"{len(v_row_perm_handled)} V-row-perm Q4_0 + "
-            f"{len(v_reorder_dequanted)} V-col-reorder dequants. "
-            f"Skipped {len(skipped_unmapped)} unmapped/incomplete.",
+            f"[Tool 1] Emitted "
+            + " + ".join(summary_parts)
+            + f". Skipped {len(skipped_unmapped)} unmapped/incomplete.",
             file=sys.stderr,
         )
         if skipped_unmapped:
@@ -630,6 +861,10 @@ def main():
     ap.add_argument("--outfile", type=Path, required=True)
     ap.add_argument("--llama-cpp", type=Path, default=Path("/home/llm/yarn-agentic/llama.cpp"),
                     help="Path to llama.cpp checkout (containing convert_hf_to_gguf.py)")
+    ap.add_argument("--ik-llama-cpp", type=Path,
+                    default=Path("/home/llm/yarn-agentic/ik_llama.cpp"),
+                    help="Path to ik_llama.cpp checkout. Its gguf-py provides the "
+                         "Q4_0_AR16 quant type (id=159) needed for V-col-perm emit.")
     ap.add_argument("--lazy", action="store_true",
                     help="Use lazy tensor loading (default eager for AutoRound dumps which fit in RAM)")
     ap.add_argument("--dry-run", action="store_true",
@@ -647,8 +882,36 @@ def main():
     if not (args.llama_cpp / "convert_hf_to_gguf.py").exists():
         sys.exit(f"convert_hf_to_gguf.py not found at {args.llama_cpp}")
 
-    sys.path.insert(0, str(args.llama_cpp))
+    # Use upstream llama.cpp's gguf-py for the converter (it has MODEL_ARCH.MMPROJ
+    # and other constants that ik_llama.cpp's gguf-py lacks). After the converter
+    # imports gguf, we splice Q4_0_AR16 (id=159) and its (16, 10) size entry from
+    # ik_llama.cpp's gguf-py into the in-memory enum + size table so the GGUF
+    # writer accepts the new raw_dtype.
+    ik_gguf_py = args.ik_llama_cpp / "gguf-py"
+    if not (ik_gguf_py / "gguf" / "constants.py").exists():
+        sys.exit(f"ik_llama.cpp gguf-py not found at {ik_gguf_py}")
     sys.path.insert(0, str(args.llama_cpp / "gguf-py"))
+    sys.path.insert(0, str(args.llama_cpp))
+
+    import gguf as _gguf_mod
+    if not hasattr(_gguf_mod.GGMLQuantizationType, "Q4_0_AR16"):
+        # IntEnum is sealed by EnumType; fall back to manual injection. Need to
+        # populate (a) the internal lookup tables, (b) class attribute via
+        # type.__setattr__ (EnumType.__setattr__ blocks adding members). On
+        # Python 3.11+ both _member_map_/_value2member_map_ and the actual
+        # class-level attribute must be set for hasattr / getattr to work.
+        EnumCls = _gguf_mod.GGMLQuantizationType
+        new_member = int.__new__(EnumCls, 159)
+        new_member._name_ = "Q4_0_AR16"
+        new_member._value_ = 159
+        EnumCls._member_map_["Q4_0_AR16"] = new_member
+        EnumCls._value2member_map_[159] = new_member
+        EnumCls._member_names_.append("Q4_0_AR16")
+        type.__setattr__(EnumCls, "Q4_0_AR16", new_member)
+        # Size table: 16 elements per block, 10 bytes per block.
+        _gguf_mod.constants.GGML_QUANT_SIZES[EnumCls.Q4_0_AR16] = (16, 10)
+    if not hasattr(_gguf_mod.GGMLQuantizationType, "Q4_0_AR16"):
+        sys.exit("Failed to register Q4_0_AR16 on upstream gguf module.")
 
     spec = importlib.util.spec_from_file_location(
         "convert_hf_to_gguf",
