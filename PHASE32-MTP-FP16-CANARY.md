@@ -748,3 +748,59 @@ Following the "archive before delete" protocol established 2026-05-04:
 | PPL log + Stage B results snapshot | `/mnt/archive/qwen3.6-stage-b/{logs,iter8-stageB-results.md}` | small |
 
 Local copies of both 27B GGUFs deleted after share-side size verification.
+
+## 27B PPL — apples-to-apples re-run (2026-05-04, retracts prior framing)
+
+The first 27B PPL run used `n_ctx=2048, --chunks 145` (= 296,960 tokens) and
+landed at **6.6827** vs the DavidAU community-published Qwen3.6-27B BF16 sheet's
+~6.9. I framed that as "V-F1.T1 beats BF16" — that framing was wrong. The
+DavidAU number was effectively at a different (or unspecified) `n_ctx`, and
+PPL on autoregressive LM eval is `n_ctx`-dependent (longer context → lower
+PPL for the same model).
+
+A more rigorous published reference exists: ubergarm's
+`Qwen3.6-27B-GGUF` HF page publishes a complete PPL table on the same
+inference engine (ik_llama.cpp) with explicit BF16 reference + Q8_0 / IQ5_KS
+/ IQ4_KS / smol-IQ4_NL deltas, all at `n_ctx=512, --chunks 580` (= 296,960
+tokens — same total tokens as our prior 145×2048 run). I re-ran V-F1.T1 at
+ubergarm's exact methodology to make the comparison rigorous.
+
+| Source | Quant | PPL | ± | Δ vs BF16 |
+|---|---|---|---|---|
+| ubergarm | BF16 (reference) | 6.9066 | 0.04552 | — |
+| ubergarm | Q8_0 | 6.9063 | 0.04551 | -0.0% |
+| ubergarm | IQ5_KS | 6.9341 | 0.04578 | +0.4% |
+| ubergarm | IQ4_KS | 6.9740 | 0.04599 | +1.0% |
+| ubergarm | smol-IQ4_NL | 7.0040 | 0.04646 | +1.4% |
+| **us** | **V-F1.T1 (Q4_0 trunk + FP16 V-reorder + BF16 mtp.fc + spliced MTP)** | **7.0169** | 0.04642 | **+1.6%** |
+
+All numbers above use `n_ctx=512, --chunks 580, ik_llama.cpp llama-perplexity`,
+default f16 KV cache (the standard convention).
+
+### Corrected verdict on the PPL axis
+
+V-F1.T1 lands on the expected 4-bit pareto curve:
+
+- Statistical tie with `smol-IQ4_NL` (7.0040 vs 7.0169; Δ=0.013, well within stderr ≈ 0.046)
+- ~one stderr above `IQ4_KS` (6.9740 vs 7.0169; Δ=0.043)
+- +1.6% vs BF16 — the standard 4-bit quality cost
+
+V-F1.T1's load-bearing property is **not** "beats BF16 on PPL" (it doesn't);
+it's "preserves Intel's calibration-driven INT4 codes verbatim", which is the
+property that lifted MTP draft acceptance from the silent dequant→requant
+route's 0% to **0.827** in our 256-token greedy bench. PPL parity with the
+4-bit pareto curve is the *baseline expectation*; α=0.827 is the *signal*.
+
+### What the prior 145-chunk @ n_ctx=2048 number does and doesn't tell us
+
+The earlier 6.6827 ± 0.045 number is internally valid (well-converged over
+148,480 scored tokens), it just isn't comparable to a BF16 reference at the
+same `n_ctx`, and we don't have one on dual-sm_75 for 27B (5 OOMs). It
+remains the best long-context PPL number on the V-F1.T1 GGUF; if a user
+cares about long-context generation quality specifically, 6.6827 ± 0.045 is
+the relevant figure.
+
+### Sources
+- [ubergarm/Qwen3.6-27B-GGUF — published PPL table at n_ctx=512, --chunks 580](https://huggingface.co/ubergarm/Qwen3.6-27B-GGUF)
+- [smcleod.net — long-mode WikiText-2 KLD methodology](https://smcleod.net/2026/04/measuring-model-quantisation-quality-with-kl-divergence/)
+- [llama.cpp issue #20035 — Qwen 3.5/3.6 family default-f16-KV PPL inflation](https://github.com/ggml-org/llama.cpp/issues/20035)
