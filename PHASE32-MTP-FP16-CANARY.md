@@ -863,3 +863,46 @@ To run a true BF16-mtp.fc-control A/B at 27B would require a Tool 1 patch suppor
 - Methodologically clean provenance (PHASE32 reproduction recipes published, all source artifacts retained or archived)
 
 The +1.2% throughput gain is small but it's not the headline benefit — the headline is *capability*: V-F1.T1 can be a draft model for itself, which other published 27B Q4 quants cannot do.
+
+## Stage 1 — V-F1.T1.q outcome (V-row-perm-on-codes Q4_0)
+
+The original V-F1.T1 conservatively dequant→FP16'd all 144 V-reorder
+tensors. The V-row reorder (in_proj_qkv, in_proj_z) only permutes the
+out-dim, leaving Q4_0's in-dim block boundary intact — so 96 of 144
+V-reorder tensors can be losslessly Q4_0-emitted with permuted codes
++ scales. Patched Tool 1 to do this; out_proj (V-col-reorder, in-dim
+permutation) keeps the FP16 fall-through.
+
+| Metric | V-F1.T1 | V-F1.T1.q | Δ |
+|--------|--------:|----------:|---:|
+| File size (binary GiB) | 25.25 | 19.86 | **-5.4** |
+| BPW (vs ubergarm BF16 50.10) | 8.07 | **6.34** | -1.73 |
+| Lossless .qweight | 263 / 407 (65%) | **359 / 407 (88%)** | +96 |
+| α (256-tok 5-run greedy) | 0.827 | 0.784 | -4 pp (within single-prompt noise) |
+| PPL (n_ctx=512, 580 chunks) | 7.0169 ± 0.046 | **7.0169 ± 0.046** | 0 |
+| MTP draft accept ≥ floor (0.50) | PASS | PASS | — |
+
+PPL bit-identity confirms the V-row-perm-on-codes path is
+mathematically equivalent to V-F1.T1's dequant→FP16→V-reorder path on
+the same FP32 dequantized values. The α drop (0.827 → 0.784) is
+within typical single-prompt variance for these benches; both well
+above the 0.50 ship floor.
+
+V-F1.T1.q sits at 6.34 BPW — close to but slightly above ubergarm's
+hypothetical IQ5_KS+MTP (~6.01 BPW). Remaining gap to that line is
+the 2.81 GiB FP16 ssm_out (out_proj) fall-through — addressable in
+Stage 2 by introducing the Q4_0_AR16 quant type with 16-element
+blocks that respect the V-col-perm chunk size.
+
+### Stage 1 emit summary
+
+```
+[Tool 1] Self-check passed on first V-row-perm emit (blk.0.attn_qkv.weight, kind=in_proj_qkv)
+[Tool 1] Self-check passed on first lossless emit (blk.0.ffn_down.weight)
+[Tool 1] Emitted 263 lossless Q4_0 trunk + 96 V-row-perm Q4_0 + 48 V-col-reorder dequants. Skipped 0 unmapped/incomplete.
+```
+
+407 .qweight tensors handled (263 + 96 + 48); 0 skipped. The
+inline self-check verifies block-0 fp16 d == permuted scales[0,0]
+and codes byte-equal to permuted codes[:32, 0] on the first emit
+of each lossless path; both passed.

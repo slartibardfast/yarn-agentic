@@ -152,20 +152,141 @@ def dequant_w4g128_sym(qweight: torch.Tensor, scales: torch.Tensor, group_size: 
 # Lossless-vs-V-reorder split
 # ---------------------------------------------------------------------------
 
-# Tensors that need V-channel row/col reorder in ggml broadcast layout. The
-# permutation crosses Q4_0 32-block boundaries so we cannot losslessly repack;
-# they go through dequant_w4g128_sym + modify_tensors V-reorder + FP16 emit.
-V_REORDER_QWEIGHT_SUFFIXES = (
+# V-row reorder candidates: V-channel row reorder permutes the OUT dim. Q4_0
+# stores blocks along the IN dim, so a row permutation on the OUT dim is just
+# rearranging top-level rows of the byte stream — Q4_0 codes copy 1:1 to the
+# permuted out-positions, scales copy 1:1, AutoRound calibration is preserved.
+# We handle these on the codes via _repack_with_v_row_perm rather than
+# dequanting them, which preserves Intel's calibrated INT4 codes for these 96
+# tensors (48 in_proj_qkv + 48 in_proj_z on Qwen3.6-27B).
+V_ROW_PERM_QWEIGHT_SUFFIXES = (
     ".linear_attn.in_proj_qkv.qweight",
     ".linear_attn.in_proj_z.qweight",
-    ".linear_attn.out_proj.qweight",
-    ".linear_attn.in_proj_a.qweight",
-    ".linear_attn.in_proj_b.qweight",
 )
+
+# V-col reorder: permutes the IN dim in 16-element chunks. Q4_0's 32-block
+# structure is broken by an in-dim permutation that crosses 16-element
+# sub-block boundaries, so these still fall through to dequant_w4g128_sym +
+# modify_tensors V-col-reorder + FP16 emit. (out_proj is the only tensor in
+# this set that's actually quantized; in_proj_a/b are FP16 in the AutoRound
+# dump so they don't go through .qweight.)
+V_COL_PERM_QWEIGHT_SUFFIXES = (
+    ".linear_attn.out_proj.qweight",
+)
+
+V_REORDER_QWEIGHT_SUFFIXES = V_ROW_PERM_QWEIGHT_SUFFIXES + V_COL_PERM_QWEIGHT_SUFFIXES
 
 
 def is_lossless_q4_0_candidate(qweight_name: str) -> bool:
+    """Trunk tensors that need no V-reorder at all — pure 1:1 lossless repack."""
     return not any(qweight_name.endswith(s) for s in V_REORDER_QWEIGHT_SUFFIXES)
+
+
+def is_v_row_perm_candidate(qweight_name: str) -> bool:
+    """V-row-reorder tensors — losslessly repacked to Q4_0 with permuted codes/scales."""
+    return any(qweight_name.endswith(s) for s in V_ROW_PERM_QWEIGHT_SUFFIXES)
+
+
+def _v_row_perm_indices(num_k_heads: int, num_v_heads: int, head_v_dim: int) -> np.ndarray:
+    """
+    Build the V-row reorder permutation as a flat 1-D index array for the V slice.
+    Mirrors `_LinearAttentionVReorderBase._reorder_v_heads(v, dim=0, ...)`:
+        original V layout: [G0_v0..v{r-1}, G1_v0..v{r-1}, ...] (grouped by K head)
+        target V layout:   [G0_v0, G1_v0, ..., G0_v1, G1_v1, ...] (tiled, ggml broadcast)
+    where r = num_v_per_k = num_v_heads // num_k_heads, each group is head_v_dim wide.
+
+    Returns a (num_v_heads * head_v_dim,)-shape int64 ndarray giving the new
+    out-row order in terms of original out-row indices.
+    """
+    num_v_per_k = num_v_heads // num_k_heads
+    rows = num_v_heads * head_v_dim
+    idx = np.arange(rows, dtype=np.int64).reshape(num_k_heads, num_v_per_k, head_v_dim)
+    return idx.transpose(1, 0, 2).reshape(rows)
+
+
+def repack_w4g128_with_v_row_perm(
+    qweight: torch.Tensor,
+    scales: torch.Tensor,
+    *,
+    target_kind: str,             # "in_proj_qkv" or "in_proj_z"
+    num_k_heads: int,
+    num_v_heads: int,
+    head_k_dim: int,
+    head_v_dim: int,
+    group_size: int = 128,
+) -> tuple[bytes, tuple[int, int]]:
+    """
+    Lossless V-row-reorder repack to Q4_0 bytes. Permutes codes + scales along
+    the OUT dim; Q4_0 block structure (along IN dim) is untouched, so AutoRound
+    calibration is preserved bit-for-bit.
+
+    For `in_proj_qkv`: out is [Q | K | V] concatenation. Permute only the V slice.
+    For `in_proj_z`:   out is purely V. Permute the entire out range.
+    """
+    codes_in_out = unpack_autogptq_int4(qweight)         # [in, out] uint8 in [0,15]
+    in_f, out_f = codes_in_out.shape
+
+    sc_groups_out = scales.detach().cpu().numpy().astype(np.float16)  # [n_groups, out]
+    n_groups = in_f // group_size
+    if sc_groups_out.shape != (n_groups, out_f):
+        raise ValueError(
+            f"scales shape {sc_groups_out.shape}, expected ({n_groups}, {out_f}) "
+            f"for in_f={in_f} group_size={group_size}"
+        )
+
+    v_perm = _v_row_perm_indices(num_k_heads, num_v_heads, head_v_dim)   # int64 in [0, num_v_heads*head_v_dim)
+    v_dim = num_v_heads * head_v_dim
+
+    if target_kind == "in_proj_qkv":
+        q_dim = head_k_dim * num_k_heads
+        k_dim = head_k_dim * num_k_heads
+        if out_f != q_dim + k_dim + v_dim:
+            raise ValueError(
+                f"in_proj_qkv out_f={out_f} != q_dim+k_dim+v_dim={q_dim+k_dim+v_dim} "
+                f"(num_k_heads={num_k_heads} head_k_dim={head_k_dim} v_dim={v_dim})"
+            )
+        # Build full out-perm = [0..q_dim, q_dim..q_dim+k_dim, q_dim+k_dim+v_perm]
+        full_perm = np.concatenate([
+            np.arange(q_dim + k_dim, dtype=np.int64),
+            (q_dim + k_dim) + v_perm,
+        ])
+    elif target_kind == "in_proj_z":
+        if out_f != v_dim:
+            raise ValueError(
+                f"in_proj_z out_f={out_f} != v_dim={v_dim} "
+                f"(num_v_heads={num_v_heads} head_v_dim={head_v_dim})"
+            )
+        full_perm = v_perm
+    else:
+        raise ValueError(f"unknown target_kind for V-row repack: {target_kind!r}")
+
+    # Apply out-dim permutation. codes is [in, out] so axis=1; scales is [n_groups, out] so axis=1.
+    codes_perm = codes_in_out[:, full_perm]
+    sc_perm = sc_groups_out[:, full_perm]
+
+    # Now repack to Q4_0 bytes — same structure as repack_w4g128_to_q4_0_bytes,
+    # but using the already-permuted codes/scales. We can just re-use the
+    # standard packer by reconstructing torch tensors with the right layout.
+    # The packer expects qweight in AutoGPTQ's int32-packed form along in-dim.
+    # Easier path: bypass the packer and emit Q4_0 bytes directly from codes+scales.
+    blocks_per_grp = group_size // 32
+    codes_out_in = codes_perm.T                              # [out, in]
+    if in_f % 32 != 0:
+        raise ValueError(f"in_features={in_f} not divisible by 32")
+    n_blocks = in_f // 32
+
+    cb = codes_out_in.reshape(out_f, n_blocks, 32)
+    lo = cb[:, :, :16]
+    hi = cb[:, :, 16:]
+    qs = (lo | (hi.astype(np.uint8) << 4)).astype(np.uint8)
+
+    sc_out_groups = sc_perm.T                                # [out, n_groups]
+    sc_per_block = np.repeat(sc_out_groups, blocks_per_grp, axis=1)   # [out, n_blocks]
+
+    packed = np.empty((out_f, n_blocks, 18), dtype=np.uint8)
+    packed[:, :, 0:2] = sc_per_block.view(np.uint8).reshape(out_f, n_blocks, 2)
+    packed[:, :, 2:18] = qs
+    return packed.tobytes(), (out_f, in_f)
 
 
 # ---------------------------------------------------------------------------
@@ -312,14 +433,32 @@ def patch_convert(convert_module):
                 f"Surface to user before any workaround."
             )
 
-        num_hidden_layers = self.hparams.get("num_hidden_layers")
-        if num_hidden_layers is None and isinstance(self.hparams.get("text_config"), dict):
-            num_hidden_layers = self.hparams["text_config"].get("num_hidden_layers")
+        # Hparams may be at the top level (text-only Qwen3.5/3.6) or nested under
+        # text_config (VL multimodal variant). Look in both.
+        def _hparam(key, default=None):
+            v = self.hparams.get(key)
+            if v is not None:
+                return v
+            tc = self.hparams.get("text_config")
+            if isinstance(tc, dict):
+                return tc.get(key, default)
+            return default
+
+        num_hidden_layers = _hparam("num_hidden_layers")
+
+        # Linear-attention V-row-perm needs head topology; only required if any
+        # in_proj_qkv / in_proj_z .qweight is present in this dump.
+        num_k_heads = _hparam("linear_num_key_heads")
+        num_v_heads = _hparam("linear_num_value_heads")
+        head_k_dim  = _hparam("linear_key_head_dim")
+        head_v_dim  = _hparam("linear_value_head_dim")
 
         losslessly_handled: list[str] = []
+        v_row_perm_handled: list[str] = []
         v_reorder_dequanted: list[str] = []
         skipped_unmapped: list[str] = []
         self_checked = False
+        v_row_self_checked = False
 
         qweight_keys = [k for k in list(self.model_tensors.keys()) if k.endswith(".qweight")]
 
@@ -379,11 +518,73 @@ def patch_convert(convert_module):
                 for suf in (".qweight", ".qzeros", ".scales", ".g_idx"):
                     self.model_tensors.pop(base + suf, None)
                 losslessly_handled.append(gguf_name)
+            elif is_v_row_perm_candidate(qw_name):
+                # ---- V-ROW-PERM PATH: lossless Q4_0 with permuted codes/scales ----
+                # The V-row reorder permutes the OUT dim. Q4_0 stores blocks along
+                # the IN dim, so we permute codes/scales along OUT and re-pack to
+                # Q4_0 bytes — AutoRound's calibration is preserved bit-for-bit.
+                if any(v is None for v in (num_k_heads, num_v_heads, head_k_dim, head_v_dim)):
+                    raise RuntimeError(
+                        f"V-row-perm tensor {qw_name!r} requires linear_num_key_heads / "
+                        f"linear_num_value_heads / linear_key_head_dim / linear_value_head_dim "
+                        f"in hparams (or text_config); got "
+                        f"k={num_k_heads} v={num_v_heads} hk={head_k_dim} hv={head_v_dim}"
+                    )
+
+                map_input = _strip_lm_prefix(base)
+                try:
+                    gguf_name = self.map_tensor_name(map_input + ".weight")
+                except (ValueError, KeyError):
+                    skipped_unmapped.append(qw_name)
+                    continue
+
+                target_kind = (
+                    "in_proj_qkv" if qw_name.endswith(".linear_attn.in_proj_qkv.qweight")
+                    else "in_proj_z"
+                )
+                qweight_t = _materialize(self.model_tensors[qw_name]())
+                scales_t = _materialize(self.model_tensors[scales_key]())
+
+                blob, (out_f, in_f) = repack_w4g128_with_v_row_perm(
+                    qweight_t, scales_t,
+                    target_kind=target_kind,
+                    num_k_heads=num_k_heads, num_v_heads=num_v_heads,
+                    head_k_dim=head_k_dim, head_v_dim=head_v_dim,
+                    group_size=group_size,
+                )
+
+                if not v_row_self_checked:
+                    # Block-0 of the permuted output: row 0 (= permuted out-row[0]) at
+                    # in-positions 0..31. For in_proj_qkv that's a Q-row (perm passthrough),
+                    # so block-0 codes/scale match the original codes[0:32, 0] and
+                    # scales[0, 0] — same as the trunk self_check. For in_proj_z row 0
+                    # is V[v_perm[0]], which is V[0] (since v_perm starts at 0 in tiled
+                    # layout because the first K-group's first V-head maps to original
+                    # index 0). So block-0 still maps to original codes[0:32, 0].
+                    _self_check_block0(qweight_t, scales_t, blob)
+                    print(
+                        f"[Tool 1] Self-check passed on first V-row-perm emit "
+                        f"({gguf_name}, kind={target_kind})",
+                        file=sys.stderr,
+                    )
+                    v_row_self_checked = True
+
+                bytes_per_row = (in_f // 32) * 18
+                arr = np.frombuffer(blob, dtype=np.uint8).reshape(out_f, bytes_per_row)
+                self.gguf_writer.add_tensor(
+                    gguf_name,
+                    arr,
+                    raw_dtype=gguf.GGMLQuantizationType.Q4_0,
+                )
+
+                for suf in (".qweight", ".qzeros", ".scales", ".g_idx"):
+                    self.model_tensors.pop(base + suf, None)
+                v_row_perm_handled.append(gguf_name)
             else:
-                # ---- V-REORDER REMNANT: replace with FP32 dequant lambda ----
-                # AutoRound sym dumps lack .g_idx (group_size is constant), so we
-                # cannot rely on upstream's gptq branch which KeyErrors on .g_idx.
-                # Inline the dequant; modify_tensors then handles V-reorder + FP16.
+                # ---- V-COL-REORDER REMNANT (out_proj): dequant→FP32→FP16 emit ----
+                # Col-perm crosses Q4_0 32-block boundaries; cannot do losslessly
+                # on codes. Replace with FP32 dequant lambda; modify_tensors handles
+                # the V-col reorder + FP16 emit.
                 qw_gen = self.model_tensors[qw_name]
                 sc_gen = self.model_tensors[scales_key]
 
@@ -400,8 +601,9 @@ def patch_convert(convert_module):
                 v_reorder_dequanted.append(base + ".weight")
 
         print(
-            f"[Tool 1] Emitted {len(losslessly_handled)} lossless Q4_0 + "
-            f"{len(v_reorder_dequanted)} V-reorder dequants. "
+            f"[Tool 1] Emitted {len(losslessly_handled)} lossless Q4_0 trunk + "
+            f"{len(v_row_perm_handled)} V-row-perm Q4_0 + "
+            f"{len(v_reorder_dequanted)} V-col-reorder dequants. "
             f"Skipped {len(skipped_unmapped)} unmapped/incomplete.",
             file=sys.stderr,
         )
@@ -432,6 +634,12 @@ def main():
                     help="Use lazy tensor loading (default eager for AutoRound dumps which fit in RAM)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Run convert_hf_to_gguf in dry-run mode")
+    ap.add_argument("--outtype", default="f16",
+                    help="Output dtype for non-quantized passthrough tensors (f16/bf16/f32/auto). "
+                         "Use bf16 to convert a non-AutoRound HF dump straight to BF16 GGUF — the "
+                         "Qwen3_5TextModel VL prefix-strip + vision-skip patches still apply, the "
+                         "quant_method='auto-round' check in the dequant_model patch falls through "
+                         "to upstream when the dump has no AutoRound config.")
     args = ap.parse_args()
 
     if not (args.model_dir / "config.json").exists():
@@ -457,7 +665,7 @@ def main():
         "convert_hf_to_gguf.py",
         str(args.model_dir),
         "--outfile", str(args.outfile),
-        "--outtype", "f16",                                      # FP16 fallthrough; Q4_0 tensors bypass this
+        "--outtype", args.outtype,                               # default f16; FP16 fallthrough for AutoRound non-quant tensors. Q4_0 emits bypass this regardless.
     ]
     if not args.lazy:
         new_argv.append("--no-lazy")
