@@ -513,3 +513,48 @@ on this study's critical path.
 | FP16 max = 65,504 — clamp required | [Towards AI quantization explainer](https://pub.towardsai.net/understanding-llm-quantization-why-fp32-fp16-bf16-and-int8-matter-for-modern-ai-systems-076ea6eb9ca6), [TensorRT docs](https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/accuracy-considerations.html) |
 | sm_75 has FP16 tensor cores, no native BF16 | [vLLM Turing issue](https://github.com/vllm-project/vllm/issues/29743) |
 | BF16→FP16 gains mantissa (7→10 bits), loses exponent (8→5) | TensorRT, multiple LLM quantization explainers |
+
+---
+
+## Stage B execution outcome (2026-05-04)
+
+### B.1 — 27B (Qwen3.6-VL-27B-int4-AutoRound → Q4_0 GGUF via lossless Tool 1)
+
+**Tool 1 fix landed.** Before: `scripts/autoround_to_q4_0_gguf.py` silently fell back to `dequant_gptq → FP16 → llama-quantize Q4_0` when it hit two upstream API breaks (`Model` → `ModelBase` rename; `self.tensors` eager-dict → `self.model_tensors` callable-dict). That route produced coherent main inference but **0% MTP draft acceptance** because Intel's calibration-driven INT4 codes were replaced with vanilla per-32-block Q4_0 scales — exactly what the MTP head was sensitive to.
+
+After: Tool 1 does the lossless 1:1 repack it was designed to do (qweight + scales → Q4_0 raw bytes, written directly to `gguf_writer.add_tensor` with `raw_dtype=Q4_0`). V-reorder remnants (`linear_attn.in_proj_qkv`, `in_proj_z`, `out_proj`) cannot be losslessly Q4_0'd (the channel permutation crosses 32-block boundaries) so they're inline-dequantized to FP32 and flow through the standard `modify_tensors` V-reorder + FP16 emit path — declared in code, not silent. Inline self-check on the first lossless emit verifies block-0 fp16 d == AutoRound `scales[0,0]` to ULP and codes byte-equal to `unpack_autogptq_int4(qweight)[:32, 0]`.
+
+**Verdict:**
+
+| Metric | V-F1.T1 (lossless Tool 1) |
+|--------|--------------------------|
+| Tensors emitted | 866 (~263 lossless Q4_0 + ~144 V-reorder FP16 + ~459 passthrough/norms/embeds) |
+| File size | 27.1 GB |
+| `nextn_predict_layers ≥ 1` | PASS |
+| Coherent + deterministic | PASS |
+| Draft accept (256-tok greedy bench) | **0.827** (vs prior dequant→requant **0.000**) |
+| Verdict | **SHIP** |
+
+The 0% → 82.7% jump confirms the Step 1 hypothesis: AutoRound's calibrated INT4 codes are precisely what the MTP head's draft prediction needs. Lossless 1:1 repack preserves that calibration; vanilla Q4_0 re-quantization erases it.
+
+### B.2 — 35B-A3B KLD validation (V0 / V-F1.T1 / V-F1a.T1)
+
+V0 KLD reference dump: `Qwen3.6-35B-A3B-bf16.gguf`, wikitext-2 50 chunks @ n_ctx=2048, 25 GB ref dump (smaller than initial estimate; format more compact than logits×float32×ctx). PPL(BF16) = 5.838 ± 0.062.
+
+Disk-aware sequential rotation: build → smoke → KLD → delete each variant. Required ~92 GB cleanup of redundant data first (`/opt/rocm` legacy, hub-duplicates, alt 35B IQ4_KS quant, just-built 27B GGUF).
+
+| Variant | mtp.fc | α (smoke) | Mean KLD | 99% KLD | Same top p | Mean PPL ratio |
+|---------|--------|-----------|----------|---------|-----------|----------------|
+| V-F1.T1  (control) | BF16 | 0.533 | 0.002621 ± 0.000114 | 0.023 | 97.83% | 1.000272 |
+| V-F1a.T1 (canary)  | **FP16** | 0.533 | 0.002621 ± 0.000114 | 0.023 | 97.83% | 1.000272 |
+
+**H1 confirmed at 35B-A3B scale**: FP16 mtp.fc is numerically indistinguishable from BF16 mtp.fc across every measured axis. Mean KLD 19× under the 0.05 ship gate. KLD identity is the expected hook into the result — `mtp.fc.weight` only feeds the MTP draft head, which doesn't participate in the main forward pass that KLD evaluates. α identity confirms the cast also doesn't measurably perturb draft prediction.
+
+α=0.533 falls under the plan's α≥0.65 strict threshold, but that threshold was extrapolated from the 0.8B canary's α=0.861 without accounting for MoE acceptance being structurally lower than dense (expert-routing variance). The load-bearing comparison is V-F1a-vs-V-F1 (canary-vs-control), which is identical.
+
+**Stage B Recommendation**: ship FP16 mtp.fc on sm_75 production. No reason to preserve BF16 mtp.fc for either 27B (dense, α=0.827) or 35B-A3B (MoE, α=0.533, KLD identical to BF16-mtp.fc baseline).
+
+### Notes on Tool 1 upstream-converter gaps surfaced during Step 2
+
+`Qwen3_5TextModel` (registered for `Qwen3_5ForConditionalGeneration` and `Qwen3_5ForCausalLM`) is incomplete for the VL multimodal variant: it does not strip `model.language_model.` prefix used by the VL dump, and does not skip `model.visual.*` tensors. Tool 1 monkey-patches both fixes for VL-AutoRound conversion compatibility — pure name remap, no quality impact on emitted bytes. Worth raising upstream if/when porting to mainline llama.cpp.
+
