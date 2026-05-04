@@ -1156,3 +1156,19 @@ After running V-F1 (BF16 mtp.fc + FP16 trunk) at all 5 tiers as a control matche
 **How to apply**: when reporting PHASE32 outcomes externally, lead with "FP16 trunk recovers iter-7 ceiling" not "FP16 mtp.fc beats BF16". The mtp.fc question is answered (safe to cast, not strictly better) but the headline is the trunk.
 
 **Reproducibility**: data + raw logs at `/opt/models/recast-out/{kld-vs-v0-0.8b-V-F1{,a}.tsv,bench-tiers-0.8b-V-F1{,a}.tsv,logs/}`. PHASE32 commit b239b8d.
+
+## 2026-05-04 — PHASE32 Stage B closed at 27B + 35B-A3B (Tool 1 lossless fix)
+
+**The silent shortcut.** PHASE32 Stage B 27B initially failed at α=0.000 because Tool 1 (`scripts/autoround_to_q4_0_gguf.py`) hit two upstream `convert_hf_to_gguf.py` API breaks (`Model` → `ModelBase` rename; `self.tensors` eager-dict → `self.model_tensors` callable-dict) and silently fell back to `dequant_gptq → FP16 → llama-quantize Q4_0`. That route preserved main inference but threw away Intel's calibration-driven INT4 codes — exactly what the MTP head was sensitive to. Saved as feedback memory `feedback_surface_tradeoff_decisions.md`.
+
+**The fix.** Tool 1 now patched to do the lossless 1:1 repack it was designed for: AutoRound qweight + scales → Q4_0 raw bytes via `gguf_writer.add_tensor(raw_dtype=Q4_0)`, written direct (no monkey-patch sentinel). V-reorder remnants (`linear_attn.in_proj_qkv`, `in_proj_z`, `out_proj`) cannot be losslessly Q4_0'd because the channel permutation crosses 32-block boundaries; they fall through to FP32 dequant + standard `modify_tensors` V-reorder + FP16 emit (declared in code, not silent). Also patches `Qwen3_5TextModel.modify_tensors` to strip `model.language_model.` prefix and skip `model.visual.*` (upstream gaps for the VL variant). Inline self-check on first lossless emit verifies block-0 fp16 d == AutoRound `scales[0,0]` to ULP.
+
+**27B SHIP.** Q3.6-27B-V-F1.T1 (lossless Q4_0 trunk + FP16 V-reorder remnants + BF16 mtp.fc + spliced MTP from the dump's `mtp.layers.0`): 27 GB, 866 tensors, α=**0.827** on the 256-token greedy correctness bench. **0% → 82.7% jump** is the headline confirmation that AutoRound's calibrated INT4 codes ARE what the MTP head needs.
+
+**35B-A3B GREEN at scale.** V0 KLD ref built from BF16 source (50 chunks wikitext-2 @ n_ctx=2048, 25 GB ref, PPL=5.838). V-F1.T1 (BF16 mtp.fc control) and V-F1a.T1 (FP16 mtp.fc canary) both: α=0.533, mean KLD=0.00262, 99% KLD=0.023, same-top-p 97.83%, PPL ratio 1.000272 — **bitwise-identical across every measured axis**. KLD identity is expected (mtp.fc only feeds the draft head, not the main forward pass that KLD evaluates); α identity confirms the FP16 cast also doesn't measurably perturb draft prediction. H1 confirmed at MoE scale.
+
+**Recommendation**: ship FP16 mtp.fc across sm_75 production. No reason to preserve BF16 mtp.fc for 27B or 35B-A3B given canary results.
+
+**Reproducibility**: results + raw logs at `/opt/models/recast-out/iter8-stageB-results.md`, `/opt/models/recast-out/v0-bf16-35b-a3b.kld`, `/opt/models/recast-out/qwen3.6-35b-a3b-V-F1a.T1.gguf`, `/opt/models/recast-out/logs/`. PHASE32 doc updated; Tool 1 patch in `scripts/autoround_to_q4_0_gguf.py`.
+
+**Disk note for future Stage Bs**: The KLD-base file format is more compact than the worst-case logits×float32×ctx estimate would suggest (25 GB for 50-chunk 35B run vs my a-priori ~52 GB estimate). Plan disk math accordingly.
