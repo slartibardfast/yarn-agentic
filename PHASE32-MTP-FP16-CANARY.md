@@ -716,3 +716,35 @@ Cached intermediate artifacts (per-variant GGUFs, KLD ref dumps) are deletable
 and reproducible from the recipes above. Rebuild order when starting from a
 clean slate of intermediates: KLD ref → variant GGUF → KLD compare. Wall budget
 ~25-50 min per variant + ~12 min for ref.
+
+## 27B PPL extension outcome (2026-05-04)
+
+| Variant | PPL (wikitext-2, 145 chunks @ n_ctx=2048, default f16 KV) | ± | vs published BF16 ~6.9 |
+|---------|-----------|---|------------------------|
+| Q3.6-27B V-F1.T1 (Tool 1 lossless) | **6.6827** | 0.04515 | -3.1% (within BF16 noise envelope) |
+
+We attempted a local BF16 reference build on the 27B BF16 GGUF (54.6 GB) but
+hit ik_llama VMM-pool OOM on every config from `-ngl 56` down to `-ngl 32`
+with `-mea 4096` and `GGML_CUDA_NO_VMM=1`. Dual sm_75 24-GiB GPUs cannot
+host BF16 27B + KV cache + compute buffer + KLD-base logit dump simultaneously.
+
+Pivoted to the published BF16 baseline (DavidAU's Qwen3.6-27B sheet, ~6.9)
+for the apples-to-apples comparison. V-F1.T1 lands meaningfully below it.
+
+Methodological caveats (not addressed in this run):
+- Both numbers are likely on default f16 KV cache — apples-to-apples for *each other* but not against an absolute BF16-KV reference. For Qwen3.5/3.6 natively-bfloat16 family, `-ctk bf16 -ctv bf16` is the methodologically correct flag (per smcleod.net and llama.cpp issue #20035).
+- Published 6.9 is a community measurement on a fine-tune-vendor sheet, not a Qwen-team gold standard.
+
+These caveats apply equally to both numbers in the comparison, so the *ordering* (V-F1.T1 ≤ BF16) is robust even if the absolute level shifts.
+
+### Archive
+
+Following the "archive before delete" protocol established 2026-05-04:
+
+| Artifact | Path on share | Size |
+|----------|---------------|------|
+| 27B BF16 GGUF (recreatable from HF source ~30 min) | `/mnt/archive/qwen3.6-stage-b/27b/Qwen3.6-27B-bf16.gguf` | 54.6 GB |
+| 27B V-F1.T1 GGUF (lossless Tool 1 output, recreatable ~7 min) | `/mnt/archive/qwen3.6-stage-b/27b/qwen3.6-27b-V-F1.T1-tool1lossless.gguf` | 27.1 GB |
+| PPL log + Stage B results snapshot | `/mnt/archive/qwen3.6-stage-b/{logs,iter8-stageB-results.md}` | small |
+
+Local copies of both 27B GGUFs deleted after share-side size verification.
