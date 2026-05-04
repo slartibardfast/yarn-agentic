@@ -402,13 +402,17 @@ def repack_w4g128_with_v_col_perm(
 
     # Byte-pack directly using AutoRound's calibrated codes/scales — do NOT
     # round-trip through Q4_0_AR16.quantize_blocks (which would re-quantize
-    # from fp32 and lose calibration). Half-split nibble layout per Phase 1.C:
-    #   qs[j] = code[j] | (code[j + 8] << 4),  j in [0, 8)
+    # from fp32 and lose calibration). INTERLEAVED nibble layout per Allium
+    # spec, C kernel, CUDA kernel:
+    #   qs[j] = code[2j] | (code[2j + 1] << 4),  j in [0, 8)
+    # (NOT Q4_0's split-halves layout. Phase 2 caught a layout-disagreement
+    # bug here that produced gibberish at runtime even though the
+    # offline self-check passed self-consistently.)
     # Tensor data layout: blocks row-major over [out_features, n_blocks] of 10 bytes.
     codes_out_in = codes_perm_in_out.T                              # [out, in]
-    cb = codes_out_in.reshape(out_f, n_blocks, 16)
-    lo = cb[:, :, :8]                                               # in positions 0..7
-    hi = cb[:, :, 8:]                                               # in positions 8..15
+    cb = codes_out_in.reshape(out_f, n_blocks, 8, 2)                # last axis: (even, odd)
+    lo = cb[:, :, :, 0]                                             # codes 0,2,4,...,14 -> low nibble
+    hi = cb[:, :, :, 1]                                             # codes 1,3,5,...,15 -> high nibble
     qs = (lo | (hi.astype(np.uint8) << 4)).astype(np.uint8)         # [out, n_blocks, 8]
 
     # scales_perm_per_block is [n_blocks, out]; we want [out, n_blocks] for emit.
@@ -466,7 +470,7 @@ def _self_check_block0_q4_0_ar16(
     First Q4_0_AR16 block of out=0 must satisfy:
       bytes 0..2:  fp16 d == scales_perm_per_block[0, 0]
       bytes 2..10: 8 nibble-pairs encoding codes_perm_in_out[:16, 0]
-                   under half-split layout (qs[j] = c[j] | (c[j+8] << 4)).
+                   under INTERLEAVED layout (qs[j] = c[2j] | (c[2j+1] << 4)).
     """
     if len(blob) < 10:
         raise AssertionError(f"[Tool 1 self-check] blob shorter than one Q4_0_AR16 block ({len(blob)} bytes)")
@@ -483,9 +487,10 @@ def _self_check_block0_q4_0_ar16(
     qs = block0[2:10]
     lo = qs & 0x0F
     hi = (qs >> 4) & 0x0F
+    # Interleaved: byte j -> code[2j] (lo) + code[2j+1] (hi).
     decoded = np.empty(16, dtype=np.uint8)
-    decoded[0:8] = lo
-    decoded[8:16] = hi
+    decoded[0::2] = lo
+    decoded[1::2] = hi
 
     expected = codes_perm_in_out[:16, 0].astype(np.uint8)
     if not np.array_equal(decoded, expected):
