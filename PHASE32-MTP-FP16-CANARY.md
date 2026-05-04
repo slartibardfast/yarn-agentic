@@ -558,3 +558,161 @@ Disk-aware sequential rotation: build → smoke → KLD → delete each variant.
 
 `Qwen3_5TextModel` (registered for `Qwen3_5ForConditionalGeneration` and `Qwen3_5ForCausalLM`) is incomplete for the VL multimodal variant: it does not strip `model.language_model.` prefix used by the VL dump, and does not skip `model.visual.*` tensors. Tool 1 monkey-patches both fixes for VL-AutoRound conversion compatibility — pure name remap, no quality impact on emitted bytes. Worth raising upstream if/when porting to mainline llama.cpp.
 
+
+## Reproduction recipes (Stage B + 27B PPL follow-up)
+
+These are the exact invocations for every artifact this study produced. After
+Stage B closure (2026-05-04), the cached intermediate artifacts (35B-A3B
+V-F1.T1 GGUF, V-F1a.T1 GGUF, V0 KLD reference) were deleted to free disk for
+the 27B PPL extension. Everything below reproduces them from the BF16 source +
+Intel AutoRound dump, both of which are retained on disk.
+
+### Disk artifacts kept (sources of truth)
+
+| Path | Size | Purpose |
+|------|------|---------|
+| `/opt/models/Qwen3.6-35B-A3B-bf16.gguf` | 67 GB | 35B-A3B BF16 source — input to Tool 3 + KLD ref builds |
+| `/opt/models/qwen3.5-0.8b/Qwen3.5-0.8B-BF16.gguf` | 1.5 GB | 0.8B BF16 — Stage A canary source |
+| `/opt/models/hf-cache/models--Intel--Qwen3.6-27B-int4-AutoRound/snapshots/a00e481620facd57da3a86eaa5c90e2e811d1aac/` | 18 GB | 27B AutoRound INT4 — input to Tool 1 |
+| `/opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw` | 1.3 MB | KLD/PPL eval corpus |
+
+### 35B-A3B V-F1.T1 / V-F1a.T1 GGUF (Tool 3)
+
+```bash
+cd /home/llm/yarn-agentic
+# V-F1.T1 (control: BF16 mtp.fc + FP16 trunk + BF16 GDN/norms)
+python scripts/recast_bf16_to_fp16.py \
+    --input  /opt/models/Qwen3.6-35B-A3B-bf16.gguf \
+    --output /opt/models/recast-out/qwen3.6-35b-a3b-V-F1.T1.gguf \
+    --policy scripts/policy/v-f1.yaml \
+    --tier T1
+# wall ~12 min  → 67 GB  (443 tensors cast FP16 / 310 preserved BF16)
+
+# V-F1a.T1 (canary: FP16 mtp.fc + FP16 trunk + BF16 GDN/norms)
+python scripts/recast_bf16_to_fp16.py \
+    --input  /opt/models/Qwen3.6-35B-A3B-bf16.gguf \
+    --output /opt/models/recast-out/qwen3.6-35b-a3b-V-F1a.T1.gguf \
+    --policy scripts/policy/v-f1a.yaml \
+    --tier T1
+# wall ~12 min  → 67 GB  (444 tensors cast FP16 / 309 preserved BF16; +1 = mtp.fc)
+```
+
+### 35B-A3B V0 KLD reference (50-chunk wikitext-2)
+
+```bash
+/home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-perplexity \
+    -m /opt/models/Qwen3.6-35B-A3B-bf16.gguf \
+    -f /opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw \
+    --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
+    -ngl 999 -fa on -ncmoe 25 \
+    --no-mmap \
+    -c 2048 --threads 16 --batch-size 2048 --ubatch-size 512 \
+    --chunks 50 \
+    --kl-divergence-base /opt/models/recast-out/v0-bf16-35b-a3b.kld
+# wall ~12 min → 25 GB ref dump; PPL(BF16) = 5.838 ± 0.062
+```
+
+### 35B-A3B KLD compare V-F1<a>.T1 vs V0
+
+```bash
+GGUF=/opt/models/recast-out/qwen3.6-35b-a3b-V-F1.T1.gguf  # or V-F1a.T1
+/home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-perplexity \
+    -m "$GGUF" \
+    -f /opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw \
+    --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
+    -ngl 999 -fa on -ncmoe 25 \
+    --no-mmap \
+    -c 2048 --threads 16 --batch-size 2048 --ubatch-size 512 \
+    --chunks 50 \
+    --kl-divergence-base /opt/models/recast-out/v0-bf16-35b-a3b.kld \
+    --kl-divergence
+# wall ~13 min per variant
+```
+
+### 27B V-F1.T1 (lossless Tool 1) GGUF
+
+```bash
+SNAP=/opt/models/hf-cache/models--Intel--Qwen3.6-27B-int4-AutoRound/snapshots/a00e481620facd57da3a86eaa5c90e2e811d1aac
+mkdir -p /opt/models/recast-out/tmp
+TMPDIR=/opt/models/recast-out/tmp python /home/llm/yarn-agentic/scripts/autoround_to_q4_0_gguf.py \
+    --model-dir "$SNAP" \
+    --outfile  /opt/models/recast-out/qwen3.6-27b-V-F1.T1-tool1lossless.gguf \
+    --llama-cpp /home/llm/yarn-agentic/llama.cpp
+# wall ~7 min → 27 GB
+# 866 tensors: ~263 lossless Q4_0 + ~144 V-reorder FP16 + ~459 passthrough/norms/embeds
+# Inline self-check passes on first lossless emit (blk.0.ffn_down.weight)
+```
+
+### 27B BF16 baseline (for PPL comparison)
+
+```bash
+HF_HUB_CACHE=/opt/models/hf-cache /home/llm/venv/bin/hf download Qwen/Qwen3.6-27B
+# wall ~10-15 min → 52 GB at /opt/models/hf-cache/models--Qwen--Qwen3.6-27B/
+
+SNAP_27B=/opt/models/hf-cache/models--Qwen--Qwen3.6-27B/snapshots/<sha>  # use the resolved path
+python /home/llm/yarn-agentic/llama.cpp/convert_hf_to_gguf.py "$SNAP_27B" \
+    --outfile /opt/models/Qwen3.6-27B-bf16.gguf \
+    --outtype bf16
+# wall ~15-20 min → ~52 GB
+# Note: upstream converter has gaps for the VL variant (no language_model. strip,
+# no model.visual.* skip) — Tool 1 patches both. For straight HF→BF16 conversion,
+# this script is sufficient because main forward pass doesn't depend on V-reorder
+# (Tool 3 handles those tensors selectively at recast time).
+```
+
+### 27B PPL on BF16 baseline (partial CPU offload — 27B BF16 ~52 GB > 48 GiB combined VRAM)
+
+```bash
+/home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-perplexity \
+    -m /opt/models/Qwen3.6-27B-bf16.gguf \
+    -f /opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw \
+    --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
+    -ngl 56 -fa on \
+    --no-mmap \
+    -c 2048 --threads 16 --batch-size 2048 --ubatch-size 512 \
+    --chunks 50
+# wall ~30-45 min on partial CPU
+# -ngl 56 keeps 56/64 hidden layers on GPU, 8 on CPU (~7 GB host RAM, fits 64 GiB)
+# 27B is dense (NOT MoE) — `-ncmoe` does not apply; partial layer offload only
+```
+
+### 27B PPL on V-F1.T1 (full GPU)
+
+```bash
+/home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-perplexity \
+    -m /opt/models/recast-out/qwen3.6-27b-V-F1.T1-tool1lossless.gguf \
+    -f /opt/models/wikitext-2-raw/wikitext-2-raw/wiki.test.raw \
+    --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
+    -ngl 999 -fa on \
+    --no-mmap \
+    -c 2048 --threads 16 --batch-size 2048 --ubatch-size 512 \
+    --chunks 50
+# wall ~5-10 min on full GPU
+```
+
+### Validation
+
+```bash
+# 27B smoke + α capture (server in MTP mode, accept rate observable from logs)
+bash /home/llm/yarn-agentic/scripts/validate_gguf_mtp_27b.sh \
+    /opt/models/recast-out/qwen3.6-27b-V-F1.T1-tool1lossless.gguf
+# expected: ALL OK, draft acceptance rate=0.83333
+
+# 27B 5-run greedy α bench
+MODEL=/opt/models/recast-out/qwen3.6-27b-V-F1.T1-tool1lossless.gguf \
+    bash /home/llm/yarn-agentic/scripts/bench-mtp-correctness-27b.sh
+# expected: PASS, MTP accept 0.82734 ≥ floor 0.50
+
+# 35B-A3B smoke (MoE, requires -ncmoe 25 host-side offload at 67 GB FP16)
+bash /home/llm/yarn-agentic/scripts/validate_gguf_mtp_35b.sh \
+    /opt/models/recast-out/qwen3.6-35b-a3b-V-F1<a>.T1.gguf
+# expected: ALL OK, draft acceptance rate=0.53333
+```
+
+### Stage B disk-rotation policy
+
+Source GGUFs (35B-A3B BF16, 27B AutoRound dump, 0.8B BF16) are retained.
+Cached intermediate artifacts (per-variant GGUFs, KLD ref dumps) are deletable
+and reproducible from the recipes above. Rebuild order when starting from a
+clean slate of intermediates: KLD ref → variant GGUF → KLD compare. Wall budget
+~25-50 min per variant + ~12 min for ref.
