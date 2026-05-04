@@ -378,3 +378,61 @@ is materially improved over pre-fix, and the bigger framework
 Recommended next step: implement option (2) (copy slot 0 state to
 all slots after startup warmup) and re-run isolation test with a
 relaxed coherence assertion.
+
+---
+
+## Phase 4 — Measured outcome
+
+Sweep at V-F1.T1.qq-tool1lossless on the dual-Quadro-RTX-6000 host,
+mtp on, no system prompt, fresh server per cell:
+
+| np | mtp aggregate t/s | ratio vs np=1 | target |
+|----|-------------------|----------------|--------|
+| 1  | 35.30             | 1.00× (base)   | —      |
+| 2  | 15.75             | 0.446×         | ≥1.00× |
+| 4  | 23.58             | 0.668×         | ≥1.00× |
+| 8  | 22.62             | 0.641×         | —      |
+
+**Result:** Phase 0.2 scaling assertions FAIL across the board. The
+per-seq fill-site (Phase 1) preserves correctness — every slot returns
+non-empty coherent content; the two-phase verify+accept refactor
+prevents `invalid logits id` crashes. But aggregate throughput at np≥2
+is *worse* than the pre-Phase-1 baseline (0.45× now vs. 0.54× before).
+
+### Where the throughput went
+
+The Phase 3 fallback counter recorded ~22 chunking dispatches across
+the np=2 concurrent run. Source breakdown:
+
+- **Prompt fill** — multi-tokens-per-seq batches trip `has_dup` in
+  the detector at `llama.cpp:4727`. Each prompt fill ubatch becomes
+  a longest-single-seq sub-batch, halving effective batch utilisation.
+- **MTP draft-verify** — the verify step batches `[t, t+1]` for each
+  active slot. With np≥2, that's `[A_t, A_t+1, B_t, B_t+1]` —
+  again `any_diff && has_dup`. Every verify tick fires the fallback.
+
+The fallback's longest-single-seq strategy was tuned for "rare
+interleaved batch" — but MTP+np≥2 makes this the **majority** case,
+not the exception.
+
+### Implications
+
+The architectural ceiling per-seq state was supposed to lift is real,
+but the mixed-seq detector at `llama.cpp:4732` is gating the win.
+Specifically: the detector trips on `has_dup` even when the seq_ids
+appear in clean contiguous blocks (`A,A,B,B` rather than `A,B,A,B`).
+The CUDA `ssm-conv.cu` kernel's `validate_unique_seq_map` fast path
+*can* handle `A,A,B,B` correctly (one contiguous run per seq, slot
+indices form a function), so the detector is over-rejecting.
+
+**Next workstream (out of scope for this commit):** weaken the
+`has_dup`-driven fallback to only trip on truly interleaved patterns
+(`A,B,A,B`). Detect contiguity instead — if every seq_id forms a
+single contiguous run within the batch, dispatch the unique-seq-map
+multi-seq path directly without sub-batching. This should eliminate
+the prompt-fill and MTP-verify fallback hits and restore the
+expected scaling.
+
+PPL bit-identical at np=1 (V-F1.T1.qq remains 7.0169 ± 0.046, α=0.917
+on validate_gguf_mtp_27b.sh). Correctness foundation lands clean;
+performance follow-up is a detector refinement, not a re-architecture.
