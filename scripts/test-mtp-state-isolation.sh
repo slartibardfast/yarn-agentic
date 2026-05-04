@@ -141,8 +141,26 @@ if [ "$CONC_B_BANGS" -ge 4 ]; then
     echo "FAIL: concurrent slot 1 starts with $CONC_B_BANGS bangs (cold-start garbage)"; fail=1
 fi
 
+# T4 extension — n-gram coherence between solo and concurrent slot 0.
+# The two outputs differ on FP order from combined-batch processing, so
+# byte-equal is too strict; but we expect the slot-0 trajectory to be
+# substantially shared if per-seq state isolation is correct. Pre-Phase-1
+# (slot-0 corruption), the overlap is essentially zero. Post-Phase-1,
+# expect ≥ 50% of 4-grams shared.
+NGRAM_OVERLAP=$(/home/llm/venv/bin/python -c "
+def grams(s, n=4): return {s[i:i+n] for i in range(len(s)-n+1)}
+a, b = grams('''$SOLO_CONTENT'''), grams('''$CONC_A_CONTENT''')
+print(0.0 if not a or not b else len(a & b) / max(1, min(len(a), len(b))))
+" 2>/dev/null || echo 0.0)
+NG_OK=$(/home/llm/venv/bin/python -c "print(1 if $NGRAM_OVERLAP >= 0.5 else 0)" 2>/dev/null || echo 0)
+echo "  4-gram overlap solo↔concurrent slot 0: $NGRAM_OVERLAP"
+if [ "$NG_OK" != "1" ]; then
+    echo "FAIL: 4-gram overlap < 0.5 — slot 0 trajectory diverged (state isolation broken?)"
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
-    echo "PASS: all three outputs coherent (no `!` cold-start garbage)"
+    echo "PASS: all three outputs coherent (no `!` cold-start garbage); ngram overlap $NGRAM_OVERLAP"
     echo "  solo slot 0:        ${SOLO_CONTENT:0:80}"
     echo "  concurrent slot 0:  ${CONC_A_CONTENT:0:80}"
     echo "  concurrent slot 1:  ${CONC_B_CONTENT:0:80}"

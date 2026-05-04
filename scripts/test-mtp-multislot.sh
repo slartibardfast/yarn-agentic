@@ -94,8 +94,21 @@ test_np() {
         grep -E "invalid logits id|GGML_ASSERT|Aborted|Segmentation" "$log" | head -3 | sed 's/^/    /'
         fail=1
     fi
+    # T6 — fallback counter assertion.
+    # Pre-Phase-C, the qwen3next mixed-sequence warn fires on every
+    # contiguous-block prompt-fill or MTP-verify ubatch (~22 per np=2
+    # run). Post-Phase-C, the engine routes contiguous blocks through
+    # the fast path and the warn never fires.
+    local fb_count=$(grep -c "qwen3next mixed-sequence" "$log" 2>/dev/null | tail -1)
+    fb_count=${fb_count:-0}
+    echo "  qnext_mixed_seq_fallback_count: $fb_count"
+    if [ "$fb_count" -gt 0 ] 2>/dev/null && [ "$np" -ge 2 ]; then
+        echo "  T6 FAIL: fallback fired $fb_count times at np=$np (target: 0 on routine traffic)"
+        fail=1
+    fi
+
     if [ "$fail" -eq 0 ]; then
-        printf "  PASS: %d/%d slots OK, aggregate=%.2f t/s\n" "$ok_responses" "$np" "$agg_tg"
+        printf "  PASS: %d/%d slots OK, aggregate=%.2f t/s, fallback=%d\n" "$ok_responses" "$np" "$agg_tg" "$fb_count"
         # Stash for cross-cell comparison
         echo "$np $agg_tg" >> /tmp/test-mtp-multislot-aggs.txt
         return 0
