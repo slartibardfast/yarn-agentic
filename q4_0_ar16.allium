@@ -2,16 +2,19 @@
 -- q4_0_ar16.allium
 
 -- Scope: GGML_TYPE_Q4_0_AR16 — 16-element-block 4-bit symmetric quant
--- introduced for PHASE32 Stage 2. Identical packing convention to Q4_0
--- (per-block fp16 d, low/high nibble per even/odd k) but with a 16-wide
--- block so it is lossless under 16-element-aligned column permutations.
+-- introduced for PHASE32 Stage 2. Differs from Q4_0 in three ways:
+--   (a) block size 16 instead of 32, so it is lossless under
+--       16-element-aligned column permutations;
+--   (b) INTERLEAVED nibble layout (byte j = code[2j] | code[2j+1]<<4)
+--       — Q4_0 packs split-halves (byte j = code[j] | code[j+QK/2]<<4);
+--   (c) symmetric scale d = absmax/8 — Q4_0 uses signed d = max/-8.
 -- The format exists to preserve Intel AutoRound INT4 W4G128 calibration
 -- through a V-col reorder where Q4_0's 32-element block straddles the
 -- 16-element permutation boundary.
 --
 -- Includes:
 --   - Block layout (10 bytes total) and the QuantizedRow wrapper.
---   - Nibble unpack convention (matches Q4_0 exactly).
+--   - Nibble unpack convention (interleaved per even/odd k).
 --   - Quantize + dequantize contracts (RNE codes, sym INT4).
 --   - vec_dot contract against Q8_0 query rows.
 --   - The col-perm-equivalence-16-aligned invariant (the *reason* this
@@ -22,7 +25,8 @@
 -- Excludes:
 --   - SIMD / backend implementations (AVX2, AVX512, CUDA dispatch).
 --     SIMDEquivalence semantics are inherited from mul_mat_cpu.allium's
---     VecDot contract — see deferred ref below.
+--     VecDot contract — see the `deferred MulMatCpu.VecDot`
+--     declaration below.
 --   - HIP / Metal / Vulkan backends. Deliberately out of scope per
 --     PHASE32 Stage 2; co-design targets sm_75 and AVX2/AVX512 only.
 --   - Native MMA-Q4_0_AR16 CUDA kernel. Phase 1.B targets the
@@ -33,6 +37,16 @@
 --     can layer on top later; they do not change this contract.
 --   - 35B-A3B: no Intel AutoRound dump exists; the format has no
 --     application without an INT4 source. Spec applies only at 27B.
+
+-- ============================================================
+-- Deferred specifications
+-- ============================================================
+
+-- Cross-spec ref: SIMDEquivalence + scalar-reference-as-truth
+-- semantics for vec_dot live in mul_mat_cpu.allium. The VecDot
+-- contract here inherits those semantics and adds Q4_0_AR16-specific
+-- tolerance bounds.
+deferred MulMatCpu.VecDot    -- see: mul_mat_cpu.allium
 
 -- ============================================================
 -- External entities — managed by ggml, not by this spec
@@ -62,15 +76,28 @@ config {
     block_size: Integer = 16
     type_size: Integer = 10
 
-    -- vec_dot tolerances. Mixed metric (abs OR rel) is necessary
-    -- because rel_err is unstable when the reference score is near
-    -- zero. Bounds are calibrated for the dequant-then-mul fallback
-    -- on Q4_0_AR16 vs an independent scalar reference: O(n*eps)
-    -- accumulation only, no codebook pre-quantization (codes already
-    -- INT4, no LUT), so the budget is much tighter than the
-    -- mul_mat_cpu.allium per-type-neutral defaults.
+    -- vec_dot tolerances for FP32-accumulator paths. Mixed metric
+    -- (abs OR rel) is necessary because rel_err is unstable when the
+    -- reference score is near zero. Bounds are calibrated for the
+    -- dequant-then-mul fallback on Q4_0_AR16 vs an independent
+    -- scalar reference: O(n*eps) accumulation only, no codebook
+    -- pre-quantization (codes already INT4, no LUT), so the budget
+    -- is much tighter than the mul_mat_cpu.allium per-type-neutral
+    -- defaults. Applies to: AVX2/AVX512 CPU vec_dot, CUDA dequant
+    -- followed by FP32 GEMM (cuBLAS CUBLAS_COMPUTE_32F or equivalent).
     vec_dot_rel_tol: Decimal = 0.001
     vec_dot_abs_tol: Decimal = 0.0001
+
+    -- vec_dot tolerance for FP16-accumulator paths (CUDA cuBLAS at
+    -- CUBLAS_COMPUTE_16F, or HMMA with FP16 accumulator). FP16
+    -- accumulator overflows / loses ULPs roughly at sqrt(K) * eps_fp16,
+    -- which is ~3e-2 at K=128 and grows with K. The dequant-then-mul
+    -- fallback on sm_75 (Phase 1.B) uses cuBLAS at FP16 accumulator
+    -- by default; native HMMA Q4_0_AR16 (deferred perf work) likewise.
+    -- Code paths that take this route must validate against this
+    -- looser bound, NOT the FP32 bound above.
+    vec_dot_fp16_gemm_rel_tol: Decimal = 0.05
+    vec_dot_fp16_gemm_abs_tol: Decimal = 0.01
 
     -- Quantize is integer arithmetic (clamp+RNE on a scalar). The
     -- resulting *codes* must be bit-exact across SIMD variants —
@@ -99,8 +126,11 @@ entity Block_Q4_0_AR16 {
     d: Decimal
 
     -- 8 bytes of nibble payload. Code k lives in the low nibble of
-    -- qs[k/2] for even k and the high nibble for odd k — the exact
-    -- Q4_0 convention.
+    -- qs[k/2] for even k and the high nibble for odd k — INTERLEAVED.
+    -- Distinct from Q4_0's split-halves layout (where byte j packs
+    -- code[j] | code[j+QK/2]<<4); the difference matters because
+    -- both formats coexist in the same gguf-py tooling and the same
+    -- ggml dispatch.
     qs: Set<Integer>
 
     @invariant ByteCount
@@ -223,19 +253,29 @@ contract VecDot {
 
     @invariant ScoreCorrectness
         -- result equals the inner product of dequantize_row(a) and
-        -- the dequantized view of b, up to:
-        --   abs(result - scalar_ref) <= config.vec_dot_abs_tol
-        --   OR  rel_diff(result, scalar_ref) <= config.vec_dot_rel_tol
-        -- No codebook pre-quantization is permitted (codes are
-        -- already INT4); the only error source is O(n*eps)
-        -- accumulation across SIMD widths.
+        -- the dequantized view of b, with the bound determined by
+        -- the implementation's accumulator precision:
         --
-        -- The scalar reference is the per-type scalar vec_dot in
-        -- ggml-base — see deferred MulMatCpu.VecDot -- see:
-        -- mul_mat_cpu.allium for the SIMDEquivalence semantics that
-        -- govern multi-variant agreement. PBT must drive the
-        -- production dispatch (not call the scalar symbol directly)
-        -- and compare to that independent reference.
+        --   FP32 accumulator path (CPU vec_dot, CUDA dequant +
+        --   CUBLAS_COMPUTE_32F):
+        --     abs(result - scalar_ref) <= config.vec_dot_abs_tol
+        --     OR rel_diff(result, scalar_ref) <= config.vec_dot_rel_tol
+        --
+        --   FP16 accumulator path (CUDA dequant + CUBLAS_COMPUTE_16F,
+        --   native HMMA Q4_0_AR16 with FP16 accumulator):
+        --     abs(result - scalar_ref) <= config.vec_dot_fp16_gemm_abs_tol
+        --     OR rel_diff(result, scalar_ref) <= config.vec_dot_fp16_gemm_rel_tol
+        --
+        -- No codebook pre-quantization is permitted (codes are
+        -- already INT4); the only error sources are O(n*eps)
+        -- accumulation across SIMD widths and the additional ~sqrt(K)
+        -- * eps_fp16 from FP16 GEMM.
+        --
+        -- See deferred MulMatCpu.VecDot for the cross-spec
+        -- SIMDEquivalence semantics that govern multi-variant
+        -- agreement. PBT must drive the production dispatch (not
+        -- call the scalar symbol directly) and compare to that
+        -- independent reference.
 }
 
 -- ============================================================
