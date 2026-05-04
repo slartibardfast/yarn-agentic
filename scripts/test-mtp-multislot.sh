@@ -99,7 +99,10 @@ test_np() {
     # contiguous-block prompt-fill or MTP-verify ubatch (~22 per np=2
     # run). Post-Phase-C, the engine routes contiguous blocks through
     # the fast path and the warn never fires.
-    local fb_count=$(grep -c "qwen3next mixed-sequence" "$log" 2>/dev/null | tail -1)
+    # Match both the legacy "mixed-sequence" warn (pre-Phase-C) and the
+    # new "interleaved batch" warn (post-Phase-C). Either firing means
+    # the engine had to fall back to longest-single-seq sub-batching.
+    local fb_count=$(grep -cE "qwen3next (mixed-sequence|interleaved) batch" "$log" 2>/dev/null | tail -1)
     fb_count=${fb_count:-0}
     echo "  qnext_mixed_seq_fallback_count: $fb_count"
     if [ "$fb_count" -gt 0 ] 2>/dev/null && [ "$np" -ge 2 ]; then

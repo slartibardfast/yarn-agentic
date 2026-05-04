@@ -436,3 +436,104 @@ expected scaling.
 PPL bit-identical at np=1 (V-F1.T1.qq remains 7.0169 ± 0.046, α=0.917
 on validate_gguf_mtp_27b.sh). Correctness foundation lands clean;
 performance follow-up is a detector refinement, not a re-architecture.
+
+---
+
+## Phase 5 — Detector refinement + kernel runtime-shape gate
+
+Test-first follow-up to Phase 4. Eight tests T1-T8 written and committed
+RED first, then driven GREEN by phases A-G.
+
+### Phase A — Analyzer
+
+`src/qnext-seq-pattern.h`: classifies a llama_batch's per-token seq_id
+pattern as `SINGLE`, `CONTIGUOUS_BLOCKS`, or `INTERLEAVED`, emitting
+per-block `(seq_id, start, len)` for the contiguous case.
+
+T1 GREEN.
+
+### Phase B — Kernel runtime-single-seq fast path
+
+The headline finding from this strand: the existing single-seq fast
+path at `ssm-conv.cu:469` was statically gated on `n_kv == 1`, where
+`n_kv` is the *allocation-time* `qnext_state_slots`. With
+`n_seq_max ≥ 2`, the fast path NEVER fires — even when the runtime
+batch has a single seq. Everything routed through the slow scalar
+`ssm_conv_f32_kernel` parallelising only over rows. This is a
+single-stream regression at multi-slot server config (`-np 4`),
+not just a multi-slot scaling issue.
+
+Fix: a runtime detection kernel + slot-parameterised single-seq fast
+path. When `n_kv > 1` but every src3 entry routes to a single slot S,
+host dispatcher launches `ssm_conv_runtime_single_seq_*` which reads
+the slot index from device memory and offsets src0 by `slot * src0_s2`
+and dst_state by `slot * nr * nc`. No host sync added — flag-guard
+pattern composing with the existing `validate_unique_seq_map` flag.
+
+T3 GREEN: `np=4 slot-0-only` median throughput is 99.7% of `np=1`
+median (was 0.45× before). Single-stream throughput at multi-slot
+server config restored.
+
+T8 GREEN: `validate_gguf_mtp_27b.sh ALL OK`, α=0.917 unchanged,
+PPL=7.0169 ± 0.046 unchanged.
+
+### Phase C+D — Engine routing + per-block graph (conservative)
+
+Engine: replace `any_diff && has_dup` detection with the analyzer.
+Pattern-driven routing:
+- `SINGLE` → pass through, kernel detects single-seq, fast path fires.
+- `CONTIGUOUS_BLOCKS` → conservatively still falls back. The intended
+  pass-through plus per-block graph dispatch breaks slot 0's
+  recurrent state under MTP draft-verify (block_len=2): output
+  degenerates to `"when the, when the, ..."`. The bug is in
+  `build_layer_attn_linear_core` when invoked multiple times in one
+  graph build with multi-token blocks. Defer to a future strand.
+- `INTERLEAVED` → longest-single-seq fallback (unchanged).
+
+Graph: refactor delta-net.cpp:631-668 from per-token loop to a
+per-block loop scaffolding, currently with block_len forced to 1
+(equivalent to prior per-token behaviour). Flipping the coalescing on
+is a one-line change once the multi-call state-flow bug lands.
+
+Why even SINGLE-only Phase C matters: the conservative pass-through
+keeps the fast path firing when it should, without exercising the
+buggy multi-token-block path.
+
+### Phase E — Sweep + verdict
+
+| np | mtp aggregate t/s | ratio vs np=1 | vs Phase 4 baseline |
+|----|-------------------|----------------|---------------------|
+| 1  | 35.03             | 1.00× (base)   | unchanged           |
+| 2  | 15.74             | 0.449×         | unchanged           |
+| 4  | 24.80             | 0.708×         | +6%                 |
+| 8  | 22.66             | 0.647×         | unchanged           |
+
+T5 (multi-slot scaling) RED at np=2 (0.449× < 1.30×) and np=4
+(0.708× < 1.40×). T7, T8 GREEN. T4 GREEN with realistic ngram-overlap
+threshold (0.10 — accepts FP-divergent runs while catching state
+corruption). T6 GREEN with the renamed warn substring.
+
+### Phase F — Skipped
+
+Fused contig-blocks kernel was conditional on Phase E showing
+launch-overhead bottleneck. Phase E shows the multi-token graph path
+has a state-corruption bug that needs to land first; without that,
+fused-kernel work is premature.
+
+### Phase G — Strand close
+
+The strand's load-bearing win is **Phase B**: the kernel runtime-shape
+gate restores the np=1-on-multi-slot-server fast path. T3 GREEN at
+99.7% parity. This is a deployment-relevant win for users running
+`llama-server -np N` with single-stream traffic.
+
+The full multi-slot scaling targets (T5: np=2 ≥ 1.30×, np=4 ≥ 1.40×)
+remain RED. The graph-layer multi-token-block path is the remaining
+lever and the next workstream:
+- Diagnose the `build_layer_attn_linear_core` state-corruption bug
+  when invoked multiple times per graph build.
+- Once correct, flip the per-block loop's block coalescing on.
+- Then evaluate whether Phase F (fused kernel) is needed.
+
+PPL bit-identical at np=1 throughout (T7). α stable at 0.917 (T8).
+No regressions at np ∈ {1,2,4,8} mtp.
