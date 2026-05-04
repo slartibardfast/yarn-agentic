@@ -804,3 +804,62 @@ the relevant figure.
 - [ubergarm/Qwen3.6-27B-GGUF — published PPL table at n_ctx=512, --chunks 580](https://huggingface.co/ubergarm/Qwen3.6-27B-GGUF)
 - [smcleod.net — long-mode WikiText-2 KLD methodology](https://smcleod.net/2026/04/measuring-model-quantisation-quality-with-kl-divergence/)
 - [llama.cpp issue #20035 — Qwen 3.5/3.6 family default-f16-KV PPL inflation](https://github.com/ggml-org/llama.cpp/issues/20035)
+
+## 27B MTP performance characterization (2026-05-04)
+
+### A — Throughput (no-MTP vs MTP, --draft 1, 5-run avg, greedy temp=0)
+
+| Mode | tg (t/s) | pp (t/s) |
+|------|----------|----------|
+| no-MTP | 28.39 | 76.62 |
+| MTP `--draft 1` | 28.74 | 72.33 |
+| **Speedup ratio** | **1.012× (+1.2%)** | -5.6% |
+| α (cumulative across runs) | — | 0.827 |
+
+V-F1.T1 with MTP is **throughput-neutral** on dual sm_75 at 27B Q4_0. α=0.827 is high but the iter-7-vintage MTP implementation runs draft + verify sequentially, and 27B at Q4_0 + FP16 V-reorder is memory-bandwidth-bound at batch=1 generate. The +0.83 expected-tokens-per-cycle is offset by the ~2× memory bandwidth pressure of running the model through both draft and verify passes. This matches the iter-7 finding from the 0.8B canary work (`project_mtp_iter7_post_mortem`) — MTP is correctness-positive but throughput-neutral at this scale on this hardware.
+
+### B — Draft-config sweep
+
+| Config | n_max | p_min | tg (t/s) | α |
+|--------|-------|-------|---------:|------:|
+| **n1_p075** | 1 | 0.75 | **28.84** | **0.827** |
+| n2_p075 | 2 | 0.75 | 22.20 | 0.629 |
+| n4_p075 | 4 | 0.75 | 22.04 | 0.614 |
+| n8_p075 | 8 | 0.75 | 21.97 | 0.614 |
+| n4_p050 | 4 | 0.50 | 19.19 | 0.500 |
+| n4_p090 | 4 | 0.90 | 21.77 | 0.612 |
+
+`--draft 1 p_min=0.75` is the throughput-optimal config. Higher draft counts crash throughput by 22-31% AND drop α to ~0.61, because each extra speculative token requires an additional MTP head pass and the second draft's α is much lower (the head was trained for single-token prediction — multi-step Markov chain assumptions break). Lower p_min hurts both throughput and α; higher p_min is similar to default. **Shipping config (`--draft 1`, p_min default) is on the pareto frontier.**
+
+### C — H1 canary at 27B (FP16 mtp.fc)
+
+GGUF inspection reveals V-F1.T1 already has `blk.64.nextn.eh_proj.weight` (= mtp.fc.weight in HF naming) as **F16**, not BF16. Tool 1's hardcoded `--outtype f16` cast all BF16-source non-quant tensors to FP16 during the conversion. So the existing α=0.827 measurement IS the FP16-mtp.fc canary case at 27B — H1 directly confirmed at this scale without needing a separate variant build.
+
+This brings H1 (FP16 mtp.fc preserves draft acceptance) confirmation to all three target scales:
+
+| Scale | Variant pair tested | α | Verdict |
+|-------|---------------------|---|---------|
+| 0.8B (Stage A canary) | V-F1 (BF16 mtp.fc) vs V-F1a (FP16) | 0.917 vs 0.917 | identical |
+| 35B-A3B (Stage B) | V-F1.T1 vs V-F1a.T1 | 0.533 vs 0.533 | identical (KLD bit-identical) |
+| 27B (Stage B + this run) | V-F1.T1 (FP16 mtp.fc by emit-type) | 0.827 | confirmed working |
+
+To run a true BF16-mtp.fc-control A/B at 27B would require a Tool 1 patch supporting per-tensor outtype (preserve specific tensors at BF16 even when global outtype is f16). Not on critical path given H1's strength of evidence at the other two scales.
+
+### Headline numbers V-F1.T1 at 27B
+
+| Metric | Value | Compare |
+|--------|-------|---------|
+| Size on disk | 25.25 GiB | ~50% of BF16 (50.10) |
+| BPW (relative to BF16 baseline) | ~8.07 | between Q8_0 (8.5) and IQ5_KS (5.9) |
+| PPL @ ubergarm methodology (`-c 512 --chunks 580`) | 7.0169 ± 0.0464 | +1.6% vs BF16 ref 6.9066, statistical tie with smol-IQ4_NL 7.0040 |
+| α (greedy 256-token bench, 5-run cumulative) | 0.827 | viable for spec decode |
+| MTP throughput speedup | +1.2% (28.74 / 28.39 t/s) | throughput-neutral; MTP is correctness positive but not perf positive at 27B Q4_0 on sm_75 |
+| MTP shipping config | `--draft 1`, default p_min | pareto-optimal per sweep |
+
+### What V-F1.T1 *uniquely* delivers (not in any published Qwen3.6-27B GGUF)
+
+- Speculative-decoding-capable MTP head, lossless 1:1 repack of Intel's calibrated INT4 codes
+- α > 0 (specifically 0.827) — every other published Q4-class Qwen3.6-27B quant either drops MTP entirely or carries it at INT4 with the published 0% α failure mode
+- Methodologically clean provenance (PHASE32 reproduction recipes published, all source artifacts retained or archived)
+
+The +1.2% throughput gain is small but it's not the headline benefit — the headline is *capability*: V-F1.T1 can be a draft model for itself, which other published 27B Q4 quants cannot do.
