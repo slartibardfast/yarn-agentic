@@ -1,0 +1,36 @@
+=== parse-probe-dump.py --gate instrumentation ===
+records:          2313751
+by_probe:
+  timing             1472392
+  vram_delta         829720
+  hit_counter        10518
+  disable_too_many   1113
+  update_failures    8
+by_event (timing):
+  launch_submit      381009
+  capture            378531
+  update             378531
+  instantiate        334321
+hit_counter:
+  entries:           10518
+  distinct topology: 29
+  distinct shape:    503
+  hits/entry mean:   71.47
+  hits/entry max:    36613
+timing (us):
+  capture            n=378531 med=0.87 mean=0.81 p95=1.32
+  instantiate        n=334321 med=28.85 mean=25.84 p95=42.22
+  launch_submit      n=381009 med=10.17 mean=9.54 p95=17.23
+  update             n=378531 med=2.80 mean=2.66 p95=5.78
+vram_delta insert : n=334313 mean=-213 bytes  nonzero=34/334313
+vram_delta destroy: n=495407 mean=0 bytes  nonzero=0/495407
+update_failures:  8
+disable_too_many: 1113
+
+=== gate: instrumentation ===
+D1 update success rate: 99.99788656675412% (threshold >= 95%)
+D2 distinct topology classes: 29 (threshold <= 10)
+D3 update P95 latency:        5.78 us (informational; <100us advisory)
+D4 per-entry VRAM cost mean:  -213.28266624390915 bytes (informational)
+D5 destroy delta_bytes mean:  0 bytes (threshold > 0)
+FAIL: criteria not met: D2, D5

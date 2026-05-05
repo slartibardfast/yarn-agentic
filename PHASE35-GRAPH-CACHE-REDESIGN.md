@@ -927,6 +927,116 @@ Gate (`parse-probe-dump.py --gate instrumentation`):
 This sample is too short for the proper A.gate measurements but the
 probe surface itself is validated against a real model.
 
+### 14.5 Real-traffic snoop with --parallel 2 → PHASE34 OOM reproduced under probe
+
+Production stopped, started a probe-enabled server with EXACT production
+profile args + `--parallel 2` (the post-PHASE33 fallback profile uses
+parallel 1; we widened to 2 to exercise multi-slot). Two OpenCode
+clients drove real agentic traffic for 23 min until **the PHASE34 OOM
+fired again, this time captured by the probe**.
+
+Dump: `/mnt/archive/cuda-graph-probe/snoop-20260505T185924/` (540 MiB
+raw JSONL); committed evidence at
+`data/cuda-graph-probe/snoop-real-traffic-23m-crash/` (2.8 MiB —
+analysis summary + small JSONLs full + large JSONLs head/tail
+sampled).
+
+**Crash root cause** (server.log + stack trace):
+
+```
+CUDA error: out of memory
+  current device: 1, in function alloc at ggml-cuda.cu:466
+  cuMemCreate(&handle, reserve_size, &prop, 0)
+ggml-cuda.cu:156: CUDA error
+[stack trace top frames:]
+ggml_cuda_pool_vmm::alloc(unsigned long, unsigned long*)
+launch_fattn_mma<256, 32, 2, 32>(...)
+ggml_cuda_flash_attn_ext_mma_f16_case<256, 32, 2>(...)
+ggml_cuda_flash_attn_ext(...)
+ggml_backend_cuda_graph_compute(...)
+```
+
+The OOM is in `ggml_cuda_pool_vmm::alloc` — the VMM-backed memory
+pool used by flash-attention's mma path for scratch — **not** in the
+`cuda_graphs` cache. PHASE34's amended retraction of "the cap is the
+cause" is fully confirmed: even after measuring, the cache wasn't the
+trigger. Slot 0 was prefilling a 120 k-token agentic prompt at
+crash time.
+
+**Binding measurements** (final, cumulative across 2× cuda devices):
+
+| metric | value | gate |
+|---|---|---|
+| total records | 2.31 M (54 MiB JSONL after compression) | — |
+| update_failures | **8 / ~830 k updates ≈ 0.001%** | D1 PASS, threshold 95% |
+| distinct topology classes | cuda0: 11, cuda1: 15 | D2 borderline-FAIL, threshold 10 |
+| distinct shape keys | cuda0: 206, cuda1: 287 (~19 shapes per class) | informs B's collapse target |
+| update P95 latency | **4.1 µs** | D3 PASS, threshold 100 µs (advisory) — Phase C unnecessary |
+| insert vram_delta nonzero rate | 34 / 166 k = 0.02% (each -2 MiB) | D4 informational |
+| **destroy vram_delta** | **0 nonzero out of 253 k events** | **D5 conclusively FAIL, threshold > 0** |
+| disable_too_many trips | 1108, concentrated in 18 of 26 topology classes (top-3 = 98%) | indicates hot-class thrash |
+| host-side probe overhead | ~3.0 s in cuda-graph code over 14 min wallclock | 0.36% of total — well under ±2% |
+
+**What Phase B should do** (data unchanged from §14.3 except now binding):
+
+Topology-class keying converts the cache from **~250 distinct shape
+entries → ~13 topology-class entries** = 19× collapse. The few hot
+classes that thrash get the biggest win (Update-on-shape-change
+replaces re-instantiate). Plain B is enough — **B.5 per-(topology,
+op_params) blacklist is over-engineered for this workload** (8
+failures across 830 k updates = 0.001%; the blacklist code never
+fires meaningfully). Ship B without B.5; reintroduce only if a
+different workload trips the rate.
+
+**What Phase E needs to be redesigned to** (this is new, replaces
+the existing Phase E spec):
+
+The destroy-delta=0 finding is conclusive on real traffic.
+**`cudaGraphExecDestroy` does not return memory to the pool that
+`cudaMemGetInfo` reports as free.** The eviction-of-cached-graphs
+loop at the heart of E's spec cannot relieve VRAM pressure even
+under a free-VRAM signal — there's nothing the loop can free.
+
+Worse: **the actual OOM trigger is `ggml_cuda_pool_vmm::alloc`**,
+not the graph cache. Even if the eviction loop worked, evicting
+graph entries wouldn't have helped — the FA scratch path needs new
+VMM territory at peak prefill, and there's none.
+
+**Phase E redesign options** (need a follow-up task / sub-doc):
+
+1. **Pool-aware refusal at alloc time.** Instrument
+   `ggml_cuda_pool_vmm::alloc` (not the graph cache) to refuse
+   rather than `ggml_abort` when `cuMemCreate` would push past a
+   safety margin. Caller (FA scratch, etc.) gets a recoverable
+   error path instead of a SIGABRT. Requires
+   plumbing changes in fattn-mma launch + caller error handling.
+2. **Cap the VMM pool's high-water mark explicitly.** Use
+   `cudaDeviceSetLimit` or pre-reserve at backend init. Forces FA
+   to use the legacy non-VMM allocator under pressure (slower but
+   recoverable).
+3. **Switch the pool implementation under pressure.** Detect
+   `cudaMemGetInfo` headroom < safety margin and route new
+   allocations to `ggml_cuda_pool_leg` instead of `ggml_cuda_pool_vmm`.
+
+The original E spec (eviction-of-cached-graphs + `disable_due_to_vram_pressure`
+flag on graph entries) remains useful as a *diagnostic* (reports
+when the cache is being asked to grow under pressure) but is not a
+*fix*. The fix is in the pool path, not the cache path.
+
+Concrete next steps surfaced by this run:
+
+- ✅ Phase B implementation (#170) is unambiguously the right fix
+  for the cache-thrash performance angle. Proceed.
+- ⚠️ Phase E spec needs a major rewrite. Open a sub-task to
+  re-attribute E's design to the VMM pool path. Until then, treat
+  the existing E test contracts (E.T1-E.T5) as superseded.
+- 📌 PHASE34 amendment (#174) should add a third amendment block
+  noting: the OOM is in `ggml_cuda_pool_vmm::alloc`, NOT the
+  cuda_graphs cache or its cap. The probe data binds this.
+- 📌 No production change implied yet. Production stays on
+  parallel=1 fallback; the multi-slot crash is independent of the
+  pool OOM but co-occurring under multi-slot agentic load.
+
 ### 14.4 Open follow-ups within Phase A scope
 
 - **Production smoke pending:** harness `run-overhead-canary.sh` and

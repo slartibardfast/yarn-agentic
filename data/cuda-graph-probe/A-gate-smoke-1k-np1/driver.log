@@ -1,0 +1,5 @@
+[2026-05-05T18:45:05+00:00] np=1 target=1000 dump=/home/llm/cuda-graph-probe/run-20260505T184505-np1
+[2026-05-05T18:45:05+00:00] waiting for server ready on port 18290 (pid 31845)
+[2026-05-05T18:45:17+00:00] server ready
+[2026-05-05T18:45:31+00:00] np=1 total=368/1000 batch=4 elapsed=14s rate=26t/s
+[2026-05-05T18:46:03+00:00] target reached: total_tokens=1208 elapsed=45s

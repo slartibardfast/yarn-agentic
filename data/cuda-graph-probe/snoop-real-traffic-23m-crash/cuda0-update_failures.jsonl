@@ -1,0 +1,4 @@
+{"ts_ns":9590483078923,"runid":"20260505T185935-2c33af","backend":"cuda0","probe":"update_failures","topology_key":"0xe59df34d5a6b26d5","shape_key_old":"0x187faa4c4a2a79c0","shape_key_new":"0x187faa4c4a2a79c0","fallback":"reinstantiate"}
+{"ts_ns":9590483657644,"runid":"20260505T185935-2c33af","backend":"cuda0","probe":"update_failures","topology_key":"0xe59df34d5a6b26d5","shape_key_old":"0x187faa4c4a2a79c0","shape_key_new":"0x187faa4c4a2a79c0","fallback":"reinstantiate"}
+{"ts_ns":9591713168088,"runid":"20260505T185935-2c33af","backend":"cuda0","probe":"update_failures","topology_key":"0xe3b1e78f6e0e43f0","shape_key_old":"0x8c3574f87901aae0","shape_key_new":"0x8c3574f87901aae0","fallback":"reinstantiate"}
+{"ts_ns":9591713703469,"runid":"20260505T185935-2c33af","backend":"cuda0","probe":"update_failures","topology_key":"0xe3b1e78f6e0e43f0","shape_key_old":"0x8c3574f87901aae0","shape_key_new":"0x8c3574f87901aae0","fallback":"reinstantiate"}

@@ -1,0 +1,4 @@
+{"ts_ns":9590483321133,"runid":"20260505T185935-2c33af","backend":"cuda1","probe":"update_failures","topology_key":"0x731356b3633ebb76","shape_key_old":"0xa9c9fa8dff740def","shape_key_new":"0xa9c9fa8dff740def","fallback":"reinstantiate"}
+{"ts_ns":9590483807214,"runid":"20260505T185935-2c33af","backend":"cuda1","probe":"update_failures","topology_key":"0x731356b3633ebb76","shape_key_old":"0xa9c9fa8dff740def","shape_key_new":"0xa9c9fa8dff740def","fallback":"reinstantiate"}
+{"ts_ns":9591713381908,"runid":"20260505T185935-2c33af","backend":"cuda1","probe":"update_failures","topology_key":"0x9509c9a7090d9edd","shape_key_old":"0x270940f7a251389b","shape_key_new":"0x270940f7a251389b","fallback":"reinstantiate"}
+{"ts_ns":9591715234480,"runid":"20260505T185935-2c33af","backend":"cuda1","probe":"update_failures","topology_key":"0x9509c9a7090d9edd","shape_key_old":"0x270940f7a251389b","shape_key_new":"0x270940f7a251389b","fallback":"reinstantiate"}
