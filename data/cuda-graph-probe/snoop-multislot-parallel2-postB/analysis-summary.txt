@@ -1,0 +1,43 @@
+=== parse-probe-dump.py --gate instrumentation ===
+records:          1339
+by_probe:
+  timing             767
+  hit_counter        478
+  vram_delta         54
+  disable_too_many   24
+  update_failures    16
+by_event (timing):
+  launch_submit      552
+  capture            86
+  update             86
+  instantiate        43
+hit_counter:
+  entries:           478
+  distinct topology: 27
+  distinct shape:    28
+  hits/entry mean:   1945.27
+  hits/entry max:    27668
+timing (us):
+  capture            n=86     med=0.92 mean=1.03 p95=2.17
+  instantiate        n=43     med=33.20 mean=51.67 p95=110.71
+  launch_submit      n=552    med=8.62 mean=10.47 p95=16.27
+  update             n=86     med=4.08 mean=4.77 p95=13.29
+vram_delta insert : n=27     mean=-77672 bytes  nonzero=1/27
+vram_delta destroy: n=27     mean=0 bytes  nonzero=0/27
+update_failures:  16
+disable_too_many: 24
+
+=== gate: instrumentation ===
+D1 update success rate: 81.3953488372093% (threshold >= 95%)
+D2 distinct topology classes: 27 (threshold <= 10)
+D3 update P95 latency:        13.2875 us (informational; <100us advisory)
+D4 per-entry VRAM cost mean:  -77672.29629629629 bytes (informational)
+D5 destroy delta_bytes mean:  0 bytes (threshold > 0)
+FAIL: criteria not met: D1, D2, D5
+
+=== compute_failure JSONL files (concat dtype-mismatch indicator) ===
+ls: cannot access '/mnt/archive/cuda-graph-probe/snoop-multislot-20260505T212052/cuda*-compute_failure.jsonl': No such file or directory
+
+=== concat-probe stderr lines in server log ===
+0
+0

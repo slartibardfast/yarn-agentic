@@ -1037,6 +1037,82 @@ Concrete next steps surfaced by this run:
   parallel=1 fallback; the multi-slot crash is independent of the
   pool OOM but co-occurring under multi-slot agentic load.
 
+### 14.6 Phase B implementation + multi-slot synergy verification
+
+After landing B.2 (cache map keyed by topology), B.4+8.2 (comparator
+relaxes ne/nb, strict on `node->type`/`src->type`), and 8.1 (compute_failure
+probe + concat.cu hook), production was paused and the snoop-replay
+script that originally captured the PHASE 33 multi-slot crash was
+replayed under the post-B server with `--parallel 2` and PROBE=1.
+
+Submodule commits (chain): `f1985cc8` (B.2) → `0ceaa155` (B.4 + 8.2)
+→ `9d16be5f` (8.1). Parent commits: `d6d1f63` → `c952886`.
+
+**Pre-replay synthetic verification (production stopped):**
+
+- ctest 7/7 GREEN: test-cuda-graph-{probe-hit-monotonic,
+  probe-distinct-shapes, probe-destroy-frees, probe-schema,
+  cache-bounded, update-state-mutation, comparator-op-params}.
+- 8 distinct shapes drove 1 topology → cache size 1 (vs pre-B 8). The
+  collapse mechanism works.
+
+**Multi-slot replay (snoop-multislot-20260505T212052):**
+
+```
+slot-A 62 786 bytes (≈ slot-0-0000.txt) → 200 OK in 37.4 s
+slot-B 338 433 bytes (≈ slot-1-0000.txt) → curl 240 s timeout
+                                            (server alive, prefill ongoing)
+```
+
+PHASE 33's failure signal:
+- `compute_failure` JSONL files: **none emitted** — concat.cu's
+  dtype-mismatch path was never entered.
+- `CONCAT-PROBE` stderr lines in server.log: **0**.
+- ABRT / GGML_ASSERT / abort: **none**.
+
+**Cache state at replay end:** 27 topology classes, 27–28 distinct
+shapes per device, 478 hit_counter records (multiple flushes ×
+27-ish entries). Pre-B real-traffic comparison: 200–290 distinct
+shape entries → ~15 topology classes. Replay's 27 classes is higher
+than continuous OpenCode (15) because two long-context prompts in
+parallel exercise more graph variety than a typical OpenCode burst.
+
+**Update statistics this replay** (different from continuous traffic):
+
+| metric | this replay | 23-min OpenCode |
+|---|---|---|
+| update_failures | 16 / 86 = 18.6 % | 8 / 830 k = 0.001 % |
+| update P95 latency | 13.3 µs | 4.1 µs |
+| disable_too_many | 24 | 1108 |
+
+The 18.6 % update-failure rate here is workload-specific (prefill-
+heavy parallel=2 with very different shapes per slot) and reflects
+graphs that genuinely can't update — they re-instantiate via the
+existing fallback path. Critically, none of these failures were
+the dtype-mismatch class (which would have surfaced as
+`compute_failure` records). Phase B's relaxation in `ne`/`nb` makes
+*more* graphs hit the Update path, and Update naturally fails when
+op_params or other captured-kernel-binding properties change — but
+the comparator's new tensor-dtype strict-check prevents any
+attempt at the worst class of mis-routing.
+
+**Verdict:** post-B + 8.2, the multi-slot parallel=2 path that
+originally crashed under PHASE 33 ran end-to-end without abort.
+Slot-B's curl timeout is just `--max-time 240` being too short for
+the 84 k-token prefill at the observed prefill rate (~210 t/s in
+the 23-min snoop ≈ 400 s for 84 k tokens). Server stayed alive,
+cleanly shut down on SIGTERM, GPUs released.
+
+This is a single-replay binding signal, not a multi-hour multi-tenant
+soak. Item 8.4 (flip `profiles/qwen36-27b-x1.sh` `--parallel 1` →
+`--parallel 2`) is the user-visible payoff and remains pending an
+explicit authorization + a longer real-traffic soak before flipping
+production.
+
+Evidence preserved at `data/cuda-graph-probe/snoop-multislot-parallel2-postB/`
+(small JSONLs full + analysis summary; raw 816 KB on
+`/mnt/archive/cuda-graph-probe/snoop-multislot-20260505T212052/`).
+
 ### 14.4 Open follow-ups within Phase A scope
 
 - **Production smoke pending:** harness `run-overhead-canary.sh` and
