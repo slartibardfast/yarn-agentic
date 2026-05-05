@@ -1,5 +1,50 @@
 # PHASE 34 — Production OOM RCA
 
+> **AMENDED 2026-05-05**
+>
+> The original "primary cause: cuda_graphs cache cap" conclusion below
+> overreached and is **retracted**. Specifically:
+>
+> - The "each `ggml_cuda_graph` instance is ~25-30 MiB" figure was
+>   **fabricated, not measured**. The 128 × 30 MiB ≈ 3.8 GiB ≈ observed
+>   3.5 GiB drift arithmetic that follows is an unsupported number
+>   chosen to fit the observation — not evidence.
+> - The 128-entry cap itself is **uncommitted local work added in
+>   this same session** as a stop-gap. Pre-our-MTP-work the cache had
+>   no cap. So "the cap is too tight" miscasts the situation: there
+>   was no upstream cap before us; the cap exists only because we
+>   added it.
+> - The crash mechanism (CUDA OOM) is real and confirmed; the
+>   *attribution* of growth to cuda_graphs specifically is **not**
+>   confirmed and remains an open question. Other plausible drivers
+>   (`ggml_cuda_pool` high-water-mark, cuBLAS workspace, driver-side
+>   per-launch state) were not ruled out.
+>
+> **What stands:**
+> - Crash signature (CUDA OOM → ABRT), heartbeat-observed GPU drift
+>   numbers, and the host-RSS growth attribution to
+>   `--ctx-checkpoints` + `--cache-ram` are all evidence-backed.
+> - The host-side hygiene mitigation (M2 — lower `--cache-ram` and
+>   `--ctx-checkpoints`) is sensible regardless and still applies.
+>
+> **What is replaced:**
+> - The M1 mitigation (`GGML_CUDA_GRAPH_MAX=24` env var) is **not
+>   recommended on its own evidence** — it would only help if the
+>   cap is in fact the bottleneck, which is unconfirmed.
+> - M3 ("derive cap from `cudaMemGetInfo`") survives in spirit but
+>   is superseded by **PHASE 35**, which lands instrumentation
+>   *before* design changes and replaces the count-cap with a
+>   topology-class cache + allocation-aware eviction.
+>
+> See: [Phase 35: CUDA Graph Cache Redesign](PHASE35-GRAPH-CACHE-REDESIGN.md)
+> (instrumentation lands first; redesign waits for measurement).
+>
+> The original text below is preserved as a record of the
+> reasoning, but readers should treat its causal claims as a
+> hypothesis the next phase tests, not a finding.
+
+---
+
 ## Symptoms
 
 Production `llama-server` (qwen36-27b-x1, ik_llama @ `32da7ca1`) crashed with
