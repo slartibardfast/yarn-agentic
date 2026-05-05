@@ -1,0 +1,4 @@
+{"ts_ns":8228222402966,"runid":"20260505T183751-651796","backend":"cuda0","probe":"hit_counter","topology_key":"0x632edbe3bdc92bff","shape_key":"0x4773828f983cb957","hits_total":2,"last_use_us":8228079845}
+{"ts_ns":8228222402966,"runid":"20260505T183751-651796","backend":"cuda0","probe":"hit_counter","topology_key":"0xf549dcc56e1dbb53","shape_key":"0x15a2ca289485f357","hits_total":2,"last_use_us":8227918905}
+{"ts_ns":8230710373047,"runid":"20260505T183751-651796","backend":"cuda0","probe":"hit_counter","topology_key":"0xbd429f461f591e62","shape_key":"0x15c0e7f341ec502f","hits_total":126,"last_use_us":8230669296}
+{"ts_ns":8230710373047,"runid":"20260505T183751-651796","backend":"cuda0","probe":"hit_counter","topology_key":"0xf549dcc56e1dbb53","shape_key":"0x15a2ca289485f357","hits_total":4,"last_use_us":8228287427}

@@ -1,0 +1,4 @@
+{"ts_ns":8228225765466,"runid":"20260505T183751-651796","backend":"cuda1","probe":"hit_counter","topology_key":"0x42250e654f9b5f8a","shape_key":"0x8ed2e104bd112489","hits_total":2,"last_use_us":8228157770}
+{"ts_ns":8228225765466,"runid":"20260505T183751-651796","backend":"cuda1","probe":"hit_counter","topology_key":"0x12881fc2abce1128","shape_key":"0x49ebf5a1bd50c802","hits_total":2,"last_use_us":8228028359}
+{"ts_ns":8230713585807,"runid":"20260505T183751-651796","backend":"cuda1","probe":"hit_counter","topology_key":"0xd1096dd47996af13","shape_key":"0x65935e58544794aa","hits_total":126,"last_use_us":8230687989}
+{"ts_ns":8230713585807,"runid":"20260505T183751-651796","backend":"cuda1","probe":"hit_counter","topology_key":"0x12881fc2abce1128","shape_key":"0x49ebf5a1bd50c802","hits_total":4,"last_use_us":8228306324}

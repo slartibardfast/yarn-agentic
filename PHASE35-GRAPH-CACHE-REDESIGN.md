@@ -861,7 +861,73 @@ This finding is **synthetic only** at this commit. The A.gate soak
 on real 27B agentic traffic is what makes it actionable; until then
 treat as a hypothesis to verify, not a settled result.
 
-### 14.3 Open follow-ups within Phase A scope
+### 14.3 Real-model smoke (qwen36-27b, llama-bench pp64+tg64, runid 20260505T183751-651796)
+
+Production server stopped to free GPUs; ran `llama-bench -m
+qwen3.6-27b-V-F1.T1.qq-tool1lossless.gguf -ngl 99 -p 64 -n 64 -r 1`
+with `GGML_CUDA_GRAPH_PROBE=1`. Dump preserved under
+`data/cuda-graph-probe/smoke-27b-pp64-tg64/`.
+
+Probe surface emits records on a real 27B graph topology, two GPUs,
+under both prefill (pp64) and generation (tg64) phases. Aggregate:
+
+```
+records:                  174
+  by_probe                timing 158, hit_counter 8, vram_delta 8
+  by_event (timing)       launch_submit 134, capture 8, instantiate 8, update 8
+
+hit_counter
+  entries                 8 (4 per GPU)
+  distinct topology       6
+  distinct shape          6
+  hits/entry              mean 33.5, max 126
+
+timing (microseconds)
+  capture                 n=8   med   23.7  mean   25.1  P95   36.8
+  instantiate             n=8   med 1694    mean 1880    P95 2821
+  update                  n=8   med   89.6  mean   97.9  P95  150
+  launch_submit           n=134 med  305    mean  325    P95  392
+
+vram_delta insert         n=8   mean -4 MiB  nonzero=4/8 (paired-sync window picks up ambient pool activity; need longer run for signal)
+update_failures           0
+disable_too_many          0
+```
+
+Gate (`parse-probe-dump.py --gate instrumentation`):
+
+| Criterion | Threshold | Observed | Verdict |
+|-----------|-----------|----------|---------|
+| D1 update success rate | >= 95% | 100.0% | PASS |
+| D2 distinct topology classes | <= 10 | 6 | PASS |
+| D3 update P95 latency | < 100 us advisory | 150 us | over advisory (informational; promotes Phase C relevance) |
+| D4 per-entry VRAM cost | informational | -4 MiB mean (noisy) | informational |
+| D5 destroy delta_bytes | > 0 | n/a (no destroys, cap not exceeded) | inconclusive in this sample |
+| D-ABORT | D1<80% AND topo>50 | not triggered | continue |
+
+**Reads:**
+1. **Phase B is well-supported.** 6 topology classes covering the
+   full graph cache, all updates succeed → topology-class keying with
+   Update-on-shape-change should collapse the cache to <=10 classes
+   under realistic traffic, exactly as the plan claimed.
+2. **Phase C becomes more relevant than it looked.** Update P95 of
+   150 us is comfortably above the <100 us advisory; under
+   long-context decode where Update fires on every step, that's
+   measurable host overhead. Worth keeping C alive on the radar.
+3. **Phase E precondition still open.** No destroys in this short
+   sample; need a workload with eviction pressure (high cap diversity
+   or low GGML_CUDA_GRAPH_MAX) to test whether `cudaGraphExecDestroy`
+   returns memory under realistic 27B graph allocs. The synthetic
+   destroy-frees test already showed delta=0 across 6/6 destroys —
+   this remains the key open question for E.
+4. **Hit rate (mean 33.5, max 126 per entry over a 64+64-token bench)**
+   confirms the graph cache is heavily-used; not a long-tail of
+   single-occurrence shapes (Phase D heat-tier admission unlikely to
+   help much).
+
+This sample is too short for the proper A.gate measurements but the
+probe surface itself is validated against a real model.
+
+### 14.4 Open follow-ups within Phase A scope
 
 - **Production smoke pending:** harness `run-overhead-canary.sh` and
   `run-flush-trigger.sh` exist but haven't been driven against the
