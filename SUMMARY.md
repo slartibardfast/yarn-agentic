@@ -38,6 +38,7 @@
 - [Phase 29: CUDA/HIP Backend Gaps for Tight Qwen3.5 MTP](PHASE29.md)
 - [Phase 30: turbo_kv_4b Cross-Architecture Vulkan Regression Debug](PHASE30.md)
 - [Phase 32: MTP FP16-Recasting Canary Study (sm_75)](PHASE32-MTP-FP16-CANARY.md)
+- [Phase 34: Production CUDA-OOM Root-Cause Analysis](PHASE34-LEAK-RCA.md)
 
 # Qwen3.5 MTP Tool Calling
 
