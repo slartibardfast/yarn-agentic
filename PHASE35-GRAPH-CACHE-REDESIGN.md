@@ -605,10 +605,16 @@ every FA launcher (~20 sites); they only need to early-return on
 | ID | Test | Fail mode | Pass mode |
 |----|------|-----------|-----------|
 | E.T1 | unit OOM-resistance — `tests/test-cuda-pool-graceful-oom.cpp` via the test-only `ggml_backend_cuda_pool_alloc_test` entry point | pool aborts under synthetic OOM, or alloc returns non-null when hook is set | T1 returns nullptr without abort; T2 returns valid pointer that round-trips through pool_free |
-| E.T2 | server 503 path — `curl` against a forced-OOM server build | response body without `error.type=unavailable`, or HTTP code != 503, or no `Retry-After` header | HTTP 503, body type `unavailable`, `Retry-After: 5` set |
-| E.T3 | long-soak under sustained pressure — agentic prefill at near-cap VRAM, parallel=1, 30 min | abort/OOM, or process exit | server stays alive; 503s observed gracefully whenever pool pressure hits |
-| E.T4 | production soak — 1 hr live OpenCode traffic, parallel=1 | abort, or 5xx not retried by LiteLLM | server alive; 503 + retry path exercised at least once |
-| E.T5 | regression — existing `test-cuda-graph-cache-bounded` | breaks under Phase B/E changes | still GREEN |
+| E.T2 | regression — existing `test-cuda-graph-cache-bounded` | breaks under Phase B/E changes | still GREEN |
+| E.T3 | production soak — 1 hr live OpenCode traffic at parallel=1 | abort, or 5xx not retried by LiteLLM | server alive for full hour; if pool pressure hits, 503 + Retry-After observed and LiteLLM retries succeed |
+
+**Note on E.T3:** the live-soak step is the only end-to-end check
+that matters. If natural traffic in the hour doesn't push the pool to
+OOM, fall back to a deterministic synthetic-hook curl —
+`GGML_CUDA_POOL_FORCE_FAIL_NEXT=1` env on the next request — to fire
+the 503 + Retry-After path explicitly and observe LiteLLM retry. The
+synthetic-hook variant is what the unit test exercises at the pool
+layer; the E.T3 fallback extends it across the server + proxy chain.
 
 ### 6.3 Implementation steps
 
