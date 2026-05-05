@@ -42,8 +42,8 @@ its production code.
 | `ik_llama.cpp/ggml/src/ggml-cuda/common.cuh:862` | `cuda_graphs` map declaration on `ggml_backend_cuda_context` |
 | `ik_llama.cpp/ggml/include/ggml-cuda.h` | accessor surface: extend `ggml_backend_cuda_graph_cache_size` family with new probes |
 | `ik_llama.cpp/tests/test-cuda-graph-cache-bounded.cpp` | prior-art test harness; templates the new tests |
-| `ik_llama.cpp/tests/CMakeLists.txt` | register new `test-phase35-*` binaries with CTest |
-| `yarn-agentic/scripts/phase35/` | new dir: integration test harnesses + analysis scripts |
+| `ik_llama.cpp/tests/CMakeLists.txt` | register new `test-cuda-graph-*` binaries with CTest |
+| `yarn-agentic/scripts/cuda-graph-probe/` | new dir: integration test harnesses + analysis scripts |
 | `yarn-agentic/PHASE34-LEAK-RCA.md` | needs second amendment after Phase A measurement (Phase F1) |
 | `yarn-agentic/PHASE35-GRAPH-CACHE-REDESIGN.md` | this doc; updated as findings land |
 | `yarn-agentic/SUMMARY.md` | add Phase 35 entry |
@@ -88,17 +88,17 @@ Specific edits in `graph.cuh`:
 ### 3.1 Test directory layout
 
 ```
-ik_llama.cpp/tests/test-phase35-A-*.cpp         (CTest-integrated unit tests)
-ik_llama.cpp/tests/test-phase35-B-*.cpp
-ik_llama.cpp/tests/test-phase35-E-*.cpp
-yarn-agentic/scripts/phase35/run-A-gate.sh      (integration harnesses)
-yarn-agentic/scripts/phase35/run-B-gate.sh
-yarn-agentic/scripts/phase35/run-E-soak.sh
-yarn-agentic/scripts/phase35/parse-probe-dump.py (decision-criteria evaluator)
-yarn-agentic/scripts/phase35/agentic-replay.sh   (np=1 + np=4 driver)
+ik_llama.cpp/tests/test-cuda-graph-probe-*.cpp         (CTest-integrated unit tests)
+ik_llama.cpp/tests/test-cuda-graph-update-*.cpp
+ik_llama.cpp/tests/test-cuda-graph-eviction-*.cpp
+yarn-agentic/scripts/cuda-graph-probe/run-instrumentation-gate.sh      (integration harnesses)
+yarn-agentic/scripts/cuda-graph-probe/run-update-path-gate.sh
+yarn-agentic/scripts/cuda-graph-probe/run-soak.sh
+yarn-agentic/scripts/cuda-graph-probe/parse-probe-dump.py (decision-criteria evaluator)
+yarn-agentic/scripts/cuda-graph-probe/agentic-replay.sh   (np=1 + np=4 driver)
 ```
 
-Naming convention: `test-phase35-<phase>-<area>.cpp` for unit tests,
+Naming convention: `test-cuda-graph-<area>-<scenario>.cpp` for unit tests,
 `run-<phase>-<purpose>.sh` for integration harnesses. The split mirrors
 the existing pattern (`test-cuda-graph-cache-bounded.cpp` is unit-test
 in the harness; `test-mtp-multislot*.sh` etc. are integration scripts).
@@ -177,9 +177,9 @@ Tests use these; production code never depends on them.
 
 Unit tests: register in `tests/CMakeLists.txt` mirroring the existing
 `test-cuda-graph-cache-bounded` block. Build with the project's
-existing target (`cmake --build build --target test-phase35-*`).
+existing target (`cmake --build build --target test-cuda-graph-*`).
 
-Integration harnesses: `bash scripts/phase35/run-<phase>-gate.sh`.
+Integration harnesses: `bash scripts/cuda-graph-probe/run-<phase>-gate.sh`.
 Each harness:
 
 1. Confirms required artefacts (model GGUFs, snoop replay corpus).
@@ -211,12 +211,12 @@ guessed at.
 
 | ID | Test | File | Fail mode | Pass mode | Made GREEN by |
 |----|------|------|-----------|-----------|---------------|
-| A.T1 | Probe-disabled overhead | `scripts/phase35/run-A-overhead.sh` | mean throughput delta > ±2% across 3 runs | mean delta within ±2%, stddev reported | A7 dump infra (must short-circuit when env unset) |
-| A.T2 | Dump schema parses | `tests/test-phase35-A-schema.cpp` | malformed JSONL or missing required fields | every record validates against §3.3 schema | A1+A7 |
-| A.T3 | Hit-counter monotonicity | `tests/test-phase35-A-monotonic.cpp` | counter post < counter pre, or skipped lookups uncounted | counter post ≥ counter pre across 1k driven graph submits | A1 |
-| A.T4 | Flush triggers | `scripts/phase35/run-A-flush.sh` | SIGUSR1 produces no dump, or process kill mid-run produces empty file | SIGUSR1 produces non-empty dump < 1 s after signal; SIGKILL during run leaves at least one timer-flushed dump on disk | A7 |
-| A.T5 | `cudaGraphExecDestroy` free-delta probe | `tests/test-phase35-A-destroy-frees.cpp` | probe records `delta_bytes` = 0 (means destroy doesn't release), AND no diagnostic recorded | probe records sane delta OR records confound + `note` flagging cuda_pool reuse | A6 |
-| A.T6 | Comparator-baseline dump | `tests/test-phase35-A-baseline-dump.cpp` | running 100 distinct shapes produces 0 hit-counter records | dump contains ≥ 100 distinct shape_key entries, ≥ 1 topology_key | A1+A7 |
+| A.T1 | Probe-disabled overhead | `scripts/cuda-graph-probe/run-overhead-canary.sh` | mean throughput delta > ±2% across 3 runs | mean delta within ±2%, stddev reported | A7 dump infra (must short-circuit when env unset) |
+| A.T2 | Dump schema parses | `tests/test-cuda-graph-probe-schema.cpp` | malformed JSONL or missing required fields | every record validates against §3.3 schema | A1+A7 |
+| A.T3 | Hit-counter monotonicity | `tests/test-cuda-graph-probe-hit-monotonic.cpp` | counter post < counter pre, or skipped lookups uncounted | counter post ≥ counter pre across 1k driven graph submits | A1 |
+| A.T4 | Flush triggers | `scripts/cuda-graph-probe/run-flush-trigger.sh` | SIGUSR1 produces no dump, or process kill mid-run produces empty file | SIGUSR1 produces non-empty dump < 1 s after signal; SIGKILL during run leaves at least one timer-flushed dump on disk | A7 |
+| A.T5 | `cudaGraphExecDestroy` free-delta probe | `tests/test-cuda-graph-probe-destroy-frees.cpp` | probe records `delta_bytes` = 0 (means destroy doesn't release), AND no diagnostic recorded | probe records sane delta OR records confound + `note` flagging cuda_pool reuse | A6 |
+| A.T6 | Comparator-baseline dump | `tests/test-cuda-graph-probe-distinct-shapes.cpp` | running 100 distinct shapes produces 0 hit-counter records | dump contains ≥ 100 distinct shape_key entries, ≥ 1 topology_key | A1+A7 |
 
 A.T1 is special: it's the regression canary that protects production
 from instrumentation cost. Run as **3 runs × (PROBE=0 baseline,
@@ -420,12 +420,12 @@ on green.
 
 | ID | Test | File | Fail mode | Pass mode | Made GREEN by |
 |----|------|------|-----------|-----------|---------------|
-| B.T1 | PPL bit-identity | `scripts/phase35/run-B-ppl-identity.sh` | PPL diff ≠ 0.0 between pre-B and post-B | exact 0.0 across the wikitext-2 slice | B1-B5 |
-| B.T2 | Cache-collapse assertion | `scripts/phase35/run-B-collapse.sh` | distinct topology classes > 10 after replay | ≤ 10 classes | B1-B3 |
-| B.T3 | State-mutation under alternating Updates | `tests/test-phase35-B-state-mutation.cpp` | output of A→B→A→B→A sequence diverges from eager-path baseline | element-wise exact match across all 5 outputs | B3-B5 |
-| B.T4 | Thrash bound | `scripts/phase35/run-B-thrash-bound.sh` | `disable_due_to_too_many_updates` > 0 events on the agentic replay | 0 trips on np=1, ≤ 1% trip-rate on np=4 | B5 + (possibly) widening detector |
-| B.T5 | Comparator strict-on-op_params | `tests/test-phase35-B-comparator-strict.cpp` | op_params change within same topology key passes Update silently and produces wrong output | comparator forces re-instantiate OR produces correct output via Update | B4 |
-| B.T6 | HIP build + bit-identity | `scripts/phase35/run-B-hip.sh` (gated on host availability) | HIP build red, OR PPL diff ≠ 0.0 on HIP | both green | B1-B5 + any `#ifdef __HIP_PLATFORM_AMD__` workarounds |
+| B.T1 | PPL bit-identity | `scripts/cuda-graph-probe/run-ppl-identity.sh` | PPL diff ≠ 0.0 between pre-B and post-B | exact 0.0 across the wikitext-2 slice | B1-B5 |
+| B.T2 | Cache-collapse assertion | `scripts/cuda-graph-probe/run-topology-class-count.sh` | distinct topology classes > 10 after replay | ≤ 10 classes | B1-B3 |
+| B.T3 | State-mutation under alternating Updates | `tests/test-cuda-graph-update-state-mutation.cpp` | output of A→B→A→B→A sequence diverges from eager-path baseline | element-wise exact match across all 5 outputs | B3-B5 |
+| B.T4 | Thrash bound | `scripts/cuda-graph-probe/run-thrash-bound.sh` | `disable_due_to_too_many_updates` > 0 events on the agentic replay | 0 trips on np=1, ≤ 1% trip-rate on np=4 | B5 + (possibly) widening detector |
+| B.T5 | Comparator strict-on-op_params | `tests/test-cuda-graph-comparator-op-params.cpp` | op_params change within same topology key passes Update silently and produces wrong output | comparator forces re-instantiate OR produces correct output via Update | B4 |
+| B.T6 | HIP build + bit-identity | `scripts/cuda-graph-probe/run-hip-bit-identity.sh` (gated on host availability) | HIP build red, OR PPL diff ≠ 0.0 on HIP | both green | B1-B5 + any `#ifdef __HIP_PLATFORM_AMD__` workarounds |
 | B.T7 | `test-cuda-graph-cache-bounded` still GREEN | existing | regression in count-cap behaviour | unchanged | B preserves existing cap pathway |
 
 Notes on individual tests:
@@ -558,10 +558,10 @@ nullptr-eager fallback works.
 
 | ID | Test | File | Fail mode | Pass mode | Made GREEN by |
 |----|------|------|-----------|-----------|---------------|
-| E.T1 | OOM-resistance synthetic | `tests/test-phase35-E-oom-resistance.cpp` | abort/OOM during the 50-class drive, OR `disable_due_to_vram_pressure` count = 0 (eviction never engaged) | no abort + ≥ 1 vram-pressure event | E1-E4 |
-| E.T2 | nullptr-eager fallback | `tests/test-phase35-E-eager-fallback.cpp` | output incorrect when flag forced ON | element-wise exact match vs forced-OFF baseline | E2 + B.6 |
-| E.T3 | Eviction actually relieves pressure | `tests/test-phase35-E-eviction-frees.cpp` | post-eviction `cudaMemGetInfo` free is unchanged | free increases by ≥ 0.5 × evicted-entry recorded VRAM cost | E2 + A.D5 confirmation |
-| E.T4 | Production soak np=1 + np=4 | `scripts/phase35/run-E-soak.sh` | any of: GPU0/1 free < 1 GiB at any point; host RSS > 16 GiB; abort/OOM; throughput delta > ±2% from pre-B baseline (3 runs) | all hold for full soak (100k tokens, np=1 + np=4) | E1-E5 + B |
+| E.T1 | OOM-resistance synthetic | `tests/test-cuda-graph-eviction-oom-resistance.cpp` | abort/OOM during the 50-class drive, OR `disable_due_to_vram_pressure` count = 0 (eviction never engaged) | no abort + ≥ 1 vram-pressure event | E1-E4 |
+| E.T2 | nullptr-eager fallback | `tests/test-cuda-graph-eviction-eager-fallback.cpp` | output incorrect when flag forced ON | element-wise exact match vs forced-OFF baseline | E2 + B.6 |
+| E.T3 | Eviction actually relieves pressure | `tests/test-cuda-graph-eviction-frees.cpp` | post-eviction `cudaMemGetInfo` free is unchanged | free increases by ≥ 0.5 × evicted-entry recorded VRAM cost | E2 + A.D5 confirmation |
+| E.T4 | Production soak np=1 + np=4 | `scripts/cuda-graph-probe/run-soak.sh` | any of: GPU0/1 free < 1 GiB at any point; host RSS > 16 GiB; abort/OOM; throughput delta > ±2% from pre-B baseline (3 runs) | all hold for full soak (100k tokens, np=1 + np=4) | E1-E5 + B |
 | E.T5 | `test-cuda-graph-cache-bounded` semantics preserved | existing | env-driven hard cap stops working | env still applies as optional ceiling on top of vram-driven cap | E5 |
 
 ### 6.2 Implementation
@@ -792,4 +792,86 @@ phase per CLAUDE.md §5.
 
 ## 14. Findings (appended as work lands)
 
-*(empty — populated as Phase A through E ship)*
+### 14.1 Phase A.0 + A.1–A.7 instrumentation landed
+
+**Submodule commits** (branch `phase33-concat-probe`):
+- `8febfc41` — initial stub accessor surface + four RED test binaries.
+- `1e46cd41` — descriptive renames (probe35.* → cuda_graph_probe.*,
+  test-phase35-A-* → test-cuda-graph-probe-*); probe accumulator + JSONL
+  flush infra; ggml_cuda_graph dtor records destroy vram_delta event.
+- `0a119a76` — wires capture / instantiate / update / launch_submit
+  timing call sites; insert vram_delta paired-sync sample;
+  update_failures + disable_too_many recorders; lifetime hardening
+  (being_destroyed atomic, lock-order matching, on_context_destroyed
+  before stream/event teardown). Stale phase35-named tests deleted.
+
+**Parent commits** (branch `phase32-q4_0_ar16-integration`):
+- `8d95308` — landed this doc + SUMMARY entry.
+- `89d5677` — first submodule pin bump + run-overhead-canary.sh /
+  run-flush-trigger.sh in scripts/cuda-graph-probe/.
+- `314a0a0` — pin bump after the rename + accumulator commit.
+- `060a482` — pin bump after the timing/vram_delta wiring commit.
+
+**Test status (synthetic):** ctest 5/5 GREEN locally. Five probe types
+all emit records under the synthetic test workloads:
+
+| probe | records observed |
+|-------|------------------|
+| hit_counter      | per cache entry; bumped twice per submit (compatibility-check + main-compute call sites both invoke `ggml_cuda_get_graph`) |
+| timing/capture   | once per cache miss (after `cudaStreamEndCapture`) |
+| timing/instantiate | once per cache miss + once per Update-fail re-instantiate |
+| timing/update    | once per `cudaGraphExecUpdate` invocation |
+| timing/launch_submit | once per `cudaGraphLaunch` (host-submit overhead, not device wall time) |
+| vram_delta/insert | once per cache miss (paired-sync `cudaMemGetInfo`) |
+| vram_delta/destroy | once per `~ggml_cuda_graph` (paired-sync `cudaMemGetInfo`) |
+| update_failures  | not yet observed in synthetic tests (synthetic shapes don't trip `cudaErrorGraphExecUpdateFailure`) |
+| disable_too_many | not yet observed in synthetic tests |
+
+### 14.2 Early signal: `cudaGraphExecDestroy` returns no VRAM (synthetic)
+
+In the destroy-frees test (cap=2, 8 distinct shapes → ~6 forced
+evictions), every `vram_delta event=destroy` record reports
+`delta_bytes = 0` (free_before == free_after, both with paired
+`cudaDeviceSynchronize`). Across the 6 destroys:
+
+```
+mean delta_bytes  = 0
+nonzero deltas    = 0/6
+```
+
+This is the precondition signal that Phase E was waiting on. **If the
+A.gate soak under realistic 27B traffic confirms this pattern,
+Phase E's allocation-aware eviction loop will not relieve VRAM
+pressure** — the freed `cudaGraphExec_t` memory stays in
+`cuda_pool` (or somewhere else accounted as "global allocator")
+rather than returning to the OS-visible free pool that
+`cudaMemGetInfo` reports.
+
+Implications, if confirmed at scale:
+- Phase E's `disable_due_to_vram_pressure` flag still useful (we can
+  *detect* low headroom and refuse new entries), but its eviction
+  loop shrinks to "no-op then return nullptr" rather than "evict to
+  make room."
+- Alternative mechanisms to actually release: investigate
+  `cudaDeviceSetLimit(cudaLimitGraphMemAlloc*)`,
+  `cudaDeviceGraphMemTrim`, or recreating the cuda_pool. Out of scope
+  for the immediate redesign; logged as an open Phase E sub-question.
+
+This finding is **synthetic only** at this commit. The A.gate soak
+on real 27B agentic traffic is what makes it actionable; until then
+treat as a hypothesis to verify, not a settled result.
+
+### 14.3 Open follow-ups within Phase A scope
+
+- **Production smoke pending:** harness `run-overhead-canary.sh` and
+  `run-flush-trigger.sh` exist but haven't been driven against the
+  active production server — overlap rules forbid concurrent
+  GPU-bound bench while llama-server is up.
+- **`update_failures` and `disable_too_many` need realistic
+  workload coverage:** synthetic add-graphs don't trigger them. The
+  A.gate soak is the natural binding test.
+- **`parse-probe-dump.py` decision evaluator:** stub committed in
+  `scripts/cuda-graph-probe/`; computes per-probe summary
+  statistics. The PASS/FAIL/ABORT verdict logic for A.D1–A.D5 lands
+  during A.gate when we have real data to wire it against.
+
