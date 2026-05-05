@@ -1,5 +1,63 @@
 # PHASE 34 — Production OOM RCA
 
+> **AMENDED 2026-05-05 (second amendment, post-probe binding)**
+>
+> The PHASE 35 instrumentation captured the same OOM under real
+> OpenCode traffic at `--parallel 2` after 23 min, with full stack
+> trace and ~830 k probe events. The first amendment below was
+> directionally correct (the cuda_graphs cache cap was not the cause);
+> this amendment closes the loop with positive attribution:
+>
+> **Root cause: `ggml_cuda_pool_vmm::alloc → cuMemCreate` at
+> `ggml/src/ggml-cuda.cu:466`**, returning `CUDA_ERROR_OUT_OF_MEMORY`
+> when the VMM pool tried to grow during flash-attention scratch
+> reservation.
+>
+> Stack trace at the abort:
+>
+> ```
+> ggml_cuda_pool_vmm::alloc(size_t, size_t*)
+> launch_fattn_mma<256, 32, 2, 32>(...)
+> ggml_cuda_flash_attn_ext_mma_f16_case<256, 32, 2>(...)
+> ggml_cuda_flash_attn_ext(...)
+> ggml_backend_cuda_graph_compute(...)
+> llama_decode_internal(...)
+> server_context::process_batch_tokens(int&)
+> server_context::update_slots()
+> ```
+>
+> Slot 0 was prefilling a 120 k-token agentic prompt at trip time;
+> cuda1 was at 335 MiB free immediately before the abort.
+>
+> **What this means for the original RCA's claims:**
+> - The cuda_graphs cache (and its cap) had **no causal role**.
+>   Confirmed by 253 k destroy-event probe records all reporting
+>   `delta_bytes = 0` — `cudaGraphExecDestroy` returns nothing to the
+>   pool that `cudaMemGetInfo` reports as free, so eviction-of-cached-
+>   graphs cannot relieve VRAM pressure even in principle.
+> - The host-RSS growth from `--cache-ram` + `--ctx-checkpoints` is
+>   **independent of the GPU OOM**. Both grow under the same
+>   workload but the OOM trigger is GPU-side scratch, not host-side.
+>   M2 host-cache hygiene still applies.
+> - The "primary cause: cuda_graphs cache cap" framing in the
+>   original text is fully wrong; the first amendment retracted it
+>   and the probe data confirms the retraction.
+>
+> **Probe evidence** preserved at:
+> - `data/cuda-graph-probe/snoop-real-traffic-23m-crash/` — 2.8 MiB
+>   committed: server.log full, small JSONLs full, large JSONLs
+>   sampled.
+> - `/mnt/archive/cuda-graph-probe/snoop-20260505T185924/` — 540 MiB
+>   raw JSONL (not committed; persistent on archive share).
+>
+> See: [PHASE 35 §14.5](PHASE35-GRAPH-CACHE-REDESIGN.md) for the
+> binding measurements (D1 99.999 %, D2 11–15 topology classes,
+> D3 4 µs, D5 0/253 k positive deltas) and the redesign that drops
+> from these data.
+>
+> The amendment below this one is the prior (first) amendment and
+> is preserved verbatim for the audit trail.
+
 > **AMENDED 2026-05-05**
 >
 > The original "primary cause: cuda_graphs cache cap" conclusion below
