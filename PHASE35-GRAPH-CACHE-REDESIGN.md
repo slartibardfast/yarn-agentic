@@ -548,74 +548,120 @@ One commit per step (B.0 tests, then B.1-B.6). Final commit:
 
 ---
 
-## 6. Phase E — Allocation-aware eviction
+## 6. Phase E — Graceful CUDA pool-pressure refusal
 
-**Pre-condition:** A.D5 confirms `cudaGraphExecDestroy` returns memory
-(or implementation note documents a workaround); B.6 confirms
-nullptr-eager fallback works.
+**Re-aimed from the original "allocation-aware eviction" spec.** The
+A.D5 finding (§14.5) showed `cudaGraphExecDestroy` returns nothing to
+the pool that `cudaMemGetInfo` reports as free — 253 k destroy events,
+all `delta_bytes = 0`. Eviction-of-cached-graphs cannot relieve VRAM
+pressure even in principle on this driver/architecture. The actual
+PHASE 34 OOM was bound to `ggml_cuda_pool_vmm::alloc → cuMemCreate`
+during FA scratch reservation, not to the graph cache.
 
-### 6.1 Test contracts (RED first)
+The redesigned Phase E makes that pool OOM **recoverable** end-to-end:
+soft-fail at the pool layer, propagate `GGML_STATUS_ALLOC_FAILED` up
+through `ggml_backend_cuda_graph_compute`, branch in the server's
+decode-result handler, return HTTP 503 + `Retry-After: 5`, let LiteLLM
+retry against the now-decoded slot.
 
-| ID | Test | File | Fail mode | Pass mode | Made GREEN by |
-|----|------|------|-----------|-----------|---------------|
-| E.T1 | OOM-resistance synthetic | `tests/test-cuda-graph-eviction-oom-resistance.cpp` | abort/OOM during the 50-class drive, OR `disable_due_to_vram_pressure` count = 0 (eviction never engaged) | no abort + ≥ 1 vram-pressure event | E1-E4 |
-| E.T2 | nullptr-eager fallback | `tests/test-cuda-graph-eviction-eager-fallback.cpp` | output incorrect when flag forced ON | element-wise exact match vs forced-OFF baseline | E2 + B.6 |
-| E.T3 | Eviction actually relieves pressure | `tests/test-cuda-graph-eviction-frees.cpp` | post-eviction `cudaMemGetInfo` free is unchanged | free increases by ≥ 0.5 × evicted-entry recorded VRAM cost | E2 + A.D5 confirmation |
-| E.T4 | Production soak np=1 + np=4 | `scripts/cuda-graph-probe/run-soak.sh` | any of: GPU0/1 free < 1 GiB at any point; host RSS > 16 GiB; abort/OOM; throughput delta > ±2% from pre-B baseline (3 runs) | all hold for full soak (100k tokens, np=1 + np=4) | E1-E5 + B |
-| E.T5 | `test-cuda-graph-cache-bounded` semantics preserved | existing | env-driven hard cap stops working | env still applies as optional ceiling on top of vram-driven cap | E5 |
-
-### 6.2 Implementation
-
-**E.0 — Tests RED.** All E.T* fail (vram-pressure flag unimplemented,
-eviction loop unimplemented, etc.). Push.
-
-**E.1 — `cuda_safety_margin_bytes()` helper.** Reads
-`GGML_CUDA_GRAPH_VRAM_MARGIN` (MiB; default 512). Optional: derive a
-floor from compute-buffer size via `ggml_backend_cuda_get_buffer_size`
-hooks if obtainable; otherwise just the env value.
-
-**E.2 — Eviction loop in `ggml_cuda_get_graph` cache-miss branch**
-(`ggml-cuda.cu:4280-4297` rewrite):
+### 6.1 Architecture
 
 ```
-size_t free_bytes;
-cudaMemGetInfo(&free_bytes, &total_bytes);
-
-while (cuda_graphs.size() > 1 && free_bytes < safety_margin) {
-    auto victim = pick_lfu(cuda_graphs);  // by hits, ties on last_use_us
-    cuda_graphs.erase(victim);             // dtor calls cudaGraphExecDestroy
-    cudaMemGetInfo(&free_bytes, &total_bytes);
-}
-
-if (free_bytes < safety_margin) {
-    // single-entry-too-big: cannot fit even a fresh entry.
-    // Mark a context-level disable_due_to_vram_pressure tally bump
-    // and return nullptr → eager path.
-    ctx->disable_due_to_vram_pressure_count++;
-    return nullptr;
-}
+                                 ┌─────────────────────────────┐
+                                 │  CUDA_ERROR_OUT_OF_MEMORY   │
+                                 │  (cuMemCreate / cudaMalloc) │
+                                 └──────────────┬──────────────┘
+                                                ▼
+                              pool->alloc() returns nullptr
+                              (other CUDA errors still abort)
+                                                ▼
+                          ggml_cuda_pool_alloc<T>::alloc → nullptr
+                                                ▼
+                              FA kernel-launch returns early
+                                                ▼
+                          eval loop reads g_cuda_pool_alloc_failed
+                                                ▼
+                       graph_compute returns GGML_STATUS_ALLOC_FAILED
+                                                ▼
+                  server-context: branch on status, slot.release(),
+                  send_error(ERROR_TYPE_UNAVAILABLE) → HTTP 503
+                                                ▼
+                              Response includes Retry-After: 5
+                                                ▼
+                     LiteLLM num_retries: 3 + retry_timeout: 5
+                                                ▼
+                  Client sees a successful retry against decoded slot
 ```
 
-**E.3 — `last_use_us` field on `ggml_cuda_graph`** (already added in
-A.1 for hit-counter).
+The signal carrier between FA-scratch failure and `graph_compute` is a
+`thread_local` boolean in the CUDA backend translation unit, set by
+the pool when it returns nullptr and read at the boundary of
+`ggml_backend_cuda_graph_compute`. Avoids changing the signature of
+every FA launcher (~20 sites); they only need to early-return on
+`nullptr` from their `.alloc()` call to skip the kernel launch.
 
-**E.4 — `disable_due_to_vram_pressure_count`** on the backend
-context, exposed via `ggml_backend_cuda_graph_disable_vram_pressure_count`.
+### 6.2 Test contracts
 
-**E.5 — `GGML_CUDA_GRAPH_MAX` retained as optional ceiling.**
+| ID | Test | Fail mode | Pass mode |
+|----|------|-----------|-----------|
+| E.T1 | unit OOM-resistance — `tests/test-cuda-pool-graceful-oom.cpp` via the test-only `ggml_backend_cuda_pool_alloc_test` entry point | pool aborts under synthetic OOM, or alloc returns non-null when hook is set | T1 returns nullptr without abort; T2 returns valid pointer that round-trips through pool_free |
+| E.T2 | server 503 path — `curl` against a forced-OOM server build | response body without `error.type=unavailable`, or HTTP code != 503, or no `Retry-After` header | HTTP 503, body type `unavailable`, `Retry-After: 5` set |
+| E.T3 | long-soak under sustained pressure — agentic prefill at near-cap VRAM, parallel=1, 30 min | abort/OOM, or process exit | server stays alive; 503s observed gracefully whenever pool pressure hits |
+| E.T4 | production soak — 1 hr live OpenCode traffic, parallel=1 | abort, or 5xx not retried by LiteLLM | server alive; 503 + retry path exercised at least once |
+| E.T5 | regression — existing `test-cuda-graph-cache-bounded` | breaks under Phase B/E changes | still GREEN |
 
-Revised from review feedback: do NOT remove the env. New semantics:
-the count-cap is no longer the default mechanism (vram-driven is),
-but if the env is set, apply it as `min(env_cap, ∞)` on top of the
-vram-driven cap. Default unset = no count cap. This keeps debugging
-and bisection ergonomic, and preserves the existing
-`test-cuda-graph-cache-bounded` test (B.T7 / E.T5).
+### 6.3 Implementation steps
 
-→ E.T1 through E.T5 GREEN.
+**E.1 — Pool soft-fail.** `ggml_cuda_pool_vmm::alloc` (`ggml-cuda.cu`)
+on `CUDA_ERROR_OUT_OF_MEMORY` from `cuMemCreate`: log warn, return
+nullptr, set `g_cuda_pool_alloc_failed = true`. Other `CUresult` values
+still go through `CU_CHECK` → abort. Symmetric edit in
+`ggml_cuda_pool_leg::alloc` for `cudaErrorMemoryAllocation` from the
+underlying `cudaMalloc` path. A debug hook
+(`GGML_CUDA_POOL_FORCE_FAIL_NEXT` env var) at the entry of both lets
+the unit test drive the soft-fail deterministically.
 
-### 6.3 Phase E commits
+**E.2 — Pool virtual-contract documentation.** `ggml_cuda_pool::alloc`
+in `common.cuh` now formally returns nullptr on recoverable OOM;
+callers MUST check.
 
-One per step. Final: `PHASE35: Phase E production soak results`.
+**E.3 — Templated wrapper unchanged.** `ggml_cuda_pool_alloc<T>::alloc`
+already returns whatever the pool returns; nullptr propagates cleanly,
+destructor was already nullptr-safe.
+
+**E.4 — FA scratch caller-site nullptr checks.** ~20 `.alloc()` call
+sites across `fattn-mma-f16.cu`, `fattn-mma-f16.cuh`,
+`fattn-new-mma.cu`, `fattn-common.cuh`, `fattn-vec-common.cuh` — after
+each, `if (X.get() == nullptr) return;` to skip the kernel launch.
+
+**E.5 — `graph_compute` status bubble.** `ggml-cuda.cu` resets the
+flag at the top of `ggml_backend_cuda_graph_compute`; the eval loop
+in `evaluate_and_capture_cuda_graph` reads it after every node compute
+and exits early if set; `graph_compute` returns
+`GGML_STATUS_ALLOC_FAILED` instead of `GGML_STATUS_SUCCESS`.
+
+**E.6 — Server 503 + Retry-After.** `examples/server/server-context.cpp`
+inspects `ret == GGML_STATUS_ALLOC_FAILED` from `llama_decode`, releases
+the slot via `slot.release()`, and emits `send_error(...,
+ERROR_TYPE_UNAVAILABLE)` (which `format_error_response` already maps
+to HTTP 503). `examples/server/server.cpp::res_err` adds
+`Retry-After: 5` whenever the response code is 503.
+
+**E.7 — LiteLLM retry config.** `litellm-qwen/config.yaml` gains
+`num_retries: 3` + `retry_timeout: 5` in `litellm_settings`. Honours
+upstream `Retry-After` headers by default.
+
+**E.8 — Test exercise the chain.** `ggml_backend_cuda_pool_alloc_test`
+in `ggml-cuda.h` exposes a thin pool-alloc/free pair for the unit
+test. Avoids depending on which op happens to call into the pool from
+a graph compute (FA does, MUL_MAT may not at small shapes).
+
+### 6.4 Phase E commits
+
+One submodule commit covering E.1–E.5 + E.8 (the GPU + test infra
+chain), one for E.6 (server), one parent commit for E.7 (LiteLLM
+config), one parent commit pinning the submodule and rewriting this
+section.
 
 ---
 
