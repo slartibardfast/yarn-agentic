@@ -1172,3 +1172,23 @@ After running V-F1 (BF16 mtp.fc + FP16 trunk) at all 5 tiers as a control matche
 **Reproducibility**: results + raw logs at `/opt/models/recast-out/iter8-stageB-results.md`, `/opt/models/recast-out/v0-bf16-35b-a3b.kld`, `/opt/models/recast-out/qwen3.6-35b-a3b-V-F1a.T1.gguf`, `/opt/models/recast-out/logs/`. PHASE32 doc updated; Tool 1 patch in `scripts/autoround_to_q4_0_gguf.py`.
 
 **Disk note for future Stage Bs**: The KLD-base file format is more compact than the worst-case logits×float32×ctx estimate would suggest (25 GB for 50-chunk 35B run vs my a-priori ~52 GB estimate). Plan disk math accordingly.
+
+## 2026-05-05 — `--parallel 2` flip caused full host hang under live agentic load
+
+**The trigger.** After PHASE 35 Item 8.4 flipped `profiles/qwen36-27b-x1.sh` from `--parallel 1` to `--parallel 2` (commit window: parent c952886 → 1cd4b68), production ran multi-slot for ~28 min. At 21:44:51 UTC slot 1 activated for the first time on a 4 k-token continuation while slot 0 was deep in agentic prefill at pos ≈ 157 k tokens. **The host hung within seconds of slot-1's first kv_cache_rm.** ~7 min unresponsive, then full reboot (no kernel panic logged → hard hang, not a soft fault). nginx 502s and inference outage during the gap.
+
+**The mechanism.** Not the cuda_pool OOM and not the PHASE 33 concat assert — both of those would have produced specific signals in the journal. Slot 0 was hot-looping context checkpoints (`--ctx-checkpoints 64` × ~150 MiB ≈ 9.6 GiB host RSS just for the slot-0 checkpoint ring). `--cache-ram 40960` MiB host budget × parallel 2 = up to 80 GiB potential host commit. Slot-1 activation compounded the host-side memory + driver-state pressure past a hard threshold. PHASE 34's M2 mitigation (lower `--cache-ram` and `--ctx-checkpoints`) was identified at the time as "sensible regardless and still applies" but never landed — that gap bit us here at multi-slot.
+
+**The revert.** `profiles/qwen36-27b-x1.sh` reverted to `--parallel 1` AND tightened the host-RSS knobs:
+- `--cache-ram` 40960 → 16384 MiB
+- `--ctx-checkpoints` 64 → 16
+
+Phase B (cache map keyed by topology + comparator dtype-strict, post-9d16be5f submodule pin) remains correct and live at parallel=1; this revert is about host RSS / multi-slot pressure, not about the graph cache work.
+
+**How to apply.** Don't re-enable `--parallel 2` until both:
+1. Phase E (graceful `ggml_cuda_pool_vmm::alloc` refusal) is landed so the remaining cuda-pool OOM is recoverable; AND
+2. A multi-hour real-traffic soak under the tightened M2 limits confirms host RSS stays well under physical RAM with two slots active.
+
+The single-replay snoop test that we used to authorize 8.4 was insufficient signal — it covered the dtype-mismatch class but not host-side pressure under sustained load. Future "ready to flip parallel" checks must include a host-RSS pressure test, not just GPU-side absence-of-abort.
+
+**Reproducibility.** Crash window: boot `cc008353…` end at 2026-05-05 21:44:51 UTC. Slot-1 first activation in `journalctl --user -u llama-server -b -1` final lines (id_slot=1 id_task=10). Profile diff in `/home/llm/profiles/qwen36-27b-x1.sh` history.
