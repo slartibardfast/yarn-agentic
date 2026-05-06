@@ -1251,3 +1251,53 @@ Reboot at 00:42:00 UTC; ~8 min unresponsive.
 - Last journal lines: `journalctl --user -u llama-server -b -1` (slot-1 task 216, pos ~30 700, checkpoint 15 of 16).
 - Watchdog telemetry: `data/overnight-soak/2026-05-06-crash/Wed_2026-05-06_002119_UTC.csv` + `.events.log`.
 - Profile snapshot at hang: `/home/llm/profiles/qwen36-27b-x2-overnight.sh` at parent commit `d9dcd7a`.
+
+## 2026-05-06 — Qwen 3.6 chat template study + jinja string.find / string.rfind
+
+**Context.** A community release shipped Qwen 3.6 27B GGUFs (`froggeric/Qwen3.6-27B-MTP-GGUF`) packaged with a hand-fixed jinja chat template (`froggeric/Qwen-Fixed-Chat-Templates`) addressing seven defects in the original vLLM-shaped Qwen template. The MTP+turbo4 quantisation work is *not* code we will integrate (upstream PR #22673 is against ggml-org/llama.cpp, not this fork — the cost of a fork-flip is too high). The chat template itself is a study object: a primary source revealing latent agentic-loop foot-guns in the template currently embedded in our production GGUF.
+
+**The seven fixes and their applicability to us.**
+1. `tool_call.arguments|items` → bracket-key lookup. Cosmetic for us — `value.cpp:1137` registers `items` on objects, so `|items` works fine in our jinja. Cited justification ("Python-only") does not bind here.
+2. `developer` role mapped to system. **Binds**: our embedded template raises `Unexpected message role.` on it; OpenAI-compat clients (Codex etc.) sending `developer` would crash the request.
+3. Skip empty thinking blocks. **Binds**: original always emits `<think>\n...\n</think>` regardless of length, wasting tokens on every preserved-thinking turn.
+4. `</think >` / `</thinking>` hallucination recovery. **Binds**: original splits only on exact `</think>`.
+5. Truncated-stream rescue at max_tokens. **Binds**: original leaves orphaned `<think>` in history.
+6. Auto-close unclosed `<think>` before a `<tool_call>`. **Binds**: original lets the malformed shape through as-is.
+7. Graceful no-user-query fallback. **Binds**: original raises `No user query found in messages.` on agentic loops where every recent message is `tool` and the user's prompt has slid out of context.
+
+**Code-read finding (the blocker).** Fix #6 calls `content.rfind('<think>')`, `content.rfind('</think>')`, `content.find('<tool_call>')`. ik_llama's jinja (its own engine, originated upstream as PR #18462 — different lineage from minja but same role) registered no `find` / `rfind` string methods. Adopting the fixed template as-is would crash rendering on any payload that triggers fix #6.
+
+The full enumeration of supported names was extracted from `common/jinja/value.cpp` for completeness:
+```
+abs append capitalize default dictsort endswith first float get indent
+int items join keys last length list lower lstrip map max min
+namespace pop raise_exception range reject rejectattr replace reverse
+rsplit rstrip safe select selectattr slice sort split startswith
+strftime_now string strip sum title tojson truncate unique upper
+values wordcount
+```
+Plus tests: `test_is_{boolean,callable,defined,divisibleby,eq,equalto,escaped,even,false,filter,float,ge,greaterthan,gt,in,integer,iterable,lessthan,lower,lt,mapping,ne,none,number,odd,sameas,sequence,string,test,true,undefined,upper}`.
+
+Every other construct used by the fixed template (`is mapping`, `is iterable`, `is defined`, `|length`, `|trim`, `|tojson`, `|safe`, `|items`, `.split`, `.startswith`, `.endswith`, `.replace`, `.strip`, negative indexing, slicing) is supported. `find` / `rfind` were the sole gap.
+
+**The fix.** Submodule commit `06b3b88a — jinja: add string.find / string.rfind with Python semantics`:
+- 42 lines in `common/jinja/value.cpp` matching CPython `str.find` / `str.rfind`: optional `start` and `end`, negative indices count from end, `end` exclusive, empty needle matches at start (find) / end (rfind).
+- 84 lines in `tests/test-jinja.cpp`: 12 cases covering happy path, miss, optional `start`, `[start, end]`, end-exclusivity, empty needle, negative indices — plus an end-to-end probe that mirrors the unclosed-think-before-tool detector pattern from fix #6.
+- Test totals: 318 tests / 1439 assertions / 0 failures (including the existing fuzzing suite).
+
+**Production change.**
+- `/home/llm/profiles/qwen36-fixed-template.jinja` — downloaded fixed template (223 lines).
+- `/home/llm/profiles/qwen36-27b-x1.sh` — adds `--chat-template-file /home/llm/profiles/qwen36-fixed-template.jinja`.
+- llama-server rebuilt and restarted; healthy. Four end-to-end smoke probes pass (developer role; tool-call w/ args + thinking history; all-tool-results no-user; happy path).
+
+**Why this matters.** The seven fixes are all latent agentic-loop foot-guns, not constant breakage — explains why our GGUF "worked" despite all seven being present. They surface only when a client sends `developer`, when context evicts the last user message during a tool loop, when streaming is truncated mid-think, or when the model emits malformed thinking tags. Production agentic clients can hit all four classes.
+
+**How to apply.**
+- The fix to `find`/`rfind` is a permanent capability gain in our jinja, independent of the chat-template study. Any future template that needs position queries works now.
+- For the chat-template swap itself: study path consumed, swap landed via `--chat-template-file`. The GGUF still embeds the original template; if we want the fix to be intrinsic (not flag-dependent), re-emit the GGUF metadata with the fixed template as a follow-up. Tracking the flag-based fix is acceptable for now.
+- **Do not adopt MTP-via-PR-22673 + turbo4 KV** as a side effect of this study. That path is upstream-only and would cost the RHT KV work, Phase B graph-cache fixes, and the MTP-IR scaffolding. The 2.5× speedup comes from the model's *built-in* MTP head — different mechanism from our external-draft work. If we want it later, port the head support into ik_llama; do not flip forks.
+
+**Status of work that landed.**
+- Submodule commit `06b3b88a` on branch `phase33-concat-probe`, pushed to origin.
+- Parent pin bumped to `06b3b88a` on branch `phase32-q4_0_ar16-integration`.
+- Production live with fixed template; 4/4 smoke probes pass; service healthy.
