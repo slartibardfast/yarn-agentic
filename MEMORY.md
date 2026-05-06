@@ -1192,3 +1192,62 @@ Phase B (cache map keyed by topology + comparator dtype-strict, post-9d16be5f su
 The single-replay snoop test that we used to authorize 8.4 was insufficient signal — it covered the dtype-mismatch class but not host-side pressure under sustained load. Future "ready to flip parallel" checks must include a host-RSS pressure test, not just GPU-side absence-of-abort.
 
 **Reproducibility.** Crash window: boot `cc008353…` end at 2026-05-05 21:44:51 UTC. Slot-1 first activation in `journalctl --user -u llama-server -b -1` final lines (id_slot=1 id_task=10). Profile diff in `/home/llm/profiles/qwen36-27b-x1.sh` history.
+
+## 2026-05-06 — Second `--parallel 2` host hang under Phase E + M2 limits + halved ctx (driver-class, not OOM)
+
+**Why this entry exists.** A second parallel=2 attempt was made with all the previously-suspected memory contributors mitigated. It hung the host *anyway*, with telemetry that decisively rules out OOM. The constraint is below userland — likely a NVIDIA driver / kernel deadlock specific to this 2× RTX 6000 (TU102, sm_75) configuration under multi-slot work patterns. **Do not re-enable `--parallel 2` via userland config alone. Future attempts must address the driver/kernel layer.**
+
+**The setup.** After Phase E shipped (graceful CUDA pool refusal, parent `46bed74`), the overnight x2 profile had:
+- `--ctx-size 524288` — half the prior 1 M (each slot 256 K)
+- `--tensor-split 1.10,0.90` + `--main-gpu 0` (rebalanced for cuda1 longer pole)
+- `--cache-ram 16384` + `--ctx-checkpoints 16` (M2 limits, retained from prior revert)
+- watchdog timer with 60 s sampling + auto-recovery on 5 consecutive `/health` fails
+
+Pre-flight passed cleanly: cuda0 9 329 MiB free, cuda1 7 472 MiB free at idle.
+
+**Telemetry up to the hang** (`data/overnight-soak/2026-05-06-crash/Wed_2026-05-06_002119_UTC.csv`):
+
+| time | host RSS | swap | load 1m | gpu0 free | gpu1 free | gpu0 util | gpu1 util |
+|---|---|---|---|---|---|---|---|
+| 00:21:23 (start) | 3.7 GB | 0 | 0.28 | 9 329 | 7 472 | 0 | 0 |
+| 00:25:31 | 8.4 GB | 0 | 0.95 | 8 893 | 7 272 | 83 | 57 |
+| 00:29:41 | 8.6 GB | 0 | 1.12 | 8 755 | 7 134 | 99 | 98 |
+| 00:31:43 | 8.6 GB | 0 | 1.01 | 8 693 | 7 072 | 98 | 98 |
+| 00:32:47 (last) | 7.7 GB | 0 | 1.00 | 8 671 | 7 050 | 80 | 99 |
+| (hang) | — | — | — | — | — | — | — |
+
+Reboot at 00:42:00 UTC; ~8 min unresponsive.
+
+**Definitively NOT an OOM, by data:**
+- Host RSS peak 8.6 GB on a 64 GB+ box (~13 % utilisation)
+- Swap 0 throughout
+- Load avg 1.0 (OOM-killer churn would drive this far higher)
+- cuda0 8.7 GB free / cuda1 7.0 GB free at the last sample
+- 0 `GGML_STATUS_ALLOC_FAILED` events in the journal — Phase E would have caught a real GPU OOM with a 503
+- 0 `GGML_ABORT` / oops / NMI / hung-task warnings in `dmesg -k -b -1`
+- 0 `CONCAT-PROBE` events — Phase B's strict-dtype comparator did its job
+
+**Hang signature** (matches 2026-05-05 21:44):
+- Mid-prefill, mid-checkpoint creation
+- Journal stops abruptly; no kernel oops, no soft-lockup detector, no machine check
+- ~8 min unresponsive then hard reboot
+- Watchdog auto-recovery couldn't fire — its own 60 s timer also stops once the kernel hangs
+
+**The constraint is below userland.** Memory limits, tensor-split rebalance, ctx halving — none of them helped. Two independent parallel=2 attempts under different configurations both hung the host with the same signature. The signature is consistent with a NVIDIA driver / kernel-level deadlock under specific multi-slot CUDA work patterns.
+
+**How to apply.**
+1. **Production stays at `--parallel 1`** for the foreseeable future. The `qwen36-27b-x2-overnight.sh` profile is preserved as evidence but should NOT be activated.
+2. **Don't try parallel=2 again with software-only knobs.** "Just slightly different memory settings" has now been disproven twice. Future attempts must address the kernel/driver layer (newer driver, kernel parameters, single-GPU isolation, hardware watchdog) — not userland config.
+3. **For concurrency, route at the LiteLLM / proxy layer.** A single-slot llama-server with proxy-level request queuing serves multiple users without the parallel=2 risk and without the engine-side multi-slot complexity surface.
+4. **The watchdog auto-recovery is necessary but insufficient.** It catches soft `/health` hangs but not host hangs. A true production multi-slot deployment would need kernel-level protection (NMI watchdog, hardware watchdog timer, IPMI heartbeat from a separate machine).
+
+**Status of related work that DID land successfully and remains live:**
+- Phase B graph cache redesign (topology-keyed + dtype-strict comparator) — submodule `0ceaa155`
+- Phase E graceful pool refusal (pool soft-fail → 503 → LiteLLM retry) — submodule `716cc21a`
+- Both are production-correct and beneficial at parallel=1, regardless of the parallel=2 status.
+
+**Reproducibility.**
+- Crash window: boot ended 2026-05-06 00:34:16 UTC; reboot 00:42:00 UTC.
+- Last journal lines: `journalctl --user -u llama-server -b -1` (slot-1 task 216, pos ~30 700, checkpoint 15 of 16).
+- Watchdog telemetry: `data/overnight-soak/2026-05-06-crash/Wed_2026-05-06_002119_UTC.csv` + `.events.log`.
+- Profile snapshot at hang: `/home/llm/profiles/qwen36-27b-x2-overnight.sh` at parent commit `d9dcd7a`.
