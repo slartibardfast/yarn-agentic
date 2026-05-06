@@ -1165,6 +1165,96 @@ Evidence preserved at `data/cuda-graph-probe/snoop-multislot-parallel2-postB/`
 (small JSONLs full + analysis summary; raw 816 KB on
 `/mnt/archive/cuda-graph-probe/snoop-multislot-20260505T212052/`).
 
+### 14.7 Phase E landed; profiling pass; overnight `--parallel 2` plan
+
+After §14.6, the remaining `ggml_cuda_pool_vmm::alloc → cuMemCreate`
+OOM was made recoverable end-to-end (graceful pool refusal,
+GPU-layer + server + LiteLLM retry). Submodule pin landed at
+`716cc21a` — see §6 for the current architecture; `9d16be5f` is
+the prior probe-only pin.
+
+Earlier in the same session, an attempt to flip production to
+`--parallel 2` under the *original* M1 host-side limits caused a
+full host hang at slot-1 first activation. M2 mitigations
+(`--cache-ram 40960 → 16384`, `--ctx-checkpoints 64 → 16`) shipped
+under `e4ca7c4`; production stayed at `--parallel 1` after the
+revert. See MEMORY entry dated 2026-05-05 for the binding details.
+
+**Profiling pass (post-Phase E, single-slot):**
+
+GPU utilisation under live agentic traffic at `--parallel 1`:
+- cuda0: median compute 80 %, mem-bw 61 %
+- cuda1: median compute 81 %, mem-bw **73 %** ← longer pole
+- saturation (≥ 95 %) only 2.5 % of samples
+- no idle dips ≥ 3 s
+
+`nsys` capture during a 105 k-token agentic prefill + 546-token
+decode (file: `/opt/models/profiling/nsys-pp-tg-big-20260505T234949.nsys-rep`):
+
+| Kernel | % GPU time | Notes |
+|---|---|---|
+| `mul_mat_q<Q4_0,128,8>` | 32.3 | Trunk MMQ |
+| `flash_attn_mma_ext_f16<256,32,2,...>` | **32.2** | Long-context decode FA — 11.7 ms/call median; flips to be the dominant cost as ctx grows |
+| `delta_net_recurrent_f32` | 5.7 | Linear-attn recurrent state |
+| `dequantize_block_q4_0<half>` | **4.7** | **Lever:** Q4_0 weights are dequantised to FP16 then fed to a separate matmul path. Fused MMQ avoids the round-trip; some ops route around it. 47 k calls × 268 µs is recoverable if the routing gap closes. |
+| `flash_attn_ext_f16<256,256,1,8,...>` | 2.9 | Older F16-only FA path |
+| `mul_mat_vec_q` + `fused_mul_mat_vec_q` | 5.2 combined | Decode batch-1 path |
+| `cutlass_75_wmma_tensorop_h161616gemm` | 2.5 | FP16 Tensor Core (m16n16k16) |
+| `mul_mat_q_stream_k_fixup` + `quantize_mmq_q8_1` | 2.3 combined | MMQ pipeline overhead |
+| Type conversions (cpy/convert) | ~3 combined | `float ↔ half` shuffles between pipeline stages |
+
+The headline finding for **deepening within rather than widening to
+`--parallel 2`**: at long context, decode is FA-bound, not trunk-bound.
+The `dequantize_block_q4_0` round-trip is the largest concrete
+lever (4.7 %) outside the necessary trunk + FA work.
+On sm_75, MMQ uses int-MMA m8n8k4 (correct for Q4_0); m16n16k16
+HMMA is sm_80+ only — no architecture-level win available, but the
+MMQ vs dequant-then-cuBLAS routing decision in
+`ggml_cuda_op_mul_mat` is worth a separate investigation step.
+
+**Overnight `--parallel 2` plan (scaffolded; not flipped):**
+
+Memory math at two 256 K slots:
+- ~32 attention layers × 2 (K+V) × 8 GQA heads × 128 head_dim ×
+  0.5 B (Q4_0) ≈ 16 KiB/token
+- 256 K tokens × 16 KiB = 4 GiB per slot's KV; × 2 slots = 8 GiB
+- Plus ~14 GiB model + ~4 GiB FA scratch / cuBLAS / graph cache
+- Total ≈ 26 GiB on 48 GiB aggregate — feasible
+
+Per-device asymmetry (cuda1 fuller than cuda0 under `--tensor-split 1,1`)
+addressed via:
+- `--tensor-split 1.10,0.90` (shift ~3 layers off cuda1)
+- `--main-gpu 0` (lighter device hosts output buffer + sampling)
+- `--cache-ram 16384` and `--ctx-checkpoints 16` retained from M2
+
+Files written under this scaffolding:
+- `/home/llm/profiles/qwen36-27b-x2-overnight.sh`
+- `scripts/overnight-soak/preflight.sh` — pre-flight smoke on
+  port 18290; pass/fail by per-GPU free-VRAM thresholds
+- `scripts/overnight-soak/watchdog.sh` — static CSV logger to
+  `/opt/models/profiling/overnight-soak/<run-id>.csv`, one row
+  per minute; auto-recovers (flips symlink to `qwen36-27b-x1.sh`,
+  restarts the unit) on 5 consecutive `/health` failures
+- `scripts/overnight-soak/recover-to-x1.sh` — manual revert
+- `~/.config/systemd/user/llama-soak-watchdog.{service,timer}` —
+  60 s cadence, persistent=false, NOT enabled by default
+
+Operator runbook (when ready to flip):
+1. `systemctl --user stop llama-server`
+2. `bash scripts/overnight-soak/preflight.sh` — adjust
+   `--tensor-split` if PASS not reached; iterate until both GPUs
+   have headroom
+3. `ln -sfn qwen36-27b-x2-overnight.sh /home/llm/profiles/active.sh`
+4. `systemctl --user start llama-server`
+5. `systemctl --user enable --now llama-soak-watchdog.timer`
+6. Walk away. Review `<run-id>.csv` and `.events.log` next morning.
+7. `bash scripts/overnight-soak/recover-to-x1.sh` to revert any time.
+
+Auto-recovery is non-perfect by design: it gives a clear "we hung"
+signal in the events log without requiring a live observer, and
+hands control back to a known-safe single-slot configuration so
+the box keeps serving.
+
 ### 14.4 Open follow-ups within Phase A scope
 
 - **Production smoke pending:** harness `run-overhead-canary.sh` and
