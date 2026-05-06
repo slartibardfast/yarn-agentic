@@ -1255,6 +1255,23 @@ signal in the events log without requiring a live observer, and
 hands control back to a known-safe single-slot configuration so
 the box keeps serving.
 
+**Update — `qwen36-27b-x2-overnight.sh` reframed as safe subset.**
+After the second `--parallel 2` host hang on 2026-05-06 00:34 UTC
+(see MEMORY entry of that date), the overnight profile was reduced
+to a single-slot variant that retains only the changes that were
+beneficial independent of multi-slot:
+- `--tensor-split 1.10,0.90` (rebalances cuda1 mem-bw longer pole)
+- `--main-gpu 0` (lighter device hosts output buffer)
+- M2 host limits retained (`--cache-ram 16384`, `--ctx-checkpoints 16`)
+- `--parallel 1` and `--ctx-size 1048576` (matches x1)
+
+A soak under this safe-subset profile is throughput-neutral or
+better vs x1 (no per-slot competition; only the device-balance
+shift is being exercised). It produces a long-baseline host-RSS /
+GPU-mem time-series for comparison against any future
+hardware-or-driver-fix attempt at parallel=2 — but it is NOT a
+parallel=2 attempt and does not unlock multi-slot.
+
 ### 14.4 Open follow-ups within Phase A scope
 
 - **Production smoke pending:** harness `run-overhead-canary.sh` and
