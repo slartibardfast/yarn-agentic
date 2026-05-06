@@ -1,0 +1,30 @@
+[Unit]
+Description=Pre-load crash kernel via kexec for vmcore capture
+Documentation=man:kexec(8)
+# Don't run if we ARE the crash kernel (the kdump-collect target sets this).
+ConditionKernelCommandLine=!systemd.unit=kdump-collect.target
+# Need filesystems mounted to read the kernel image and initramfs.
+After=local-fs.target
+Wants=local-fs.target
+# Run before generic services so the crash kernel is armed early.
+DefaultDependencies=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# crashkernel= reserves the memory at boot via kernel cmdline; this service
+# loads a kernel image into that reserved region.
+#
+# --reuse-cmdline copies the running cmdline; --append overrides specific
+# flags so the crash kernel boots into the dump-and-reboot target instead
+# of the normal multi-user.target.
+ExecStart=/usr/bin/kexec -p \
+    /boot/vmlinuz-linux-lts \
+    --initrd=/boot/initramfs-linux-lts.img \
+    --reuse-cmdline \
+    --append="systemd.unit=kdump-collect.target irqpoll maxcpus=1 nr_cpus=1 reset_devices disable_cpu_apicid=0 console=tty0"
+# Unload on stop so a manual stop returns to the no-crashkernel state cleanly.
+ExecStop=/usr/bin/kexec -p -u
+
+[Install]
+WantedBy=multi-user.target

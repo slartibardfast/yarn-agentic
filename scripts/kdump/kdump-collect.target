@@ -1,0 +1,9 @@
+[Unit]
+Description=KDUMP collect crash dump and reboot
+Documentation=man:systemd.special(7)
+# Stop normal-boot targets if any of them somehow got pulled in.
+Conflicts=multi-user.target graphical.target rescue.target
+AllowIsolate=yes
+
+[Install]
+WantedBy=

@@ -1,0 +1,25 @@
+[Unit]
+Description=Capture filtered vmcore and reboot to normal kernel
+# Only runs when we ARE the crash kernel (kdump-load passed this on cmdline).
+ConditionKernelCommandLine=systemd.unit=kdump-collect.target
+# Need filesystems for /opt/crash; need /proc/vmcore exposed by the panicked
+# kernel. local-fs and proc come up before sysinit.target completes.
+After=local-fs.target proc-mounted.target
+Wants=local-fs.target
+# We're a leaf job; nothing else should run. DefaultDependencies=no avoids
+# pulling in the multi-user dependencies.
+DefaultDependencies=no
+Requires=kdump-collect.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kdump-collect.sh
+# Always reboot back to the normal kernel after the dump finishes (or fails).
+# Don't kexec — go through firmware POST so the box clears any wedged state.
+ExecStartPost=/bin/sh -c '/bin/sync; /usr/bin/systemctl --force --force reboot'
+TimeoutStartSec=600
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=kdump-collect.target
