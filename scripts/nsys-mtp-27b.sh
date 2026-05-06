@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Capture nsys trace of llama-server in baseline and MTP modes for 27B Q4_K_M.
+# Capture nsys trace of llama-server in baseline and MTP modes for 27B production quant.
 
 set -euo pipefail
 
 BIN=/home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-server
-MODEL=/opt/models/Qwen3.6-27B-Q4_K_M/Qwen3.6-27B-Q4_K_M.gguf
+MODEL=/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless.gguf
 PORT=18181
 PROMPT="The history of artificial intelligence began in earnest in"
 N_PREDICT=64
@@ -39,6 +39,8 @@ run_traced() {
         --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
         -ngl 999 -fa on $mtp_flag \
         -c 4096 --threads 16 --batch-size 2048 --ubatch-size 512 \
+        --cache-type-k q4_0 --cache-type-v q4_0 \
+        --k-cache-hadamard --v-cache-hadamard \
         --no-context-shift --metrics --port "$PORT" --host 127.0.0.1 \
         > "${trace_dir}/server.log" 2>&1 &
     local SRV_PID=$!
