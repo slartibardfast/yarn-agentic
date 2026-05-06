@@ -155,4 +155,4 @@ GPUs for ~5 ms/cycle savings.
 2× Quadro RTX 6000 (TU102, sm_75, 24 GiB each), CUDA 13.2,
 `--split-mode graph --tensor-split 1,1`, 262K context.
 
-Model: Qwen3.6 27B IQ4_XS with q4_0 Hadamard KV cache.
+Model: Qwen3.6 27B INT4 AutoRound with q4_0 Hadamard KV cache.

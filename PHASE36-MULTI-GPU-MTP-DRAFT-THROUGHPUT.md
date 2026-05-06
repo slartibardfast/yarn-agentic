@@ -13,7 +13,7 @@ Make draft depth > 1 faster than draft depth 1 on 2-GPU graph split.
 | 4. Overlap CPU graph prep with GPU compute | [ ] | Double-buffer: CPU builds graph k+1 while GPU computes step k |
 | 5. Fused multi-draft cgraph | [ ] | Single ggml_cgraph chaining N draft steps — one build+alloc for all N |
 | 6. Adaptive draft truncation | [ ] | Stop drafting when marginal cost exceeds expected acceptance benefit |
-| 7. MTP head precision audit | [ ] | Test BF16/F16 MTP head preservation vs IQ4_XS quantized head on acceptance rate |
+| 7. MTP head precision audit | [ ] | Test BF16/F16 MTP head preservation vs INT4 AutoRound quantized head on acceptance rate |
 | 8. Pipeline overlap: accept tail + state advance | [ ] | Overlap mtp_accept_tokens with DeltaNet re-advancement on separate streams |
 
 ## Context
@@ -46,7 +46,7 @@ unnecessary data movement, and acceptance rate decay.
 | [Mirror SD (Apple)](https://machinelearning.apple.com/research/mirror) | Dual pipeline: draft and target speculate simultaneously on separate accelerators | Interesting for Step 8 but our GPUs cooperate on every forward |
 | [MoE-Spec](https://arxiv.org/abs/2602.16052) | Top 50% experts capture 93% routing probability; budget verification | Applicable if we target 35B-A3B MoE; not relevant for 27B dense |
 | [EVICT](https://arxiv.org/abs/2605.00342) | Training-free adaptive draft tree truncation before verification | Principle applies to Step 6 — stop drafting when it stops paying |
-| [Qwen3.6 quantization studies](https://huggingface.co/shieldstar/Qwen3.6-35B-A3B-int4-AutoRound-EC) | BF16 MTP head preservation gives 85–90% acceptance; quantized head degrades sharply | Directly relevant to Step 7 |
+| [Qwen3.6 quantization studies](https://huggingface.co/shieldstar/Qwen3.6-35B-A3B-int4-AutoRound-EC) | BF16 MTP head + Q6_K body: 92/81/67% at d=1/2/3. Depth-decay is intrinsic; higher precision reduces it but doesn't eliminate it | Directly relevant to Step 7 |
 
 **Conclusion from survey:** P-EAGLE, DFlash, EasySpec, and SwiftSpec
 are architecturally inapplicable — they require either a different
@@ -54,7 +54,7 @@ draft head or a different GPU topology. The applicable techniques are:
 upstream's per-ubatch hook (Step 1), CUDA graph / graph-shape reuse
 (Step 3), CPU-GPU overlap scheduling (Step 4), and adaptive truncation
 (Step 6). The MTP head precision finding (Step 7) may be the single
-highest-leverage item if our IQ4_XS quant has quantized the MTP head.
+highest-leverage item if our INT4 AutoRound quant has quantized the MTP head.
 
 ## Anatomy of one speculative cycle
 
@@ -500,24 +500,27 @@ exceeds fixed `--draft 3`.
 
 ## Step 7: MTP head precision audit
 
-**Problem:** Our Qwen3.6 27B model is quantized to IQ4_XS. Upstream
-results with BF16 or Q6_K models show 75–85% acceptance at d=3.
-Our d=1 acceptance is 86% (good), but d≥2 drops to 59–63%.
+**Problem:** Our Qwen3.6 27B model uses INT4 AutoRound quantization
+(V-F1.T1.qq). Our d=1 acceptance is 86%, but d≥2 drops to 59–63%.
 
-Community findings: preserving the MTP head weights in BF16/F16
-while quantizing the backbone gives 85–90% acceptance across all
-depths. Quantizing the MTP head amplifies rounding error through
-autoregressive chaining — each draft step's prediction error
-compounds into the next step's input.
+Community data on the same model (Qwen3.6 27B) shows depth-decay
+is intrinsic but severity depends on precision:
+- Q6_K body + BF16 MTP head: 92%, 81%, 67% at d=1, 2, 3
+- NVFP4 body + BF16 MTP head: 87%, 72%, 61% at d=1, 2, 3
+- Our INT4 AutoRound: 86%, ~60%, ~55% at d=1, 2, 3
+
+The pattern is clear: higher precision reduces depth-decay but
+does not eliminate it. The question is whether our AutoRound quant
+has quantized the MTP head itself, amplifying the decay further.
 
 **Investigation:**
-1. Check whether our IQ4_XS GGUF has quantized the MTP head
+1. Check whether our INT4 AutoRound GGUF has quantized the MTP head
    (`mtp.fc.weight`, `mtp.eh_proj.weight`, etc.) or preserved it
    in F16/BF16
 2. If quantized: rebuild the GGUF with MTP head weights in F16
    (using `convert_hf_to_gguf.py` with per-tensor type overrides
    or binary patching)
-3. Measure acceptance at d=1,3,5 with F16 MTP head vs IQ4_XS head
+3. Measure acceptance at d=1,3,5 with F16 MTP head vs INT4 AutoRound head
 4. If F16 head recovers acceptance to 75%+, ship it as the
    production quant
 
@@ -601,4 +604,4 @@ and serve as polish after the high-leverage steps land.
 2× Quadro RTX 6000 (TU102, sm_75, 24 GiB each), CUDA 13.2,
 `--split-mode graph --tensor-split 1,1`, 262K context.
 
-Model: Qwen3.6 27B IQ4_XS with q4_0 Hadamard KV cache.
+Model: Qwen3.6 27B INT4 AutoRound with q4_0 Hadamard KV cache.
