@@ -32,40 +32,78 @@ even. That framing is wrong. Draft should cost nothing.
 
 ## Step 0 results (measured 2026-05-06)
 
-**Test**: 200 greedy tokens (`temperature=0`) on the production
-`qwen3.6-27b-V-F1.T1.qq-tool1lossless.gguf`, `--split-mode graph --tensor-split 1,1`,
-`-c 4096`, q4_0 Hadamard KV. Logs: `data/profile-step0/{nomtp,mtp-d1,mtp-d3,mtp-d5}.log`.
+Three profile runs at increasing realism. Production runs at
+`--ctx-size 262144` with the q4_0 Hadamard KV; MTP is currently
+**off** in production ("still incompatible with this context size;
+KV doubling" — `profiles/qwen36-27b-x1.sh`). Phase 36 is the work
+to make MTP pay off at production context.
 
-### Throughput and acceptance — measured vs prior estimate
+| Run | Prompt | `-c` | Sampler | Output dir |
+|-----|--------|-----:|---------|------------|
+| Synthetic 4K | 30-token historic synthetic | 4 096 | greedy | `data/profile-step0/` |
+| X02 64K | `agentic-prompt-corpus.jsonl#X02` (1.3K-token "very-long-context") | 65 536 | greedy | `data/profile-step0-x02-c64k/` |
+| **X02 256K (production-realistic ctx)** | `#X02` | 262 144 | greedy | `data/profile-step0-x02-c256k/` |
 
-| Config  | Measured t/s | Prior estimate | Acceptance (acc/gen) |
-|---------|-------------:|---------------:|---------------------:|
-| No MTP  | 33.21        | 33.5           | —                    |
-| d=1     | 34.25 (+3%)  | 35.3 (+5%)     | 81% (96/118)         |
-| d=3     | 30.46 (-8%)  | 32.5 (-3%)     | 55% (98/177)         |
-| d=5     | 30.00 (-10%) | 32.4 (-3%)     | 54% (97/179)         |
+The synthetic 4K result was a sanity-check baseline; the X02 256K
+result is the one that actually represents the production allocation
+regime. Greedy `temp=0` matches the **fused-MTP path's constraint**
+(Step 1 requires trivial sampler) but **not** production's chat
+sampler (`temp=0.6 --top-p 0.95`); `temp=0.6` would route through
+the per-step fallback and is profiled separately if/when Step 5 is
+re-elevated.
 
-The d≥2 regression is **deeper** than estimated. d=5 trails the no-MTP
-baseline by 10%, not 3%.
+### Throughput and acceptance — measured across all three regimes
 
-### Effective draft depth (the surprise)
+| Config | Synthetic 4K | X02 64K | **X02 256K (prod-ctx)** | Acceptance @ 256K |
+|--------|------------:|--------:|------------------------:|------------------:|
+| No MTP | 33.21       |  31.13* |                  31.13  | —                 |
+| d=1    | 34.25       |  34.36  |                  32.14  | 88% (186/211)     |
+| d=3    | 30.46       |  30.43  |                  28.76  | 58% (200/346)     |
+| d=5    | 30.00       |  30.36  |                  28.65  | 58% (200/346)     |
 
-Per-step decode firing distribution at d=5 (n=116 cycles):
+\* The 64K nomtp throughput wasn't captured in the run that ran d=1/3/5;
+the 256K nomtp run was used to estimate it.
 
-| step | n   | mean decode (µs) |
-|-----:|----:|-----------------:|
-| 0    | 116 | 4915             |
-| 1    |  59 | 4970             |
-| 2    |   2 | 4951             |
-| 3    |   1 | 4949             |
-| 4    |   1 | 4956             |
+**Key takeaways at production context:**
 
-**Average drafts per cycle at d=5: 1.54** (179 / 116). The
-`prob < p_min` early-exit clamps draft depth aggressively. d=5 mode
-runs the same loop overhead as d=5 but only generates ~1.5 drafts
-per cycle on average — meaning d=5 is structurally close to "d=1
-plus extra rejected drafts." This explains the d≥2 regression: more
-generation overhead, similar accepted-token rate.
+- The d=1 vs d=5 ranking is **identical across all three regimes**.
+  The synthetic 4K profile correctly captured the throughput pattern.
+- d=1 over nomtp at production 256K = **+1.0 t/s (+3%)**, much
+  smaller than the +5% the original estimate projected and below
+  the +3% measured at 4K.
+- d=5 regression vs nomtp at production 256K = **-2.5 t/s (-8%)**,
+  similar to other regimes.
+- Absolute throughput drops 6% from 4K → 256K (33.21 → 31.13 nomtp),
+  driven by graph_compute mean rising from 31 ms → 37 ms — the verify
+  graph carries more attention work over the bigger KV at production
+  context.
+- Acceptance is *higher* at the realistic 1.3K-token prompt than at
+  the 30-token synthetic prompt (d=1: 88% vs 81%). The model is more
+  confident on its first 1-2 drafts when given real context.
+
+### Effective draft depth — measured across regimes
+
+Per-step decode firing distribution at d=5:
+
+| step | Synthetic 4K (n cycles=116) | X02 64K / 256K (n cycles=197) |
+|-----:|----------------------------:|-------------------------------:|
+| 0    | 116                         | 197                            |
+| 1    |  59                         | 145                            |
+| 2    |   2                         |   4                            |
+| 3    |   1                         |   0                            |
+| 4    |   1                         |   0                            |
+| **avg drafts/cycle** | **1.54**            | **1.76**                       |
+
+The realistic prompt produces a *slightly deeper* effective draft
+(1.76 vs 1.54), but still nowhere near the requested 5. The
+`prob < p_min` early-exit clamps depth aggressively in both regimes.
+d=5 mode is structurally close to "d=1 plus extra rejected drafts" —
+explaining the d≥2 regression in both regimes.
+
+Per-step decode time is essentially flat across regimes: ~5 ms ±0.1
+for steps 0–2, regardless of context size. Draft step compute is
+not bottlenecked by KV size at the prompt lengths tested (≤ 1.3K
+tokens of running KV).
 
 ### Per-component timing — measured
 
@@ -92,23 +130,21 @@ dominates draft-step cost, scheduling does not. The plan's central
 quantitative premise — that fused cgraph eliminates the dominant
 per-step cost — is wrong by a factor of 2-3×.
 
-### `can_reuse_graph` HIT/MISS — measured
+### `can_reuse_graph` HIT/MISS — measured across regimes
 
-Final summary at d=5: HIT=61, MISS=339. Per-condition reasons:
+| Regime         | HIT  | MISS  | r1 (no_prev) | r2 (multi_token) | r7 (n_kv_changed) | r9 (mtp_op_changed) |
+|----------------|-----:|------:|-------------:|-----------------:|------------------:|--------------------:|
+| Synthetic 4K   |   61 |   339 |  201 (59%)   |        82 (24%)  |          **0**    |             56 (17%) |
+| X02 64K        |  137 |   563 |  355 (63%)   |       159 (28%)  |          **1**    |             48 ( 9%) |
+| X02 256K       | (similar) | (similar) | (similar) |    (similar) |          ≤1       |          (similar)  |
 
-| Reason | Code | Count | % of misses |
-|--------|------|------:|------------:|
-| no_prev | r1 | 201 | 59% |
-| multi_token | r2 | 82 | 24% |
-| mtp_op_changed | r9 | 56 | 17% |
-| **n_kv_changed** | **r7** | **0** | **0%** |
-| (others 3,4,5,6,8,10) | — | 0 | 0% |
-
-**Step 5 (KQ_mask bucketing) was scoped to fix r7. r7=0% means
-Step 5 has no measured benefit.** The actual reuse killers are
-structural: prev is wiped after every multi-token call (verify),
-verify itself is multi-token, and switching between MTP op types
-invalidates the cache.
+**Step 5 (KQ_mask bucketing) was scoped to fix r7 (`kv_self.n`
+changed). r7 = 0–0.2% across regimes**, including at production
+256K context with a realistic 1.3K-token prompt. Step 5 has no
+measured benefit in any regime tested. The actual reuse killers
+are structural and uniform across regimes: prev wiped after every
+multi-token call (verify), verify itself is multi-token, and the
+MTP op-type transitions invalidate the cache.
 
 ### What this changes
 
@@ -579,36 +615,41 @@ for the corresponding precision level.
 The pre-measurement model assumed 4 tokens/cycle and 5 sequential
 draft steps × 11 ms each. The measurement says:
 
-- ~1.72 tokens/cycle at d=5 (not 4)
-- 5 ms per draft step (not 11)
-- 1.54 average drafts per cycle (not 5)
-- ~30 ms verify, dominating the cycle (~53% of 57 ms)
+- ~1.76 tokens/cycle at d=5 with realistic prompt (not 4)
+- ~5 ms per draft step (not 11)
+- ~1.76 average drafts per cycle (not 5)
+- ~37 ms verify graph_compute mean at production context, dominating
+  the cycle
 
-A realistic model now looks like this:
+Realistic model anchored on the **X02 256K** measurement
+(production context, 1.3K-token agentic prompt, greedy):
 
 | State                                       | Cycle time | Tokens/cycle | Throughput |
 |---------------------------------------------|-----------:|-------------:|-----------:|
-| **Measured baseline (d=5, sequential)**     |     ~57 ms |        ~1.72 | 30.00 t/s  |
-| Measured baseline (d=1, sequential)         |     ~52 ms |        ~1.81 | 34.25 t/s  |
-| Measured baseline (no MTP)                  |     ~30 ms |         1.00 | 33.21 t/s  |
-| After Step 1 (fused draft, d=5)             | ~55 ms     |        ~1.72 | ~31 t/s    |
-| After Step 2 (async pipeline)               | ~30–35 ms  |        ~1.72 | ~50 t/s    |
-| After Step 3 (kill UPDATE_ACCEPTED)         | ~25–30 ms  |        ~1.72 | ~57 t/s    |
-| After Step 6 (F16 head → 67% d=3, 81% d=1) | ~25–30 ms  |        ~2.5  | ~85 t/s    |
+| **Measured (no MTP, 256K)**                 |     ~32 ms |         1.00 | 31.13 t/s  |
+| **Measured (d=1, 256K)**                    |     ~58 ms |        ~1.86 | 32.14 t/s  |
+| **Measured (d=5, 256K)**                    |     ~62 ms |        ~1.78 | 28.65 t/s  |
+| After Step 1 (fused draft, d=5)             | ~60 ms     |        ~1.78 | ~30 t/s    |
+| After Step 2 (async pipeline)               | ~37–42 ms  |        ~1.78 | ~45 t/s    |
+| After Step 3 (kill UPDATE_ACCEPTED)         | ~32–37 ms  |        ~1.78 | ~50 t/s    |
+| After Step 6 (F16 head → 81% d=3, 92% d=1)  | ~32–37 ms  |         ~2.4 | ~70 t/s    |
 
-The Step 0 measurement says the headroom is much smaller than the
-~241 t/s upper bound originally projected. **Realistic ceiling for
-Steps 1–3 + Step 6 on this 2-GPU setup is ~2.5× baseline**, matching
-the upstream single-GPU 2.5× benchmark — not exceeding it.
+The Step 0 measurement says the headroom at production context is
+**smaller than at 4K**. Realistic ceiling for Steps 1–3 + Step 6 on
+this 2-GPU setup at production context is ~70 t/s (2.2× baseline),
+falling short of the upstream single-GPU 2.5× benchmark.
 
-The original "60% efficiency → 145 t/s (4.3×)" projection
-multiplied two errors: the 11 ms-per-step estimate and the
-4 tokens/cycle assumption. Both were too optimistic by ~2×.
-
-A 1.5–2.5× baseline win is still worth shipping. But the
-"d=5 throughput > d=1" goal in PHASE36-PLAN.md is now directly
+A 1.5–2× baseline win is still worth shipping. But the
+"d=5 throughput > d=1" goal in PHASE36-PLAN.md is directly
 contingent on Step 6 lifting effective draft depth (via higher
-per-step acceptance), not on Steps 1–4 alone.
+per-step acceptance) — Steps 1–4 alone do not get there.
+
+**Caveat**: all three runs are greedy (`temp=0`). Production runs
+`temp=0.6 --top-p 0.95`, which routes through the per-step fallback
+(not fused) and would produce different timings. That regime needs
+its own profile pass before deciding whether the per-step path's
+optimizations (originally Step 5) are worth re-elevating. The fused
+path (Steps 1–2) only applies to greedy.
 
 ## Execution order
 

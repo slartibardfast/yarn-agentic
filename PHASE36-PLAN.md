@@ -497,19 +497,29 @@ Measure acceptance at d=1,3,5 with F16 head vs quantized head. Compare to commun
 
 ## Cumulative performance gates (revised after Step 0 measurement)
 
-Pre-measurement table assumed ~85 ms cycle and 4 tokens/cycle. Measurement says ~57 ms cycle and 1.72 tokens/cycle. Targets are scaled proportionally; the Step 4 row is dropped (premise invalidated; demoted to "revisit later").
+Pre-measurement table assumed ~85 ms cycle and 4 tokens/cycle. Measurement at production-context anchors says ~62 ms cycle (d=5, 256K) and 1.78 tokens/cycle. Targets are scaled proportionally; Step 4 dropped (premise invalidated; demoted to "revisit later").
 
-| Milestone                            | d=5 t/s | vs baseline | Gate |
-|--------------------------------------|--------:|------------:|-----:|
-| **Current (measured 2026-05-06)**    |   30.00 |       0.90× | --   |
-| After Step 1 (fused)                 |   ≥ 31  |       0.93× | ≥ 30 t/s |
-| After Step 2 (pipeline)              |   ≥ 50  |       1.5×  | ≥ 40 t/s |
-| After Step 3 (kill UPDATE_ACCEPTED)  |   ≥ 57  |       1.7×  | ≥ 50 t/s |
-| Final (Steps 1–3 + Step 6 F16 head)  |   ≥ 85  |       2.5×  | ≥ 67 t/s (2×) |
+| Milestone                            | d=5 t/s @ 256K | vs nomtp 256K | Gate |
+|--------------------------------------|---------------:|--------------:|-----:|
+| **Current (measured 2026-05-06)**    |          28.65 |         0.92× | --   |
+| After Step 1 (fused)                 |          ≥ 30  |         0.96× | ≥ 28 t/s |
+| After Step 2 (pipeline)              |          ≥ 45  |         1.4×  | ≥ 38 t/s |
+| After Step 3 (kill UPDATE_ACCEPTED)  |          ≥ 50  |         1.6×  | ≥ 42 t/s |
+| Final (Steps 1–3 + Step 6 F16 head)  |          ≥ 70  |         2.2×  | ≥ 55 t/s (1.75×) |
 
 Fail at any gate → stop, diagnose, re-profile before continuing.
 
-The original ~80–96 t/s ceiling was based on multiplicative errors (5 drafts vs measured 1.5; 11 ms per step vs measured 5 ms). The revised ceiling matches the upstream single-GPU 2.5× benchmark — a defensible engineering target on this 2-GPU setup.
+Anchor regime: `agentic-prompt-corpus.jsonl#X02` (1.3K-token "very-long-context") + `--ctx-size 262144` + greedy `temp=0`. This matches the production allocation regime and the fused MTP path's trivial-sampler constraint. **Production chat regime (`temp=0.6 --top-p 0.95`) is not yet profiled** — that path routes through the per-step fallback, not the fused path; Step 5 may need re-elevation if/when that profile shows different MISS reasons.
+
+Three runs measured (logs in `data/profile-step0*/`):
+
+| Regime         | nomtp | d=1   | d=3   | d=5   |
+|----------------|------:|------:|------:|------:|
+| Synthetic 4K   | 33.21 | 34.25 | 30.46 | 30.00 |
+| X02 64K        | ~32   | 34.36 | 30.43 | 30.36 |
+| **X02 256K**   | 31.13 | 32.14 | 28.76 | 28.65 |
+
+The d=1>d=3>d=5 ranking is invariant across all three regimes. The synthetic 4K profile correctly captures the throughput pattern, though absolute numbers drop ~6% at production context (verify graph carries more attention work).
 
 ---
 
