@@ -37,9 +37,15 @@
 - [Phase 28: TURBO_KV_4B — Residual Window Implementation](PHASE28.md)
 - [Phase 29: CUDA/HIP Backend Gaps for Tight Qwen3.5 MTP](PHASE29.md)
 - [Phase 30: turbo_kv_4b Cross-Architecture Vulkan Regression Debug](PHASE30.md)
+- [Phase 31: MTP Production on ik_llama.cpp](PHASE31.md)
 - [Phase 32: MTP FP16-Recasting Canary Study (sm_75)](PHASE32-MTP-FP16-CANARY.md)
+- [Phase 33: Production Cache Tuning and Multi-Slot Stability](PHASE33.md)
 - [Phase 34: Production CUDA-OOM Root-Cause Analysis](PHASE34-LEAK-RCA.md)
 - [Phase 35: CUDA Graph Cache Redesign — Test-First Plan](PHASE35-GRAPH-CACHE-REDESIGN.md)
+
+# Multi-GPU MTP
+
+- [Per-Step Checkpoint for Graph-Split DeltaNet](MULTI-GPU-PER-STEP-CHECKPOINT.md)
 
 # Qwen3.5 MTP Tool Calling
 
