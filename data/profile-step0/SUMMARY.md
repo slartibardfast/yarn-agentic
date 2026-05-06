@@ -1,88 +1,103 @@
-# Phase 36 Step 0 — first profile pass (2026-05-06)
+# Phase 36 Step 0 — profile pass(es) (2026-05-06)
 
-Raw `.log` files are gitignored (`*.log` in repo root). To reproduce:
+Three runs at increasing realism. Raw `.log` files are gitignored
+(`*.log`); reproduce via `scripts/profile-mtp-draft-cycle.sh` after
+stopping the production llama-server.
+
+## Runs
+
+| Run             | Prompt                                                 | `-c`     | Sampler | Output dir                              |
+|-----------------|--------------------------------------------------------|---------:|---------|-----------------------------------------|
+| Synthetic 4K    | 30-token historic synthetic                            |   4 096  | greedy  | `data/profile-step0/`                   |
+| X02 64K         | `scripts/agentic-prompt-corpus.jsonl#X02` (~1.3K tok)  |  65 536  | greedy  | `data/profile-step0-x02-c64k/`          |
+| **X02 256K**    | `agentic-prompt-corpus.jsonl#X02`                      | 262 144  | greedy  | `data/profile-step0-x02-c256k/`         |
+
+X02 256K matches production allocation (`profiles/qwen36-27b-x1.sh`
+runs `--ctx-size 262144`). Greedy `temp=0` matches the fused MTP
+path's trivial-sampler constraint but **not** production's chat
+sampler (`temp=0.6 --top-p 0.95`); that regime would route through
+the per-step fallback and is unprofiled.
+
+## Reproduce
 
 ```sh
-# From yarn-agentic root, with production llama-server stopped:
 systemctl --user stop llama-server
+
+# Synthetic 4K (the historic baseline):
 bash scripts/profile-mtp-draft-cycle.sh
+
+# X02 at 64K context:
+CTX_SIZE=65536 PROMPT_ID=X02 OUTDIR_SUFFIX="-x02-c64k" \
+  bash scripts/profile-mtp-draft-cycle.sh
+
+# X02 at production 256K context:
+CTX_SIZE=262144 PROMPT_ID=X02 OUTDIR_SUFFIX="-x02-c256k" \
+  bash scripts/profile-mtp-draft-cycle.sh
+
 systemctl --user start llama-server
 ```
 
-Outputs land back in this directory.
+## Throughput summary
 
-## Setup
+| Regime         | nomtp  | d=1    | d=3    | d=5    | d=1 acc | d=5 acc |
+|----------------|-------:|-------:|-------:|-------:|--------:|--------:|
+| Synthetic 4K   |  33.21 |  34.25 |  30.46 |  30.00 |     81% |     54% |
+| X02 64K        |  ~32   |  34.36 |  30.43 |  30.36 |     88% |     58% |
+| **X02 256K**   |  31.13 |  32.14 |  28.76 |  28.65 |     88% |     58% |
 
-- Submodule: `ik_llama.cpp/` at `phase36-mtp-throughput` @ `d15dd96`
-  (per-step component timing + `can_reuse_graph` HIT/MISS counters,
-  `IK_PRINT_TIMING` CLI-override fix).
-- Build: `build-profile/` configured with
-  `-DCMAKE_CXX_FLAGS=-DIK_PRINT_TIMING=1`.
-- Model: `/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless.gguf`
-  (production INT4 AutoRound, ~18 GiB).
-- Hardware: 2× Quadro RTX 6000 (TU102, sm_75, 24 GiB each), CUDA 13.2.
-- Server flags: `--device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1
-  -ngl 999 -fa on -c 4096 --batch-size 2048 --ubatch-size 512
-  --cache-type-k q4_0 --cache-type-v q4_0 --k-cache-hadamard --v-cache-hadamard`.
-- Workload: 200 greedy tokens (`temperature=0`) on the
-  "history of artificial intelligence" prompt, after a 16-token warmup.
-- Profile env: `LLAMA_PROFILE_DECODE=1`.
+The d=1 > d=3 > d=5 ranking is **invariant across all three regimes**.
+Absolute throughput drops ~6% from 4K → 256K (verify graph carries
+more attention work over the bigger KV).
 
-## Results
+## Per-component timing (microseconds, X02 256K)
 
-### Throughput
+| component               | d=0   | d=1   | d=3   | d=5   |
+|-------------------------|------:|------:|------:|------:|
+| build_graph             |  929  |  362  |  360  |  357  |
+| sched_alloc_graph       | 1997  |  505  |  518  |  548  |
+| graph_compute (all)     | 37109 | 20512 | 19662 | 19623 |
+| set_inputs              |   18  |   19  |   25  |   46  |
+| mtp_draft_step_decode   |   —   | 4980  | 5092  | 5044  |
+| mtp_draft_step_emb_d2h  |   —   |    2  |    2  |    2  |
+| mtp_draft_step_hidden_h2d| —    |    0  |    0  |    0  |
 
-| draft | t/s    | acceptance     |
-|-------|--------|----------------|
-| d=0   | 33.21  | —              |
-| d=1   | 34.25  | 81% (96/118)   |
-| d=3   | 30.46  | 55% (98/177)   |
-| d=5   | 30.00  | 54% (97/179)   |
+## Per-draft-step distribution at d=5
 
-### Per-component timing (microseconds, mean across calls)
+| step | Synthetic 4K (cycles=116) | X02 64K / 256K (cycles=197) |
+|------|--------------------------:|----------------------------:|
+| 0    | 116                       | 197                         |
+| 1    |  59                       | 145                         |
+| 2    |   2                       |   4                         |
+| 3    |   1                       |   0                         |
+| 4    |   1                       |   0                         |
+| **avg drafts/cycle** | **1.54**          | **1.76**                    |
 
-| component             | d=0   | d=1   | d=3   | d=5   |
-|-----------------------|-------|-------|-------|-------|
-| build_graph           |  903  |  353  |  342  |  354  |
-| sched_alloc_graph     | 1891  |  476  |  453  |  473  |
-| graph_compute (all)   | 31142 | 16726 | 16388 | 16381 |
-| set_inputs            |    2  |    3  |   27  |   15  |
-| mtp_draft_step_decode |   —   | 4898  | 5152  | 4934  |
-| mtp_draft_step_emb_d2h|   —   |    2  |    2  |    2  |
-| mtp_draft_step_hidden_h2d| —  |    0  |    0  |    0  |
+## `can_reuse_graph` HIT/MISS final summary
 
-### Per-draft-step distribution at d=5
+| Regime       | HIT  | MISS  | r1 (no_prev) | r2 (multi_token) | r7 (n_kv_changed) | r9 (mtp_op_changed) |
+|--------------|-----:|------:|-------------:|-----------------:|------------------:|--------------------:|
+| Synthetic 4K |   61 |   339 |    201 (59%) |        82 (24%)  |               0   |             56 (17%) |
+| X02 64K      |  137 |   563 |    355 (63%) |       159 (28%)  |               1   |             48 ( 9%) |
 
-| step | n   | mean decode (µs) |
-|------|-----|------------------|
-| 0    | 116 | 4915             |
-| 1    | 59  | 4970             |
-| 2    | 2   | 4951             |
-| 3    | 1   | 4949             |
-| 4    | 1   | 4956             |
-
-Effective draft depth = 179 / 116 = **1.54** (vs requested 5).
-
-### `can_reuse_graph` HIT/MISS at d=5 (final summary)
-
-HIT=61, MISS=339:
-- r1 (no_prev): 201 (59%)
-- r2 (multi_token): 82 (24%)
-- r9 (mtp_op_changed): 56 (17%)
-- r7 (n_kv_changed): **0**
+r7 (`kv_self.n` changed) is 0–0.2% across both regimes — Step 5's
+KQ_mask bucketing premise is invalidated in both.
 
 ## Key findings
 
-1. Step 0 performance gate FAILED — build+alloc is 16–22% of
-   per-draft-step cost on populated steps, not ≥40%. Compute
-   dominates.
-2. Draft depth at d=5 averages 1.54, not 5. The
-   `prob < p_min` early-exit clamps depth aggressively.
-3. `r7` (n_kv changed) = 0 % of misses — Step 5 (KQ_mask
-   bucketing) premise invalidated.
-4. emb_d2h + hidden_h2d = 2 µs total per step — Step 4
+1. Step 0 perf gate (`build+alloc ≥ 40% of per-step cost`) FAILED.
+   build+alloc is 16–22% of per-draft-step cost on populated steps.
+   Compute dominates.
+2. Effective draft depth at d=5 averages ~1.5–1.8, not 5. The
+   `prob < p_min` early-exit clamps depth aggressively in every
+   regime tested.
+3. r7 (n_kv changed) MISS reason fires 0–0.2% across regimes.
+   Step 5 (KQ_mask bucketing) premise invalidated.
+4. emb_d2h + hidden_h2d = 2 µs per step in every regime. Step 4
    (D2D relay) premise invalidated by 3 orders of magnitude.
+5. d=1 > d=3 > d=5 throughput ranking is invariant from 4K to 256K
+   context. Synthetic profile correctly captured the regression.
 
 See `PHASE36-MULTI-GPU-MTP-DRAFT-THROUGHPUT.md` "Step 0 results"
 and `PHASE36-PLAN.md` "Performance gate — RESULT: FAILED" for the
-revised step ordering and revised cumulative throughput model.
+revised step ordering and revised cumulative throughput model
+(realistic 256K-anchored ceiling: ~70 t/s, 2.2× baseline).
