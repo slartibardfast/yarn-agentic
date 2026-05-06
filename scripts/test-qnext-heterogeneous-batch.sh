@@ -115,15 +115,37 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Build heterogeneous prompts — A is short (~50 tokens), B is long
-# (~2000 tokens). The sizes straddle the --batch-size 2048 boundary
-# on purpose so that a single scheduler step packs both into one
-# ubatch and triggers the per-block dispatch path.
-PROMPT_SHORT="What is 2 + 2? Answer with one word."
-PROMPT_LONG="$(printf 'Read the following passage and summarize it in one sentence:\n\n')"
-for chunk in $(seq 1 40); do
-    PROMPT_LONG+="The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. The five boxing wizards jump quickly. Sphinx of black quartz, judge my vow. How vexingly quick daft zebras jump. "
-done
+# Build heterogeneous prompts. The bug requires (a) one slot still
+# prefilling a *large* batch when (b) another slot reaches decode —
+# token_seq_ids in the resulting ubatch are then [1,1,...,1, 0]
+# (CONTIGUOUS_BLOCKS, mixed-shape) and the per-block dispatch
+# fires. Three things matter:
+#   - Prompts are LARGE (5K+ tokens) so prefill takes seconds, not ms.
+#   - Prompts are UNIQUE per (iter, label) so the cache cannot
+#     short-circuit the prefill. Random-seeded suffix per call.
+#   - The 'slot 0' request decodes for max_tokens=200 to stay busy
+#     well into other slots' prefill windows.
+make_unique_prompt() {
+    local label=$1
+    local target_words=$2
+    local seed
+    seed=$(printf '%s-%s-%s' "$RUN_ID" "$label" "$RANDOM-$RANDOM-$RANDOM")
+    {
+        printf '[unique-tag-%s] Read the following passage and answer the question at the end.\n\n' "$seed"
+        local i=0
+        while [ $i -lt "$target_words" ]; do
+            # Each pangram chunk is ~10 words; emit until we hit target.
+            printf 'The %s quick brown fox jumps over the lazy %s dog. ' "$RANDOM" "$RANDOM"
+            i=$((i + 12))
+        done
+        printf '\n\nQuestion: in one word, what is the unique tag at the start? '
+    }
+}
+
+# ~6000 tokens (the long-prefill workload).
+PROMPT_LONG=$(make_unique_prompt long 4500)
+# ~600 tokens — a "medium" prefill, finishes faster than long.
+PROMPT_MEDIUM=$(make_unique_prompt medium 400)
 
 post_chat() {
     local label=$1
@@ -131,14 +153,18 @@ post_chat() {
     local n_tokens=$3
     local out="$RUN_DIR/resp-$label.json"
     local timing="$RUN_DIR/timing-$label.txt"
-    /usr/bin/time -f '%e' -o "$timing" \
+    (
+        local t0=$(date +%s.%N)
         curl -sS --max-time 120 \
             -H "Content-Type: application/json" \
             -d "$(jq -n --arg p "$prompt" --argjson n "$n_tokens" \
                 '{messages:[{role:"user",content:$p}], max_tokens:$n, temperature:0.0, stream:false}')" \
             -o "$out" -w 'http=%{http_code} bytes=%{size_download}\n' \
             "http://127.0.0.1:$PORT/v1/chat/completions" \
-            > "$RUN_DIR/curl-$label.txt" 2>&1 &
+            > "$RUN_DIR/curl-$label.txt" 2>&1
+        local t1=$(date +%s.%N)
+        echo "$(echo "$t1 - $t0" | bc)" > "$timing"
+    ) &
     echo $!
 }
 
@@ -148,19 +174,28 @@ for iter in $(seq 1 "$ITERS"); do
     echo
     echo "=== iteration $iter / $ITERS ==="
 
+    # Build fresh unique prompts for THIS iteration so cache hits can
+    # never short-circuit the prefill.
+    LONG_A=$(make_unique_prompt "iter${iter}-A" 4500)
+    LONG_B=$(make_unique_prompt "iter${iter}-B" 4500)
+    MED_C=$(make_unique_prompt  "iter${iter}-C" 400)
+    MED_D=$(make_unique_prompt  "iter${iter}-D" 400)
+
+    # Slot 0 gets a long generation (max_tokens=200) so it stays
+    # busy in decode while later slots are still prefilling.
     PIDS=()
-    PIDS+=("$(post_chat "iter${iter}-short-A" "$PROMPT_SHORT" 32)")
-    PIDS+=("$(post_chat "iter${iter}-long-B"  "$PROMPT_LONG"  32)")
+    PIDS+=("$(post_chat "iter${iter}-long-A"  "$LONG_A" 200)")
+    PIDS+=("$(post_chat "iter${iter}-long-B"  "$LONG_B"  32)")
     if [ "$NP" -ge 4 ]; then
-        PIDS+=("$(post_chat "iter${iter}-short-C" "$PROMPT_SHORT" 32)")
-        PIDS+=("$(post_chat "iter${iter}-long-D"  "$PROMPT_LONG"  32)")
+        PIDS+=("$(post_chat "iter${iter}-med-C" "$MED_C" 32)")
+        PIDS+=("$(post_chat "iter${iter}-med-D" "$MED_D" 32)")
     fi
 
     for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null; done
 
     iter_pass=true
-    for label in "iter${iter}-short-A" "iter${iter}-long-B" \
-                 $([ "$NP" -ge 4 ] && echo "iter${iter}-short-C iter${iter}-long-D"); do
+    for label in "iter${iter}-long-A" "iter${iter}-long-B" \
+                 $([ "$NP" -ge 4 ] && echo "iter${iter}-med-C iter${iter}-med-D"); do
         local_curl="$RUN_DIR/curl-$label.txt"
         if ! grep -q "http=200" "$local_curl"; then
             echo "  FAIL $label: $(cat "$local_curl")"
