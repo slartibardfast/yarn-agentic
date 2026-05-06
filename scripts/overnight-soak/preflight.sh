@@ -82,11 +82,16 @@ echo "=== smoke: short prompt to slot 0 ===" | tee -a "$LOG"
 SMOKE=$(curl -fsS --max-time 30 -H 'Content-Type: application/json' \
     -d '{"prompt":"Reply with just OK.","n_predict":4,"stream":false,"cache_prompt":false}' \
     "http://127.0.0.1:$ALT_PORT/completion" 2>&1)
-echo "$SMOKE" | python3 -c 'import sys, json
+echo "$SMOKE" | python3 -c '
+import sys, json
 try:
-    d=json.loads(sys.stdin.read()); print(f"  tokens_predicted={d.get(\"tokens_predicted\",0)} content={d.get(\"content\",\"\")[:60]!r}")
+    d = json.loads(sys.stdin.read())
+    n = d.get("tokens_predicted", 0)
+    c = d.get("content", "")[:60]
+    print("  tokens_predicted=" + str(n) + " content=" + repr(c))
 except Exception as e:
-    print(f"  smoke parse err: {e}")' | tee -a "$LOG"
+    print("  smoke parse err: " + str(e))
+' | tee -a "$LOG"
 
 echo | tee -a "$LOG"
 echo "=== gpu state post-smoke ===" | tee -a "$LOG"
