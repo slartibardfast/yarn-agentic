@@ -46,7 +46,9 @@
 # Multi-GPU MTP
 
 - [Per-Step Checkpoint for Graph-Split DeltaNet](MULTI-GPU-PER-STEP-CHECKPOINT.md)
-- [Phase 36: Multi-GPU MTP Draft Throughput](PHASE36-MULTI-GPU-MTP-DRAFT-THROUGHPUT.md)
+- [Phase 36: Multi-GPU MTP Draft Throughput (design)](PHASE36-MULTI-GPU-MTP-DRAFT-THROUGHPUT.md)
+- [Phase 36: MTP Audit (prior art)](PHASE36-MTP-AUDIT.md)
+- [Phase 36: Implementation Plan](PHASE36-PLAN.md)
 
 # Qwen3.5 MTP Tool Calling
 
