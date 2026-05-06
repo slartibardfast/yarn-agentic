@@ -22,31 +22,133 @@ even. That framing is wrong. Draft should cost nothing.
 
 | Step | State | Summary |
 |------|-------|---------|
-| 0. Profile draft cycle | [ ] | Instrument every ms of the cycle — no estimates, only measurements |
+| 0. Profile draft cycle | [~] | Instrumented + first profile pass landed (2026-05-06). Three estimates invalidated — see "Step 0 results" below. |
 | 1. Fused multi-draft cgraph | [ ] | Single ggml_cgraph chaining N draft steps into one compute call |
 | 2. Async dual-stream pipeline | [ ] | Draft runs on a low-priority CUDA stream, overlapped with accept tail |
 | 3. Eliminate UPDATE_ACCEPTED decode | [ ] | Fold MTP KV update into verify via per-ubatch hook (shrinks accept tail) |
-| 4. Device-resident hidden state relay | [ ] | Kill the inp_mtp_states host bounce — draft starts faster |
-| 5. KQ_mask bucketing for graph reuse | [ ] | Pad n_kv to bucket boundaries for non-fused fallback path |
+| 4. Device-resident hidden state relay | [ ] | **Premise invalidated by Step 0** — measured D2H+H2D = 2µs total, not 1.5 ms. Demoted. |
+| 5. KQ_mask bucketing for graph reuse | [ ] | **Premise invalidated by Step 0** — measured `kv_self.n` mismatch (r7) = 0% of misses. Demoted. |
 | 6. MTP head precision audit | [ ] | Test F16 MTP head preservation on acceptance rate |
+
+## Step 0 results (measured 2026-05-06)
+
+**Test**: 200 greedy tokens (`temperature=0`) on the production
+`qwen3.6-27b-V-F1.T1.qq-tool1lossless.gguf`, `--split-mode graph --tensor-split 1,1`,
+`-c 4096`, q4_0 Hadamard KV. Logs: `data/profile-step0/{nomtp,mtp-d1,mtp-d3,mtp-d5}.log`.
+
+### Throughput and acceptance — measured vs prior estimate
+
+| Config  | Measured t/s | Prior estimate | Acceptance (acc/gen) |
+|---------|-------------:|---------------:|---------------------:|
+| No MTP  | 33.21        | 33.5           | —                    |
+| d=1     | 34.25 (+3%)  | 35.3 (+5%)     | 81% (96/118)         |
+| d=3     | 30.46 (-8%)  | 32.5 (-3%)     | 55% (98/177)         |
+| d=5     | 30.00 (-10%) | 32.4 (-3%)     | 54% (97/179)         |
+
+The d≥2 regression is **deeper** than estimated. d=5 trails the no-MTP
+baseline by 10%, not 3%.
+
+### Effective draft depth (the surprise)
+
+Per-step decode firing distribution at d=5 (n=116 cycles):
+
+| step | n   | mean decode (µs) |
+|-----:|----:|-----------------:|
+| 0    | 116 | 4915             |
+| 1    |  59 | 4970             |
+| 2    |   2 | 4951             |
+| 3    |   1 | 4949             |
+| 4    |   1 | 4956             |
+
+**Average drafts per cycle at d=5: 1.54** (179 / 116). The
+`prob < p_min` early-exit clamps draft depth aggressively. d=5 mode
+runs the same loop overhead as d=5 but only generates ~1.5 drafts
+per cycle on average — meaning d=5 is structurally close to "d=1
+plus extra rejected drafts." This explains the d≥2 regression: more
+generation overhead, similar accepted-token rate.
+
+### Per-component timing — measured
+
+| Component                  | mtp-d5 mean (µs) | mtp-d1 mean (µs) | nomtp mean (µs) |
+|---------------------------:|-----------------:|-----------------:|----------------:|
+| build_graph                |              354 |              353 |             903 |
+| sched_alloc_graph          |              473 |              476 |            1891 |
+| graph_compute (all)        |           16 381 |           16 726 |          31 142 |
+| set_inputs                 |               15 |                3 |               2 |
+| `mtp_draft_step_decode`    |             4934 |             4898 |               — |
+| `mtp_draft_step_emb_d2h`   |                2 |                2 |               — |
+| `mtp_draft_step_hidden_h2d`|                0 |                0 |               — |
+
+**Per-step build+alloc fraction of decode** at d=5:
+- step=0: build+alloc 813µs / decode 5097µs = **16.0%**
+- step=1: 930µs / 4970µs = 18.7%
+- step=2: 1095µs / 4951µs = 22.1%
+- step=3: 2168µs / 4949µs = 43.8% (n=1, single-call noise)
+- step=4: 2168µs / 4956µs = 43.7% (n=1, single-call noise)
+
+The **Step 0 performance gate** ("≥40% of per-step cost is
+build+alloc") **fails on the populated steps** (0–2): compute
+dominates draft-step cost, scheduling does not. The plan's central
+quantitative premise — that fused cgraph eliminates the dominant
+per-step cost — is wrong by a factor of 2-3×.
+
+### `can_reuse_graph` HIT/MISS — measured
+
+Final summary at d=5: HIT=61, MISS=339. Per-condition reasons:
+
+| Reason | Code | Count | % of misses |
+|--------|------|------:|------------:|
+| no_prev | r1 | 201 | 59% |
+| multi_token | r2 | 82 | 24% |
+| mtp_op_changed | r9 | 56 | 17% |
+| **n_kv_changed** | **r7** | **0** | **0%** |
+| (others 3,4,5,6,8,10) | — | 0 | 0% |
+
+**Step 5 (KQ_mask bucketing) was scoped to fix r7. r7=0% means
+Step 5 has no measured benefit.** The actual reuse killers are
+structural: prev is wiped after every multi-token call (verify),
+verify itself is multi-token, and switching between MTP op types
+invalidates the cache.
+
+### What this changes
+
+| Step | Original premise | Measurement | Verdict |
+|------|------------------|-------------|---------|
+| 1. Fused cgraph | 5× draft steps × 11 ms each → 1× fused → 7 ms | Effective depth = 1.5, not 5; per-step build+alloc = 17–22%, not >40% | Still useful (some savings, prerequisite for Step 2), but **expected impact downgraded from "29ms → 7ms saving" to "small saving on the 0–1 cycles where step≥2 fires"** |
+| 2. Async pipeline | Move draft off critical path, save ~48 ms | Draft on critical path = 5 ms × 1.54 = 7.7 ms, not 55 ms | Still the right architecture but **expected savings ≪ originally projected** |
+| 3. Kill UPDATE_ACCEPTED | Saves ~5 ms accept tail | Update_accepted size still unmeasured (no per-cycle bucketing yet); >0 ms guaranteed | **Scope unchanged** but specific savings number waits on Step 3 telemetry |
+| 4. D2D hidden-state relay | Kill 1.5 ms × 5 = 7.5 ms host bounce per cycle | Measured D2H+H2D = 2 µs total | **Premise invalidated.** Drop from priority list. |
+| 5. KQ_mask bucketing | Fix `kv_self.n` (r7) churn → 80% reuse | r7 = 0% of misses; r1+r2+r9 dominate | **Premise invalidated.** Drop from priority list. |
+| 6. MTP head precision | F16 head closes the d=3 86%→55% acceptance gap | Acceptance gap confirmed (54% at d=5 vs community 67%); precision unmeasured | **Scope unchanged** — still worth doing, prerequisite is gguf-info on the production AutoRound. |
+
+### Revised priority
+
+1. Step 3 (kill UPDATE_ACCEPTED) — fastest path to a measurable win
+2. Step 1 + Step 2 together — the d=5 path to 1.5–2× baseline (not 4×+)
+3. Step 6 (MTP head F16) — multiplicative with the above
+4. Step 5 (bucketing): demoted; revisit only if a new measurement shows r7 firing in a different operating regime
+5. Step 4 (D2D relay): demoted; revisit only if profiling under a different workload shows the bounce regrowing
 
 ## Context
 
 Per-step checkpoint for split DeltaNet state landed (see
 [Multi-GPU Per-Step Checkpoint](MULTI-GPU-PER-STEP-CHECKPOINT.md)).
-The ~36 ms re-decode penalty is eliminated. But d=1 still wins:
+The ~36 ms re-decode penalty is eliminated. But d=1 still wins
+(measured 2026-05-06; see "Step 0 results" above for the full
+table):
 
 | Config | Throughput | Accept |
 |--------|-----------|--------|
-| No MTP | 33.5 t/s | — |
-| d=1 | 35.3 t/s | 86% |
-| d=3 | 32.5 t/s | 63% |
-| d=5 | 32.4 t/s | 59% |
+| No MTP | 33.21 t/s | — |
+| d=1 | 34.25 t/s | 81% |
+| d=3 | 30.46 t/s | 55% |
+| d=5 | 30.00 t/s | 54% |
 
-Root cause: draft is on the critical path. Every draft step adds
-to cycle time. The scheduling overhead (graph build, alloc, launch)
-per step makes it worse, but even with zero overhead, sequential
-draft compute (~5 ms × 5 = 25 ms) dominates the cycle.
+Root cause: draft is on the critical path. Each draft step adds
+~5 ms to cycle time (compute-dominated). Scheduling overhead
+(build+alloc) is 17–22% of per-step cost — non-trivial but not
+the dominant term. Effective draft depth at d=5 is ~1.5 because
+the early-exit on `prob < p_min` clamps below the requested 5.
 
 ## Prior art
 
@@ -64,24 +166,27 @@ draft compute (~5 ms × 5 = 25 ms) dominates the cycle.
 
 ## Architecture: async draft pipeline
 
-### Current (sequential)
+### Current (sequential — measured 2026-05-06)
 
 ```
                     CRITICAL PATH
                     ─────────────
-VERIFY_k ──────────────────────────────────  ~13.5 ms   GPU×2
-UPDATE_ACCEPTED ───────────────              ~7 ms      GPU×2
-DRAFT step 1 ────────────────────            ~11 ms     GPU×2
-DRAFT step 2 ────────────────────            ~11 ms     GPU×2
-DRAFT step 3 ────────────────────            ~11 ms     GPU×2
-DRAFT step 4 ────────────────────            ~11 ms     GPU×2
-DRAFT step 5 ────────────────────            ~11 ms     GPU×2
-ACCEPT TAIL ──────────                       ~8 ms      GPU×2
-                                             ─────
-                                             ~83 ms → ~4 tokens → 48 t/s theoretical
+VERIFY_k ──────────────────────────────────  ~30 ms     GPU×2  (measured: graph_compute mean × verify share)
+DRAFT step 0 ───────                          ~5 ms     GPU×2  (always fires)
+DRAFT step 1 ───────                          ~5 ms     GPU×2  (~50% of cycles)
+DRAFT step 2 ───────                          ~5 ms     GPU×2  (~2% of cycles)
+DRAFT step 3 ───────                          ~5 ms     GPU×2  (rare)
+DRAFT step 4 ───────                          ~5 ms     GPU×2  (rare)
+ACCEPT + UPDATE_ACCEPTED ─────                ~? ms     GPU×2  (Step 3 will measure precisely)
+                                              ─────
+                                              ~57 ms/cycle → 1.72 tokens/cycle → 30.0 t/s
 ```
 
-Every block is on the critical path. Draft adds 55 ms.
+Effective draft depth = 1.54 at d=5. The ~55 ms "5 sequential
+drafts" of the prior estimate doesn't happen — the loop exits early
+on `prob < p_min`. The d=5 → d=1 regression is not from 55 ms of
+critical-path draft; it's from ~5–8 ms of *wasted* draft compute
+plus the lower acceptance rate per accepted draft.
 
 ### Target (pipelined)
 
@@ -469,29 +574,41 @@ for the corresponding precision level.
 
 ---
 
-## Cumulative impact model
+## Cumulative impact model (revised after Step 0)
 
-| State | Cycle time | Tokens/cycle | Throughput |
-|-------|-----------|--------------|------------|
-| Current (d=5, sequential) | ~85 ms | ~4.0 | 32.4 t/s |
-| After Step 1 (fused draft) | ~50 ms | ~4.0 | ~80 t/s |
-| After Step 2 (async pipeline) | ~20.5 ms | ~4.0 | ~195 t/s |
-| After Step 3 (kill UPDATE_ACCEPTED) | ~16.6 ms | ~4.0 | ~241 t/s |
-| After Step 6 (F16 MTP head, 75% accept) | ~16.6 ms | ~4.75 | ~286 t/s |
-| Baseline (no MTP) | ~30 ms | 1.0 | 33.5 t/s |
+The pre-measurement model assumed 4 tokens/cycle and 5 sequential
+draft steps × 11 ms each. The measurement says:
 
-These are theoretical upper bounds. Realistic throughput depends on:
-- GPU resource contention between streams (expect 70–80% of
-  theoretical overlap efficiency)
-- Remaining sync points not yet identified
-- Actual measured cycle times (Step 0)
+- ~1.72 tokens/cycle at d=5 (not 4)
+- 5 ms per draft step (not 11)
+- 1.54 average drafts per cycle (not 5)
+- ~30 ms verify, dominating the cycle (~53% of 57 ms)
 
-**Conservative estimate:** 60% of theoretical after Steps 1–3 →
-**~145 t/s (4.3× baseline)**. Even at 40% efficiency: **~96 t/s
-(2.9× baseline)**.
+A realistic model now looks like this:
 
-The upstream single-GPU 2.5× benchmark (83 t/s) is achievable and
-beatable with correct pipelining on 2-GPU.
+| State                                       | Cycle time | Tokens/cycle | Throughput |
+|---------------------------------------------|-----------:|-------------:|-----------:|
+| **Measured baseline (d=5, sequential)**     |     ~57 ms |        ~1.72 | 30.00 t/s  |
+| Measured baseline (d=1, sequential)         |     ~52 ms |        ~1.81 | 34.25 t/s  |
+| Measured baseline (no MTP)                  |     ~30 ms |         1.00 | 33.21 t/s  |
+| After Step 1 (fused draft, d=5)             | ~55 ms     |        ~1.72 | ~31 t/s    |
+| After Step 2 (async pipeline)               | ~30–35 ms  |        ~1.72 | ~50 t/s    |
+| After Step 3 (kill UPDATE_ACCEPTED)         | ~25–30 ms  |        ~1.72 | ~57 t/s    |
+| After Step 6 (F16 head → 67% d=3, 81% d=1) | ~25–30 ms  |        ~2.5  | ~85 t/s    |
+
+The Step 0 measurement says the headroom is much smaller than the
+~241 t/s upper bound originally projected. **Realistic ceiling for
+Steps 1–3 + Step 6 on this 2-GPU setup is ~2.5× baseline**, matching
+the upstream single-GPU 2.5× benchmark — not exceeding it.
+
+The original "60% efficiency → 145 t/s (4.3×)" projection
+multiplied two errors: the 11 ms-per-step estimate and the
+4 tokens/cycle assumption. Both were too optimistic by ~2×.
+
+A 1.5–2.5× baseline win is still worth shipping. But the
+"d=5 throughput > d=1" goal in PHASE36-PLAN.md is now directly
+contingent on Step 6 lifting effective draft depth (via higher
+per-step acceptance), not on Steps 1–4 alone.
 
 ## Execution order
 

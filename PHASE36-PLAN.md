@@ -57,34 +57,50 @@ Steps 3, 4, 5, 6 are independent of each other but Step 2 benefits from Step 3 (
 
 ---
 
-## Step 0: Profile draft cycle (2 remaining commits)
+## Step 0: Profile draft cycle [~] (instrumented + first profile landed; gate failed; ordering revised)
 
-Instrumentation and measurement. Profile script and per-step timing exist but are uncommitted.
+Instrumentation and measurement. Profile script and per-step timing landed at submodule `d15dd96` (phase36-mtp-throughput) on 2026-05-06.
 
-### 0.1 Commit instrumentation (1 commit)
+### 0.1 Instrumentation [x] (commit `d15dd96`)
 
-Commit the following together as a single instrumentation commit on `phase36-mtp-throughput`:
-- `common/speculative.cpp`: per-step decode/emb_d2h/hidden_h2d timing (lines 1419-1456)
-- `src/llama.cpp`: can_reuse_graph HIT/MISS logging (lines 4856, 4890)
-- `scripts/profile-mtp-draft-cycle.sh` (in yarn-agentic, separate commit there)
+Single submodule commit on `phase36-mtp-throughput`:
+- `common/speculative.cpp`: per-draft-step `decode/emb_d2h/hidden_h2d` timers, env-gated by `LLAMA_PROFILE_DECODE`. Output format: `<label>  <microseconds>  step=<i>` — matches the awk pattern in `scripts/profile-mtp-draft-cycle.sh`.
+- `src/llama.cpp`: `can_reuse_graph` HIT/MISS counter at the call site, with per-condition reason histogram (1..10). Gated by `IK_PRINT_TIMING`.
+- `src/llama.cpp`: `#ifndef IK_PRINT_TIMING` guard so the script's CLI `-DIK_PRINT_TIMING=1` actually takes effect (the unconditional `#define ... 0` was silently overriding it; existing instrumentation never fired before this fix).
 
-Also: delete untracked `ggml/src/gguf.cpp` and rebuild `build-profile/` to include the new instrumentation.
+### 0.2 First profile pass [x] (logs in `data/profile-step0/`)
 
-### 0.2 Run profiling and publish measured timing table
+Ran `scripts/profile-mtp-draft-cycle.sh` at d=0,1,3,5 (200 tokens, temperature=0) on the production AutoRound quant with the production server stopped. Full results table now lives in `PHASE36-MULTI-GPU-MTP-DRAFT-THROUGHPUT.md` under "Step 0 results."
 
-Run `scripts/profile-mtp-draft-cycle.sh` at d=0,1,3,5 (200 tokens, temperature=0). Extract:
-- Per-decode `build_graph`, `sched_alloc_graph`, `set_inputs`, `graph_compute` (from IK_PRINT_TIMING=1)
-- Per-step `decode`, `emb_d2h`, `hidden_h2d` (from LLAMA_PROFILE_DECODE)
-- `can_reuse_graph` HIT/MISS rates per draft depth
-- Throughput (t/s) and acceptance rate per draft depth
+### Performance gate — RESULT: FAILED, ordering revised
 
-Replace every estimate in `PHASE36-MULTI-GPU-MTP-DRAFT-THROUGHPUT.md` with measured values.
+The gate ("≥ 40% of per-step cost is build+alloc") **failed** at the populated draft steps:
 
-**Commit:** Update Phase 36 doc with measured numbers.
+| step | n   | build+alloc / decode |
+|-----:|----:|---------------------:|
+| 0    | 116 | 16.0%                |
+| 1    |  59 | 18.7%                |
+| 2    |   2 | 22.1%                |
+| 3    |   1 | 43.8% (single-call noise) |
+| 4    |   1 | 43.7% (single-call noise) |
 
-### Performance gate
+Compute dominates draft-step cost, not scheduling. The gate forced a re-evaluation, which surfaced three more findings that changed the plan:
 
-Measured timing validates that scheduling overhead (build + alloc) dominates over compute per draft step. Expected: >= 40% of per-step cost is build+alloc. If compute dominates instead, fused cgraph is less impactful and we re-evaluate step ordering.
+1. **Effective draft depth at d=5 = 1.54** (179 step calls / 116 cycles). The early-exit on `prob < p_min` clamps draft depth aggressively — the d=5 mode is structurally close to "d=1 plus extra rejected drafts." The original "5 sequential drafts × 11 ms = 55 ms on critical path" framing was wrong on both factors.
+2. **`can_reuse_graph` MISS reasons:** r1=59% (no_prev), r2=24% (multi_token), r9=17% (mtp_op_changed). **r7 (n_kv changed) = 0%.** Step 5 (KQ_mask bucketing) was scoped specifically to fix r7 — its premise is invalidated.
+3. **Hidden-state host bounce:** measured `emb_d2h` = 2 µs, `hidden_h2d` = 0 µs per step. Step 4's premise of "1.5 ms × 5 = 7.5 ms saved per cycle" is invalidated by 3 orders of magnitude.
+
+### Revised step ordering
+
+Steps 4 and 5 are demoted (premise invalidated by data). Steps 1–3 remain but with smaller projected gains. See `PHASE36-MULTI-GPU-MTP-DRAFT-THROUGHPUT.md` "Step 0 results → What this changes" for the full table.
+
+New priority for the work that follows:
+
+1. **Step 3** (kill UPDATE_ACCEPTED) — fastest path to a measurable win; the actual update_accepted cost was not separated in the first profile pass and needs Step 3 telemetry to size precisely
+2. **Step 1 + Step 2 together** — the d=5 path to 1.5–2× baseline (not 4×+)
+3. **Step 6** (MTP head F16) — multiplicative with the above; needs a precision audit of the production AutoRound quant first
+4. **Step 5** (bucketing): demoted — revisit only if a new measurement shows r7 firing in a different operating regime
+5. **Step 4** (D2D relay): demoted — revisit only if profiling under a different workload shows the bounce regrowing
 
 ---
 
@@ -479,18 +495,21 @@ Measure acceptance at d=1,3,5 with F16 head vs quantized head. Compare to commun
 
 ---
 
-## Cumulative performance gates
+## Cumulative performance gates (revised after Step 0 measurement)
 
-| Milestone | d=5 t/s | vs baseline | Gate |
-|-----------|---------|-------------|------|
-| Current | 32.4 | 0.97x | -- |
-| After Step 1 (fused) | >= 40 | >= 1.2x | >= 36 t/s |
-| After Step 2 (pipeline) | >= 60 | >= 1.8x | >= 50 t/s |
-| After Step 3 (kill UPDATE) | >= 70 | >= 2.1x | >= 55 t/s |
-| After Step 4 (D2D relay) | >= 75 | >= 2.2x | >= 60 t/s |
-| Final (Steps 1-4 + Step 6) | >= 80 | >= 2.4x | >= 67 t/s (2x) |
+Pre-measurement table assumed ~85 ms cycle and 4 tokens/cycle. Measurement says ~57 ms cycle and 1.72 tokens/cycle. Targets are scaled proportionally; the Step 4 row is dropped (premise invalidated; demoted to "revisit later").
 
-Fail at any gate -> stop, diagnose, re-profile before continuing.
+| Milestone                            | d=5 t/s | vs baseline | Gate |
+|--------------------------------------|--------:|------------:|-----:|
+| **Current (measured 2026-05-06)**    |   30.00 |       0.90× | --   |
+| After Step 1 (fused)                 |   ≥ 31  |       0.93× | ≥ 30 t/s |
+| After Step 2 (pipeline)              |   ≥ 50  |       1.5×  | ≥ 40 t/s |
+| After Step 3 (kill UPDATE_ACCEPTED)  |   ≥ 57  |       1.7×  | ≥ 50 t/s |
+| Final (Steps 1–3 + Step 6 F16 head)  |   ≥ 85  |       2.5×  | ≥ 67 t/s (2×) |
+
+Fail at any gate → stop, diagnose, re-profile before continuing.
+
+The original ~80–96 t/s ceiling was based on multiplicative errors (5 drafts vs measured 1.5; 11 ms per step vs measured 5 ms). The revised ceiling matches the upstream single-GPU 2.5× benchmark — a defensible engineering target on this 2-GPU setup.
 
 ---
 
@@ -521,14 +540,13 @@ Step 0 -> Step 1 -> Step 2 -> Step 3 (can start parallel with Step 2) -> Step 4 
 
 Total: ~25 commits across 7 steps. Steps 5 and 6 can run in parallel with Steps 2-4.
 
-## Immediate next actions
+## Immediate next actions (Step 0 closed; next is Step 3 telemetry)
 
-1. Commit the uncommitted instrumentation (speculative.cpp + llama.cpp) on `phase36-mtp-throughput`
-2. Delete untracked `ggml/src/gguf.cpp`
-3. Rebuild `build-profile/` to include the new instrumentation
-4. Stop production server, run `scripts/profile-mtp-draft-cycle.sh`, collect data
-5. Update Phase 36 doc with measured numbers
-6. Performance gate check -> proceed to Step 1
+Step 0 setup + first profile pass done at parent commits `59e926f`..`885e2a0` and submodule `d15dd96`. Next:
+
+1. Decide whether to rerun the profile under different `--draft` / `p_min` settings to map effective draft depth (currently 1.54 at d=5; would be informative to see what depth actually fires at p_min=0)
+2. Begin Step 3 (kill UPDATE_ACCEPTED) — it's now the highest-priority lever per the revised ordering. The RED tests already exist in `tests/mtp-ubatch-hook/` (b34e661b) and `tests/mtp-verify-accept/` (58009a77). Step 3.1 (tag `result_mtp_embd` in verify graph) is the first concrete commit.
+3. After Step 3 lands and the `update_accepted` cost is precisely sized, decide whether Step 1 (fused) is worth the engineering vs going straight to Step 2 (pipeline) on the per-step path.
 
 ## Verification plan
 
