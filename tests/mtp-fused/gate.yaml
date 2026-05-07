@@ -1,0 +1,42 @@
+# tests/mtp-fused/gate.yaml
+#
+# Phase 36 fused-chain quality gate thresholds.
+# Read by scripts/test-fused-harness.sh; sets RED→GREEN targets that
+# drive the test-first sequence #3 → #2 → #4 → #5.
+#
+# Ratios are fused / per-step on the SAME workload (same prompt, same
+# ctx_size). Thresholds reflect targets *after* the relevant fix lands;
+# the gate is RED at Phase 0 (current state) on purpose so the harness
+# documents the work remaining.
+#
+# Phase 0 baseline (post seed-source + seed-copy + vocab fixes; X02 256K
+# observed 2026-05-07):
+#
+#   workload          accept_d3   tg_d3      accept_d3_ratio   tg_d3_ratio
+#   --------          ---------   -----      ---------------   -----------
+#   per-step  fast      0.7715     34.5 t/s  -                 -
+#   fused     fast      0.3975     ~36 t/s   0.515             ~1.04
+#   per-step  slow      0.5840     28.78     -                 -
+#   fused     slow      0.5201     34.30     0.890             1.192
+#
+# Threshold ratchet plan (test-first sequence):
+#
+#   Phase 0:        accept ratios FAIL (RED) on both workloads.
+#                   tg ratio fast PASSES at provisional 1.10.
+#                   tg ratio slow FAILS at 1.45 (RED, drives #2).
+#   Post-#3:        accept ratios reach >=0.97 (per-step semantic
+#                   equivalence). Both workloads PASS accept gate.
+#                   tg ratio slow still RED (1.192 < 1.45).
+#   Post-#2:        tg ratio slow >=1.45 (pipelining hides chain
+#                   latency behind verify). All gates PASS.
+#   Post-#4:        accept gate steady, tg ratio slow may rise to ~1.50
+#                   (adaptive depth picks higher-EV chains).
+#   Post-#5:        marginal tg lift to 1.52 (graph reuse trims build).
+
+fast:                       # synthetic prompt, ctx=4K (~3 min total)
+  accept_d3_ratio: 0.97     # Phase 0: 0.515 -- RED, drives #3
+  tg_d3_ratio:     1.10     # Phase 0: ~1.04 -- borderline RED, ratchets with #2
+
+slow:                       # X02 prompt, ctx=256K (~40 min total)
+  accept_d3_ratio: 0.97     # Phase 0: 0.890 -- RED, drives #3
+  tg_d3_ratio:     1.45     # Phase 0: 1.192 -- RED, drives #2

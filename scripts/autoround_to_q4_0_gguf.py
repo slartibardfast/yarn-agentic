@@ -571,15 +571,135 @@ def patch_convert(convert_module):
 
     Qwen3_5TextModel = getattr(convert_module, "Qwen3_5TextModel", None)
     if Qwen3_5TextModel is not None:
-        original_text_modify = Qwen3_5TextModel.modify_tensors
+        original_text_modify     = Qwen3_5TextModel.modify_tensors
+        original_force_quant     = Qwen3_5TextModel.tensor_force_quant
+
+        # ---------------- Phase 36 Issue G fix ----------------
+        # The Intel AutoRound INT4 snapshot stores `lm_head.weight` (== GGUF
+        # `output.weight`) as BF16 of shape (vocab=248320, embd=5120). Only
+        # ~152K rows correspond to trained tokenizer entries; the rest are
+        # matmul-alignment padding whose BF16 contents are uninitialised
+        # garbage. Two corrections must apply at emit time:
+        #
+        # Change A: emit `output.weight` as BF16 (not F16). The current
+        #   pipeline casts BF16 -> F16 in the converter's default path,
+        #   losing the BF16 source's 8-bit exponent range and risking
+        #   F16 saturation on the unused-row tail. Override
+        #   tensor_force_quant for `output.weight` to GGMLQuantizationType.BF16.
+        #
+        # Change B: zero out the unused-vocab rows of `output.weight`
+        #   before the converter quantizes it. The trained-vocab and
+        #   added-tokens (CONTROL/USER_DEFINED/EOS/PAD/...) row indices
+        #   come from the snapshot's `tokenizer.json`. Zero rows produce
+        #   exactly-zero logits at those indices; any trained row with
+        #   any positive logit wins on-device argmax, fixing the fused
+        #   path's "Invalid token" failure mode.
+        #
+        # The Q4_0 / Q4_0_AR16 trunk weights flow through unchanged.
+        _vocab_unused_cache = {"loaded": False, "indices": None,
+                               "n_vocab": 0, "n_trained": 0, "n_added": 0}
+
+        def _compute_unused_indices(model_dir):
+            """Identify lm_head rows that should be zeroed.
+
+            Sources, all in the AutoRound snapshot dir:
+              - `tokenizer.json` -> `model.vocab` (trained BPE merges)
+                 and `added_tokens` (specials).
+              - `config.json` -> `vocab_size` (matmul-aligned tensor width).
+
+            Returns a sorted list of row indices in [0, vocab_size) that
+            are not in the trained ∪ added-tokens set.
+            """
+            if _vocab_unused_cache["loaded"]:
+                return _vocab_unused_cache["indices"]
+            import json
+            from pathlib import Path
+            md = Path(model_dir)
+            tok_path = md / "tokenizer.json"
+            cfg_path = md / "config.json"
+            with open(tok_path) as f:
+                tok = json.load(f)
+            with open(cfg_path) as f:
+                cfg = json.load(f)
+            model_vocab = (tok.get("model") or {}).get("vocab") or {}
+            added_tokens = tok.get("added_tokens") or []
+            used = set()
+            # Trained-vocab token ids: values in tokenizer.model.vocab.
+            for _, v in model_vocab.items():
+                used.add(int(v))
+            for at in added_tokens:
+                used.add(int(at["id"]))
+            # vocab_size lives at top level for text-only configs and
+            # under text_config for VL multimodal variants.
+            n_vocab = cfg.get("vocab_size")
+            if n_vocab is None and isinstance(cfg.get("text_config"), dict):
+                n_vocab = cfg["text_config"].get("vocab_size")
+            if n_vocab is None:
+                # Fallback: take the max+1 of used ids; if even that's
+                # missing, refuse to proceed rather than silently emit
+                # the broken padded GGUF.
+                if not used:
+                    raise RuntimeError(
+                        "[Tool 1] cannot determine vocab_size for output.weight zeroing"
+                    )
+                n_vocab = max(used) + 1
+            unused = [i for i in range(int(n_vocab)) if i not in used]
+            _vocab_unused_cache["loaded"]    = True
+            _vocab_unused_cache["indices"]   = unused
+            _vocab_unused_cache["n_vocab"]   = int(n_vocab)
+            _vocab_unused_cache["n_trained"] = len(model_vocab)
+            _vocab_unused_cache["n_added"]   = len(added_tokens)
+            print(
+                f"[Tool 1] vocab analysis: total={int(n_vocab)} "
+                f"trained={len(model_vocab)} added={len(added_tokens)} "
+                f"unused={len(unused)} (will be zeroed in output.weight)",
+                file=sys.stderr,
+            )
+            return unused
 
         def patched_text_modify(self, data_torch, name, bid):
             if _is_vision_tensor(name):
                 return
             name = _strip_lm_prefix(name)
-            yield from original_text_modify(self, data_torch, name, bid)
+            for new_name, new_tensor in original_text_modify(self, data_torch, name, bid):
+                # Change B: zero unused-vocab rows of lm_head before emit.
+                # The converter has already cast BF16 -> F32 (line ~790 of
+                # convert_hf_to_gguf.py); we mutate the F32 tensor here,
+                # and the post-modify pipeline re-quantizes to BF16 via
+                # tensor_force_quant (Change A). Zero is exact in F32
+                # and BF16, no precision concern at the masked rows.
+                if new_name == "output.weight":
+                    import torch as _torch
+                    unused = _compute_unused_indices(self.dir_model)
+                    if unused:
+                        # Materialise lazy tensors before in-place mutation.
+                        if hasattr(new_tensor, "_lazy_load"):
+                            new_tensor = new_tensor._lazy_load()
+                        # Clone if it's a view to avoid aliasing surprises.
+                        new_tensor = new_tensor.clone()
+                        idx = _torch.tensor(unused, dtype=_torch.long, device=new_tensor.device)
+                        new_tensor.index_fill_(0, idx, 0.0)
+                        print(
+                            f"[Tool 1] output.weight: BF16 emit, zeroed "
+                            f"{len(unused)} unused vocab rows "
+                            f"(kept {_vocab_unused_cache['n_trained']} trained "
+                            f"+ {_vocab_unused_cache['n_added']} added)",
+                            file=sys.stderr,
+                        )
+                yield new_name, new_tensor
 
-        Qwen3_5TextModel.modify_tensors = patched_text_modify
+        def patched_tensor_force_quant(self, name, new_name, bid, n_dims):
+            # Change A: force BF16 emit for output.weight, overriding the
+            # ftype default (which is F16 at our --outtype f16). Trained
+            # rows preserve BF16 precision end-to-end (BF16 source ->
+            # F32 cast in converter -> BF16 emit here is round-trip
+            # lossless because F32 contains all BF16 bits exactly).
+            if new_name == "output.weight":
+                return gguf.GGMLQuantizationType.BF16
+            return original_force_quant(self, name, new_name, bid, n_dims)
+
+        Qwen3_5TextModel.modify_tensors     = patched_text_modify
+        Qwen3_5TextModel.tensor_force_quant = patched_tensor_force_quant
 
     def _materialize(t):
         """Force a possibly-lazy torch.Tensor to be eager (no-op if already eager)."""

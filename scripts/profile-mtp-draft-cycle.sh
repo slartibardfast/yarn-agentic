@@ -30,7 +30,7 @@ set -euo pipefail
 
 SRC=/home/llm/yarn-agentic/ik_llama.cpp
 BUILD_DIR="${SRC}/build-profile"
-MODEL=/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless.gguf
+MODEL=${MODEL:-/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless.gguf}
 CORPUS=/home/llm/yarn-agentic/scripts/agentic-prompt-corpus.jsonl
 PORT=18181
 

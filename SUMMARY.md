@@ -48,7 +48,10 @@
 - [Per-Step Checkpoint for Graph-Split DeltaNet](MULTI-GPU-PER-STEP-CHECKPOINT.md)
 - [Phase 36: Multi-GPU MTP Draft Throughput (design)](PHASE36-MULTI-GPU-MTP-DRAFT-THROUGHPUT.md)
 - [Phase 36: MTP Audit (prior art)](PHASE36-MTP-AUDIT.md)
+- [Phase 36: Fused Design Trace](PHASE36-FUSED-DESIGN-TRACE.md)
 - [Phase 36: Implementation Plan](PHASE36-PLAN.md)
+- [Phase 36: First Closure (premature — see Phase 37)](PHASE36-CLOSURE.md)
+- [Phase 37: Re-opening Phase 36 — chain-residual gap](PHASE37.md)
 
 # Qwen3.5 MTP Tool Calling
 
