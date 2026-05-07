@@ -56,6 +56,19 @@ Three additions in `common/speculative.cpp` + `examples/server/server-context.cp
 
 ### Implementation sequence
 
+#### Path A: Slot-allocator extension (chain rollout > 1)
+
+Smaller refactor; lifts effective accept by ~accept^N at modest extra overhead:
+
+1. **Plumb chain depth into cparams**: add `cparams.mtp_chain_extra_cells = max(0, LLAMA_MTP_ROLLOUT - 1)` read at init. Only set when `cparams.mtp && hparams.nextn_predict_layers > 0`.
+2. **Extend find_slot reservation**: `cells_to_reserve = n_tokens + cparams.mtp_chain_extra_cells`. Bump `cache.head` and set `cache.n` to cover all reserved cells.
+3. **Per-iter kv_head_offset in build_mtp_head_qwen35**: pass `kv_head_offset = k` to `build_std_attention` so iter k writes K/V at cell `kv_head + k`.
+4. **Per-iter KQ_mask view**: each chain iter's attention reads cells `[0..kv_head + k]`. The shared `KQ_mask` (built for verify's single Q position at `kv_head + 0`) needs an EXTENDED variant covering `kv_head + k` for k = 0..rollout-1. Build the extended mask in `build_inp_KQ_mask` when `cparams.mtp_chain_extra_cells > 0`, then index into it per-iter.
+5. **Confirm n_kv covers reserved**: `kv_self.n` at verify decode time should be `kv_head + n_tokens + chain_extra`. Adjust the bookkeeping in find_slot.
+6. **Test**: re-run harness with `LLAMA_MTP_ROLLOUT=3`. Expect accept × rollout effective (e.g., 39% × 3 → ~1.17 effective drafts/cycle).
+
+#### Path B: Tree drafting (top-K branching)
+
 1. **Scaffold tree-aware ggml ops**: `ggml_top_k` exists. Need to confirm or add.
 2. **Build tree in graph**: extend `build_mtp_head_qwen35` to top-K + branch.
 3. **Extract tree**: extend post-compute extraction in `llama_decode_internal`.
@@ -64,6 +77,17 @@ Three additions in `common/speculative.cpp` + `examples/server/server-context.cp
 6. **Tree-aware mask**: server hooks into KQ_mask building for the tree batch.
 7. **Tree accept**: server walks tree to pick longest matching prefix.
 8. **Harness measure**: re-run `--fast` and `--slow` with tree drafting on.
+
+### Next-iteration priority
+
+Path A is the smaller-blast-radius win. With current measured 39.44% per-iter
+accept, chain rollout=3 gives expected effective drafts/cycle:
+1 - (1 - 0.394)^3 = 0.78 → average 1 + 0.394 + 0.394² + 0.394³ ≈ 1.55 drafts.
+Compute overhead: chain adds ~3× the MTP head cost (per iter), but the
+amortization across multiple drafts per cycle should net positive.
+
+If Path A works empirically (positive uplift over no-MTP baseline of 33 t/s),
+tree drafting becomes a stretch optimization on top, not a blocker.
 
 ## Env knobs
 
