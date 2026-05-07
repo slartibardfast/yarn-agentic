@@ -186,7 +186,24 @@ ratio          accept=0.957   tg=0.670   effective=0.641
 
 vs baseline fused (no Full #2): effective 1.02. **Net Full #2 lift: -37%**.
 
-**Diagnosis**: Quadro RTX 6000 sm_75 has 72 SMs. Verify saturates many across 64 transformer layers. Async fused on a separate CUDA stream queues for SMs — effectively serial. Per-cycle GPU work increases (1-2 extra fused worth of kernels for async + miss-redo) without proportional overlap recovery. The +18% projection assumed unbounded SM availability for cross-stream concurrency.
+**Diagnosis (REVISED with profiling, 2026-05-07 session 3)**: NOT SM contention. Hardware concurrency wasn't ruled out — but the ACTUAL bug is at a different layer: **chain-residual seed plumbing is fundamentally unsound for this model**.
+
+Through diagnostic instrumentation (`LLAMA_MTP_FULL_2_DIAG=1`, `LLAMA_MTP_INPUT_CHECKSUM=1`):
+
+1. **Hit rate at predictor=`persist_n - 1`: 0%** initially. Server's chain-residual arm (`slot.mtp_next_chain_residual_step`) was gated on `LLAMA_MTP_CHAIN_RESIDUAL_SEED` env, not `LLAMA_MTP_FULL_2`. `pending_chain_residual_step` always -1 → never matched any guess.
+
+2. After fixing (1), arming with FULL_2 enabled: **chain probs collapse from ~0.85 to ~0.03**. The `MIN_PROB=0.5` truncation then sets `n_emitted=0` every cycle → server falls back to non-spec-decode → throughput regresses to baseline-or-worse.
+
+3. **Numerical comparison of seed sources**:
+   - `persist[0]` first4 ≈ [1.5, 1.0, -1.5, 0.3] — consistently positive small values, low variance
+   - Host bounce h_pre_norm first4 ≈ [-3, 2, -2, ...] — high-magnitude varied
+   - **Different distributions.** The MTP layer's `post-shared_head_norm` (chain_residual) is NOT in the same numeric space as the main forward's `h_pre_norm` for this Qwen 3.6 27B model.
+
+4. Phase 37 #4 chain-residual seed plumbing rests on the assumption these representations are interchangeable. They aren't. The path was env-gated OFF in production (and never exercised end-to-end), so this latent bug never surfaced until Phase 38 E activated it.
+
+The +18% projection was contingent on the chain-residual seed pathway being sound. It isn't. Architecture is correct; seed source is wrong.
+
+**Fix path (Phase 38.5 / 39)**: capture verify's `t_h_pre_norm` (which IS in the right numeric space) at every batch position into a context-owned persist buffer; index by `n_accepted_drafts` to pick the seed for the next fused. Touches: verify's forward to expose all-position h_pre_norm, post-compute extraction in `llama_decode_internal`, prepare_mtp_graph_inputs to read from the new buffer instead of `mtp_persist[k]`. Well-scoped refactor.
 
 **The architecture is correct and committed.** It would deliver the projected lift on hardware with more SMs (e.g., H100 has 132, A100 has 108). On this hardware, the architecture is dormant infrastructure for future hardware migration. Defaults to OFF (`LLAMA_MTP_FULL_2` unset).
 
