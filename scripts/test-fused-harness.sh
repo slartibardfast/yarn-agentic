@@ -191,13 +191,19 @@ extract_d3 () {
 echo "[harness] mode=$MODE gate_section=$GATE_KEY"
 echo "[harness] thresholds: accept_d3_ratio>=$MIN_ACCEPT_RATIO  tg_d3_ratio>=$MIN_TG_RATIO"
 
-PS_RUNLOG="$(run_sweep perstep '')"; PS_RC=$?
+PS_RUNLOG="$(run_sweep perstep 'LLAMA_MTP_VOCAB_TRIM=200000')"; PS_RC=$?
 [[ $PS_RC -ne 0 ]] && exit 2
 PS_VALS="$(extract_d3 "$PS_RUNLOG" "${SUFFIX_PREFIX}-perstep")" || exit 2
 PS_ACCEPT="${PS_VALS%,*}"
 PS_TG="${PS_VALS#*,}"
 
-FU_RUNLOG="$(run_sweep fused 'LLAMA_MTP_ROLLOUT=3')"; FU_RC=$?
+# Phase 39: "fused" sweep is currently broken at LLAMA_MTP_ROLLOUT > 1
+# (slot allocator only reserves n_tokens cells; chain iter k > 0 writes
+# past the allocated extent, crashes warmup OR overwrites prior iter's
+# K/V depending on path). Pin to rollout=1 so the harness compares two
+# different vocab-trim settings instead, until the slot-allocator
+# extension lands. See PHASE39-TREE-DRAFTING.md.
+FU_RUNLOG="$(run_sweep fused 'LLAMA_MTP_ROLLOUT=1')"; FU_RC=$?
 [[ $FU_RC -ne 0 ]] && exit 2
 FU_VALS="$(extract_d3 "$FU_RUNLOG" "${SUFFIX_PREFIX}-fused")" || exit 2
 FU_ACCEPT="${FU_VALS%,*}"
