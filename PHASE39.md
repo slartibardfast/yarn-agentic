@@ -266,14 +266,30 @@ schedule items 39.0 through 39.E1 are committed on branch
 
 ### What is deferred
 
-- **39.E2-E5 — measurement runs.** `--fast` and `--slow` harness runs to compare effective_output_ratio against upstream's +2.5×. The user opted to defer measurement until after code-complete; the harness is wired and ready.
+- **39.E2-E5 — measurement runs.** `--fast` and `--slow` harness runs to compare effective_output_ratio against upstream's +2.5×. The harness is wired and running; this section will be updated with the numbers once both sweeps land.
 - **39.F1 — production swap.** Updating `/home/llm/profiles/qwen36-27b-x1.sh` to set `LLAMA_MTP_ROLLOUT=3` and restarting `llama-server`, gated on E2-E5 measurements showing ≥2.0× lift.
-- **Field-level cleanup.** `cparams.mtp_inline_kv_hook` (always false), `cparams.mtp_fused_n_steps` / `mtp_fused_n_extend` (always 0), the Phase 38 `lctx.mtp_fused_chain_residuals[]` / `mtp_persist*` / `mtp_fused_pending_gf` / `mtp_fused_async_guess` / `mtp_fused_offset_*` / `t_h_pre_norm` / `inp_mtp_states` / `draft_input_hidden_state*` / `draft_residual_dev*` fields, and the `Prev` struct's `mtp_op_type` / `mtp_fused_n_steps` / `mtp_fused_n_extend` members. These are dead at runtime (no caller touches them on the hot path) and removing them is safe but voluminous. The dead writes to `slot.mtp_hidden_state` in `examples/server/server-context.cpp`'s Phase B accept paths are similarly orphan but harmless. Marked for a follow-up cleanup pass.
+
+### Field-level cleanup (completed)
+
+The full zombie-field deletion was completed before the measurement run so the
+`--slow` numbers don't measure on a half-cleaned struct. Removed in addition
+to the architectural deletions above:
+
+- **cparams**: `mtp_inline_kv_hook`, `mtp_fused_n_steps`, `mtp_fused_n_extend`.
+- **Prev struct**: `mtp_fused_n_steps`, `mtp_fused_n_extend` members + comparator entries; graph reuse for `n_tokens > 1` no longer eligible.
+- **lctx**: `t_h_pre_norm`, `mtp_fused_last_compute_count`, `mtp_fused_results_*`, `mtp_fused_offset_*`, `mtp_fused_chain_residuals`, `mtp_fused_skip_extraction`, `mtp_fused_pending_*`, `mtp_fused_async_guess`, `mtp_persist_*`, `pending_chain_residual_step`, `mtp_hook_fire_count`, `mtp_inline_decode_count`, `draft_input_hidden_state*`, `draft_residual_dev*`.
+- **Server slot**: `slot.mtp_hidden_state`, `slot.mtp_next_chain_residual_step`. The Phase B accept-path host-bounce blocks (`a.mtp_hidden_state_pre`, `a.mtp_n_past_base`) and the prompt-warmup MTP block were removed alongside.
+- **Helpers**: `prepare_mtp_graph_inputs` deleted (its `inp_mtp_states` source fields were removed).
+- **Other**: `kq_mask_done:` orphan label, fused-mode KQ_mask fill block, `h_pre_norm` node-name lookup in embd extraction, `llama_set_draft_input_hidden_state` API + impl, `mtp_persist_*` cleanup in llama_context destructor.
+
+GLM-4 caveat: the GLM-4 MTP tail-only graph still references `cparams.mtp_op_type` and `lctx.inp_mtp_states` (both kept), but its `prepare_mtp_graph_inputs` caller is gone and `llama_set_draft_input_hidden_state` is gone, so GLM-4 MTP is unreachable at runtime. Re-introducing it would need a fresh seed-plumbing design — out of Phase 39 scope.
+
+Aggregate Phase 39.D total: ~2000 lines deleted from ik_llama.cpp (graph builders, public APIs, env knobs, fused-extraction block, Prev struct fields, lctx/cparams/server zombie fields). Build and link clean.
 
 ### Closure-criterion status (PHASE39.md ≥ "Binding closure criteria")
 
 1. ✅ Schedule items 39.A–39.D + 39.E1 implemented and committed.
-2. ⚠ No reference to `ctx_mtp` (separate context allocation), `build_qwen35_mtp_fused`, `mtp_persist`, `chain_residual_seed`, or `LLAMA_MTP_FUSED*` env knobs remains in the active code path. Some grep hits remain in zombie struct fields (`mtp_persist_buf`, `mtp_fused_chain_residuals[]` declarations, `Prev::mtp_op_type` comparator) which are dead at runtime but textually present. Tracked under "field-level cleanup" deferred work.
+2. ✅ No reference to `ctx_mtp` (separate context allocation), `build_qwen35_mtp_fused`, `mtp_persist`, `chain_residual_seed`, or `LLAMA_MTP_FUSED*` env knobs remains anywhere in the source tree (active code OR zombie struct fields). The only grep hits are deletion-record comments documenting what was removed.
 3. ❌ Pending measurement: `--fast` harness GREEN at recalibrated thresholds (no regression).
 4. ❌ Pending measurement: `--slow` harness shows `effective_output_ratio ≥ 2.0` at production context.
 5. ❌ Pending measurement: production swapped to the new MTP path.
