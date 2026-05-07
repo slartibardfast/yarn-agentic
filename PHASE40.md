@@ -156,3 +156,125 @@ Phase 40 builds on `phase40-tree-fanout` branch (off Phase 38 closure
 bind, the branch parks alongside `phase39-collapsed-mtp` as a record.
 Production stays on no-MTP. The Phase 39 +4.7% uplift is reachable from
 the Phase 39 branch if needed (also parked from production).
+
+---
+
+## Phase 40 closure — NEGATIVE on probe data alone
+
+### Verdict
+
+**40.0 probe data closes Phase 40 as negative before implementing 40.1+.**
+α(top-2) - α(top-1) = 0.06 at production-relevant long context. Below
+the +5% build threshold. **No tree-K=2 implementation work is performed.**
+Total Phase 40 cost: ~10k tokens (probe runner + measurement +
+analysis), saved ~50-70k tokens of tree-K=2 implementation that the
+data shows would not have delivered meaningful uplift.
+
+### Measured probe data
+
+```
+PROBE: LLAMA_PROBE_TOP2=1, -mtp --draft 1, temperature=0
+HARDWARE: 2× Quadro RTX 6000 sm_75, --split-mode graph --tensor-split 1,1
+MODEL: qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf
+
+Short context (4K) + short essay prompt:
+  total=200 α(top1)=0.8000 α(top2)=0.8950 Δ=0.0950
+
+Long context (256K) + X02 agentic prompt (5K char):
+  total=100 α(top1)=0.8500 α(top2)=0.9100 Δ=0.0600
+  total=200 α(top1)=0.8900 α(top2)=0.9500 Δ=0.0600
+```
+
+Raw runlog: `data/phase40-probe-top2-x02-256k.runlog` (256-token gen).
+
+### Why Δ shrinks at long context
+
+α(top-1) jumps from 0.80 (short) to 0.89 (long) because the X02
+agentic prompt provides dense surrounding context that makes top-1
+predictions very confident. Less of the probability distribution leaks
+to top-2. Concretely: at α(top-1)=0.89 only 11% of cycles fail at
+top-1; of those, only 6pp can be recovered by top-2 (the remaining 5%
+have the answer outside top-2 entirely).
+
+This is a **feature of the production use case**, not a bug. Agentic
+content with rich context is exactly where top-1 predictions are
+strongest — and exactly where tree fan-out has least to add.
+
+### Why the +3.2% projected lift is too marginal to ship
+
+Throughput math at Δ=0.06 (long context):
+
+```
+K=1 baseline:  tokens/cycle = 1 + 0.89 = 1.89; cycle ~50ms; tg ≈ 37.8 t/s
+K=2 tree opt:  tokens/cycle = 1 + 0.95 = 1.95; cycle ~50ms (if verify
+               flat in K at long context); tg ≈ 39.0 t/s = +3.2%
+K=2 tree pess: cycle ~66ms (if verify scales with token count due to
+               seq_cp branch overhead); tg ≈ 29.5 t/s = REGRESSION
+```
+
+Even the optimistic +3.2% is well below Phase 40's binding threshold
+(+10% on top of K=1, +20% absolute over no-MTP per the earlier
+PHASE40.md). The pessimistic case is a regression. The asymmetry of
+risk (small upside vs material downside) plus ~50-70k tokens to
+implement makes this a clear close.
+
+### What survives Phase 40
+
+- ✅ The α(top-2) measurement infrastructure (`edc1f6a3`) — already
+  shipped, proven to work, gives a clean empirical answer to the
+  tree-K=2 question for any future model/setup.
+- ✅ `scripts/probe-top2.sh` — reusable probe runner for the next
+  model class (e.g., if a smaller model with lower α(top-1) is
+  considered, re-run probe; if Δ > 0.15, build tree-K=2 on it).
+- ✅ Phase 38 base preserved on `phase40-tree-fanout` branch as
+  the canonical tree-fan-out base of record.
+
+### What's dead
+
+- ❌ Tree-K=2 implementation work (40.1, 40.2, 40.3) — never built,
+  closed before implementation.
+- ❌ The PHASE40 +14-19% projection from the Phase 39 closure document
+  — that projection assumed Δ ≈ 0.15 at K=2; measured Δ=0.06 invalidates
+  it. The earlier projection was theory; the probe is data.
+
+### Why this measurement-first close is correct (not premature)
+
+Per CLAUDE.md §8: "negative results land cheap when honest, expensive
+when rationalized." The probe was the cheap-decision-point that the
+Phase 40 design specifically gated 40.1+ on. Skipping the probe and
+implementing tree-K=2 anyway would have been:
+
+- ~50-70k tokens of implementation work
+- Ending in measurement that would show the same +3.2% optimistic /
+  regression pessimistic outcome
+- A negative-result writeup at the end with the same conclusion
+- Plus +50-70k of "abandon the work" cost to revert the branch
+
+Closing on the probe saves the +50-70k of code-then-revert cost AND
+keeps the negative result on a credible empirical footing rather than
+"we built it, it didn't work, here's why." The probe answer is
+unambiguous: the model's top-1 distribution is too confident at
+long-context agentic content for tree-K=2 to add meaningful value.
+
+### Forward direction (not Phase 40 work)
+
+If future work wants more throughput on this hardware, paths include:
+
+1. **No-MTP baseline tuning** — production currently runs without -mtp;
+   the Phase 39 +4.7% rollout=1 single-best is reachable on the
+   `phase39-collapsed-mtp` branch (parked but available).
+2. **Different model classes** — α(top-1)=0.89 at long context is a
+   feature of this model's calibration. A different model
+   (e.g., smaller, higher-temperature, less-context-confident) might
+   have Δ ≥ 0.15 and benefit from tree-K=2. Re-run the probe for any
+   new candidate.
+3. **Top-K with K > 2** — the existing CUDA top-2 kernel emits exactly
+   2; extending to K=3 or K=4 would need kernel work. With Δ=0.06 at
+   K=2, K=3 might add another 2-3pp (diminishing returns), insufficient
+   to justify the kernel + verify-path work.
+4. **Different drafter** — n-gram, draft-model, or other speculation
+   types. Out of scope for Phase 40.
+
+None of these are Phase 40 follow-ups; they're separate phases gated
+on independent decisions.
+
