@@ -496,6 +496,53 @@ Both gates not yet jointly GREEN. Proceeding to #5 (graph reuse
 across cycles) — the lever expected to recover tg regression by
 amortising cgraph build cost.
 
+### #5 — graph reuse across cycles for MTP fused
+
+ik_llama already has a per-decode graph-reuse mechanism
+(`llama_context::can_reuse_graph` + `Prev` cache) that lets a
+single-token decode skip `llama_build_graph` and
+`ggml_backend_sched_alloc_graph`. The mechanism gates on
+`u_batch.n_tokens == 1`, so MTP fused decodes (which always have
+`n_tokens == n_steps > 1`) miss with reason 2 ("multi_token") on
+every cycle.
+
+**Implementation.** Extend `Prev` with `n_tokens` and
+`mtp_fused_n_steps` fields. In `can_reuse_graph`, replace the bare
+`u_batch.n_tokens > 1 → MISS` test with: allow reuse when both
+`prev` and current decode are `MTP_OP_DRAFT_GEN_FUSED` with the
+same step count and same `n_tokens`. The cgraph topology depends
+only on `n_steps` for the fused path, so successive fused calls
+with the same step count share a graph. In the prev-update site,
+allow caching when fused (in addition to the existing
+single-token case). Three small edits in `llama.cpp`, ~30 LOC
+total.
+
+Harness `--fast` with `LLAMA_MTP_CHAIN_MIN_PROB=0.5` (combined #4 + #5):
+
+| | per-step | fused | ratio | gate threshold |
+|---|---:|---:|---:|---:|
+| accept_d3 | 0.75658 | 0.82645 | **1.0923** | 0.97 — **PASS** |
+| tg_d3 t/s | 37.63 | 33.70 | **0.8956** | 1.10 — RED |
+
+vs post-#4-only:
+
+| | post-#4 | post-#5 | Δ |
+|---|---:|---:|---:|
+| accept_d3_ratio | 1.0387 | 1.0923 | +0.054 |
+| tg_d3_ratio | 0.8555 | 0.8956 | +0.040 |
+
+Both ratios up; accept comfortably above gate, tg still RED but
+moving correctly. The +0.040 tg lift from graph reuse is in line
+with the ~600 µs / ~20 ms per-cycle budget the plan projected.
+
+**Decision: KEEP.** Both ratios improve.
+
+Schedule arithmetic: tg gate at 1.10 needs +0.20 from current 0.90.
+Graph reuse extracted ~5% of cycle wall-clock; remaining 14% has to
+come from the pipelining lever (#2), which overlaps verify and
+fused on separate streams to hide one cycle's compute behind the
+other (projected +30% throughput). Proceeding to #2.
+
 ## Pickup brief — for the session that picks this up after compaction
 
 ### Live state
