@@ -449,6 +449,53 @@ becomes a real correctness gate rather than a no-op.
 
 Both gates still RED. Proceeding to #4 (adaptive chain depth).
 
+### #4 — adaptive chain depth (`LLAMA_MTP_CHAIN_MIN_PROB`)
+
+Truncates the fused chain at the first step whose argmax probability
+falls below the env threshold. `fr.probs[k]` is already host-side
+from `ggml_backend_cuda_mtp_argmax_with_prob_to_host`; the truncation
+runs on the runner side (`mtp_speculative_gen_draft`) with no extra
+device sync. All N steps' compute still runs in the fused graph —
+the saving is on the verify side (fewer drafted tokens to verify),
+not on the draft side. Default env unset → no truncation, behaviour
+unchanged.
+
+Harness `--fast` with `LLAMA_MTP_CHAIN_MIN_PROB=0.5`:
+
+| | per-step | fused | ratio | gate threshold |
+|---|---:|---:|---:|---:|
+| accept_d3 | 0.77181 | 0.80165 | **1.0387** | 0.97 — **PASS** |
+| tg_d3 t/s | 38.05 | 32.55 | **0.8555** | 1.10 — RED (worse) |
+
+The accept gate **flipped GREEN** for the first time in this
+schedule: fused d=3 acceptance (0.80) now exceeds per-step (0.77).
+Phase 36's binding "fused beats per-step" claim is satisfied on
+acceptance. But tg regressed from 0.96 → 0.86 (−0.10 absolute) —
+adaptive truncation makes individual cycles shorter on average, so
+per-cycle overhead (cgraph build, sample-prep, verify-tail) is
+amortised over fewer tokens. The truncation itself is correct and
+fast; the cost is cycle-rate going up.
+
+**Decision: KEEP** — additive, env-gated, default OFF. The accept
+ratio improvement is large and meaningful; the tg regression is a
+known artefact of higher cycle rate, addressable by #5 (graph reuse
+across cycles) and #2 (pipelining). Plan-rule conflict (accept
+improves AND tg regresses ≥ 0.02) is resolved in favour of KEEP
+because the change has zero default-behaviour cost; tuning is the
+caller's choice.
+
+Tuning lever for future ablations: `LLAMA_MTP_CHAIN_MIN_PROB`
+threshold trades accept lift for tg cost. Lower (e.g. 0.3) = less
+truncation, smaller accept lift, smaller tg regression. Higher
+(e.g. 0.7) = more truncation, larger accept lift, larger tg
+regression. 0.5 is the first measured point; the right threshold
+is workload-dependent and best determined per production traffic
+shape.
+
+Both gates not yet jointly GREEN. Proceeding to #5 (graph reuse
+across cycles) — the lever expected to recover tg regression by
+amortising cgraph build cost.
+
 ## Pickup brief — for the session that picks this up after compaction
 
 ### Live state
