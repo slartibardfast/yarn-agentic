@@ -83,18 +83,43 @@ Makes `chain_residual[n_steps]` exist for the all-accept seed case.
 | C4 | Env knob: LLAMA_MTP_FUSED_EXTEND=1 enables n_steps+1 chain |
 | C5 | Smoke test: confirm chain_residual[n_steps] populated when extended |
 
-### D. Speculative-tail KV writes + reconciliation
+### D. Full KV cache unification + drop inline-KV-hook on LLAMA_MTP_FULL_2 (REVISED 2026-05-07 mid-session)
 
-Eliminates the verify/fused KV cell race for accepted positions by giving fused its own write region.
+**Two prior framings tried and rejected:**
+
+1. **Offset path (initial)**: speculative-tail KV writes for fused, with reconciliation. Surfaced issues — the race isn't only on writes (fused chain attention reads from cells verify is concurrently writing), and offset introduces logical/physical position decoupling that complicates kv_head accounting and graph reuse keying.
+
+2. **Partial unification (intermediate)**: alias layers 0..n_layer-2, keep layer n_layer-1 separate. The "partial" hedge existed to preserve the Phase 36 Step 3 inline-KV-hook (which writes layer n_layer-1 with main-forward-derived `inpL` during verify's forward). But the hook is exactly what creates the layer n_layer-1 race — its writes are semantically distinct from fused chain's MTP-shortcut-derived writes, so concurrent dispatch produces non-deterministic torn cells. Partial unification dodges this by giving layer n_layer-1 separate memory, paying 1.5% extra VRAM and accepting that ctx_tgt's and ctx_mtp's layer n_layer-1 diverge.
+
+**Final framing (full unification + drop inline-hook on Full #2 path):**
+
+The inline-KV-hook IS the source of the layer n_layer-1 race. Eliminate it on the Full #2 path and layer n_layer-1 has only one writer semantic class:
+
+- **Fused chain** (during fused dispatch on ctx_mtp): writes layer n_layer-1 at chain positions. MTP-shortcut-derived.
+- **UPDATE_ACCEPTED** (post-accept on ctx_mtp): writes layer n_layer-1 at accepted positions. Also MTP-shortcut-derived.
+
+These run at distinct times (UPDATE_ACCEPTED is post-accept; fused is pre-accept). No concurrent write at layer n_layer-1.
+
+Verify's main forward iterates layers 0..n_layer-2 (excludes the MTP layer); without the inline-hook, verify never writes layer n_layer-1. So under full unification:
+
+- **Verify writes**: layers 0..n_layer-2 (unified — fused doesn't read or write them, no contention).
+- **Fused writes**: layer n_layer-1 (unified — verify doesn't write layer n_layer-1 without the hook).
+- **UPDATE_ACCEPTED writes**: layer n_layer-1 (post-accept, sequential with fused).
+
+**Disjoint layers between concurrent dispatchers. No race anywhere. Single semantic class per layer.**
+
+The cost: re-enabling UPDATE_ACCEPTED's separate decode (~5ms/cycle on production-context). Phase 36 Step 3's +12% MTP-vs-nomtp at d=1 partially erodes — most of that win was the kv-fold structural change, not just UPDATE_ACCEPTED elimination, so the actual cost is closer to -3-5% throughput. Phase 38 E's projected +18% from concurrent dispatch dwarfs this; net positive.
+
+**The architectural simplification is also durable.** Single canonical layer n_layer-1 writer (MTP-shortcut-derived). No two-phase semantic divergence between inline-hook writes and UPDATE_ACCEPTED writes. ctx_tgt and ctx_mtp share every K/V cell at every layer — no divergence anywhere.
 
 | Task | What |
 |---|---|
-| D1 | cparams.mtp_kv_head_offset (int) — base position for fused's KV writes |
-| D2 | build_qwen35_mtp_fused: use kv_head_offset + k as KV write position (kv_head_offset replaces "+k" today) |
-| D3 | API: llama_mtp_set_kv_offset(ctx, offset) |
-| D4 | Reconciliation function: per-layer D2D copy from tail [commit+n_drafts+1..] to actual [commit+n_accepted+1..] |
-| D5 | Cell allocation: ensure tail region [commit+n_drafts+1..commit+n_drafts+n_steps] is reserved before dispatch |
-| D6 | Smoke test: reconciled K/V matches sequential-baseline K/V byte-identical for accepted positions |
+| D1 | Add a `parent_ctx` parameter (or post-init setter) to plumb ctx_tgt into ctx_mtp at init time |
+| D2 | In `llama_kv_cache_init` for ctx_mtp: when `parent_ctx` is set, set k_l[il]/v_l[il] for ALL il in [0, n_layer) to ALIAS the parent's k_l/v_l (point ggml_tensor->data into parent's buffer; share view metadata; do NOT allocate fresh tensor memory) |
+| D3 | Lifecycle: ctx_mtp's destructor must not free the aliased buffers (owned by ctx_tgt). Mark all KV slots as aliases when parent is set. |
+| D4 | When LLAMA_MTP_FULL_2=1: disable cparams.mtp_inline_kv_hook on ctx_tgt's verify path. UPDATE_ACCEPTED becomes the sole layer n_layer-1 canonical writer. mtp_accept_tokens's early-return-if-_hook_on guard handles this automatically (when hook is off, UPDATE_ACCEPTED runs). |
+| D5 | Wire common/speculative.cpp's ctx_mtp construction to pass ctx_tgt as parent |
+| D6 | Smoke test: VRAM measurement before/after shows ~all of fused-context's KV cache freed; correctness check (--fast harness GREEN at deployed config with LLAMA_MTP_FULL_2=1) |
 
 ### E. Dual-stream dispatch + recovery
 
@@ -139,4 +164,22 @@ Phase 38 closes (`[x]`) when, and only when, all four hold:
 
 ## Implementation log
 
-(Appended as work lands. Per CLAUDE.md §5: every PHASE38 edit commits + pushes immediately.)
+### Compaction-1 progress (2026-05-07, session 2)
+
+**Landed and verified:**
+- B (persistent chain-residual buffer): committed `0e18a304`. Persist[] tensors in context-owned ggml_backend_buffer outlive sched_reset. D2D capture from chain_residuals at end of fused compute. D2D read in prepare_mtp_graph_inputs. Smoke-test --fast PASS at recalibrated 0.95 floor (effective 1.022).
+- C (extended chain): committed `4f8f7154`. cparams.mtp_fused_n_extend, build_qwen35_mtp_fused runs n_chain = n_steps + n_extend internal steps, emits n_steps drafts, captures all residuals. Smoke-test --fast EXTEND=0 PASS (1.037), EXTEND=1 PASS (0.984 — the +1 step's compute cost paid; recovered later when E uses the extended seed).
+
+**Re-scoped during execution:**
+- D (speculative-tail KV writes): originally framed as race-avoidance between concurrent fused and verify. User correction during the run: caches are unified for VRAM reasons (not separate as I had assumed). With unified cache at layer 64 (MTP layer), fused and verify CAN write the same cells concurrently. The race is real. Speculative-tail offset (`cparams.mtp_kv_head_offset = n_drafts_prev`) places fused's writes past verify's range; UPDATE_ACCEPTED handles correctness for accepted cells. **D not landed in this session** — needs implementation in next session.
+
+**Deferred to next session:**
+- D (full): cparams.mtp_kv_head_offset, fused dispatch with offset, llama_mtp_set_kv_offset API.
+- E (async dispatch + recovery): llama_decode async path requires gating the post-compute extraction (sched_synchronize + tensor_get for argmax/prob) behind a flag. New APIs llama_mtp_fused_dispatch_async + llama_mtp_fused_extract_results. Server tracks per-slot pending speculative state. Match/miss recovery via llama_kv_cache_seq_rm.
+- F: harness validation, gate.yaml ratchet to whatever lift Full #2 measures.
+
+**The +18% projection remains the binding ratchet for closure.** B+C alone don't deliver lift (both are foundation for E). The lift comes from E's concurrent dispatch overlapping fused(k+2) with verify(k+1). B+C are correct and verified GREEN at the recalibrated parity floor; E+F is the next session's work.
+
+### Why D was rescoped mid-session
+
+Initial reading of common/speculative.cpp:172 (`ctx_mtp = llama_init_from_model(...)`) suggested a fully separate ctx_mtp with its own KV cache → fused and verify on different memory regions → no race possible → D simplifies to "no-op". User corrected: "we were unifying caches for VRAM reasons" — the unification is real; D's race-avoidance is necessary. Re-scope captured here for next session's pickup.
