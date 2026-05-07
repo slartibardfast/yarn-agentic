@@ -332,3 +332,115 @@ adjacent easier case that doesn't exercise the claim does not close
 the box." Phase 39's claim is **+2.0× minimum, +2.5× target on
 production context**. Without the `--slow` measurement that floor
 isn't proven. Code-complete is a milestone, not a closure.
+
+---
+
+## Phase 39 closure — PARKED (upstream port doesn't fit this hardware)
+
+### Verdict
+
+Phase 39 is **architecturally a port success but a throughput failure
+against its binding criterion**. The +2.5× upstream claim does not
+materialize on this hardware. Measured peak: **+4.7% uplift** at
+rollout=1 + FastMTP off, slow context. Binding floor was +2.0×.
+**Phase 39 is PARKED. The +4.7% is not being shipped to production;
+the upstream-port architecture is preserved on branch but not pursued
+further. Forward work moves to PHASE40.md (our own design, top-K
+fan-out tree drafting).**
+
+### What we measured (honest table)
+
+| Config | --fast accept | --fast tg | --slow accept | --slow tg | vs nomtp 31.13 |
+|---|---|---|---|---|---|
+| nomtp baseline | n/a | 33.06 | n/a | 31.13 | 1.00× |
+| rollout=1, FastMTP off (perstep) | 38.46% | 29.08 | 62.98% | 32.58 | **+4.7%** |
+| rollout=1, FastMTP on (fused) | 39.44% | 31.22 | 43.07% | 30.32 | -2.6% |
+| rollout=2 | 3.81% (collapsed) | — | — | — | — |
+| rollout=3 | 2.93% (collapsed) | — | — | — | — |
+
+### Profile-derived diagnosis (why upstream's +2.5× doesn't apply here)
+
+Per `data/profile-step0-gate-slow-perstep.runlog` graph_compute breakdown:
+
+- nomtp cycle: 1 token / ~29 ms decode = 31 t/s
+- MTP rollout=1 cycle: ~45 ms for 1.63 tokens (1 + 0.63 accept) = 32.6 t/s
+- MTP head's per-iter cost: **~16 ms**
+  (full transformer layer at the MTP layer + lm_head over 152K vocab)
+
+Extrapolating chain rollout > 1:
+
+- rollout=3: 30 ms (verify) + 48 ms (3 head iters) = 78 ms cycle
+- Expected accepts: 1 + 0.63 + 0.63² + 0.63³ ≈ 2.05 tokens
+- tg ≈ 26 t/s — **regression** below rollout=1's 32.6
+
+The regression is hardware-class. Upstream's measurement bench was
+**single GPU with NVLink + turbo4 KV** (a quantized rotated-Hadamard
+KV form that materially reduces attention bandwidth). On this 2×
+Quadro RTX 6000 + split-graph + tensor-split + standard q4_0 KV
+stack, the MTP layer's attention dominates the per-iter cost and the
+chain math doesn't amortize. **Chain rollout > 1 cannot win here even
+when fully working.**
+
+### What about FastMTP?
+
+Off > on at long context. FastMTP trims lm_head from 152K → 32K vocab
+(~4× matmul reduction). At long context attention over 256K KV
+dominates the cycle, so the lm_head matmul saving is irrelevant
+(~3 ms / 50 ms cycle). The trim's actual effect is to **drop accept
+rate by ~20pp** (43% vs 63% at slow), which shows up as a 2.6%
+regression. FastMTP was designed by its authors for short-context
+scenarios where lm_head dominates; at long context it is a
+quality regression with no speed gain.
+
+### Citation — upstream MTP authors
+
+The Phase 39 architecture port is direct adoption of work by upstream
+llama.cpp contributors:
+
+- **Qwen 3.5/3.6 MTP head implementation**: `src/models/qwen35.cpp` and
+  `src/models/qwen35moe.cpp` `build_mtp_head` graph builder, FastMTP
+  trimming pattern, stacked logits emission.
+- **Speculation glue**: `common/speculative.cpp::common_mtp_read_drafts`
+  and `common_speculative_state_mtp` cooldown mechanism.
+- **Upstream PR #22673** (llama.cpp upstream) — source of the +2.5×
+  measurement, which attributes the win to chain rollout depth.
+
+Their work is correct for their target hardware (single-GPU
+NVLink, turbo4 KV). Phase 39 verifies the port works coherently
+on a different hardware class (RTX 6000 split-tensor + standard
+q4_0 KV), and documents the per-iter MTP head cost that determines
+where chain rollout becomes a regression.
+
+### What survives Phase 39
+
+- ✅ Single-context inline MTP architecture (clean, ~2000 lines lighter
+  than Phase 36/37/38 ctx_mtp/fused/chain_residual stack).
+- ✅ +4.7% --slow uplift at rollout=1 + FastMTP off, vocab-fix GGUF.
+- ✅ Coherent text quality.
+- ✅ Honest profile data documenting why depth >1 won't win on this
+  hardware.
+
+### What's dead
+
+- ❌ +2.0× / +2.5× binding throughput target.
+- ❌ Chain rollout > 1 path (per-iter inp_pos shift, slot allocator
+  extension, mtp_chain_extra_cells worst-case fix all reverted).
+- ❌ FastMTP on at production context.
+
+### Production status
+
+PARKED. Production stays on no-MTP. The +4.7% is reachable behind
+`-mtp` on the Phase 39 branch but is not being merged or shipped.
+The cost-of-shipping (compatibility surface, ongoing maintenance of
+upstream-port code, ~+2000 lines of MTP path that drift from
+upstream's release cadence) outweighs +4.7%.
+
+### Forward pointer
+
+Phase 40 (PHASE40.md) takes the architecture in a different direction:
+**top-K fan-out tree drafting on our own code**. The profile-derived
+projection is K=2 → +14%, K=3 → +19% at depth=1. Top-K tree fan-out is
+not in upstream — it is novel design over our own architecture, not a
+port. Phase 40 builds directly on the forward graph + verify path
+ik_llama.cpp already has, without taking the upstream MTP path
+collapse from Phase 39.
