@@ -203,7 +203,13 @@ Through diagnostic instrumentation (`LLAMA_MTP_FULL_2_DIAG=1`, `LLAMA_MTP_INPUT_
 
 The +18% projection was contingent on the chain-residual seed pathway being sound. It isn't. Architecture is correct; seed source is wrong.
 
-**Fix path (Phase 38.5 / 39)**: capture verify's `t_h_pre_norm` (which IS in the right numeric space) at every batch position into a context-owned persist buffer; index by `n_accepted_drafts` to pick the seed for the next fused. Touches: verify's forward to expose all-position h_pre_norm, post-compute extraction in `llama_decode_internal`, prepare_mtp_graph_inputs to read from the new buffer instead of `mtp_persist[k]`. Well-scoped refactor.
+**Initial fix proposal (verify-h_pre_norm-persist) — analyzed and rejected**: the proposal was to capture verify's `t_h_pre_norm` into persist (right numeric space) instead of fused's chain residuals. On further analysis, this does NOT unblock Phase 38 E's +18% projection. It would save ~4 µs/cycle on the SYNC seed host-bounce (~0.06% lift), but the +18% projection requires SPECULATIVE async dispatch of fused(K+1) overlapping with verify(K). And verify(K) is what produces fused(K+1)'s seed — the dependency is fundamental, not architectural. The chain-residual seed plumbing was the ONLY mechanism to break this dependency (predict the seed from fused's own chain). It's broken numerically on this model.
+
+**Architectural conclusion: Phase 38 E's +18% projection is unreachable on this model+hardware without a sound seed-prediction mechanism we don't have.** The verify→fused seed dependency is intrinsic to speculative decoding's forward-progress structure. Async dispatch with no prediction overlaps only with the inter-tick gap (~2ms / 71ms = ~3%), not the projected 18%.
+
+**Phase 38 closes as architecture-only.** B (persistent buffer) + C (extended chain) + E (async dispatch APIs) committed and verified GREEN at parity. The +18% lift remains contingent on a future seed-prediction mechanism (potentially: train an MTP layer whose chain residuals align with main forward h_pre_norm; or restructure the verify-fused boundary to enable cross-stream seed transfer; or accept the dependency and pursue different lift levers like tree drafting). None are in current scope.
+
+The diagnostic tooling (`LLAMA_MTP_FULL_2_DIAG`, `LLAMA_MTP_INPUT_CHECKSUM`) is left in place for future work that re-investigates the seed-prediction problem.
 
 **The architecture is correct and committed.** It would deliver the projected lift on hardware with more SMs (e.g., H100 has 132, A100 has 108). On this hardware, the architecture is dormant infrastructure for future hardware migration. Defaults to OFF (`LLAMA_MTP_FULL_2` unset).
 
