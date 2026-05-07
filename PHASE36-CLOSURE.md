@@ -128,3 +128,17 @@ The original plan projected ~70 t/s ceiling at production context (2.2×). Reali
 Without Issue G fixed, Phase 36 closes at +12% (d=1) — a real but smaller win than the plan's headline. The d=5 path is structurally close to d=1 in this workload because the early-exit on `prob < p_min` clamps effective draft depth to 1.5–1.8.
 
 The work is *unblockable* from this branch — the keystone n_tokens refactor, the synthesized graph builders, the per-device argmax + reduction infrastructure, the bucketed comparator, the host-stage relay, and the test scaffolds are all committed. The next session that picks this up has all six steps' code paths already wired; only Issue G's fix and Step 2.2/2.4's pipeline-cycle plumbing remain.
+
+---
+
+## Superseded by PHASE37 (2026-05-07)
+
+This closure document recorded the state at the moment Phase 36 was first marked done. Phase 37 then reopened it: the binding claim "fused beats per-step at default settings" did not hold against measurement at production context. PHASE37.md captures the full reopen → repair → recalibrate cycle and supersedes the closure characterisation above. The work above (Steps 0–6) is still landed; Phase 37 added four bug fixes (vocab emit, KV cell offset, seed copy-on-set, seed source context) and four schedule items (#3a F32 attention precision, #3b KV cpy dependency anchor, #4 adaptive chain depth, #5 fused graph reuse). Phase 37 #2 (pipelining) closed as infrastructure-only when measurement showed the projected lift was an order of magnitude too high.
+
+**The recalibrated binding claim, as of Phase 37 closure**: at deployed settings (`LLAMA_MTP_FUSED=1 LLAMA_MTP_INLINE_KV=1 LLAMA_MTP_CHAIN_MIN_PROB=0.5`), the fused chain achieves effective output **parity** with per-step at d=3 on Quadro RTX 6000 sm_75 — within ±5% noise on `effective_output_ratio = accept_ratio × tg_ratio`. **Parity, not beat.** The dependency-bounded ceiling on this hardware is at unity; the over-aspirational tg thresholds in the original plan reflected projections that did not survive measurement.
+
+The fused implementation's ship value is in optionality, not throughput: lower verify-side overhead at long context, simpler integration with KV scheduling, simpler control flow for future graph-batching across slots.
+
+Read PHASE37.md for the full re-open narrative, the four bug fixes, the schedule progress, and the Path 3 measurement-driven recalibration. Read `tests/mtp-fused/gate.yaml` for the binding gate that this closure now points at.
+
+The earlier closure text above is preserved as historical record (per CLAUDE.md §6 append-only on facts). The original "fused beats per-step" framing was wrong; this superseding section is the correction.
