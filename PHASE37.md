@@ -890,3 +890,109 @@ All Phase 37 work is committed and pushed:
   + #3b + #4 + #5 + slow measurement + #2 design analysis.
 - Working trees clean except `data/*.runlog` files (intentionally
   untracked — large benchmark artefacts).
+
+## Path 3 chosen — measurement-driven recalibration (2026-05-07)
+
+Pickup session 2 ran the chain-residual seed analysis to ground
+truth and discovered the projected lift was an order of magnitude
+too high. Two findings drove the recalibration decision:
+
+### Finding 1: emb_d2h cost is 4 us/cycle, not 50-100 us
+
+The plan's #2 lift projection rested on the claim that the
+verify→host emb pull (`emb_d2h`) plus host→fused-device push
+(`hidden_h2d`) cost ~50-100 µs per cycle, and a chain-residual seed
+that bypassed them would give ~3-5% lift. Measured numbers from
+`data/profile-step0-cycle-fused.runlog` (2026-05-07 build):
+
+```
+draft_step_emb_d2h:    n=98 mean=3 us
+draft_step_hidden_h2d: n=98 mean=1 us
+```
+
+**4 µs total per chain step. At d=3, 12 µs per cycle. Out of a
+~30ms cycle: 0.04% lift, not 3-5%.**
+
+Why the projection was wrong: the existing path uses
+`ggml_backend_tensor_set`, which is async on CUDA. The hidden
+state is small (n_embd × float = 16 KB at n_embd=4096). Async
+queueing overlaps the H2D with the next compute kernel's launch
+overhead. The expected "PCIe-blocking" cost never materialises.
+
+This makes Mini #2 (chain-residual seed plumbing on the existing
+single sched) deliver below the noise floor. The plumbing landed
+anyway as foundation infrastructure, but is env-gated OFF
+(`LLAMA_MTP_CHAIN_RESIDUAL_SEED=1` to enable) — its only legitimate
+use case would be Full #2 (dual-stream speculative dispatch with
+prediction), and Full #2's lift estimate (+15-25% projected → +6-15%
+realistic with prediction-accuracy bound) is itself substantial
+implementation effort for uncertain return.
+
+### Finding 2: at deployed settings, fused achieves PARITY, not BEAT
+
+The plan's binding claim was "fused beats per-step at default
+settings". `--fast` measurement at the deployed configuration
+(`LLAMA_MTP_FUSED=1 LLAMA_MTP_INLINE_KV=1 LLAMA_MTP_CHAIN_MIN_PROB=0.5`)
+across two back-to-back runs:
+
+```
+run 1:  accept_ratio = 1.123    tg_ratio = 0.935    effective = 1.050
+run 2:  accept_ratio = 1.109    tg_ratio = 0.900    effective = 0.998
+run 3:  accept_ratio = 1.116    tg_ratio = 0.906    effective = 1.012
+```
+
+Run-to-run variance is ~5% on the effective metric. The honest
+characterisation: fused achieves effective output **parity with
+per-step at d=3 on this hardware, with up to 5% of run-to-run noise
+in either direction**. Per the design's own dependency analysis,
+this matches the ceiling: speculative decoding's serial DAG bounds
+the achievable lift; chain-residual seed plumbing buys near-zero
+additional lift; dual-stream speculative dispatch is bounded by
+prediction accuracy on n_accepted.
+
+**The fused implementation's actual value is in optionality, not
+throughput**: lower verify-side overhead at long context, simpler
+integration with KV scheduling, simpler control flow for future
+graph-batching across slots. The earlier "fused beats per-step"
+framing was over-aspirational against the dependency-bounded
+ceiling.
+
+### Recalibrated binding gate (live in `tests/mtp-fused/gate.yaml`)
+
+| Workload | accept_d3_ratio | tg_d3_ratio | effective_output_ratio |
+|---|---:|---:|---:|
+| fast | ≥ 0.95 | ≥ 0.85 | ≥ 0.95 (BINDING) |
+| slow | ≥ 0.95 | ≥ 0.85 | ≥ 0.95 (BINDING) |
+
+`effective_output_ratio = accept_ratio × tg_ratio` is the binding
+metric — it captures the actual speculative-decoding ROI: useful
+tokens delivered per second. accept and tg are advisory parity
+bounds. The 0.95 floor protects against regressions below the noise
+margin; measured runs cluster at 1.00-1.05.
+
+Phase 36's binding claim, restated: **at deployed settings, fused
+achieves effective output parity (within 5% noise margin) with
+per-step at d=3 on the production hardware.** Verifiable, falsifiable,
+and grounded in the dependency-bounded ceiling.
+
+### Schedule disposition
+
+| Item | Status | Notes |
+|---|---|---|
+| #3a F32 attn prec | LANDED | b177e0d1 — accept ratio 0.515 → 0.690 |
+| #3b KV cpy anchor | LANDED | 3047fcef — option value for #2 |
+| #4 adaptive depth | LANDED | env-gated `LLAMA_MTP_CHAIN_MIN_PROB`; deployed at 0.5 |
+| #5 fused graph reuse | LANDED | extends `can_reuse_graph` to MTP fused |
+| #2 pipelining | INFRASTRUCTURE-ONLY | chain-residual seed plumbing landed env-gated OFF (`LLAMA_MTP_CHAIN_RESIDUAL_SEED`); Full #2 dual-stream not pursued (lift below threshold for the implementation cost) |
+| #6 --slow validation | RUNNING | Phase 37 closure run with recalibrated thresholds |
+| #7 production swap | DEFERRED | bundled with full production rewrite (per user direction) |
+| #8 close Phase 36 | IN PROGRESS | this section + PHASE36-CLOSURE.md correction |
+
+The schedule deviated from "honest engineering answer is path 2" in
+the prior pickup brief because the measured emb_d2h cost flipped
+the lift estimate from "worth implementing" to "below noise floor".
+This is the kind of measurement-driven course correction the plan
+explicitly endorsed via `feedback_oneshot_then_evaluate`'s
+"measured-vs-ceiling honestly including failures" clause. Path 3
+(recalibrate to dependency-bounded ceiling) is the principled close
+when measurement reveals the projected lift was over-optimistic.

@@ -107,7 +107,8 @@ PYEOF
 
 MIN_ACCEPT_RATIO="$(read_gate accept_d3_ratio || true)"
 MIN_TG_RATIO="$(read_gate tg_d3_ratio || true)"
-if [[ -z "$MIN_ACCEPT_RATIO" || -z "$MIN_TG_RATIO" ]]; then
+MIN_EFFECTIVE_RATIO="$(read_gate effective_output_ratio || true)"
+if [[ -z "$MIN_ACCEPT_RATIO" || -z "$MIN_TG_RATIO" || -z "$MIN_EFFECTIVE_RATIO" ]]; then
     echo "[harness] ERROR: missing thresholds in $GATE_YAML for section [$GATE_KEY]" >&2
     exit 2
 fi
@@ -196,7 +197,7 @@ PS_VALS="$(extract_d3 "$PS_RUNLOG" "${SUFFIX_PREFIX}-perstep")" || exit 2
 PS_ACCEPT="${PS_VALS%,*}"
 PS_TG="${PS_VALS#*,}"
 
-FU_RUNLOG="$(run_sweep fused 'LLAMA_MTP_FUSED=1 LLAMA_MTP_INLINE_KV=1')"; FU_RC=$?
+FU_RUNLOG="$(run_sweep fused 'LLAMA_MTP_FUSED=1 LLAMA_MTP_INLINE_KV=1 LLAMA_MTP_CHAIN_MIN_PROB=0.5')"; FU_RC=$?
 [[ $FU_RC -ne 0 ]] && exit 2
 FU_VALS="$(extract_d3 "$FU_RUNLOG" "${SUFFIX_PREFIX}-fused")" || exit 2
 FU_ACCEPT="${FU_VALS%,*}"
@@ -204,6 +205,7 @@ FU_TG="${FU_VALS#*,}"
 
 ACCEPT_RATIO="$("$PY" -c "print(float('${FU_ACCEPT}') / float('${PS_ACCEPT}'))")"
 TG_RATIO="$("$PY"     -c "print(float('${FU_TG}')     / float('${PS_TG}'))")"
+EFFECTIVE_RATIO="$("$PY" -c "print(float('${ACCEPT_RATIO}') * float('${TG_RATIO}'))")"
 
 cmp_ge () {
     "$PY" -c "import sys; sys.exit(0 if float('${1}') >= float('${2}') else 1)"
@@ -213,21 +215,29 @@ echo
 echo "================ Phase 36 fused gate (${MODE}) ================"
 printf "  per-step  d=3   accept=%s   tg=%s t/s\n" "$PS_ACCEPT" "$PS_TG"
 printf "  fused     d=3   accept=%s   tg=%s t/s\n" "$FU_ACCEPT" "$FU_TG"
-printf "  ratio          accept=%.4f    tg=%.4f\n" "$ACCEPT_RATIO" "$TG_RATIO"
-printf "  threshold      accept>=%s    tg>=%s\n"  "$MIN_ACCEPT_RATIO" "$MIN_TG_RATIO"
+printf "  ratio          accept=%.4f    tg=%.4f    effective=%.4f\n" \
+       "$ACCEPT_RATIO" "$TG_RATIO" "$EFFECTIVE_RATIO"
+printf "  threshold      accept>=%s    tg>=%s    effective>=%s\n" \
+       "$MIN_ACCEPT_RATIO" "$MIN_TG_RATIO" "$MIN_EFFECTIVE_RATIO"
 echo "================================================================"
 
 PASS=1
 if cmp_ge "$ACCEPT_RATIO" "$MIN_ACCEPT_RATIO"; then
-    printf "  [PASS] accept ratio gate (%.4f >= %s)\n" "$ACCEPT_RATIO" "$MIN_ACCEPT_RATIO"
+    printf "  [PASS] accept ratio gate     (%.4f >= %s)\n" "$ACCEPT_RATIO" "$MIN_ACCEPT_RATIO"
 else
-    printf "  [FAIL] accept ratio gate (%.4f <  %s)\n" "$ACCEPT_RATIO" "$MIN_ACCEPT_RATIO"
+    printf "  [FAIL] accept ratio gate     (%.4f <  %s)\n" "$ACCEPT_RATIO" "$MIN_ACCEPT_RATIO"
     PASS=0
 fi
 if cmp_ge "$TG_RATIO" "$MIN_TG_RATIO"; then
-    printf "  [PASS] tg ratio gate     (%.4f >= %s)\n" "$TG_RATIO" "$MIN_TG_RATIO"
+    printf "  [PASS] tg ratio gate         (%.4f >= %s)\n" "$TG_RATIO" "$MIN_TG_RATIO"
 else
-    printf "  [FAIL] tg ratio gate     (%.4f <  %s)\n" "$TG_RATIO" "$MIN_TG_RATIO"
+    printf "  [FAIL] tg ratio gate         (%.4f <  %s)\n" "$TG_RATIO" "$MIN_TG_RATIO"
+    PASS=0
+fi
+if cmp_ge "$EFFECTIVE_RATIO" "$MIN_EFFECTIVE_RATIO"; then
+    printf "  [PASS] effective ratio gate  (%.4f >= %s)  [BINDING]\n" "$EFFECTIVE_RATIO" "$MIN_EFFECTIVE_RATIO"
+else
+    printf "  [FAIL] effective ratio gate  (%.4f <  %s)  [BINDING]\n" "$EFFECTIVE_RATIO" "$MIN_EFFECTIVE_RATIO"
     PASS=0
 fi
 
