@@ -290,9 +290,25 @@ Aggregate Phase 39.D total: ~2000 lines deleted from ik_llama.cpp (graph builder
 
 1. ✅ Schedule items 39.A–39.D + 39.E1 implemented and committed.
 2. ✅ No reference to `ctx_mtp` (separate context allocation), `build_qwen35_mtp_fused`, `mtp_persist`, `chain_residual_seed`, or `LLAMA_MTP_FUSED*` env knobs remains anywhere in the source tree (active code OR zombie struct fields). The only grep hits are deletion-record comments documenting what was removed.
-3. ❌ Pending measurement: `--fast` harness GREEN at recalibrated thresholds (no regression).
-4. ❌ Pending measurement: `--slow` harness shows `effective_output_ratio ≥ 2.0` at production context.
-5. ❌ Pending measurement: production swapped to the new MTP path.
+3. ✅ `--fast` harness GREEN at rollout=1: perstep (FastMTP off) accept=38.46% tg=29.08; fused (FastMTP on) accept=39.44% tg=31.22; effective_output_ratio=**1.101** vs binding ≥0.95.
+4. ❌ Pending: `--slow` harness shows `effective_output_ratio ≥ 2.0` at production context. Currently below threshold; tree drafting (PHASE39-TREE-DRAFTING.md) is the path to ≥2.0×.
+5. ❌ Pending: production swapped to the new MTP path. Gated on #4.
+
+### Linear chain limitations (rollout > 1)
+
+Empirically: rollout=3 collapses accept rate from 39.44% to 2.93% under
+the current build. Diagnosis: each chain iteration writes K/V at the
+verify position's `kv_head`, so iter k+1 overwrites iter k's K/V.
+Per-iter `kv_head_offset = k` would solve the overwrite but the slot
+allocator only reserves `n_tokens` cells in the cache, so offset > 0
+crashes warmup with `view_2d` out-of-bounds. Restoring chain rollout
+needs:
+
+- Slot allocator extension: reserve `n_tokens + (rollout - 1)` cells
+  per verify decode when `cparams.mtp` and `nextn_predict_layers > 0`,
+  OR a separate scratch KV buffer for chain iters.
+- Tree-aware speculative engine to unfold the chain into parallel
+  candidate paths instead of forcing a linear sequence (PHASE39-TREE-DRAFTING.md).
 
 Phase 39 is therefore **code complete, measurement-pending**. The
 checkbox on the parent PLAN.md should remain `[ ]` per
