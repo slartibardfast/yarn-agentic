@@ -399,6 +399,56 @@ flip the call site to `false` without further plumbing.
 Both gates still RED. Proceeding to #3b (KV write/read graph
 dependency injection).
 
+### #3b — KV write/read graph dependency anchor
+
+The H1 hypothesis: step k's `ggml_cpy(K_cur, k_cache_view)` and step
+k+1's `ggml_view_3d(kv.k_l, ...)` are sibling leaves on the K-cache
+buffer with no tensor-flow edge between them. ggml's CUDA scheduler
+*could* reorder step k+1's view ahead of step k's cpy, returning
+uninitialised cells to the next attention. The d=2 probe (PHASE37
+above) already disfavoured H1 ("H2 with a small step-1
+contribution"), but the anchor is cheap insurance and worth landing
+before the more invasive items.
+
+**Implementation choice.** ggml has no CUDA-side `ggml_set` to
+encode a "post-cpy buffer" tensor (CPU-only op), and inserting an
+explicit shape-matched no-op edge between cpy_result and the next
+step's K view requires shape gymnastics that the optimizer may
+fold. The cleanest CUDA-friendly form: at each chain step
+boundary, `ggml_dup` step k's K and V cpy results (captured from
+`lctx.cache_copies` before step k+1 overwrites the slot) and
+`ggml_build_forward_expand` the dup. The dup is unused downstream
+but its presence forces any scheduler — single-stream FIFO,
+multi-stream with reorder, or graph optimizer — to materialise the
+cpy at the chain boundary's build position.
+
+Patch is in `build_qwen35_mtp_fused`'s chain loop, inside the
+existing `if (k + 1 < n_draft)` block; ~25 lines. Multi-device
+(`model.splits.size() > 0`) iterates all device slots; single-device
+falls into the same loop.
+
+Harness `--fast` measurement:
+
+| | per-step | fused | ratio | gate threshold |
+|---|---:|---:|---:|---:|
+| accept_d3 | 0.75000 | 0.51064 | **0.6809** | 0.97 — RED |
+| tg_d3 t/s | 37.47 | 35.96 | **0.9597** | 1.10 — RED |
+
+Per-step accept moved 0.77181 → 0.75000 between #3a and #3b runs
+(unmodified path), which establishes the harness's run-to-run noise
+floor at ~0.02 absolute. The fused ratio's 0.6903 → 0.6809 movement
+(Δ −0.0094) is comfortably within that noise band. Same for tg
+ratio (Δ −0.0113).
+
+**Decision: KEEP** per plan rule "revert only if regress ≥ 0.02".
+The change is neutral within harness noise on this hardware (single
+CUDA context, FIFO build-order already establishes correct cpy →
+read sequencing). The anchor's option value is for future multi-
+stream configurations (cf. Schedule #2 pipelining), where it
+becomes a real correctness gate rather than a no-op.
+
+Both gates still RED. Proceeding to #4 (adaptive chain depth).
+
 ## Pickup brief — for the session that picks this up after compaction
 
 ### Live state
