@@ -245,3 +245,49 @@ If a fresh session starts here, the entry points are:
 - All Phase 38 commits on `phase36-mtp-throughput` (ik_llama.cpp) and `phase32-q4_0_ar16-integration` (yarn-agentic). Pushed.
 
 The next session has a clean foundation, a precise plan, primary-source references, and a budget that fits the work. The bet for the next 1M context is whether 39.A–39.F land cleanly with the upstream architecture as the spec.
+
+## Phase 39 closure (code complete, measurement deferred)
+
+Phase 39's code port landed end-to-end in a single 1M-context session. The
+schedule items 39.0 through 39.E1 are committed on branch
+`phase39-collapsed-mtp` (both `ik_llama.cpp` submodule and parent
+`yarn-agentic`).
+
+### What landed
+
+| Step | Outcome |
+|---|---|
+| 39.0 | Upstream primary sources read; helper-name mapping table captured (build_norm → llm_build_norm, build_lora_mm → llm_build_lora_mm, build_layer_attn(inp->get_attn(), ...) → build_std_attention, build_layer_ffn → llm_build_std_moe_ffn / llm_build_ffn). |
+| 39.A | `ctx_mtp` allocation removed; `common_speculative_state_mtp` aliases `ctx_mtp = ctx_tgt`; `cparams_dft.mtp / .mtp_op_type / .embeddings` setup deleted (main ctx already carries them via params.has_mtp); `mtp_speculative_gen_draft` stubbed; `mtp_update_kv_cache` + `mtp_accept_tokens` deleted with all callers. |
+| 39.B | `build_mtp_head_qwen35` ported in `src/graphs/build_qwen35.cpp`: chained rollout (n iterations, weights reused), per-iteration body (embed → eh_proj → attn → MoE/dense FFN → lm_head with FastMTP trim via `LLAMA_MTP_VOCAB_TRIM`, default 32K), stacked logits via `ggml_concat`, depth via `LLAMA_MTP_ROLLOUT` (default = `hparams.nextn_predict_layers` = 1). Context fields `mtp_logits_buf` / `mtp_logits_valid` / `mtp_n_vocab` / `mtp_n_drafts` + `t_mtp_logits` cgraph-output pointer added. Public APIs `llama_get_mtp_logits` / `llama_get_mtp_n_vocab` / `llama_get_mtp_n_drafts` exposed. Post-compute extraction added in `llama_decode_internal` (mirrors upstream `llama-context.cpp:1864-1905`). Inline-KV-hook block + `h_pre_norm` dup deleted from `build_qwen35moe` / `build_qwen35`. |
+| 39.C | `common_mtp_read_drafts(ctx_tgt, k_max)` added: host-side argmax over the rollout logits with EOG-stop. `mtp_speculative_gen_draft` is now a thin wrapper around it. Server speculative-launch host-bounce setup (`if (slot.has_mtp) { ... }` block) replaced by a no-op comment — drafts come from `lctx.mtp_logits_buf` populated by the prior verify forward. |
+| 39.D | Deleted: `build_qwen35_mtp`, `build_qwen35_mtp_kv_only`, `build_qwen35_mtp_chain_residual`, `build_qwen35_mtp_fused`; the four obsolete graph-builder declarations; the `cparams.mtp_op_type != MTP_OP_NONE` branches in build_qwen35moe / build_qwen35; the entire fused-extraction block in `llama_decode_internal`; the Phase 36/37/38 public APIs (`llama_mtp_fused_draft_invoke`, `llama_mtp_fused_dispatch_async`, `llama_mtp_fused_extract_results`, `llama_mtp_fused_last_compute_count`, `llama_mtp_get_persist_n`, `llama_mtp_has_pending_async`, `llama_mtp_get_async_guess`, `llama_mtp_set_async_guess`, `llama_mtp_get_pending_chain_residual_step`, `llama_mtp_set_persist_from_host`, `llama_set_draft_input_chain_residual`, `llama_main_graph_h_pre_norm`); `struct llama_mtp_fused_result` + `LLAMA_MTP_FUSED_MAX`; `LLAMA_MTP_INLINE_KV` env-knob setter; `LLAMA_MTP_FUSED_STATS` diagnostic block. Disabled `mtp-fused/*`, `mtp-ubatch-hook/*`, `mtp-verify-accept/*` test bundles in `tests/CMakeLists.txt` (their referenced symbols are gone). Net: ~1300 lines deleted. |
+| 39.E1 | `scripts/test-fused-harness.sh` env block now uses `LLAMA_MTP_ROLLOUT=3`. |
+
+### What is deferred
+
+- **39.E2-E5 — measurement runs.** `--fast` and `--slow` harness runs to compare effective_output_ratio against upstream's +2.5×. The user opted to defer measurement until after code-complete; the harness is wired and ready.
+- **39.F1 — production swap.** Updating `/home/llm/profiles/qwen36-27b-x1.sh` to set `LLAMA_MTP_ROLLOUT=3` and restarting `llama-server`, gated on E2-E5 measurements showing ≥2.0× lift.
+- **Field-level cleanup.** `cparams.mtp_inline_kv_hook` (always false), `cparams.mtp_fused_n_steps` / `mtp_fused_n_extend` (always 0), the Phase 38 `lctx.mtp_fused_chain_residuals[]` / `mtp_persist*` / `mtp_fused_pending_gf` / `mtp_fused_async_guess` / `mtp_fused_offset_*` / `t_h_pre_norm` / `inp_mtp_states` / `draft_input_hidden_state*` / `draft_residual_dev*` fields, and the `Prev` struct's `mtp_op_type` / `mtp_fused_n_steps` / `mtp_fused_n_extend` members. These are dead at runtime (no caller touches them on the hot path) and removing them is safe but voluminous. The dead writes to `slot.mtp_hidden_state` in `examples/server/server-context.cpp`'s Phase B accept paths are similarly orphan but harmless. Marked for a follow-up cleanup pass.
+
+### Closure-criterion status (PHASE39.md ≥ "Binding closure criteria")
+
+1. ✅ Schedule items 39.A–39.D + 39.E1 implemented and committed.
+2. ⚠ No reference to `ctx_mtp` (separate context allocation), `build_qwen35_mtp_fused`, `mtp_persist`, `chain_residual_seed`, or `LLAMA_MTP_FUSED*` env knobs remains in the active code path. Some grep hits remain in zombie struct fields (`mtp_persist_buf`, `mtp_fused_chain_residuals[]` declarations, `Prev::mtp_op_type` comparator) which are dead at runtime but textually present. Tracked under "field-level cleanup" deferred work.
+3. ❌ Pending measurement: `--fast` harness GREEN at recalibrated thresholds (no regression).
+4. ❌ Pending measurement: `--slow` harness shows `effective_output_ratio ≥ 2.0` at production context.
+5. ❌ Pending measurement: production swapped to the new MTP path.
+
+Phase 39 is therefore **code complete, measurement-pending**. The
+checkbox on the parent PLAN.md should remain `[ ]` per
+CLAUDE.md §5 — closing requires the binding measurement evidence
+in #3 and #4.
+
+### Why this scoping is honest
+
+CLAUDE.md §5's checkbox semantics: "Closing a box requires verification
+evidence that binds on the step's actual claim. Evidence from an
+adjacent easier case that doesn't exercise the claim does not close
+the box." Phase 39's claim is **+2.0× minimum, +2.5× target on
+production context**. Without the `--slow` measurement that floor
+isn't proven. Code-complete is a milestone, not a closure.
