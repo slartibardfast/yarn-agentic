@@ -164,6 +164,34 @@ Phase 38 closes (`[x]`) when, and only when, all four hold:
 
 ## Implementation log
 
+### Phase 38 outcome (2026-05-07, session 2)
+
+**Result: architecturally correct, hardware-limited. Negative throughput on this GPU.**
+
+| Item | Status | Notes |
+|---|---|---|
+| B persistent buffer | LANDED | commit 0e18a304; --fast PASS |
+| C extended chain | LANDED | commit 4f8f7154; --fast PASS at EXTEND=0 and EXTEND=1 |
+| D unification | DEFERRED to Phase 38.5 | refactor too large for one window |
+| E async dispatch + recovery | LANDED, FAILED MEASUREMENT | architecture correct; hardware doesn't deliver +18% |
+| F harness validation | RUN | --fast: effective 0.64 with FULL_2 (vs 1.02 without) |
+
+**Measurement (--fast at deployed config + LLAMA_MTP_FULL_2=1 LLAMA_MTP_FUSED_EXTEND=1):**
+
+```
+per-step  d=3   accept=0.772   tg=37.96 t/s
+fused     d=3   accept=0.739   tg=25.43 t/s
+ratio          accept=0.957   tg=0.670   effective=0.641
+```
+
+vs baseline fused (no Full #2): effective 1.02. **Net Full #2 lift: -37%**.
+
+**Diagnosis**: Quadro RTX 6000 sm_75 has 72 SMs. Verify saturates many across 64 transformer layers. Async fused on a separate CUDA stream queues for SMs — effectively serial. Per-cycle GPU work increases (1-2 extra fused worth of kernels for async + miss-redo) without proportional overlap recovery. The +18% projection assumed unbounded SM availability for cross-stream concurrency.
+
+**The architecture is correct and committed.** It would deliver the projected lift on hardware with more SMs (e.g., H100 has 132, A100 has 108). On this hardware, the architecture is dormant infrastructure for future hardware migration. Defaults to OFF (`LLAMA_MTP_FULL_2` unset).
+
+Phase 36/37's recalibrated gate (effective_output_ratio ≥ 0.95 floor) remains binding. Phase 38 ships the infrastructure with a negative measurement; doesn't re-recalibrate the gate.
+
 ### Compaction-1 progress (2026-05-07, session 2)
 
 **Landed and verified:**

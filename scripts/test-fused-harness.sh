@@ -197,7 +197,7 @@ PS_VALS="$(extract_d3 "$PS_RUNLOG" "${SUFFIX_PREFIX}-perstep")" || exit 2
 PS_ACCEPT="${PS_VALS%,*}"
 PS_TG="${PS_VALS#*,}"
 
-FU_RUNLOG="$(run_sweep fused 'LLAMA_MTP_FUSED=1 LLAMA_MTP_INLINE_KV=1 LLAMA_MTP_CHAIN_MIN_PROB=0.5')"; FU_RC=$?
+FU_RUNLOG="$(run_sweep fused 'LLAMA_MTP_FUSED=1 LLAMA_MTP_INLINE_KV=1 LLAMA_MTP_CHAIN_MIN_PROB=0.5 LLAMA_MTP_FUSED_EXTEND=1 LLAMA_MTP_FULL_2=1')"; FU_RC=$?
 [[ $FU_RC -ne 0 ]] && exit 2
 FU_VALS="$(extract_d3 "$FU_RUNLOG" "${SUFFIX_PREFIX}-fused")" || exit 2
 FU_ACCEPT="${FU_VALS%,*}"
