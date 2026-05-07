@@ -90,17 +90,20 @@ Compute dominates draft-step cost, not scheduling. The gate forced a re-evaluati
 2. **`can_reuse_graph` MISS reasons:** r1=59% (no_prev), r2=24% (multi_token), r9=17% (mtp_op_changed). **r7 (n_kv changed) = 0%.** Step 5 (KQ_mask bucketing) was scoped specifically to fix r7 — its premise is invalidated.
 3. **Hidden-state host bounce:** measured `emb_d2h` = 2 µs, `hidden_h2d` = 0 µs per step. Step 4's premise of "1.5 ms × 5 = 7.5 ms saved per cycle" is invalidated by 3 orders of magnitude.
 
-### Revised step ordering
+### Revised step ordering (correction 2026-05-07)
 
-Steps 4 and 5 are demoted (premise invalidated by data). Steps 1–3 remain but with smaller projected gains. See `PHASE36-MULTI-GPU-MTP-DRAFT-THROUGHPUT.md` "Step 0 results → What this changes" for the full table.
+Steps 4 and 5 are demoted (premise invalidated by data). Steps 1–3 remain in their original sequence — Step 1 → Step 2 → Step 3 — because Step 2 (the actual +14% lever) requires Step 1's fused cgraph to dispatch a single async draft compute on the secondary stream. Step 3 enables more accept-tail / draft overlap once Step 2 is in place.
 
-New priority for the work that follows:
+An earlier revision tried to reorder this as "Step 3 first" based on a back-of-envelope that put `update_accepted` at ~30 ms × 197 ≈ 5.9 s of generation time. Tagged `decode_op` measurement (commit `e8c13c2`) showed it's actually 6.4 ms × 188 = **1.2 s** — Step 3 standalone is +5%, not +50%. The plan's original 1 → 2 → 3 ordering stands.
 
-1. **Step 3** (kill UPDATE_ACCEPTED) — fastest path to a measurable win; the actual update_accepted cost was not separated in the first profile pass and needs Step 3 telemetry to size precisely
-2. **Step 1 + Step 2 together** — the d=5 path to 1.5–2× baseline (not 4×+)
-3. **Step 6** (MTP head F16) — multiplicative with the above; needs a precision audit of the production AutoRound quant first
-4. **Step 5** (bucketing): demoted — revisit only if a new measurement shows r7 firing in a different operating regime
-5. **Step 4** (D2D relay): demoted — revisit only if profiling under a different workload shows the bounce regrowing
+Active priority:
+
+1. **Step 1** (fused cgraph) — structural prerequisite for Step 2. RED scaffolding at `b34e661b`. Effective draft depth is 1.76 not 5, so the standalone scheduling-overhead win is small, but Step 2 cannot be implemented without it.
+2. **Step 2** (async dual-stream pipeline) — the headline win, projected +14%. Drafts move off the critical path.
+3. **Step 3** (kill UPDATE_ACCEPTED) — additional +5% standalone, plus shrinks the accept tail so Step 2's overlap window grows. RED scaffolding at `b34e661b` and `58009a77`. Steps 3.0a (decode_op tagging, `e8c13c2`) and 3.1 (h_pre_norm tag + `llama_main_graph_h_pre_norm()` API) already landed.
+4. **Step 6** (MTP head F16): **already done** — the production AutoRound GGUF carries the MTP head tensors at F16 (`blk.64.nextn.eh_proj.weight` is 100 MiB = 5120×10240×2). No further leverage available from this step.
+5. **Step 5** (bucketing): demoted — revisit only if a new measurement shows r7 firing in a different operating regime.
+6. **Step 4** (D2D relay): demoted — revisit only if profiling under a different workload shows the bounce regrowing.
 
 ---
 
