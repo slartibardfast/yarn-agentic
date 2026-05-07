@@ -801,57 +801,92 @@ close Phase 36 on the empirically-validated bound. This is what
   (`/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless.gguf`)
   via `systemctl --user`. The new GGUF
   (`/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf`)
-  is on disk but not yet swapped in.
+  is on disk but not yet swapped in (`#7` of Phase 37 schedule —
+  gated on full gate GREEN).
 - **Build dir:** `/home/llm/yarn-agentic/ik_llama.cpp/build-profile/`
-  (CUDA, IK_PRINT_TIMING=1). Rebuild via
+  (CUDA). Rebuild via
   `cd /home/llm/yarn-agentic/ik_llama.cpp && cmake --build build-profile -j 32 --target llama-server`.
-- **Harness:** `scripts/test-fused-harness.sh --fast` (3 min, RED).
-  `scripts/test-fused-harness.sh --slow` (40 min, RED).
-- **Probe:** `scripts/probe-fused-d2.sh` (single fused vs per-step
-  d=2 comparison; H1/H2 discriminator).
+- **Harness:** `scripts/test-fused-harness.sh --fast` (3 min) —
+  accept gate PASS at 1.092, tg gate RED at 0.896 (with
+  `LLAMA_MTP_CHAIN_MIN_PROB=0.5`).
+  `scripts/test-fused-harness.sh --slow` (40 min) — accept gate
+  PASS at 1.008, tg gate RED at 0.985 vs 1.45 threshold (with
+  same env). Effective throughput parity reached
+  (accept × tg = 0.993).
 
-### Code changes landed (all in ik_llama.cpp submodule, uncommitted)
+### Schedule status (committed and pushed)
 
-1. `scripts/autoround_to_q4_0_gguf.py` — vocab fix (BF16 output.weight,
-   zero unused rows).
-2. `src/llama-build-context.{h,cpp}`, `src/graphs/build_qwen35.cpp` —
-   `kv_head_offset` parameter threaded through `build_std_attention` and
-   `build_qwen35_mtp_kv_only`. New helper `build_qwen35_mtp_chain_residual`.
-   Fused chain uses helper + `ggml_dup` at step boundaries.
-3. `src/llama-context.h`, `src/llama.cpp` — `draft_input_hidden_state_buf`
-   copy-on-set; cycle counter (`mtp_cycle_counter`) for diagnostics;
-   env-gated stats prints `LLAMA_MTP_FUSED_STATS`, `LLAMA_MTP_INPUT_CHECKSUM`,
-   `LLAMA_MTP_CYCLE_DBG`.
-4. `common/speculative.cpp` — fused invoke called with `nullptr` seed
-   so the runner's `set_draft_input_hidden_state` persists.
-5. `src/llama.cpp` — `llama_mtp_fused_draft_invoke` accepts `nullptr`
-   seed; only calls set when seed is given.
+| Item | Status | Notes |
+|---|---|---|
+| #3a F32 attn prec | KEEP, committed b177e0d1 | seam parameter for ablation |
+| #3b KV cpy anchor | KEEP, committed 3047fcef | option value for #2 |
+| #4 adaptive depth | KEEP, env-gated `LLAMA_MTP_CHAIN_MIN_PROB` | accept gate flipped GREEN |
+| #5 fused graph reuse | KEEP | extends `can_reuse_graph` to MTP fused |
+| #2 pipelining | **design-only, awaiting user direction** | see "#2 — pipelining design" section |
+| #6 --slow validation | partial (accept GREEN, tg RED) | re-run after #2 lands |
+| #7 production swap | pending | gated on full gate GREEN |
+| #8 close Phase 36 | pending | gated on #7 |
 
-### Test artefacts (yarn-agentic root, uncommitted)
+### Resume the schedule — #2 is the open question
 
-- `PHASE37.md` — this document.
-- `SUMMARY.md` — updated with PHASE37 + missing PHASE36 entries.
-- `scripts/test-fused-harness.sh` — quality gate.
-- `scripts/probe-fused-d2.sh` — H1/H2 discriminator (used).
-- `tests/mtp-fused/gate.yaml` — thresholds.
-- `tests/mtp-fused/test-mtp-fused-chain-residual.cpp` — unit test
-  (compiles; needs an MTP-init fixture before it runs end-to-end —
-  worst-case-init triggers a KV-cache assert that production avoids
-  via its specific init sequence).
+The chain-residual seed insight (see "#2 — pipelining design"
+section above) shows fused(k+1) does NOT depend on verify(k+1)'s
+h_pre_norm — it depends on fused(k)'s chain residual at chain step
+n_accepted[k+1]. This decouples them on the DAG.
 
-### Resume the schedule
+Three implementation paths, awaiting user direction:
 
-The next concrete action is **#3 deeper — F32 attention precision**.
-The change is one line inside `build_qwen35_mtp_chain_residual`'s
-attention call (or right after it):
+1. **Mini #2** (~half day): chain-residual seed plumbing +
+   same-stream async dispatch. Lift +3-5%. Tests the seed plumbing
+   as a stepping stone.
+2. **Full #2** (multi-day): chain-residual seed + dual-stream
+   sched + speculative-tail KV writes + reconciliation. Lift
+   +15-25%.
+3. **Recalibrate gate + Mini #2:** dependency-bounded ceiling
+   (~1.05 fast / ~1.15 slow), Mini #2 for the marginal lift, close
+   Phase 36 on the realistic threshold.
 
-```cpp
-ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
-```
+The honest engineering answer is path 2 (Full #2): implement,
+measure real lift, recalibrate gate to whatever Full #2 actually
+delivers, close Phase 36 on the empirically-validated bound.
 
-…then `cd /home/llm/yarn-agentic/ik_llama.cpp && cmake --build build-profile -j 32 --target llama-server`,
-then `bash scripts/test-fused-harness.sh --fast`. Note the new
-`accept_d3_ratio` and `tg_d3_ratio` and write them into PHASE37.md
-under a new section heading.
+### Concrete starting point if path 2 is chosen
 
-Then proceed down the schedule list.
+1. **Expose chain residuals as outputs** in `build_qwen35_mtp_fused`:
+   for each chain step k < n_steps, tag the post-shared_head_norm
+   `normed` tensor with a name like `mtp_chain_residual_<k>` and
+   `ggml_set_output`. The runner reads them via
+   `lctx.mtp_chain_residuals[k]` (a new field).
+2. **Plumb residual seed** in `llama.cpp`:
+   - Add `llama_set_draft_input_chain_residual(ctx, k_index)` —
+     selects which chain step's residual to use as next fused's seed.
+   - Modify the fused decode path to pull seed from on-device
+     residual rather than from the host buffer.
+3. **Dual-stream dispatch** in `llama-context.{h,cpp}` and
+   `common/speculative.cpp`:
+   - Allocate a second `ggml_backend_sched` for the fused leg.
+   - In `mtp_speculative_gen_draft`, after sample step yields
+     `n_accepted`, kick verify[k+1] on sched A and fused[k+1] on
+     sched B (using residual seed). Sync at end of cycle.
+4. **KV write conflict resolution** (Implementation #1 from the
+   design): both verify and fused write to overlapping cells; rely
+   on model determinism for accepted cells; ignore rejected cells.
+   No code change needed beyond letting it happen.
+5. **All-accept fallback**: when `n_accepted == n_steps`, fall back
+   to verify's h_pre_norm (sequential cycle).
+6. **Recalibrate `tests/mtp-fused/gate.yaml`** after measuring
+   actual Full #2 lift — set thresholds at the empirically-bounded
+   value plus modest safety margin.
+7. **Run `--fast` then `--slow` harness**, record results, KEEP/
+   revert per plan rule, document.
+8. **Close Phase 36** once gates GREEN at recalibrated thresholds.
+
+### Code state at this snapshot
+
+All Phase 37 work is committed and pushed:
+- ik_llama.cpp branch `phase36-mtp-throughput`: b177e0d1 (#3a) →
+  3047fcef (#3b) → next-after-3047fcef (#4) → next (#5).
+- yarn-agentic branch `phase32-q4_0_ar16-integration`: foundation
+  + #3b + #4 + #5 + slow measurement + #2 design analysis.
+- Working trees clean except `data/*.runlog` files (intentionally
+  untracked — large benchmark artefacts).
