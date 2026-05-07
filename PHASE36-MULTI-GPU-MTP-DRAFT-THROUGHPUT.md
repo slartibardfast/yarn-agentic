@@ -610,6 +610,49 @@ for the corresponding precision level.
 
 ---
 
+## Step 1+3+5 measured (2026-05-07)
+
+After landing the bundle on `phase36-mtp-throughput` (Steps 1, 2.1,
+2.3, 3.2, 3.3, 4, 5; Steps 2.2 and 2.4 deferred), profile re-run at
+production-realistic ctx 256K, X02 prompt, greedy:
+
+| Config | nomtp | d=1 | d=3 | d=5 |
+|--------|------:|----:|----:|----:|
+| **Baseline (no env)**           | 31.10 | 32.04 | 28.78 | 28.77 |
+| **Step 3 hook** (`LLAMA_MTP_INLINE_KV=1`) | 31.11 | **34.93** | 29.53 | 29.59 |
+| Step 1 fused (`LLAMA_MTP_FUSED=1`) | — | — | crash | crash |
+| Δ Step 3 vs baseline | — | +9.0% | +2.6% | +2.8% |
+| Step 3 / nomtp | — | +12.3% | -5.0% | -4.9% |
+
+**Step 3 hook is a clean win at d=1**: 34.93 t/s vs nomtp 31.10 t/s
+= +12% MTP-vs-no-MTP. That's the largest measured Phase 36 win to
+date and matches the d=1 row of the revised cumulative table.
+
+**Step 3 hook at d=3/d=5 still regresses vs nomtp** (-5%). The
+inline-hook eliminates the separate UPDATE_ACCEPTED dispatch (~6.4
+ms × 188 cycles = 1.2 s) but adds the kv-only MTP forward inside
+verify (~3-5 ms per cycle). Net: small win that doesn't close the
+gap to d=1 at deeper draft depths.
+
+**Step 1 fused path is broken**: the chain calls `build_std_attention`
+with single-token-shaped inputs while `lctx.n_tokens = n_draft`,
+which trips an internal view-size assert in
+`llm_build_mul_mat_qkv_gated`. The helper is not strictly input-
+shape-driven — some intermediates use the build context's n_tokens
+member. Fixing requires either (a) refactoring the helper to take
+n_tokens as an argument, or (b) inlining the attention math in
+the fused builder. Both are larger changes than fit in this oneshot.
+
+Step 2 (async dual-stream pipeline) was the headline projected
++14% lever; it requires the fused cgraph as prerequisite. With Step 1
+broken, Step 2.2/2.4 are deferred. Step 2.1 (per-device draft
+streams) is committed but unused until the fused path is repaired.
+
+**Defaults**: production should run with neither env var set
+(matches the 31.10 / 32.04 / 28.78 / 28.77 baseline — same as before
+the bundle landed). Once Step 3's d=1 win is bound on a longer
+soak, the default for `cparams.mtp_inline_kv_hook` can flip to true.
+
 ## Cumulative impact model (revised after Step 0)
 
 The pre-measurement model assumed 4 tokens/cycle and 5 sequential
