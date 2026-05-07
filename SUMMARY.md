@@ -54,6 +54,7 @@
 - [Phase 37: Re-opening Phase 36 — chain-residual gap](PHASE37.md)
 - [Phase 38: Full #2 dual-stream speculative dispatch](PHASE38.md)
 - [Phase 39: Adopt upstream's collapsed-context chained-rollout MTP](PHASE39.md)
+- [Phase 40: Top-K Fan-Out Tree MTP Drafting (our novel work)](PHASE40.md)
 
 # Qwen3.5 MTP Tool Calling
 
