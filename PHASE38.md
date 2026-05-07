@@ -234,3 +234,36 @@ Phase 36/37's recalibrated gate (effective_output_ratio ≥ 0.95 floor) remains 
 ### Why D was rescoped mid-session
 
 Initial reading of common/speculative.cpp:172 (`ctx_mtp = llama_init_from_model(...)`) suggested a fully separate ctx_mtp with its own KV cache → fused and verify on different memory regions → no race possible → D simplifies to "no-op". User corrected: "we were unifying caches for VRAM reasons" — the unification is real; D's race-avoidance is necessary. Re-scope captured here for next session's pickup.
+
+### Phase 39 correction note (append-only, do not rewrite Phase 38 above)
+
+The +18% projection in this document is moot — the diagnostic that
+followed (chain_residual ≠ h_pre_norm distribution; verify→fused seed
+dependency) revealed that Phase 38's architecture has a fundamental
+data-flow constraint that Phase 38 E couldn't break with the toolset
+available in that session. **Phase 39 obsoletes Phase 38** by porting
+upstream llama.cpp's collapsed-context MTP architecture (PR #22673,
+froggeric GGUFs).
+
+What changed:
+
+- ctx_mtp eliminated. The MTP head runs inline at the end of the main
+  forward graph (`build_mtp_head_qwen35`); no separate context, no
+  separate KV cache, no separate dispatch.
+- The chain-residual seed plumbing is gone. Upstream's design uses the
+  argmax of main_logits (computed on the verify forward) as the seed,
+  bypassing the verify→fused seed-prediction problem entirely.
+- The dual-stream / async-fused machinery (Phase 38 E) becomes moot —
+  there's only ONE dispatch per cycle now, no overlap question.
+
+See PHASE39.md for the port + Phase 39's closure record (code complete,
+measurement deferred). Upstream measures **+2.5×** empirically on
+this model class — direct portability evidence that the lift is
+architectural, not projected.
+
+The Phase 38 diagnostic record (chain_residual ≠ h_pre_norm distribution
+analysis, dependency analysis, measurement evidence) remains valuable
+historical context: it documents *why* the local optimisation strategy
+hit a wall, and *why* that wall doesn't exist in the upstream
+architecture. Do not rewrite this Phase 38 record; the negative result
+is the lesson.
