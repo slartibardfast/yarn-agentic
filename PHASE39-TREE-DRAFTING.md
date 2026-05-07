@@ -89,6 +89,67 @@ amortization across multiple drafts per cycle should net positive.
 If Path A works empirically (positive uplift over no-MTP baseline of 33 t/s),
 tree drafting becomes a stretch optimization on top, not a blocker.
 
+### Path A implementation depth (revised after deep dive)
+
+The chain rollout's cache semantics require care across TWO decodes:
+
+**Decode 1 (chain-generating)**: positions [head+0..head+chain] reserved.
+Layer 0..63 K/V at head+0 only (single verify). Layer 64 K/V at
+head+0..head+chain (chain rollout writes per-iter). cells[].pos =
+[P+1, P+2, ..., P+chain+1] all committed to the same seq_id.
+
+**Decode 2 (verify)**: batch [draft_P+1, draft_P+2, ..., draft_P+chain].
+positions match. Layer 0..63 process the batch normally, writing K/V
+at cells head+0..head+chain. Layer 64's K/V at those cells was
+already written by the previous chain — gets OVERWRITTEN by this
+decode's chain. That overwrite is fine because we're verifying the
+same positions.
+
+**Reject handling**: walk drafts vs. argmax(verify). Find longest
+matching prefix. seq_rm positions past the prefix.
+
+Concretely, the implementation steps:
+
+1. **Plumb cparams.mtp_chain_extra_cells** from `LLAMA_MTP_ROLLOUT - 1`
+   when MTP + nextn weights are present.
+2. **Extend find_slot**: reserve `n_tokens + chain_extra` cells. Assign
+   pos = base_pos + i and seq_id to all reserved cells.
+3. **Extend KQ_mask**: build_inp_KQ_mask creates an [n_kv, chain] sized
+   mask (chain Q rows). Row k covers cells [0..head+k].
+4. **Multi-Q attention in MTP head**: stack chain iter Q tensors into a
+   [n_embd_head, n_head, chain] tensor. Single attention call processes
+   all chain Q rows in parallel with the per-row mask. K/V written at
+   cells head+0..head+chain.
+5. **Per-iter K/V offsets in build_std_attention**: pass `kv_head_offset`
+   so iter k writes at head+k. (Already supported via existing
+   parameter.)
+6. **MTP head's chain rollout**: produces N mtp_logits (one per iter)
+   stacked. Output is [vocab, chain].
+7. **Speculative engine**: chain → drafts list (length chain). Server
+   submits batch [draft_1..draft_chain] for verify. Walk + accept like
+   standard speculative decoding.
+
+The crucial novel piece: step 4's multi-Q attention. ggml's
+flash_attn_ext supports multi-Q (n_q > 1). The mask is [n_kv, n_q];
+each Q row's column mask defines visible K cells. Building this mask
+correctly is the central design point.
+
+### What blocks the simpler approaches
+
+- "Skip K/V write for iter > 0": ggml's attention mixes cache K/V with
+  freshly-built K/V via the kv_store path. There's no "compute attn
+  with provided K/V tensors only, no cache" variant in build_std_attention.
+  Adding one is a few-day refactor of llm_build_kv.
+- "Sequential chain via N graph builds": ggml's graph is built once
+  per decode. Building N times per decode = N graph allocations.
+  Slow + fragments scheduler state.
+- "Accept top-K drafts in flat batch (no tree mask)": the existing
+  speculative engine uses linear positions; can't represent K
+  alternatives at the same logical position.
+
+The multi-Q attention is the cleanest design even though it requires
+tree-aware mask construction.
+
 ## Env knobs
 
 - `LLAMA_MTP_TREE_K=N` — branching factor per depth (default 1 = linear).
