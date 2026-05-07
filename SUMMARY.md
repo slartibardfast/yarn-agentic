@@ -53,6 +53,7 @@
 - [Phase 36: First Closure (premature — see Phase 37)](PHASE36-CLOSURE.md)
 - [Phase 37: Re-opening Phase 36 — chain-residual gap](PHASE37.md)
 - [Phase 38: Full #2 dual-stream speculative dispatch](PHASE38.md)
+- [Phase 39: Adopt upstream's collapsed-context chained-rollout MTP](PHASE39.md)
 
 # Qwen3.5 MTP Tool Calling
 
