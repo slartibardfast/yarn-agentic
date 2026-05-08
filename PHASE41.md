@@ -291,3 +291,66 @@ cycle-time scaling is favorable.
 
 If both are favorable, Phase 42 implementation; otherwise close the
 workstream at Phase 41 evidence.
+
+---
+
+## Phase 41+42 workstream — FINAL CLOSURE NEGATIVE
+
+nsys profile (`scripts/nsys-profile-tree.sh`, 4K context, 64 tokens,
+production multi-GPU) decomposed the K=2 vs K=1 cycle-cost delta
+(+87 ms/cycle):
+
+| Component | Δ (ms/cycle) | Mechanism |
+|---|---|---|
+| `mul_mat_vec_q` matmul | +11 | template variant `<2,4>` → `<3,4>`: verify batch grows 2→3 tokens |
+| `k_reduce_add_T` cross-device | +12 | scales with token count |
+| `cutlass tensorop` GEMM | +12 | scales with token count |
+| `cpy_flt` memory copies | +6 | scales with token count |
+| Kernel launch overhead | +20 | +156k extra `cudaLaunchKernel` calls (per-token kernels) |
+| Stream sync overhead | +20 | +39k extra `cudaStreamSynchronize` calls |
+| `k_get_rows_float` (the s_copy graph) | +2 | per cycle s_copy dispatch |
+
+**The cost driver is verify-cycle K-scaling**, not the s_copy graph.
+Every per-token kernel in the model forward scales linearly with the
+verify batch size; that scaling is structural to the model, not
+something a graph or s_copy optimization can address.
+
+### Phase 42 mathematical dead end
+
+Verify batch at depth=2: 7 tokens (1 sampled + 2 d=1 + 4 d=2) = 3.5×
+K=1's batch. Even at α₂=1.0 (every depth-2 candidate accepted, never
+achievable), the math:
+
+  net_throughput = (1 + α₁ + α₁·α₂) / (verify_scale)
+                 = (1 + 0.86 + 0.86·1.0) / 3.5
+                 = 0.78× K=1 baseline
+
+Phase 42 cannot be net-positive on this hardware. Closing without
+implementation.
+
+### What survives
+
+- ✅ Phase 41 foundation commits on `phase41-tree-foundation` (5 fixes
+  that make tree-K=2 structurally work end-to-end on production
+  multi-GPU). Preserved as a record. Reusable on different model class
+  / hardware where the verify-cycle K-scaling cost differs.
+- ✅ Allium specs (`specs/{tree_mtp_decode, branch_seq_id,
+  per_step_ssm_ancestor}.allium`) — capture the contracts even though
+  the implementation is parked.
+- ✅ Probe and profile harnesses (`scripts/probe-tree-k2.sh`,
+  `scripts/probe-tree-k2-single.sh`, `scripts/nsys-profile-tree.sh`).
+- ✅ Negative-result measurement evidence (`data/phase41-multi-longctx.runlog`,
+  `data/phase41-nsys-{k1,k2}.nsys-rep`).
+
+### Path that wasn't taken
+
+Async pipelining (verify cycle overlapped with next MTP draft) is the
+only architectural angle that could change the math — by hiding part of
+the verify-cycle cost behind the MTP draft cost. The original plan
+budgeted ~30k tokens for it and flagged it as hardware-uncertain (Phase
+38 E retracted as fail-on-hardware). Not pursued; closing the
+workstream cleanly is the disciplined call given the structural finding.
+
+Production stays on no-MTP. The Phase 39 +4.7% rollout=1 measurement
+on `phase39-collapsed-mtp` is the standing positive result if a
+production swap is wanted.
