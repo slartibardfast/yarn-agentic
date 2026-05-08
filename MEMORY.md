@@ -1639,3 +1639,31 @@ re-add async, D8.1d re-add fused. Then D8.2 fills spec_loop.
 This iteration: capture the corrected plan; do not start the port. Next
 iteration: D8.1a (signature + skeleton + first cohesive subset of the
 body).
+
+
+## 2026-05-08 — PHASE45 D7 closed: wrapper has zero CUDA cost
+
+D7 cli A/B perf-floor: 3 NEW-API reps vs OLD-API reference (captured
+pre-port at same SHA), Qwen 3.6 27B greedy decode, full production
+profile (CUDA 0+1 split, q4_0 hadamard KV, ctx 262144).
+
+- eval (gen) t/s: OLD 31.37 → NEW mean 31.35 (worst rep 31.19)
+- mean ratio: 0.9994×; worst-case 0.9943×
+- 0.95 floor cleared by ~10×
+
+Lesson: Option A delegate-everything wrapper pattern adds ~3 setter
+calls (n_threads, causal, embeddings) + 1 pointer indirection per
+decode. Total < 1 µs against ~32 ms model forward. The cost is below
+measurement noise — no CUDA codegen surprise. Confirms the same
+pattern is safe for D8 spec_loop (which adds equivalent overhead at
+spec_loop_step scope).
+
+Honest reframing of binding test: the original PHASE45.md spec for
+D7 was `bench-multiturn-pre-port.sh --fast` GREEN at 0.95 floor. That
+bench targets server, which is on OLD API until D10. Running it at
+D7 would only test server-on-OLD vs server-on-OLD — cannot bind on
+wrapper cost. The cli A/B is the right level. Multi-turn agentic
+bench is properly D10's verifier. Captured in PHASE45.md D7 row
+revision.
+
+Full evidence: data/phase45-d7-perf-floor.md.
