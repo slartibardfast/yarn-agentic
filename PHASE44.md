@@ -264,6 +264,82 @@ Cumulative: Phase 41 + 42 + 43 + 44 all converge on **the ggml-cuda
 backend was designed pre-graph-capture for the multi-GPU TP path, and
 modernizing it is a significant upstream-class workstream.**
 
+---
+
+## PHASE44 — Stage 1 implementation attempt + final close NEGATIVE
+
+User direction: "do everything with a perf uplift" — full attack.
+
+### Multi-slot cache key patch (option 3) — IMPLEMENTED + MEASURED
+
+Extended `ggml_cuda_graph_get_topology_key` to include first-node
+data-address low 16 bits, giving alternating allocator-slot states
+separate cache entries.
+
+**Correctness restored**: K=1 accept rate goes 0.728 (gate-only test
+drift) → 0.881 (multi-slot fix, matches baseline 0.868). The cache
+fragmentation does correctly prevent the rebuild-loop self-disable.
+
+**But throughput essentially unchanged** at n_predict=256 256K X02:
+
+| Config | Reverted baseline | Multi-slot patch | Δ |
+|---|---|---|---|
+| noMTP | 22.90 t/s | 21.97 t/s | -4% (noise + overhead) |
+| MTP K=1 | 22.09 t/s | 22.10 t/s | 0% |
+| MTP K=2 | 15.79 t/s | 15.58 t/s | -1% |
+
+**With explicit `GGML_CUDA_DISABLE_GRAPHS=1`** (no capture at all):
+Same numbers (within noise). Capture provides ~0 net throughput.
+
+### What this proves
+
+Even when graph capture is fixed (correctness + stability), it
+provides **no throughput benefit on this hardware/codebase combination**.
+The earlier +50% projection (PHASE43 prep) was wrong:
+- PHASE43 attributed the projection to launch-overhead reduction
+- The nsys data showed +20ms/cycle of launch overhead
+- But that overhead is NOT on the critical path for our cycle
+
+The cycle is dominated by GPU compute time + cross-device sync, not
+launch overhead. Capture compresses launches but doesn't speed up the
+work. The launches were happening in parallel with compute anyway.
+
+### Other levers tried within PHASE44 scope
+
+- Allocator stability investigation: would require ~10-20k of upstream
+  ggml-allocator work, with no expectation of throughput gain given
+  the multi-slot capture experiment showed capture itself isn't the
+  win.
+- Indirection extension (cpy_dest_ptrs-style for FUSED_RMS_NORM):
+  ~20-40k token implementation, also no expected throughput gain.
+
+### Final close
+
+**PHASE44 closes NEGATIVE** along with PHASE41-43. The diagnostic
+story is now exhaustive:
+
+- PHASE41: tree-K K=2 throughput-negative on this hardware
+- PHASE42: cost driver is launch overhead (correct identification)
+  but launch overhead is NOT on critical path
+- PHASE43: NCCL on PCIe x8 throughput-negative
+- PHASE44: graph capture provides ~0 throughput benefit on this
+  hardware/codebase, even when correctly enabled
+
+**Capture is not the perf lever on TU102 sm_75 PCIe x8.** Different
+levers needed for any throughput improvement:
+- Kernel fusion in the model itself (reduce kernel COUNT, not launch overhead per kernel)
+- KV cache compression (smaller per-token bandwidth)
+- Different speculation pattern (single-GPU draft model, avoid TP)
+- NVLink upgrade (eliminates cross-device sync bottleneck)
+- Different model architecture (smaller hidden dim, fewer layers)
+
+### Source state
+
+All diagnostic instrumentation removed. Multi-slot patch reverted
+(neutral). PHASE43 NCCL infrastructure preserved behind cmake flag.
+Branch `phase41-tree-foundation` clean and at production-equivalent
+state.
+
 ### Decision point
 
 Three paths from here:
