@@ -208,3 +208,82 @@ If option 1 yields nothing actionable, fall back to option 2
 (allocator stability) — that's the upstream-aligned fix.
 
 Option 3 only if 1 and 2 both fail.
+
+---
+
+## Stage 1 investigation — option 1 ruled out
+
+Read the capture-replay flow at `ggml-cuda.cu:4720+`:
+
+When `update_required=true`:
+1. **Re-execute all kernels live** (line 4734-4760) — these run inside
+   the cudaStreamBeginCapture region, so they're being captured. But
+   they ALSO execute as live launches.
+2. End capture (line 4772). New graph object recorded.
+3. `cudaGraphExecUpdate` (line 4842) tries to update existing exec.
+
+So the "savings" from capture only kick in when `update_required=false`
+and we replay via `cudaGraphLaunch` instead of executing live. With
+`update_required=true` every cycle, kernels execute live regardless.
+
+cudaGraphExecUpdate ISN'T failing — it's working fine. The problem is
+that the work is already done before Update is called. Update is a
+side effect, not a performance lever.
+
+The cache architecture contributes: `topology_key` at line 4401 hashes
+only `(n_nodes, op-sequence)` — the SAME for both alternating slot
+states. Both states fight for one cache slot; whichever was last
+captured wins; the other rebuilds.
+
+**Option 1 (cudaGraphExecUpdate) is ruled out** — the path works, but
+it's positioned after the live execution.
+
+To get capture savings, `update_required` must be **false** on most
+cycles. This requires either:
+- **Option 2 (allocator stability)**: scratch allocator gives the same
+  slot for the same op slot across cycles. Properties match → replay.
+- **Option 3 (multi-slot cache key)**: extend `topology_key` to include
+  a discriminator that distinguishes alternating slot states.
+  Alternating states get separate cache entries; both stable on
+  re-visit; both replay on hit.
+
+Option 2 is upstream-aligned but invasive. Option 3 is local but
+requires identifying the right discriminator (e.g., low bits of the
+first node's data address) — non-obvious without understanding the
+allocator's state machine.
+
+### Honest assessment after Stage 0 + 1 investigation
+
+Phase 44's "capture stability" is achievable, but the cheapest fix is
+~10-20k tokens (Option 2 or 3) AND requires understanding ggml's
+allocator semantics that are upstream-class. The phase has bottomed
+out into "ggml-cuda backend modernization" territory — same conclusion
+the Phase 43 close gestured at.
+
+Cumulative: Phase 41 + 42 + 43 + 44 all converge on **the ggml-cuda
+backend was designed pre-graph-capture for the multi-GPU TP path, and
+modernizing it is a significant upstream-class workstream.**
+
+### Decision point
+
+Three paths from here:
+
+A. **Continue — implement Option 2 or 3 in PHASE44 Stage 1.** ~10-20k
+   for partial fix; ~30-50k if it cascades into more deeply-rooted
+   upstream changes. Real probability of negative outcome (Stage 2
+   measurement still doesn't bind +10% gate).
+
+B. **Park PHASE44 with Stage 0+1 findings preserved.** Document the
+   diagnosis; revisit when ggml-cuda backend modernization (which is
+   needed for many things, not just capture) becomes a separate
+   workstream.
+
+C. **Pivot away from capture entirely.** Different optimization angle
+   — e.g., reduce the per-token kernel launch count via fusion in the
+   model itself, KV cache compression, draft-model spec decode (a
+   separate small draft on a single GPU avoiding TP entirely).
+
+Recommendation: **B + C**. The diagnostic story is now complete on
+this axis (4 phases of negative results converging on the same
+architectural conclusion). Putting more work into capture without
+the broader ggml-cuda modernization is unlikely to land.
