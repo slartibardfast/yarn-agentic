@@ -1568,3 +1568,74 @@ This finding came out of careful review before coding (per user
 instruction "task it out in memory and reviewing carefully"). Without
 the review, the natural reflex would have been to start `#include
 "speculative.h"` from spec_loop.cpp and hit a link error 30 minutes in.
+
+
+### D8 direction correction (user redirect, 2026-05-08)
+
+User redirected: "break the cycle by extraction".
+
+Wrong path I was about to take: move spec_loop UP to libcommon so it can
+wrap `common_speculative_*` from above. That would have made spec_loop
+asymmetric with the other three engine types and frozen the
+common_speculative pile in libcommon.
+
+Right path: spec_loop stays in libllama (peer to session/decoder/kv-txn).
+Cycle breaks by extracting the algorithmic core of `mtp_speculative_gen_draft`
+DOWN into libllama. `common/speculative.cpp` becomes a thin libcommon
+shim around the libllama-level routine; eventually deletes.
+
+### Extraction plan
+
+Symbols to move libcommon → libllama:
+- `mtp_speculative_gen_draft` body (~300 LoC) — the main MTP draft loop.
+  Adapt sampler interaction from `common_sampler_*` to direct
+  `llama_sampler_*` (the chain wrapper is libcommon glue; the core
+  sample primitive is libllama). Preserve PHASE36/37/38 instrumentation
+  (top-2 probe, fused chain, async dispatch) — those already use
+  `llama_mtp_*` (libllama-internal).
+- Helpers: `llama_arm_draft_top2`, `llama_mtp_get_async_guess`, etc are
+  already in libllama; just reachable.
+
+Symbols that stay in libcommon:
+- `common_speculative_init`/`_draft`/`_accept`/`_print_stats` — wrap
+  the libllama core, layer on autotune (`spec-tuner`), gpt_params,
+  common_sampler. These remain libcommon glue.
+- `spec-tuner.cpp` — autotune is application-level policy; libcommon
+  is the right home.
+
+### D8 sub-iterations (corrected)
+
+- **D8.1** — extract the MTP draft loop body into libllama as
+  `llama_spec_mtp_draft(decoder_draft, decoder_verify, llama_sampler,
+  id_last, p_min, n_draft_max, drafts_out, n_drafts_out)`. Drop
+  common_sampler dependency; use llama_sampler_sample directly. Land
+  in `src/llama-spec-mtp-draft.cpp` (new). Build verify only.
+
+- **D8.2** — fill spec_loop body. spec_loop_create stores verify +
+  drafts + sampler. spec_loop_step calls llama_spec_mtp_draft, runs
+  verify_decoder.decode on the drafts, computes accept-prefix via
+  llama_sampler_sample on each verify position, rolls back rejected
+  drafts via kv_txn (session-level). Update n_drafted/n_accepted stats.
+
+- **D8.3** — refactor `common_speculative_*` to forward to
+  llama_spec_loop (in libllama) plus libcommon glue. server's 3
+  callsites unchanged.
+
+- **D8.4** — bench: multi-turn agentic, confirm tg ≥ +19% holds.
+
+### Why extraction not wrap
+
+Extraction (Option E from earlier finding) costs more this iteration but
+preserves the architecture. Wrapping (Option L) would have been faster
+but would have entrenched libcommon as the home of an algorithm that
+properly belongs in libllama. The fork-mode permission ("we can have
+fun here") + the four-peer design intent point to extraction.
+
+D8.1 is a real ~300 LoC port; not a one-iteration-stop-after task. The
+honest iteration boundary is "extract one cohesive piece per cycle":
+D8.1a header + signature, D8.1b body without async/autotune, D8.1c
+re-add async, D8.1d re-add fused. Then D8.2 fills spec_loop.
+
+This iteration: capture the corrected plan; do not start the port. Next
+iteration: D8.1a (signature + skeleton + first cohesive subset of the
+body).
