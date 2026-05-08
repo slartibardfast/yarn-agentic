@@ -55,6 +55,10 @@
 - [Phase 38: Full #2 dual-stream speculative dispatch](PHASE38.md)
 - [Phase 39: Adopt upstream's collapsed-context chained-rollout MTP](PHASE39.md)
 - [Phase 40: Top-K Fan-Out Tree MTP Drafting (our novel work)](PHASE40.md)
+- [Phase 41: Tree MTP Foundation](PHASE41.md)
+- [Phase 43: NCCL Capture Threadlocal](PHASE43.md)
+- [Phase 44: CUDA Graph Capture Investigation](PHASE44.md)
+- [Phase 45: Decompose llama_context](PHASE45.md)
 
 # Qwen3.5 MTP Tool Calling
 
