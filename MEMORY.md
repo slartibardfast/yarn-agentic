@@ -1426,3 +1426,100 @@ PHASE45_*):
 - PHASE45_DECODE_DEEP_MAP.md — 84 blocks classified for body work.
 - PHASE45_PHASE39_INTEGRATION.md — DRAFT_MTP plug-in plan + flagged
   D8 measurement question on `mtp_inline_kv_hook`.
+
+
+## 2026-05-08 — PHASE45 D8 plan (post-review)
+
+D8 closes the spec_loop type with a wrap-don't-rewrite strategy, mirroring
+the Option A approach proven on D6/D7.
+
+### Inventory of current speculation code
+
+- `common/speculative.cpp` — 1725 LoC; canonical implementation. Public:
+  `common_speculative_init` (line 1019, ~180 LoC), `_draft` (1218, 44),
+  `_accept` (1262), `_print_stats` (1290), `_get_mtp_ctx` (1332),
+  `_context_shift` (1346), `mtp_speculative_gen_draft` (1358, ~300 LoC),
+  `mtp_update_kv_cache` (1663), `mtp_accept_tokens` (1692).
+
+- Server callsites (only consumer of common_speculative_*):
+  - `server-context.cpp:296` — `common_speculative_init(params, slot.ctx)`
+  - `server-context.cpp:3226` — `common_speculative_draft(...)`
+  - `server-context.cpp:3973` — `common_speculative_accept(slot.spec, n)`
+  Plus the inline accept-prefix loop, `spec_ckpt` for recurrent rollback,
+  MTP hidden-state staging via `llama_set_draft_input_hidden_state`.
+
+- main.cpp — does NOT drive spec.
+- examples/speculative/speculative.cpp — separate two-model binary; not
+  the MTP path; out of scope for D8.
+
+### Strategy
+
+Spec_loop wraps the existing common_speculative_*. It does not
+re-implement. Header surface stays as in D5; bodies route through
+existing internals. This keeps:
+- The +19% lift untouched (no algorithmic regression risk).
+- mtp_speculative_gen_draft's PHASE36/37/38 instrumentation in place
+  (top-2 probe, fused chain, async dispatch) — they're decoder-internal
+  optimizations, not architectural concerns of D8.
+- server's spec_ckpt + MTP-hidden-state hooks, which D8 does not
+  attempt to redesign.
+
+### Sub-iterations
+
+- **D8.1** — spec_loop body skeleton lifecycle: `spec_loop_create` extracts
+  internal ctx from verify decoder, calls `common_speculative_init`, stores
+  `common_speculative *` on the loop. `_free` calls
+  `common_speculative_free`. Stats accessors expose the wrapper's counters
+  (incremented by .2). Build verify only.
+
+- **D8.2** — granular API: add `llama_spec_loop_draft` + `_accept_n`
+  matching common_speculative's draft/accept. Internal: forward to
+  `common_speculative_draft` / `_accept`. Increment counters. Keep
+  `spec_loop_step` aborting (future verticalized API for new callers).
+
+- **D8.3** — port server's 3 spec callsites:
+  - 296: `common_speculative_init` → `llama_spec_loop_create`
+    (server already has `slot.spec` field; just change the create call).
+  - 3226: `common_speculative_draft` → `llama_spec_loop_draft`
+    (signature aligned).
+  - 3973: `common_speculative_accept` → `llama_spec_loop_accept_n`.
+  Server's spec_ckpt + MTP hidden state staging unchanged.
+
+- **D8.4** — bench: run `scripts/bench-multiturn-pre-port.sh --fast`
+  against the rebuilt server. Confirm tg ≥ +19% vs nomtp baseline. If
+  regression, audit the wrap (should be byte-identical because we
+  delegate end-to-end).
+
+### Open question (deferred from PHASE39 integration check)
+
+`mtp_inline_kv_hook` lock in PHASE45.md — DO NOT remove the hook in
+D8. Keep `decoder_params.mtp_inline_kv_hook` configurable, default
+true on VERIFY decoders that want PHASE36's inlining. The PHASE45.md
+"no INLINE_KV hook needed" line is provisional pending D8.4
+measurement. If D8.4 PASSes with hook on (PHASE36 measured win),
+keep it. If hook off matches +19%, switch the default. Don't
+silently force one or the other.
+
+### Header changes expected for D8.2
+
+The current header has `llama_spec_loop_step(loop, batch)` (verticalized).
+Server's flow needs granular access. Add to `include/llama-spec-loop.h`:
+
+```c
+LLAMA_API int32_t llama_spec_loop_draft(
+        struct llama_spec_loop * loop,
+        llama_seq_id             seq_id,
+        llama_token              id_last,
+        const llama_token      * prompt_tokens,
+        int32_t                  n_prompt_tokens,
+        llama_token            * draft_buf,
+        int32_t                  draft_buf_capacity);
+
+LLAMA_API void llama_spec_loop_accept_n(
+        struct llama_spec_loop * loop,
+        int32_t                  n_accepted);
+```
+
+`spec_loop_step` (verticalized) stays as future API. Aborts in D8;
+filled out at D9 or later when a new caller arrives that benefits from
+vertical (bench-scripts, single-shot CLIs).
