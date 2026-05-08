@@ -1,0 +1,58 @@
+# PHASE45 D6 byte-identical reference (OLD-API capture)
+# model:    qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf
+# sha256:   85fb67a013a06216…
+# profile:  qwen36-27b-x1
+# binary:   ik_llama.cpp/build/bin/llama-cli @ phase45-decompose
+# prompt:   "The capital of France is"
+# n_predict: 50, seed=42, temp=0, top_k=1, top_p=1.0
+# captured: 2026-05-08T22:58:47Z
+11751
+13
+271
+248068
+198
+8160
+579
+264
+7047
+1817
+25
+271
+16
+13
+220
+2972
+2014
+53983
+2570
+5396
+64700
+198
+256
+471
+2570
+2640
+25
+328
+760
+6511
+314
+9338
+369
+11751
+1149
+198
+256
+471
+1061
+369
+264
+29350
+57879
+4952
+13
+271
+17
+13
+220
+2972
