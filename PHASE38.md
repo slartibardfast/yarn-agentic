@@ -1,5 +1,9 @@
 # Phase 38 — Full #2 dual-stream speculative dispatch (+18% projection)
 
+> **Note (2026-05-08): Phase 38 D/E/F superseded by PHASE45.** The parent_ctx KV alias plan (D), the seed-source persist-host fix (E), and the Hadamard-absorption optimization (F) are abandoned in favor of decomposing `llama_context` into `llama_session` + `llama_decoder` + `llama_spec_loop`. Multi-slot MTP (np=3 × 256K) lands through PHASE45's session-sharing architecture, not parent_ctx aliasing. See PHASE45.md.
+>
+> Phase 38 B+C+E (persistent buffer, extended chain, async dispatch APIs) remain landed as historical infrastructure; the +18% projection remains unreachable on this hardware as documented in the diagnostic record below. PHASE45 changes scope from "tactical fix to current speculative path" to "architectural rebuild that makes multi-slot native."
+
 ## Hypothesis
 
 At deployed settings (`LLAMA_MTP_FUSED=1 LLAMA_MTP_INLINE_KV=1 LLAMA_MTP_CHAIN_MIN_PROB=0.5`), the speculative-decoding loop is dependency-bounded: fused → verify → fused. Phase 36/37 closed at the ceiling of that serial DAG: parity at short context, +7.3% effective output at production context.
