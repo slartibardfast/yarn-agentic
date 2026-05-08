@@ -1360,3 +1360,41 @@ deliver. Either pursue path 1 (Stage 9 in the plan) or path 2
 (Stage 11) — and run the threshold-sweep / nsys diagnosis (Stage 10)
 before committing to either, to know whether the c = 262144 hang is a
 property of capture itself or of our changes.
+
+## 2026-05-08 — PHASE45 supersedes PHASE38 D/E/F via decomposition
+
+The fork is permanent and not upstreamable, which unlocks the cleanest
+move on the abstraction: decompose `llama_context` into three composable
+types — `llama_session` (transformer K/V, cells, positions), `llama_decoder`
+(role-parameterized executor), and `llama_spec_loop` (orchestrator) —
+plus `llama_kv_txn` for transactional speculative writes.
+
+Verify and draft are the SAME type parameterized by role
+(LLAMA_DECODER_VERIFY vs LLAMA_DECODER_DRAFT_MTP), not two specialized
+classes. The asymmetry that PHASE38 D's parent_ctx alias was papering
+over (one "real" context aliasing the other) was an artifact of the old
+shape, not a real architectural distinction.
+
+Multi-slot MTP (np=3 × 256K) lands as PHASE45's first user. The slot
+mapping is locked: ONE session shared across slots, ONE verify decoder
++ ONE draft decoder, slots are seq_id partitions in a batched forward.
+This is the only mapping that achieves the multi-slot win without
+duplicating transformer K/V per slot (the original 65 GB OOM problem).
+
+PHASE39's inline MTP head port is wrapped, not superseded — it becomes
+the DRAFT_MTP decoder's graph builder. PHASE39's +2.5× upstream
+evidence remains PHASE45's lift target at D8.
+
+Why this beats parent_ctx alias (PHASE38 D):
+- The same architecture supports tree MTP (N drafts), pipelined verify+draft,
+  dual-model spec decoding, and multi-tenant inference — none of which compose
+  cleanly under parent_ctx
+- Sampling, recurrent rollback, and adapter scope all become unambiguous
+  under decomposition
+- Fork-mode means no compatibility shims; the work is one branch from header
+  sketches to multi-slot, no intermediate stable releases
+
+Audit reports (D1-D4) committed to repo root: PHASE45_FIELD_AUDIT.md,
+PHASE45_KV_PATHS.md, PHASE45_ACCRETIONS.md, PHASE45_CALLSITES.md.
+Header sketches (D5) in ik_llama.cpp/include/.
+
