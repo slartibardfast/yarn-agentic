@@ -138,3 +138,73 @@ multi-device scheduler rework.
 
 Phase 43 NCCL infrastructure stays preserved on the cmake flag for
 post-NVLink revisit; orthogonal to this phase.
+
+---
+
+## Stage 0 results — confirmed + sharpened diagnosis
+
+Diagnostic instrumentation (env-gated `LLAMA_PHASE44_DIAG`) added to
+`ggml-cuda.cu` and ran probe with multi-GPU TP at 4K context, 16-token
+generation. Output:
+
+**Per-split shape (first 12 cycles):**
+```
+cycle 0  device=0  n_nodes=50  first=FUSED_RMS_NORM  has_reduce=0
+cycle 1  device=1  n_nodes=49  first=FUSED_RMS_NORM  has_reduce=0
+cycle 2  device=1  n_nodes=1   first=REDUCE         has_reduce=1  -> disabled
+cycle 3  device=0  n_nodes=3   first=FUSED_RMS_NORM  has_reduce=0
+cycle 4  device=1  n_nodes=4   first=FUSED_RMS_NORM  has_reduce=0
+cycle 5  device=1  n_nodes=1   first=REDUCE         has_reduce=1  -> disabled
+... (pattern repeats)
+```
+
+**Aggregate over 6555 dispatch calls:**
+- has_reduce=1 (REDUCE-only splits): 2176
+- has_reduce=0 (compute-only splits): 4379
+- "disabled by check_node_graph_compatibility": 2176 (= REDUCE count, gate works)
+- "update_required=1" on compute splits: ~50% of cycles → rebuild loop
+
+**Property mismatch breakdown (from `LLAMA_PHASE44_DIAG_PROPS=1`):**
+- 18× `FUSED_RMS_NORM` output `node_address` mismatch
+- 16× `FUSED_RMS_NORM` `src[1]_data_mismatch`
+- 2× `FUSED_RMS_NORM` `src[0]_data_mismatch`
+
+All on `FUSED_RMS_NORM`. Addresses cycle predictably:
+- Output: `0x7f6454000000` ↔ `0x7f6454005080` (alternating slots)
+- src[1]: `0x7f646b498000` → `0x7f646b400000` → `0x7f646b49d000` …
+
+**Pattern**: ggml's per-cycle scratch allocator gives different scratch
+slots each call. The captured graph captures one set; replay at next
+cycle needs a different set. Property mismatch → rebuild → after 4
+consecutive rebuilds, capture self-disables permanently.
+
+This is the production state today: capture is technically enabled but
+silently disabled at runtime by the rebuild-loop self-protect.
+
+### Stage 1 candidate fixes (ordered by cheapest first)
+
+1. **Investigate `cudaGraphExecUpdate` failure path** (~5-15k). The
+   line 4681 path already exists; if it succeeded for "only addresses
+   moved" cases, we wouldn't need property-stable graphs. Check why
+   it's failing in practice — could be a small fix.
+
+2. **Allocator stability** (~10-20k). Make ggml's compute scratch
+   give deterministic slots across cycles. If outputs always land at
+   same address, captured graph stays valid. Smaller code change but
+   touches core allocator semantics; some cycle-to-cycle variation
+   may be intentional.
+
+3. **Indirection extension** (~20-40k). Add cpy_dest_ptrs-style
+   indirection for FUSED_RMS_NORM (and any other ops that get
+   identified as moving). Use `cudaGraphExecKernelNodeSetParams` at
+   replay time to patch addresses. Most general; biggest scope.
+
+### Stage 1 recommendation
+
+Try option 1 first (investigate cudaGraphExecUpdate). If the existing
+update path is fixable, the rest of this phase becomes trivial.
+
+If option 1 yields nothing actionable, fall back to option 2
+(allocator stability) — that's the upstream-aligned fix.
+
+Option 3 only if 1 and 2 both fail.
