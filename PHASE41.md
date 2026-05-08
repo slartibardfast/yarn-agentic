@@ -82,3 +82,74 @@ production swap; closure document re-measures on production prompts.
 Full workstream plan at `~/.claude/plans/wild-sleeping-storm.md`. Phase 42
 detail (Stage 3.A–3.G + closure) lives there until Phase 41 closes and
 Stage 2.5 gate passes.
+
+---
+
+## Phase 41 status: `[ ]` REOPEN — split-CUDA s_copy crash
+
+### What landed
+
+- 1.A bump (`gpt_params.n_seq_max_extra` plumbed through; server bumps when tree_k > 1)
+- 1.D in-range branch seq_id formula
+- Allium specs (3 files) committed and `allium check` clean
+
+### What broke at Stage 1.E
+
+Smoke harness `scripts/probe-tree-k2.sh N_PREDICT=128 CTX=4096`:
+- K=1 baseline: tg=17.17 t/s, accept=82.6%, 128 tokens, clean.
+- **K=2: CUDA error: illegal memory access** during
+  `llama_kv_cache_update` → `ggml_backend_cuda_synchronize`.
+
+Stack trace (from `data/phase40-tree-k2.runlog`):
+```
+ggml_backend_cuda_synchronize → ggml_backend_sched_copy_inputs
+→ ggml_backend_sched_graph_compute_async
+→ llama_kv_cache_update (do_copy=true s_copy graph)
+→ llama_decode_internal
+```
+
+### Root cause: documented in the codebase already
+
+`ik_llama.cpp/src/llama.cpp:4715-4729` (`qnext_slot_alloc` site) explicitly notes:
+> "Two attempted mitigations failed within Phase 1's surgical scope:
+> - Host-staged ggml_backend_tensor_get/set: aborts on split CUDA
+>   tensors (ggml_backend_cuda_split_buffer_get_tensor).
+> - **cells[sid].src = 0 + do_copy = true: triggers a server crash;**
+>   the do_copy machinery has additional preconditions
+>   (cell.pos / has_seq_id state) that aren't satisfied at fill-site
+>   time and must be set up via the full seq_cp contract."
+
+The plan's premise — that the existing `do_copy` + `s_copy` graph would
+correctly copy state rows on tree-mode `seq_cp` — is **wrong on production
+config (`--split-mode graph` with split `s_l`)**. The same issue prevents
+the code path from being used in production today.
+
+`build_s_copy` at `src/llama-build-context.cpp:215-222` calls
+`ggml_get_rows` on `kv_self.s_l[il]`. When `s_l[il]` is split (`->extra`
+populated by `ggml_split_tensor_t`), the cross-device get-rows is not
+correctly handled — hence the illegal memory access.
+
+### What this means for Phase 41
+
+Closure binding criterion (K=2 d=1 runs clean on Qwen 3.6 27B at 256K X02)
+is **not met**. The split-CUDA s_copy bug is a deeper fix than Phase 41
+budgeted (~50k). Three paths forward:
+
+1. **Host-staged fallback for split s_l in s_copy.** CPU-mediated row
+   copy. Slow but correct. Estimated 30-50k tokens.
+2. **In-graph copy that respects split layout.** Build per-device get_rows
+   slices and reduce-add. Deeper, ~80-120k tokens.
+3. **Park Phase 41+42 with explicit blocker.** No further work; preserve
+   the foundation (n_seq_max bump + in-range formula) on this branch as
+   a record. Phase 42's tree-d=2 prize is unreachable on production
+   config without (1) or (2).
+
+### Surface (per CLAUDE.md feedback rule)
+
+Stopping at this finding rather than silently picking a workaround that
+changes deliverable quality. The user direction said "doesn't sound so
+scary" for the DeltaNet K-slot extension; the actual blocker is **deeper
+in the s_copy graph compute**, not in DeltaNet itself. Pre-existing
+production code documents this exact crash mode.
+
+Awaiting user decision among the three paths.
