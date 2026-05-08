@@ -1,5 +1,7 @@
 # Phase 39 — Adopt upstream's collapsed-context chained-rollout MTP
 
+> **Note (2026-05-08): PHASE45 wraps this work, does not supersede it.** Under the PHASE45 decomposition, the inline MTP head ported here becomes the `DRAFT_MTP` decoder's graph builder. The `VERIFY` decoder builds the transformer-only forward (layers 0..N-2); the `DRAFT_MTP` decoder owns layer N-1 writes via `kv_txn`. Phase 39's measurement (+2.5× upstream evidence) remains the binding number for PHASE45 D8. See PHASE45.md.
+
 ## Hypothesis
 
 Upstream llama.cpp's architecture for Qwen 3.5/3.6 MTP delivers a measured +2.5× over baseline at production context (per `MEMORY.md` entry "Qwen 3.6 27B MTP upstream PR #22673 + froggeric GGUFs"). Their design is structurally simpler than ours and does not have the verify→fused seed dependency that bounded Phase 38 E. **Phase 39 ports the upstream architecture into ik_llama.cpp**, collapsing ctx_mtp into ctx_tgt, folding MTP rollout into the main forward graph, and obsoleting the Phase 38 chain_residual seed plumbing.
