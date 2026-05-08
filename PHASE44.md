@@ -363,3 +363,98 @@ Recommendation: **B + C**. The diagnostic story is now complete on
 this axis (4 phases of negative results converging on the same
 architectural conclusion). Putting more work into capture without
 the broader ggml-cuda modernization is unlikely to land.
+
+---
+
+## PHASE44 ADDENDUM 2026-05-08 — trust-update reopening was on broken output
+
+PHASE44_SYNTHESIS reopened this phase based on the trust-update
+threshold experiment: raise `consecutive_updates >= 4` to a high
+value and capture engages, saving 66–70 % of `cudaLaunchKernel`
+time. The synthesis concluded the indirection layer
+(`cudaGraphExecKernelNodeSetParams` per cycle) was the missing piece.
+
+A 5-commit implementation pass on branch `phase44-capture-indirection`
+(off `phase41-tree-foundation`) lands the indirection infrastructure:
+
+- `c654ab57` Stage 0+1: `cudaGraphGetNodes` + positional cgraph→kernel
+  mapping
+- `c36754d2` Stage 2 v1: threshold env knob + `patch_state` struct
+  scaffolding
+- `83810f78` Stage 2 v1 revert: in-place mod of CUDA-owned
+  `kernelParams` is unsafe
+- `17f252e8` Stage 1b + Stage 2 v3: pointer-matching verification +
+  cgraph-only FUSED_RMS_NORM patch (avoids unsafe reads of past-argc
+  memory)
+- `74e452cf` Stage 1c: delta-based mapping via
+  `cudaStreamGetCaptureInfo` per-cgraph-node node-count snapshots;
+  16 / 18 cgraph kernel ops correctly mapped (vs 4 / 21 with the
+  positional 1:1 baseline)
+
+### Empirical refutation of the synthesis's premise
+
+At default `consecutive_updates >= 4`: capture disables on workloads
+where allocator addresses change every cycle (i.e. all observed
+production workloads on this codebase). Stage 2 patching code never
+fires because there's no captured graph to patch. The infrastructure
+is **inert** in production.
+
+At raised threshold (1000): capture stays "engaged" but
+`cuda_graph_update_required = true` every cycle (because the
+property check triggers on `node->data` mismatch), so the existing
+code path **re-captures every cycle**. Stage 2 patching reports
+`unchanged = N setparams_err = 0` — the freshly recaptured graph
+already has correct pointers; Stage 2 is **redundant with re-capture**.
+Net: capture record + cudaGraphLaunch ≈ same cost as live exec. No
+uplift.
+
+The trust-update measurement that justified the synthesis's reopening
+was on a config that produced empty / garbage output. A 66 % saving
+on broken output is not a real saving; it's a mismeasurement.
+
+### Threshold = 1000 + c = 262144 hang
+
+A separate issue, independent of Stage 2: server hangs after ~400
+phase 44 cycles. c = 32768 + threshold = 1000 doesn't hang;
+c = 262144 + threshold = 4 doesn't hang. Specific to the
+combination. Cause not yet root-caused (Stage 10 in plan).
+
+### Where the actual uplift lies
+
+Either of two architectural changes that let `cudaGraphLaunch` replay
+without re-record on shape-stable cycles:
+
+- *Path 1 (Stage 9):* split `ggml_graph_node_has_matching_properties`
+  (`ggml-cuda.cu:4580`) into a tri-state. Pointer-only mismatches flag
+  a new `pointer_patch_required` path that runs Stage 2 patching
+  **instead of** re-capture. Capture stays cached; `cudaGraphLaunch`
+  replays without re-record. Real launch-time savings.
+- *Path 2 (Stage 11):* stabilize `ggml_alloc` so addresses don't
+  change cycle-to-cycle when shape is unchanged. Property check
+  returns matched; capture replays as-is.
+
+Path 1 needs Stage 2 to cover all moving-pointer ops upfront
+(MUL_MAT, ADD, FUSED_MUL_UNARY, CONCAT, SCALE, DELTA_NET, SSM_CONV,
+L2_NORM); only FUSED_RMS_NORM landed. Path 2 is upstream-class but
+architecturally cleaner.
+
+### Status of PHASE44 phrase per phrase
+
+- PHASE44 was closed NEGATIVE in the original closure section.
+- PHASE44_SYNTHESIS reopened it on the trust-update finding.
+- This addendum **closes the synthesis-driven reopening** with the
+  same `[ ]`/`[~]` semantics from CLAUDE.md §5: the synthesis-driven
+  workstream is `[~]` partial — Stage 0–2 mapping infrastructure
+  landed cleanly, but the synthesis's core claim ("indirection delivers
+  the trust-update-measured savings") was empirically false.
+- Phase remains open: Stage 9 (or Stage 11) is the path forward.
+  Stage 10 should run before either to unblock measurement.
+
+### Next-action checklist
+
+- [ ] Stage 10 — c = 262144 + threshold = 1000 hang RCA via
+  nsys + threshold sweep + isolation tests (~15k tokens)
+- [ ] Stage 9 — property-check tri-state + Stage 2 op coverage
+  (~50–80k tokens)
+  - alternative: Stage 11 — allocator stability (~40–60k)
+- [ ] Stage 4 — measurement + production swap once Stage 9 lands
