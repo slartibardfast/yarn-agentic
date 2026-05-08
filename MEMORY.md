@@ -1398,3 +1398,31 @@ Audit reports (D1-D4) committed to repo root: PHASE45_FIELD_AUDIT.md,
 PHASE45_KV_PATHS.md, PHASE45_ACCRETIONS.md, PHASE45_CALLSITES.md.
 Header sketches (D5) in ik_llama.cpp/include/.
 
+
+
+## 2026-05-08 — PHASE45 D6 closed: Option A wrapper validates byte-identical
+
+main.cpp greedy decode now routes through `llama_session_adopt(ctx)` +
+`llama_decoder_create(session, PRIMARY)` + `llama_decoder_decode(...)`
++ `llama_session_kv_seq_*(...)`. `scripts/diff-d6-reference.sh`
+reports 50/50 token IDs byte-identical vs the OLD-API reference on
+Qwen 3.6 27B (CUDA 0+1, q4_0 hadamard KV, ctx 262144).
+
+Lesson: `gpt_params` uses 0 to mean "default to n_threads" for
+`n_threads_batch`. The decoder wrapper forwards directly to
+`llama_set_n_threads`, which expects a positive value, so the
+normalization (`n_threads_batch > 0 ? n_threads_batch : n_threads`)
+must happen in main.cpp's translation step. Old `llama_init_from_gpt_params`
+buried this in `common_context_params_to_llama`; the new API surfaces
+it. Default helpers in the decoder layer (e.g.
+`common_decoder_params_from_gpt_params`) should bake this in for D10
+to keep callers from re-doing the translation per-callsite.
+
+Subagent track summary that produced D6 unblock (committed under
+PHASE45_*):
+- PHASE45_D6_SPLIT.md — Option A recommendation, lift line ranges.
+- PHASE45_SERVER_PORT.md — 127 callsites for D10 server port.
+- PHASE45_COMMON_PORT.md — 100 callsites + draft D6 main.cpp edit.
+- PHASE45_DECODE_DEEP_MAP.md — 84 blocks classified for body work.
+- PHASE45_PHASE39_INTEGRATION.md — DRAFT_MTP plug-in plan + flagged
+  D8 measurement question on `mtp_inline_kv_hook`.
