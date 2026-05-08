@@ -230,3 +230,91 @@ End-to-end gate at Stage 5:
 - Moving away from TP-split-graph (TP wins by 2× compute capacity per M1
   measurement)
 - Multi-process / multi-node NCCL
+
+---
+
+## Phase 43 measurement + close — NEGATIVE on this hardware
+
+### What landed (Stages 0-2 — already implemented in upstream code)
+
+- `GGML_NCCL` cmake option (line 100 of ggml/CMakeLists.txt) already
+  defaults ON. Just needed `pacman -S nccl` to install the library.
+- `reduce.cu:136-165` already has NCCL allreduce dispatch path,
+  gated `#ifdef GGML_USE_NCCL`.
+- `ggml-cuda.cu:281-296` already has `ncclCommInitAll` at backend
+  creation. `common.cuh:766-768` has `nccl_coms[]` + `have_nccl`.
+- Build + runtime: "NCCL main communicator initialized" confirmed.
+
+### Stage 3 measurement (NCCL alone, no capture)
+
+`scripts/probe-verify-scaling.sh` n_predict=128 256K X02:
+
+| Config | NCCL-on tg | Pre-NCCL baseline (Agent X) | Δ |
+|---|---|---|---|
+| noMTP | 16.99 t/s | 21.77 t/s | **-22%** |
+| MTP K=1 | 15.94 t/s | 21.31 t/s | **-25%** |
+| MTP K=2 | 12.09 t/s | 15.26 t/s | **-21%** |
+
+NCCL on PCIe 3.0 x8 (no NVLink) is materially slower than the
+hand-rolled `cudaMemcpyPeerAsync + k_reduce_add_T` path. Matches
+Agent 1's research warning: "Don't expect a perf win from NCCL on
+this topology pre-NVLink." Magnitude exceeded expectation (-22% vs
+expected ±5%).
+
+### Stage 4 attempt — graph capture with NCCL
+
+Modified the `GGML_OP_REDUCE` gate to allow capture when NCCL routes
+the op (`ggml-cuda.cu:4487`).
+
+**Result: argmax drift.** Capture engaged (10-12 cached graphs), but
+K=1 accept rate dropped from 0.868 → 0.716 (-15pp). Same failure mode
+Agent X observed in the gate-only speculative test.
+
+Tried `cudaStreamCaptureModeThreadLocal` (per Agent 1's recommendation
+for multi-GPU): server crashes during model warmup in
+`ggml_cuda_op_mul_mat_cublas`. cuBLAS does host-allocations or
+non-captured-stream operations that ThreadLocal rejects.
+
+**Two stacked failure modes:**
+1. Relaxed mode: capture works structurally but produces argmax drift
+   (subtle FP-add reordering through captured graph)
+2. ThreadLocal mode: cuBLAS is fundamentally not capture-safe in this
+   codebase
+
+### Closure: NEGATIVE on this hardware, NCCL kept for NVLink future
+
+Both projected upsides (~+50% via capture) are blocked:
+- NCCL alone is throughput-negative on PCIe x8 (NVLink would invert this)
+- Graph capture has cuBLAS-class incompatibilities beyond the REDUCE
+  gate — would need ggml-cuda backend rework to address
+
+Source reverts:
+- `ggml-cuda.cu:4487` gate fix reverted
+- Capture mode reverted to `Relaxed`
+- Working directory clean post-revert
+
+**Recommendations:**
+1. **Production**: rebuild with `-DGGML_NCCL=OFF` to restore the prior
+   peer-copy + ring-reduce path until NVLink arrives. NCCL kept
+   available behind the cmake flag for the post-NVLink swap.
+2. **Post-NVLink**: re-measure. NCCL ring-allreduce on NVLink at ~50-100
+   GB/s likely beats current peer-copy baseline (which is PCIe x8
+   limited at ~7 GB/s). Capture remains broken; orthogonal to NCCL.
+3. **For graph capture upside (+50% projected)**: requires
+   ggml-cuda backend work to make cuBLAS dispatch capture-safe.
+   Significant scope; out of Phase 43.
+
+### Reusable artifacts preserved
+
+- `scripts/probe-greedy-parity.sh`, `scripts/parity-nmse.py` — parity
+  test infrastructure
+- `specs/cuda_nccl_allreduce.allium` — contract spec for the NCCL
+  reduce path
+- `data/phase43-nccl-{scaling,capture}.runlog` — measurement evidence
+
+PHASE41 + PHASE42 + PHASE43 = three negative results on MTP/tree-K
+acceleration on TU102 sm_75 PCIe x8. The diagnostic story is now
+complete: this hardware is launch-overhead bound + cross-device
+bandwidth limited. Both classes of fix (capture, NCCL) are blocked
+by deeper compatibility issues. Architecture is ready for NVLink
+upgrade; software work is gated on ggml-cuda backend modernization.
