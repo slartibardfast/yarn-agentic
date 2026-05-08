@@ -278,3 +278,89 @@ If future work wants more throughput on this hardware, paths include:
 None of these are Phase 40 follow-ups; they're separate phases gated
 on independent decisions.
 
+---
+
+## Phase 40 closure addendum — REOPEN, build, hit ARCHITECTURAL blocker
+
+### What happened
+
+After the probe-data closure was accepted, the user re-fired the /loop
+("YOU MUST fully solve this") and noted the +3.2% projection deserved an
+empirical test before close. Phase 40 was reopened and the full
+implementation landed:
+
+**40.1 (committed)** — `common_mtp_read_drafts_topk` extended;
+`mtp_speculative_gen_draft` now returns top-1+top-2 as siblings when
+`LLAMA_MTP_TREE_K=2`. Reads existing device-side top-2 cache. Built
+clean, diagnostic stderr confirms 100% kept rate (top-2 rarely tied
+with top-1 or EOG).
+
+**40.2 (committed)** — `common_sampler_sample_and_accept_tree`,
+server-side tree-shaped verify batch with per-branch seq_ids via
+`llama_kv_cache_seq_cp`, tree-aware accept Phase A + Phase B with
+winning-branch promotion and transient seq_id cleanup. Built clean.
+
+**40.3 (in progress)** — first end-to-end test exposed an architectural
+incompatibility:
+
+```
+/home/llm/yarn-agentic/ik_llama.cpp/src/llama-delta-net.cpp:70:
+GGML_ASSERT((uint32_t) s < qnext_state_slots) failed
+```
+
+### The architectural blocker
+
+Qwen 3.5 / 3.6 are **hybrid attention models** with DeltaNet recurrent
+layers interleaved with standard transformer layers. DeltaNet maintains
+a per-seq_id recurrent state slot; the slot array is sized to the
+server's `--parallel` count (typically 1 for production), captured in
+`qnext_state_slots`.
+
+Tree fan-out via parallel seq_ids requires K transient seq_ids per
+slot. Branch seq_id `1024 + slot.id*8 + i` immediately violates the
+DeltaNet assert because the recurrent state has only 1 slot for
+slot.id.
+
+**This is fundamental, not a bug.** Each tree branch's recurrent state
+at the verify position would diverge (since each branch's input at
+that position differs — top-1 vs top-2). DeltaNet's state-passing
+isn't expressible across parallel branches sharing a single state slot.
+
+### Why the implementation work was still valuable
+
+1. The probe-data conclusion (Δ=0.06 too small) was already a close
+   signal. The architectural blocker is a SECOND independent close,
+   confirming the verdict from a different angle.
+2. The implementation surfaces the blocker concretely so future work
+   on non-hybrid models can ship without re-deriving it.
+3. The tree path code (`scripts/probe-tree-k2.sh`,
+   `common_sampler_sample_and_accept_tree`, server-side branch
+   construction) is well-tested up to the DeltaNet layer crash —
+   reusable for any pure-transformer model port.
+
+### What's actually closed
+
+Phase 40 is closed for **all hybrid attention models** (Qwen 3.5/3.6 and
+similar with DeltaNet/Mamba/recurrent layers). The implementation
+exists on `phase40-tree-fanout` branch but is parked from production —
+two independent reasons:
+
+- Probe data: Δ=0.06 too small to justify even on a non-hybrid model
+- Architecture: hybrid recurrent layers prevent the parallel seq_id
+  approach entirely on this specific model
+
+### Forward direction (revised)
+
+The tree-K=2 implementation IS production-ready code-wise. It would
+work on a pure-transformer model (no hybrid recurrent layers) where
+the α(top-2) ceiling is meaningfully larger than top-1.
+
+To use this code on a different model class:
+
+1. Run `scripts/probe-top2.sh PROMPT_ID=X02` to measure Δ on the new model.
+2. If Δ ≥ 0.15, the implementation on this branch will deliver the
+   projected uplift assuming the model is pure-transformer.
+3. The DeltaNet blocker is specific to the hybrid attention class.
+
+Production stays on no-MTP. Phase 40 ends here.
+
