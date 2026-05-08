@@ -1,0 +1,17 @@
+[scaling] stopping production llama-server
+
+===== verify-scaling: noMTP-batch1 (mtp_args='', env='') =====
+[scaling] noMTP-batch1: tg=18.01548205489092 ntoks=128 elapsed_ms=7105 runlog=/home/llm/yarn-agentic/data/phase42-scaling-noMTP-batch1.runlog
+
+===== verify-scaling: MTP-K1-batch2 (mtp_args='-mtp --draft 1', env='') =====
+[scaling] MTP-K1-batch2: tg=16.778083628260585 ntoks=128 elapsed_ms=7629 runlog=/home/llm/yarn-agentic/data/phase42-scaling-MTP-K1-batch2.runlog
+
+===== verify-scaling: MTP-K2-batch3 (mtp_args='-mtp --draft 1', env='LLAMA_MTP_TREE_K=2') =====
+[scaling] MTP-K2-batch3: tg=12.613322822230982 ntoks=128 elapsed_ms=10148 runlog=/home/llm/yarn-agentic/data/phase42-scaling-MTP-K2-batch3.runlog
+
+===== summary =====
+
+verify cycle wall time = N_PREDICT / tg / cycle_factor
+  noMTP cycle_factor = 1.0 (1 token per cycle)
+  MTP K=1 cycle_factor ≈ 1.86 (1 + α with α≈0.86)
+  MTP K=2 cycle_factor ≈ 1.95 (1 + α_top2 with α_top2≈0.95)
