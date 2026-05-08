@@ -1523,3 +1523,48 @@ LLAMA_API void llama_spec_loop_accept_n(
 `spec_loop_step` (verticalized) stays as future API. Aborts in D8;
 filled out at D9 or later when a new caller arrives that benefits from
 vertical (bench-scripts, single-shot CLIs).
+
+
+### D8 architectural finding (review surfaced)
+
+Spec_loop CANNOT cleanly wrap `common_speculative_*` while living in
+libllama. Reason: `common_speculative_init/_draft/_accept` and
+`mtp_speculative_gen_draft` all use `common_sampler` (libcommon only)
+and other libcommon types. Libllama cannot link libcommon (the
+dependency goes the other way). So `src/llama-spec-loop.cpp` cannot
+`#include "speculative.h"`.
+
+Two ways to resolve:
+
+**Option L — Move spec_loop to libcommon** (recommended).
+- `include/llama-spec-loop.h` — keep here, drop `LLAMA_API`. Header
+  symmetry with session/decoder/kv-txn is preserved at consumer level.
+- `src/llama-spec-loop.cpp` → `common/spec-loop.cpp`. Includes
+  both `llama-spec-loop.h` and `speculative.h`. Wraps
+  `common_speculative_*` directly.
+- `src/CMakeLists.txt` — drop `llama-spec-loop.cpp` from llama target.
+- `common/CMakeLists.txt` — add `spec-loop.cpp`.
+- Pro: minimal port, +19% lift untouched, mirrors how
+  `common_speculative` already lives in libcommon.
+- Con: spec_loop is asymmetric with the other three types' build
+  layer. PHASE45.md's "four peers" framing becomes "three engine peers
+  + one orchestrator above them" — still architecturally honest.
+
+**Option E — Re-implement spec_loop in libllama using primitives**.
+- `src/llama-spec-loop.cpp` calls `mtp_fused_draft_invoke`,
+  `llama_set_draft_input_hidden_state`, `llama_get_logits_ith`, applies
+  `llama_sampler` (not common_sampler) directly.
+- Pro: keeps spec_loop in libllama; clean four-peer architecture.
+- Con: ~300+ LoC of re-implementation; `mtp_speculative_gen_draft`'s
+  PHASE36/37/38 instrumentation (top-2 probe, fused chain async, autotune)
+  must be ported or dropped. Risk of regressing the +19% lift.
+
+Recommendation: **Option L for D8** — wrap, don't rewrite. Reframe
+PHASE45.md to acknowledge spec_loop is an orchestrator above the
+engine, not a peer of the engine types. Option E is a candidate for
+a later cleanup phase once the orchestrator's contract is stable.
+
+This finding came out of careful review before coding (per user
+instruction "task it out in memory and reviewing carefully"). Without
+the review, the natural reflex would have been to start `#include
+"speculative.h"` from spec_loop.cpp and hit a link error 30 minutes in.
