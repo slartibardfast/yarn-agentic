@@ -2,6 +2,12 @@
 
 Permanent fork. Not upstreamable. We can have fun here.
 
+## Status (2026-05-08)
+
+- D1–D5 [x] — audits + header sketches landed.
+- D6 [x] — main.cpp greedy-decode through `llama_session` + `llama_decoder(PRIMARY)`; `scripts/diff-d6-reference.sh` reports byte-identical 50-token output vs OLD-API reference on Qwen 3.6 27B (CUDA 0+1, q4_0 hadamard KV, ctx 262144). Binding test bound on the step's actual claim.
+- D7–D11 [ ] — open. D7 (CUDA single-slot through new types, multi-turn bench ≥0.95 floor) is the next gate; the CUDA path itself is exercised by D6's verifier — D7's remaining work is the perf bench, not the basic forward.
+
 ## Goal
 
 Replace `llama_context`-as-bag-of-state with three composable types:
