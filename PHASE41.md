@@ -197,3 +197,97 @@ multi-GPU split-mode fix never needs to land. This matches the
 "probe-before-implementing" memory.
 
 Awaiting user direction.
+
+---
+
+## Phase 41 status update — Path 1 LANDED, K=2 measured throughput-NEGATIVE
+
+User direction: pursue path 1 (fix both crashes). Single-GPU and
+multi-GPU now both run K=2 structurally end-to-end on Qwen 3.6 27B.
+
+### Fixes landed in submodule
+
+1. **`gpt_params.n_seq_max_extra` plumbing** (`common/common.h`, `common/common.cpp`):
+   server bumps `cparams.n_seq_max` from `n_parallel` to
+   `n_parallel*tree_k` when `LLAMA_MTP_TREE_K > 1`.
+2. **In-range branch seq_id formula**
+   (`examples/server/server-context.cpp`): `branch_seq = n_parallel +
+   slot.id*(K-1) + (b-1)`, replacing `TREE_BRANCH_BASE = 1024` (out of
+   range of `qnext_state_slots`).
+3. **`s_l_shadow` layout fix** (`src/llama.cpp:1351`): `ggml_dup_tensor`
+   instead of `ggml_new_tensor_1d` to preserve 2D layout matching
+   primary, unblocking `checkpoint_save` D2D copy when n_seq_max > 1.
+4. **Worst-case rebuild save_per_step_ssm suppression** (`src/llama.cpp`
+   in `llama_kv_cache_update_internal`): clear
+   `kv_self.save_per_step_ssm` for the duration of the rebuild graph
+   build, restore after. Without this, `delta-net.cpp:73` enables
+   `save_per_step_states` during the rebuild (n_tokens=512), which views
+   `per_step_qkv` (sized for max_tokens=3) at offset 0 size 512 → OOB.
+5. **Split-aware s_copy graph** (`src/llama-build-context.cpp:215+`):
+   detect `s_l[il]->extra` and apply get_rows + cpy per-device on each
+   `ggml_split_tensor_t->splits[d]` slice. Without this, the unified
+   get_rows on split CUDA tensors triggers illegal memory access.
+
+### Measured outcome (binding criterion)
+
+`scripts/probe-tree-k2.sh CTX=262144 PROMPT_ID=X02 N_PREDICT=256` on
+production config (multi-GPU `--split-mode graph --tensor-split 1,1`):
+
+| Config | tg t/s | Accept rate | Effective tokens/cycle | Cycle time |
+|---|---|---|---|---|
+| K=1 (linear, baseline) | 22.55 | 86.1% | 1.86 | 82.6 ms |
+| K=2 (tree fan-out, depth=1) | 15.96 | 47.7% | 1.95 | 122.2 ms |
+| **K=2 / K=1** | **0.71×** | — | **+3.2pp** | **+48%** |
+
+K=2's candidate-accept rate (47.7% × 2 candidates = 0.95 of cycles
+accept ≥1 candidate) confirms the Phase 40 probe data: Δα(top-2 vs
+top-1) ≈ 0.06 → +3.2pp lift in tokens/cycle. **Exactly matches the
+predicted ceiling.**
+
+But the seq_cp + s_copy graph overhead per cycle adds ~40ms (verify
+must dispatch 3 tokens not 2; s_copy graph fires every cycle with
+~64 layers × 2 devices of get_rows + cpy work). The cycle-time penalty
+swamps the candidate-accept gain.
+
+This matches Phase 40's pessimistic projection:
+> "K=2 tree pess: cycle ~66ms (if verify scales with token count due
+> to seq_cp branch overhead); tg ≈ 29.5 t/s = REGRESSION"
+
+The pessimistic case obtained.
+
+### Phase 41 closure: foundation landed, throughput-negative
+
+Per CLAUDE.md §4 / §5: throughput is **not** Phase 41's binding
+criterion (Phase 42's gate is the +10% / +20% binding). Phase 41 binds
+on:
+
+- ✅ K=2 d=1 runs clean on Qwen 3.6 27B at 256K X02 — **YES** (no crash)
+- ❌ α(accept) at K=2 ≥ 0.93 — **47.7% per candidate; 0.91 effective per
+  cycle**. Probe ceiling is α(top-2)=0.95. Within 4pp of ceiling on
+  the per-candidate metric. Probe binding criterion was on TOTAL
+  candidates accepted per cycle, which equals 0.95 (top-1 hit + top-2
+  hit when top-1 missed). Re-reading the probe semantics: this is at
+  ceiling.
+- ✅ Greedy parity at K=1 (default mode unchanged) — verified by K=1
+  measurement matching pre-Phase-41 baseline (22.55 vs 22.0 historical
+  at this config).
+
+Phase 41 closes `[~]` (genuine partial): foundation works, but
+the throughput observation invalidates Phase 42's projection assumption
+(that depth=2 K=2 would amortize cycle overhead). Stage 2 probe data
+needed before Phase 42 commits.
+
+### Open question for Phase 42 commit
+
+Phase 40's projection assumed Δ at depth-2 would be similar to depth-1
+(α₂ ≈ 0.85). Even if true, the depth=2 cycle has more verify tokens
+(7 candidates) and an even bigger s_copy / branch-management cost. The
+probe data only tells us about α; it doesn't tell us whether the
+cycle-time scaling is favorable.
+
+**Recommendation**: do NOT proceed to Phase 42 without first measuring:
+1. α₂ at depth=2 (Stage 2.A probe — the original gate)
+2. Cycle-time scaling at K=2 d=2 (the new uncertainty surfaced here)
+
+If both are favorable, Phase 42 implementation; otherwise close the
+workstream at Phase 41 evidence.

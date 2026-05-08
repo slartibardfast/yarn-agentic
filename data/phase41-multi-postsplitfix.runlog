@@ -1,0 +1,11 @@
+===== K=1 (linear baseline) =====
+[tree] starting k1 (env: <none>)
+[tree] k1: tg=17.323047773717686 accept=0.85294 ntoks=128 elapsed_ms=7389
+  log: /home/llm/yarn-agentic/data/phase40-tree-k1.runlog
+
+===== K=2 (tree fan-out) =====
+[tree] starting k2 (env: LLAMA_MTP_TREE_K=2)
+[tree] k2: tg=13.338891204668611 accept=0.45455 ntoks=128 elapsed_ms=9596
+  log: /home/llm/yarn-agentic/data/phase40-tree-k2.runlog
+
+===== summary =====
