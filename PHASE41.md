@@ -152,4 +152,48 @@ scary" for the DeltaNet K-slot extension; the actual blocker is **deeper
 in the s_copy graph compute**, not in DeltaNet itself. Pre-existing
 production code documents this exact crash mode.
 
-Awaiting user decision among the three paths.
+### Single-GPU verification confirms split-mode is not the only issue
+
+`scripts/probe-tree-k2-single.sh` runs K=2 on `--device CUDA0` only
+(no split). It also crashes — at a DIFFERENT point:
+`checkpoint_save → ggml_backend_tensor_copy` with assertion
+`ggml_are_same_layout(src, dst) failed`
+(`data/phase41-single-k2-singlegpu.runlog`).
+
+The bumped `n_seq_max` changes `s_l[il]`'s shape from
+`[n_embd_v_s, n_parallel]` to `[n_embd_v_s, n_parallel*K]`; the
+`s_l_shadow` is allocated 1D as `[nelems]` (line 1351). Before the bump,
+the layouts apparently passed the check (or the path wasn't exercised in
+the same way).
+
+**Two distinct blockers surface from a single n_seq_max bump:**
+
+1. **Multi-GPU split-mode-graph**: `s_copy` graph fails on split CUDA tensors
+   — `ggml_get_rows` with split `s_l[il]->extra` triggers illegal memory access.
+2. **Single-GPU**: `checkpoint_save` shadow-tensor layout mismatch when
+   `s_l[il]` shape changes — pre-existing layout-check in
+   `ggml_backend_tensor_copy` rejects the copy.
+
+### Updated paths forward
+
+1. **Fix BOTH crashes** (~80-150k):
+   - Single-GPU: change `s_l_shadow` allocation to match primary's 2D
+     layout (1351: `ggml_new_tensor_2d` instead of `_1d`).
+   - Multi-GPU: extend `build_s_copy` with split-aware path mirroring
+     the existing per-step-restore split-CUDA fast path
+     (`src/llama.cpp:1703-1729+` provides the per-device kernel template).
+2. **Park Phase 41+42 with both blockers documented**: the foundation
+   commits stay on `phase41-tree-foundation`; specs preserved.
+3. **Smaller-scope fix: production-only mitigation**. Restrict tree-K
+   to single-GPU only, fix only the single-GPU layout bug (~15k). Phase 42
+   still gated on Stage 2 probes.
+
+### Recommendation
+
+Path **1** is the correct fix but unbudgeted. Path **3** is the smallest
+correct step that unblocks measurement and lets Stage 2 probes run on
+single-GPU; if Stage 2 probes show Phase 42 isn't worth pursuing, the
+multi-GPU split-mode fix never needs to land. This matches the
+"probe-before-implementing" memory.
+
+Awaiting user direction.
