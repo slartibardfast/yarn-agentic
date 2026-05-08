@@ -6,7 +6,8 @@ Permanent fork. Not upstreamable. We can have fun here.
 
 - D1–D5 [x] — audits + header sketches landed.
 - D6 [x] — main.cpp greedy-decode through `llama_session` + `llama_decoder(PRIMARY)`; `scripts/diff-d6-reference.sh` reports byte-identical 50-token output vs OLD-API reference on Qwen 3.6 27B (CUDA 0+1, q4_0 hadamard KV, ctx 262144). Binding test bound on the step's actual claim.
-- D7–D11 [ ] — open. D7 (CUDA single-slot through new types, multi-turn bench ≥0.95 floor) is the next gate; the CUDA path itself is exercised by D6's verifier — D7's remaining work is the perf bench, not the basic forward.
+- D7 [x] — cli A/B perf floor: 3 NEW-API reps vs OLD-API reference, mean ratio 0.9994×, worst-case 0.9943×. 0.95 floor cleared by ~10×. Original "scripts/bench-multiturn-pre-port.sh" binding test was misframed (it targets the server, which is on OLD API until D10; it cannot measure wrapper cost). Revised binding test below; full evidence in `data/phase45-d7-perf-floor.md`.
+- D8–D11 [ ] — open. D8 (spec decoding via `llama_spec_loop`) is the next gate.
 
 ## Goal
 
@@ -56,7 +57,7 @@ llama_spec_loop          orchestrator: 1 verify + N draft decoders;
 | D4 | Inventory external callsites of `llama_context` (server, common, examples we ship) | report `PHASE45_CALLSITES.md` exists, ~90 API methods classified |
 | D5 | Header sketches: `llama-session.h`, `llama-decoder.h`, `llama-kv-txn.h`, `llama-spec-loop.h` (~500 LoC stubs) | `gcc -fsyntax-only` clean on all four headers |
 | D6 | End-to-end CPU forward through new types (no spec, no multi-slot) | `main.cpp` greedy-decode 50 tokens, byte-identical output vs old API on Qwen 3.6 27B |
-| D7 | CUDA single-slot through new types | `scripts/bench-multiturn-pre-port.sh --fast` GREEN at 0.95 floor (Phase 36 recalibrated gate) |
+| D7 | CUDA single-slot through new types | cli A/B: NEW-API mean eval t/s ≥ 0.95 × OLD-API on Qwen 3.6 27B greedy-50 (3 reps for variance). The original `bench-multiturn-pre-port.sh` test would only exercise OLD code paths until D10 ports the server; it is the D10 verifier, not D7. |
 | D8 | Spec decoding via `llama_spec_loop` (single-slot MTP, draft 3) | multi-turn agentic bench tg ≥ +19% vs nomtp baseline (the measured C config: `-mtp --draft 3` + INLINE_KV) |
 | D9 | Multi-slot MTP (np=3 × 256K) | profile `qwen36-27b-x3-mtp.sh` boots; 48 GB VRAM fit; per-slot tg ≥ 29.6 t/s; no OOM over 1000-token soak |
 | D10 | Delete `llama_context`. Update server, common, scripts, profiles | `git grep -l llama_context src/ common/ examples/server/` returns 0 |
