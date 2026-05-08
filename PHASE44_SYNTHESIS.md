@@ -91,6 +91,43 @@ Tier 4.7-9 kernel fusion / KV compression / draft model   +10-20% each
 - **PHASE44 multi-slot patch claimed correctness fix**: TRUE, but I conflated correctness restoration with capture engagement. Capture wasn't engaging in either state — accept rate was preserved by NOT capturing (the cache fragmentation prevented bad captures from being cached). cudaLaunchKernel count is the binding evidence I should have looked at first.
 - **"Capture provides ~0 throughput benefit"**: technically correct conclusion but premature attribution to "hardware doesn't benefit" instead of "capture isn't engaging". The latter is fixable; the former is not.
 
+## Trust-update threshold experiment (post-synthesis correction)
+
+Raised `consecutive_updates >= 4` to `>= 100000` to let capture stabilize. Result:
+
+- nsys K=1: cudaLaunchKernel time **1.37s → 0.46s (-66%)**. cudaGraphLaunch fires 21,145 times. cudaGraphExecUpdate fires 20,999 times. **Capture IS engaging.**
+- nsys K=2: cudaLaunchKernel **2.16s → 0.64s (-70%)**. cudaGraphLaunch 33,225, Update 33,019.
+- Throughput on noMTP: 22.78 t/s (vs baseline 22.90 — within noise, no benefit despite launch reduction)
+- Throughput on K=1 / K=2: **server hangs / empty output**. Capture replays produce wrong/invalid output without proper pointer indirection.
+
+**This is the unambiguous proof:**
+- Capture CAN engage on this hardware (refutes "hardware doesn't benefit")
+- Engagement saves 66-70% of cudaLaunchKernel time (real)
+- But replays are wrong without indirection (cudaGraphExecUpdate alone doesn't catch all moving pointers)
+- noMTP throughput unchanged because noMTP has minimal capture targets relative to wall
+
+## Tier 2.4 proper scope (the actual work needed)
+
+Implementation that would work:
+
+1. Modify `evaluate_and_capture_cuda_graph` (`ggml-cuda.cu:4720+`) to call `cudaGraphGetNodes` after `cudaStreamEndCapture` and populate the existing `graph->nodes` (already in graph.cuh:26 but unused).
+2. For each captured node, capture its kernel params (`cudaGraphKernelNodeGetParams`) into `graph->params` (graph.cuh:27, also unused).
+3. Map each captured node back to its originating ggml_tensor via order-preserving traversal (capture preserves kernel-launch order per CUDA docs).
+4. At replay time, BEFORE `cudaGraphLaunch`: iterate `graph->nodes`, get each tensor's CURRENT data pointer from the live cgraph, call `cudaGraphExecKernelNodeSetParams` to update.
+5. Skip the live re-execute path when `graph->instance != nullptr`.
+
+The data structures exist (someone planned this). The logic is missing. Estimated 30-50k tokens of careful work + extensive testing because cudaGraphExecKernelNodeSetParams has strict requirements (param sizes must match exactly).
+
+## Final recommendation (revised)
+
+The "hardware doesn't benefit from capture" framing was wrong. **Capture provides real benefit (~+11% launch overhead recovery + replay savings) IF we land the indirection infrastructure.** The path is:
+
+- Tier 2.4 proper indirection: 30-50k tokens, real engineering, real win
+- Stack with NVLink (Tier 3) when bridge arrives
+- Then re-evaluate Tier 1.2 overlap on the captured baseline
+
+The next session should start with Tier 2.4 implementation. The data structures in graph.cuh suggest this was upstream work that got stalled — picking it up would be productive.
+
 ## Recommendation
 
 Implement Tier 1.1 (ncclReduce switch) now — small, low risk, real win, and unlocks the assumption that NCCL infrastructure can be tuned. Then Tier 1.2 (overlap scheduler).
