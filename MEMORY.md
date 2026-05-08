@@ -1301,3 +1301,62 @@ Every other construct used by the fixed template (`is mapping`, `is iterable`, `
 - Submodule commit `06b3b88a` on branch `phase33-concat-probe`, pushed to origin.
 - Parent pin bumped to `06b3b88a` on branch `phase32-q4_0_ar16-integration`.
 - Production live with fixed template; 4/4 smoke probes pass; service healthy.
+
+## 2026-05-08 PHASE 44 capture-indirection diagnosis correction
+
+**Premise that turned out wrong.** PHASE43 closure + PHASE44 plan
+both treated the prior trust-update experiment ("`consecutive_updates >= 100000`
+saves 66–70 % cudaLaunchKernel time") as evidence that capture is the
+lever and the missing piece is per-cycle pointer indirection. The
+trust-update measurement was on a config that produced **empty / garbage
+output**. A 66 % saving on broken output is not a saving; it's a
+mismeasurement.
+
+**What's actually happening at default `consecutive_updates >= 4`.**
+On this workload the allocator gives different `node->data` addresses
+every cycle, so `is_cuda_graph_update_required` returns true every
+cycle, so `number_consecutive_updates` accumulates and capture is
+disabled after 4. Most of the time **capture is OFF in production**.
+Stage-2 patch code never fires because there's no captured graph to
+patch.
+
+**What's actually happening at raised threshold (e.g. 1000).** Capture
+stays "engaged" but `cuda_graph_update_required = true` every cycle
+(pointers still moving), so the existing code re-captures every cycle.
+Stage 2 patching reports `unchanged = N setparams_err = 0` consistently
+— the freshly recaptured graph already has correct pointers. Stage 2
+is **redundant with re-capture**. Net: same cost as live exec plus a
+cudaGraphLaunch. No uplift.
+
+**The correct lever** (the one PHASE 44 should have started from):
+either of two architectural changes that let cudaGraphLaunch replay
+without re-record on shape-stable cycles:
+
+- *Path 1:* split `ggml_graph_node_has_matching_properties`
+  (`ggml-cuda.cu:4580`) into a tri-state — pointer-only mismatches
+  flag a new `pointer_patch_required` path that runs Stage 2 patching
+  **instead of** re-capture.
+- *Path 2:* stabilize `ggml_alloc` so addresses don't change cycle-
+  to-cycle when shape is unchanged. Then property check returns
+  matched and capture replays as-is.
+
+Path 1 needs Stage 2 to cover all moving-pointer ops (MUL_MAT, ADD,
+FUSED_MUL_UNARY, CONCAT, SCALE, DELTA_NET, SSM_CONV, L2_NORM); only
+FUSED_RMS_NORM landed in this iteration. Path 2 is upstream-class but
+architecturally cleaner.
+
+**State landed on branch `phase44-capture-indirection`** (off
+`phase41-tree-foundation`): five commits — Stage 0 (collect cuda
+graph nodes), Stage 1 (positional then delta-based mapping via
+`cudaStreamGetCaptureInfo` per-cgraph-node deltas), Stage 1b
+(pointer-matching verification), Stage 2 (FUSED_RMS_NORM patching).
+Verified at threshold = 4: 7563-byte coherent decode, no segfault.
+threshold = 1000 + c = 262144: hangs after ~400 cycles, cause not yet
+root-caused (independent of Stage 2).
+
+**How to apply this memory.** Future sessions: do not re-attempt the
+Stage 0–4 indirection layer as currently structured; it doesn't
+deliver. Either pursue path 1 (Stage 9 in the plan) or path 2
+(Stage 11) — and run the threshold-sweep / nsys diagnosis (Stage 10)
+before committing to either, to know whether the c = 262144 hang is a
+property of capture itself or of our changes.
