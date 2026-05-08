@@ -1,0 +1,51 @@
+[scaling] stopping production llama-server
+
+===== verify-scaling: noMTP-batch1 (mtp_args='', env='') =====
+[scaling] noMTP-batch1 failed to start
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/usr/lib/libthread_db.so.1".
+0x00007f0b8789ef32 in ?? () from /usr/lib/libc.so.6
+#0  0x00007f0b8789ef32 in ?? () from /usr/lib/libc.so.6
+#1  0x00007f0b8789339c in ?? () from /usr/lib/libc.so.6
+#2  0x00007f0b878933e4 in ?? () from /usr/lib/libc.so.6
+#3  0x00007f0b8790367f in wait4 () from /usr/lib/libc.so.6
+#4  0x00007f0b8d93e479 in ggml_abort () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#5  0x00007f0b8db8ac41 in ggml_cuda_error(char const*, char const*, char const*, int, char const*) () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#6  0x00007f0b8db90173 in ggml_cuda_op_mul_mat_cublas(ggml_backend_cuda_context&, ggml_tensor const*, ggml_tensor const*, ggml_tensor*, char const*, float const*, char const*, float*, long, long, long, long, CUstream_st*) () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#7  0x00007f0b8db9923b in ggml_cuda_op_mul_mat(ggml_backend_cuda_context&, ggml_tensor const*, ggml_tensor const*, ggml_tensor*, void (*)(ggml_backend_cuda_context&, ggml_tensor const*, ggml_tensor const*, ggml_tensor*, char const*, float const*, char const*, float*, long, long, long, long, CUstream_st*), void (*)(float const*, void*, long, long, long, long, ggml_type, CUstream_st*)) [clone .constprop.0] () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#8  0x00007f0b8db9ca5c in ggml_cuda_mul_mat(ggml_backend_cuda_context&, ggml_tensor const*, ggml_tensor const*, ggml_tensor*, ggml_cgraph const*, int) () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#9  0x00007f0b8dbabd49 in ggml_backend_cuda_graph_compute(ggml_backend*, ggml_cgraph*) () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#10 0x00007f0b8d9ac499 in ggml_backend_sched_graph_compute_async () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#11 0x00007f0b9d6c4661 in llama_decode_internal(llama_context&, llama_batch) () from /home/llm/yarn-agentic/ik_llama.cpp/build/src/libllama.so
+#12 0x00007f0b9d6c7f66 in llama_decode () from /home/llm/yarn-agentic/ik_llama.cpp/build/src/libllama.so
+#13 0x0000564c400e94aa in llama_init_from_gpt_params(gpt_params&) ()
+#14 0x0000564c4007c26c in server_context::load_model(gpt_params const&) ()
+#15 0x0000564c3ff7b567 in main ()
+[Inferior 1 (process 117305) detached]
+/home/llm/yarn-agentic/scripts/probe-verify-scaling.sh: line 134: 117305 Aborted                    (core dumped) env $extra_env "${BUILD}/bin/llama-server" -m "$MODEL" --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 -ngl 999 -fa on ${mtp_args} -c ${CTX} --threads 16 --batch-size 2048 --ubatch-size 512 --cache-type-k q4_0 --cache-type-v q4_0 --k-cache-hadamard --v-cache-hadamard --no-context-shift --port "$PORT" --host 127.0.0.1 > "$runlog" 2>&1
+
+===== verify-scaling: MTP-K1-batch2 (mtp_args='-mtp --draft 1', env='') =====
+[scaling] MTP-K1-batch2 failed to start
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/usr/lib/libthread_db.so.1".
+0x00007fe94c49ef32 in ?? () from /usr/lib/libc.so.6
+#0  0x00007fe94c49ef32 in ?? () from /usr/lib/libc.so.6
+#1  0x00007fe94c49339c in ?? () from /usr/lib/libc.so.6
+#2  0x00007fe94c4933e4 in ?? () from /usr/lib/libc.so.6
+#3  0x00007fe94c50367f in wait4 () from /usr/lib/libc.so.6
+#4  0x00007fe95253e479 in ggml_abort () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#5  0x00007fe95278ac41 in ggml_cuda_error(char const*, char const*, char const*, int, char const*) () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#6  0x00007fe952790173 in ggml_cuda_op_mul_mat_cublas(ggml_backend_cuda_context&, ggml_tensor const*, ggml_tensor const*, ggml_tensor*, char const*, float const*, char const*, float*, long, long, long, long, CUstream_st*) () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#7  0x00007fe95279923b in ggml_cuda_op_mul_mat(ggml_backend_cuda_context&, ggml_tensor const*, ggml_tensor const*, ggml_tensor*, void (*)(ggml_backend_cuda_context&, ggml_tensor const*, ggml_tensor const*, ggml_tensor*, char const*, float const*, char const*, float*, long, long, long, long, CUstream_st*), void (*)(float const*, void*, long, long, long, long, ggml_type, CUstream_st*)) [clone .constprop.0] () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#8  0x00007fe95279ca5c in ggml_cuda_mul_mat(ggml_backend_cuda_context&, ggml_tensor const*, ggml_tensor const*, ggml_tensor*, ggml_cgraph const*, int) () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#9  0x00007fe9527abd49 in ggml_backend_cuda_graph_compute(ggml_backend*, ggml_cgraph*) () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#10 0x00007fe9525ac499 in ggml_backend_sched_graph_compute_async () from /home/llm/yarn-agentic/ik_llama.cpp/build/ggml/src/libggml.so
+#11 0x00007fe9622c4661 in llama_decode_internal(llama_context&, llama_batch) () from /home/llm/yarn-agentic/ik_llama.cpp/build/src/libllama.so
+#12 0x00007fe9622c7f66 in llama_decode () from /home/llm/yarn-agentic/ik_llama.cpp/build/src/libllama.so
+#13 0x000055d19b8b14aa in llama_init_from_gpt_params(gpt_params&) ()
+#14 0x000055d19b84426c in server_context::load_model(gpt_params const&) ()
+#15 0x000055d19b743567 in main ()
+[Inferior 1 (process 117904) detached]
+/home/llm/yarn-agentic/scripts/probe-verify-scaling.sh: line 137: 117904 Aborted                    (core dumped) env $extra_env "${BUILD}/bin/llama-server" -m "$MODEL" --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 -ngl 999 -fa on ${mtp_args} -c ${CTX} --threads 16 --batch-size 2048 --ubatch-size 512 --cache-type-k q4_0 --cache-type-v q4_0 --k-cache-hadamard --v-cache-hadamard --no-context-shift --port "$PORT" --host 127.0.0.1 > "$runlog" 2>&1
+
+===== verify-scaling: MTP-K2-batch3 (mtp_args='-mtp --draft 1', env='LLAMA_MTP_TREE_K=2') =====
