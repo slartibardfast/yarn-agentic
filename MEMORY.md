@@ -2142,3 +2142,45 @@ Total D9.6: ~50-90k tokens, multi-session expected.
 This plan replaces the earlier "field extraction in one atomic pass"
 framing. Whole-struct still applies in spirit (one continuous body of
 work, no separate rename pass) but the execution is staged.
+
+
+## 2026-05-09 — D9.6b first attempt: REVERTED (warmup decode segfault)
+
+Tried to extract perf counters (t_eval_us, n_eval, etc.) from
+llama_context to llama_decoder. Server segfaulted on startup before
+the bench could run.
+
+**Cause:** `llama_init_from_model` runs a WARMUP decode internally
+during ctx construction, before any user-created decoder exists. With
+the perf counter accesses moved to `lctx.decoder_ref->t_compute_start_us`
+etc., warmup's null `decoder_ref` is dereferenced → segfault.
+
+**Sequence:**
+1. llama_init_from_model creates ctx (decoder_ref = null)
+2. Inside, warmup decode calls llama_decode_internal
+3. llama_decode_internal accesses `lctx.decoder_ref->t_compute_start_us`
+4. Null-deref crash
+
+**Fix for next D9.6b attempt:** null-safe access pattern. Wrap each
+counter update in `if (lctx.decoder_ref)`. Warmup's perf counters get
+skipped (OK — startup noise, not user-visible). After decoder_create,
+all subsequent decodes update normally via decoder_ref.
+
+**Architectural correction:** D9.6a's "every functional ctx has a
+decoder" assumption is wrong. There's a transient window (during
+ctx construction) where decoder_ref is null. All field migrations
+need null-safe paths through that window — OR we add a default/stub
+decoder owned by ctx that decoder_ref points to until the user's
+decoder is created.
+
+The latter is cleaner for D9.6c-h (output buffers, recurrent state,
+etc., where adding null checks at every site is verbose). Plan for
+D9.6b retry: introduce a `default_decoder` member on llama_context,
+initialize it in the ctx constructor, point decoder_ref at it.
+llama_decoder_create then reassigns decoder_ref to the user's decoder
+and the default copies its accumulated state forward (or just
+discards — warmup's counters aren't user-visible).
+
+Reverted the half-done extraction. State is back at the D9.6a commit
+(which committed cleanly with bench at +28.7%). Tag `phase45-d9.5`
+remains canonical.
