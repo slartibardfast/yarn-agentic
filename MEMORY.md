@@ -3256,3 +3256,55 @@ single-session feasible.
 - [Defeating Nondeterminism in LLM Inference (Thinking Machines Lab, 2025)](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/)
 - [vLLM Batch Invariance docs](https://docs.vllm.ai/en/latest/features/batch_invariance/)
 - [vLLM Issue #9567: Models produce different output with different batch sizes](https://github.com/vllm-project/vllm/issues/9567)
+
+### D10.e.0 corpus probe (2026-05-09) — Reyes' challenge rebutted
+
+Universality test across 6 prompt classes, M=2 same-prompt 3 reps × 2
+slots = 6 outputs per class. Bit-equality vs solo M=1:
+
+| Prompt class | Bit-equal/total | Distinct outputs |
+|---|---|---|
+| python_code | 0/6 | 5 |
+| factual | 4/6 | 3 |
+| translation | 3/6 | 4 |
+| math | 2/6 | 5 |
+| essay | 0/6 | 6 |
+| list | 3/6 | 4 |
+
+**Aggregate: 12/36 = 33% bit-equality.** Every prompt class shows
+divergence with 3-6 distinct attractor outputs. Reasoning prompts
+(essay) are worst — `<think>` tag amplifies many close-call decisions.
+Factual/translation are best (high-confidence top-1 less sensitive
+to ε noise).
+
+**The bug is universal, not prompt-specific.** Reyes' challenge is
+rebutted; the corpus-wide signal validates D10.e.2 as worth
+engineering.
+
+**Distinct-attractor count (3-6 per prompt) tells us the chaos has
+bounded state-space** — the dynamical system has a small set of
+"basins of attraction" rather than continuous noise. The fix needs
+to lock onto ONE basin (canonical solo output) deterministically.
+
+### Hammond's rank-tolerance approach (rejected 2026-05-09)
+
+User flagged: rank-tolerance accept (use top-K instead of strict
+argmax) is **incompatible with agentic flows**. Tool calls,
+JSON structure, code-gen all require the model's actual best token
+because top-2 candidates can have radically different semantics
+(`"approve"` vs `"reject"`, `os.remove` vs `os.rename`, `>` vs `<`).
+The fix has to come from kernel-level batch invariance, not from
+relaxing the decoder's argmax discipline.
+
+### Forward path (D10.e revised after council + user input)
+
+- D10.e.0 [partial] — corpus probe done. Per-layer variance-source
+  diagnostic still needed: instrument l_out at il = 0, 16, 32, 48,
+  64 to find FIRST layer where row 0 vs row 1 of M=2 same-prompt
+  diverge. Tells us if it's one kernel or all 65 layers.
+- D10.e.1 [rejected] — Hammond's rank-tolerance (incompatible with
+  agentic flows).
+- D10.e.2 — kernel-level fix at the variance source identified by
+  e.0.
+- D10.e.3 — opt-in `LLAMA_BATCH_INVARIANT=1` flag (Singh's
+  production pattern).
