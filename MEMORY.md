@@ -2184,3 +2184,194 @@ discards — warmup's counters aren't user-visible).
 Reverted the half-done extraction. State is back at the D9.6a commit
 (which committed cleanly with bench at +28.7%). Tag `phase45-d9.5`
 remains canonical.
+
+
+## 2026-05-09 — PHASE45 D10 design (multi-slot validation, np=3 × 256K)
+
+D10 closes PHASE45's binding criterion: the architectural keystone of D9.5
+(shared-session np=3 working) becomes a sustained-load production
+validation. Designed while the D9.6→D9.8 cleanup agent runs in worktree.
+
+### Workload — agentic corpus replay per slot
+
+Reuse `scripts/agentic-multiturn-corpus.json` (the 7-turn agentic
+conversation we already use for D8 bench). For D10:
+- 3 worker threads, each replaying the corpus to its own slot in a loop.
+- Each loop iteration extends the slot's conversation past 200k tokens
+  via repeated agentic exchange (corpus trims/wraps when needed, OR a
+  longer corpus is constructed by chaining replies).
+- Slots run concurrently — server side schedules them via seq_id.
+- Total runtime budget: until a hard fail (OOM, host-hang, RSS over
+  threshold) OR until each slot has crossed 200k tokens.
+
+This is more rigorous than the D8 single-slot 384-token bench — it
+exercises (a) shared-K/V allocation under pressure, (b) DeltaNet
+n_seq_max=3 recurrent state under sustained use, (c) the prior
+`--parallel 2` host-RSS hang threshold (~157k) plus margin.
+
+### Monitoring — nsys + host-RSS sampler
+
+**nsys (Nsight Systems):** the project has used it before (PHASE 41
+analysis); same toolchain. Run as `nsys profile -t cuda,nvtx,osrt
+-o /home/llm/yarn-agentic/data/phase45-d10-nsys --force-overwrite=true
+--stats=true llama-server …`. Captures:
+- GPU kernel timeline (verifies multi-slot batched ubatches actually
+  batch on the device, not serialize via NCCL p2p).
+- CUDA memory allocations over time (catches gradual leaks).
+- OS-runtime calls (mmap, futex) — reveals host-side contention.
+
+For a 200k-token soak, the nsys file gets large fast (~GiB scale).
+Either (a) restrict capture to a representative window (first 10k
+tokens after warmup, last 10k before target), or (b) run nsys in a
+"summary only" mode (`-x stop` after N seconds) at intervals.
+
+**Host-RSS sampler:** the prior `--parallel 2` hang at ~157k tokens
+was host-RSS pressure (per memory entry on qwen36-27b-x1.sh profile).
+Independent of nsys, run a lightweight monitor:
+```
+while kill -0 $SERVER_PID 2>/dev/null; do
+    ps -o rss= -p $SERVER_PID
+    cat /proc/meminfo | awk '/MemAvailable/{print $2}'
+    sleep 5
+done > /home/llm/yarn-agentic/data/phase45-d10-rss.log
+```
+The goal: if RSS climbs past N GiB or MemAvailable drops below a
+threshold, the bench script aborts cleanly BEFORE the host hangs.
+Threshold: needs calibration (start with `RSS > 32 GiB` or
+`MemAvailable < 4 GiB` as an early-warning).
+
+### Profile — `profiles/qwen36-27b-x3-mtp.sh` (new)
+
+Based on `qwen36-27b-x1.sh` with the multi-slot adjustments:
+- `--parallel 3` (replaces single-slot)
+- `--ctx-size` per-slot allocation: 262144 stays as TOTAL (server
+  divides among slots). Each slot effectively gets ~87k tokens. That's
+  enough headroom for 200k-token soak ONLY if slot recycles its KV
+  (n_keep + context shift). Need to verify.
+- All MTP flags identical to x1: `-mtp --draft 3` + `LLAMA_MTP_INLINE_KV=1`
+  (load-bearing per D9.9a finding).
+- Threads: 16 same.
+- KV cache type / hadamard / FA: same as x1.
+- Add `--metrics` so per-slot timing is exposed via /v1/chat/completions.
+
+### Bench harness — `scripts/bench-multislot.sh` (new)
+
+```
+#!/usr/bin/env bash
+# PHASE45 D10 multi-slot bench. Drives 3 concurrent agentic corpus
+# replays at --parallel 3, monitors host-RSS, captures nsys window.
+set -uo pipefail
+BIN=/home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-server
+PROFILE=/home/llm/profiles/qwen36-27b-x3-mtp.sh
+CORPUS=/home/llm/yarn-agentic/scripts/agentic-multiturn-corpus.json
+TARGET_TOKENS_PER_SLOT=${TARGET_TOKENS_PER_SLOT:-200000}
+RSS_FAIL_GIB=${RSS_FAIL_GIB:-32}
+PORT=18181
+
+# 1. Start server (via profile)
+source "$PROFILE" &
+SRV_PID=$!
+
+# 2. Wait for /health, then start the RSS sampler
+…wait_for_health…
+( while kill -0 $SRV_PID 2>/dev/null; do
+    ps -o rss= -p $SRV_PID  # report KiB
+    sleep 5
+  done ) > /home/llm/yarn-agentic/data/phase45-d10-rss.log &
+
+# 3. Three concurrent slot drivers — each loops the corpus until its slot
+#    has accumulated ≥ TARGET_TOKENS_PER_SLOT generated tokens.
+for slot in 0 1 2; do
+    ( drive_slot $slot &
+      pid=$!
+      wait $pid
+      echo "slot $slot done: $tokens tokens" ) &
+done
+wait
+
+# 4. Stop server, extract per-slot timings, compare to baseline
+kill -TERM $SRV_PID
+…
+```
+
+Output: per-slot tg t/s, peak RSS, time-to-200k, any abort cause. If
+RSS exceeds `RSS_FAIL_GIB`, the harness aborts and reports HOST_RSS_HANG.
+
+### Batched-draft perf opportunity
+
+Today's `llama_spec_loop_gen_drafts(loop, id_last, …)` runs ONE-slot
+serially. For np=3, server calls it 3× per generation cycle. Each call
+builds a 1-token batch (n_tokens=1) for DRAFT_GEN.
+
+Opportunity: extend the API to take an array of (seq_id, id_last)
+pairs, build ONE multi-row DRAFT_GEN batch (n_tokens=N), forward once,
+extract drafts per row. Same compute consolidation as the verify
+forward already does.
+
+Estimated win: ~2-3× draft-side throughput at np=3 (3 forwards → 1).
+Verify side already batches naturally, so the consolidation is on the
+draft side only. End-to-end gen tg lift: ~10-15% additional vs
+serial-draft baseline (rough estimate).
+
+API surface: add `llama_spec_loop_gen_drafts_batched(loop, n_slots,
+seq_ids[], id_lasts[], drafts_out[][], n_drafts_out[])`. Internally
+calls a batched variant of `llama_spec_mtp_draft`.
+
+Scope: D10.b sub-iteration (after D10.a baseline measurement). Rough
+budget: ~30-50k tokens. Not blocking D10's binding test, but a real
+perf measure to capture the multi-slot architectural win.
+
+### D10 sub-iterations
+
+- **D10.a**: profile + bench harness + monitoring scripts. Build, smoke
+  test at np=3 short run (40-token responses, like D9.5 architectural
+  smoke). Confirms harness works.
+- **D10.b**: batched-draft API + impl. spec_loop_gen_drafts_batched
+  lands. Build clean, D8 single-slot bench still PASSes.
+- **D10.c**: full 200k-token soak per slot via the bench harness. nsys
+  capture for first 10k + last 10k. RSS log full duration.
+- **D10.d**: analyze results. Per-slot tg measured concurrently;
+  compare to D8 baseline (29.6 t/s per slot floor). Verify no host-RSS
+  hang. Verify nsys shows actual GPU-side batching (not seq_id-by-seq_id
+  serialization).
+- **D10.e**: D8 bench retest at np=1 to confirm no regression in the
+  single-slot path.
+
+### D10 binding test (refined)
+
+PHASE45.md row currently:
+> 48 GB VRAM fit; per-slot tg ≥ 29.6 t/s on the multi-turn agentic bench,
+> run across all 3 slots concurrently; no OOM and no host-RSS hang
+> over a 200k-token soak per slot.
+
+Add:
+- **(b refined)** recurrent-state smoke check: per slot 1-token output
+  coherent (not garbled). Already passed at D9.5 short run; re-verify.
+- **(d)** per-slot tg t/s measured during concurrent operation
+  (not single-slot single-pass; that's just D8). Median over per-slot
+  observations — must be ≥ 29.6 t/s per slot.
+- **(e)** sum-over-slots throughput as informational metric. Not a
+  binding gate but interesting: if shared session genuinely saves
+  compute, sum-throughput at np=3 should approach 3× single-slot
+  throughput (with some diminishing returns from batching overhead).
+- **(f)** RSS_FAIL_GIB threshold = 32 GiB (calibrate from initial run).
+  Hang prevention.
+- **(g)** nsys capture of first 10k + last 10k tokens shows multi-seq_id
+  batched ubatches on GPU (not slot-by-slot serialization).
+
+### Open question (decide before D10.a)
+
+Memory budget for ctx-size at np=3:
+- Today's x1 profile: ctx-size 262144 single slot.
+- For x3, three options:
+  - **A)** ctx-size 262144 TOTAL → ~87k per slot. Soak to 200k requires
+    context shift. May not work for 7-turn agentic conversations that
+    exceed slot budget.
+  - **B)** ctx-size 87381 PER SLOT (262144 ÷ 3). Same effective per-slot
+    capacity as A, just framed differently. Server may have logic for this.
+  - **C)** ctx-size 786432 TOTAL (3 × 262144) → 262k per slot. Massive
+    KV memory; may not fit in 48 GiB.
+
+Need to check what `--ctx-size` semantics actually are at `--parallel 3`.
+Memory entry on qwen36-27b-x1.sh might have notes; the cli help is the
+ground truth.
