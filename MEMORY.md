@@ -3685,3 +3685,64 @@ pinpoint which sub-op introduces row asymmetry. ~15-20k tokens.
 Probe edits reverted. Profile clean. Submodule HEAD `b07d0bbe`.
 Layer-trace instrumentation (in-tree, env-gated) preserved for
 ongoing investigations.
+
+### D10.e.0.J probe — REDO with clean build (2026-05-09)
+
+User flagged stale-CUDA-build risk. Did full `rm -rf build && cmake -B build`
+clean rebuild, then re-applied J probe with explicit `rm fattn-mma-f16.cu.o`
+and verified the .cu.o was rebuilt by ninja (logged "[1/5] Building CUDA
+object ggml/src/CMakeFiles/ggml.dir/ggml-cuda/fattn-mma-f16.cu.o").
+
+Three configs measured on clean baseline:
+
+| Config | layer 3 abs δ(r0,r1) | layer 16 abs δ(r0,r1) |
+|---|---|---|
+| Truly-clean (no probe code at all) | 1.27e-03 | 1.87e-02 |
+| Probe code present, env=off | 1.27e-03 | 1.87e-02 |
+| Probe code present, env=on (gqa_opt OFF, ncols2=1) | 1.27e-03 | 1.87e-02 |
+
+**The J probe negative survives clean build.** Within-M=2 row asymmetry
+at layer 3+ is INVARIANT to:
+- `ncols2 = 2` (gqa_opt path) vs `ncols2 = 1` (no-gqa_opt path)
+- `np = 2` vs `np = 4`
+- Cross-warp partial-sum aggregation order
+
+Bug B mechanism is NOT in the gqa_opt path. Original J negative was
+correct, and the clean-build redo strengthens confidence.
+
+**Surprise side-finding**: solo M=1 first8 values at layers 16+ shifted
+when the probe code (3 lines of host C++ — bool var + fprintf + counter)
+was added, EVEN WITH env=off (gate inactive). The shift is consistent
+between env=off and env=on (both have probe code present); it's the
+"truly-clean baseline" that shows the unperturbed behavior.
+
+Possible causes for solo-M=1 shift:
+- fprintf-induced host-side latency changes CUDA kernel launch
+  scheduling and overlap patterns
+- Compiler register allocation slightly different with extra bool/int
+- Module init order / static-var initialization timing
+
+This means: **even tiny binary-layout perturbations propagate to
+late-layer numerics via chaos amplification**. The greedy-decode
+chaos surface is more sensitive than just per-row scheduling jitter.
+
+For the diagnostic methodology going forward: probe code MUST be
+absent from the binary when measuring "baseline" numerics, OR all
+comparisons MUST use the SAME binary (probe code present, just env
+gate state differs). The current J redo correctly used same-binary
+comparisons for env=off vs env=on.
+
+### Build hygiene rule going forward (committed)
+
+1. **Clean rebuild from scratch** (`rm -rf build && cmake -B build`)
+   when adding new template-instances/*.cu files (CMake glob requires
+   reconfigure).
+2. **Force-rm specific .o files** when changing single .cu files to
+   guarantee they get rebuilt. Verify by checking ninja output for
+   "Building CUDA object ... .cu.o".
+3. **NEVER assume incremental build picked up the change** without
+   verification. CUDA template instantiation + `file(GLOB)` make this
+   unreliable.
+
+This codifies the prior memory entry "incremental builds invalidate
+bisection — CUDA header changes need clean builds per test point".
