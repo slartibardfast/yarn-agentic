@@ -1,0 +1,22 @@
+=== bench-multiturn-pre-port ===
+  binary: /home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-server
+  model:  /opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf
+  ctx:    262144
+  corpus: /home/llm/yarn-agentic/scripts/agentic-multiturn-corpus.json
+  runs:   2
+
+Submodule HEAD: 9df755e8
+Submodule branch: phase45-decompose
+
+=== A_nomtp : -no-mtp  ===
+  run 1: tg=29.81 t/s  pp=360.81 t/s  predicted_n=384  prompt_n=2442
+  run 2: tg=29.75 t/s  pp=360.34 t/s  predicted_n=384  prompt_n=2442
+  AVG: tg=29.78 t/s  pp=360.57 t/s  prompt_tokens=2442
+
+=== C_mtp_d3_ikv : -mtp --draft 3 LLAMA_MTP_INLINE_KV=1 ===
+  run 1: tg=35.53 t/s  pp=296.14 t/s  predicted_n=384  prompt_n=2442
+  run 2: tg=36.12 t/s  pp=331.56 t/s  predicted_n=384  prompt_n=2442
+  AVG: tg=35.82 t/s  pp=313.85 t/s  prompt_tokens=2442
+  draft acceptance: 0.66568
+
+done
