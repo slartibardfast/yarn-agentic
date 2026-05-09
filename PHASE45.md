@@ -8,7 +8,7 @@ Permanent fork. Not upstreamable. We can have fun here.
 - D6 [x] — main.cpp greedy-decode through `llama_session` + `llama_decoder(PRIMARY)`; `scripts/diff-d6-reference.sh` reports byte-identical 50-token output vs OLD-API reference on Qwen 3.6 27B (CUDA 0+1, q4_0 hadamard KV, ctx 262144). Binding test bound on the step's actual claim.
 - D7 [x] — cli A/B perf floor: 3 NEW-API reps vs OLD-API reference, mean ratio 0.9994×, worst-case 0.9943×. 0.95 floor cleared by ~10×. Original "scripts/bench-multiturn-pre-port.sh" binding test was misframed (it targets the server, which is on OLD API until D10; it cannot measure wrapper cost). Revised binding test below; full evidence in `data/phase45-d7-perf-floor.md`.
 - D8 [x] — multi-turn agentic bench: C (-mtp --draft 3 + INLINE_KV) at 35.77 tg t/s vs A (nomtp) at 29.69 tg t/s = **1.2049× (+20.5%)**. +19% floor cleared. Acceptance rate 0.663. Hook A/B settled the PHASE39-integration §4 reopened lock: hook OFF E config at 35.58 t/s (+19.84%) is within 0.5% of C — hook is genuinely removable as PHASE45.md framed. Full evidence in `data/phase45-d8.4-perf-floor.md`.
-- D9–D11 [ ] — open. D9 (multi-slot MTP, np=3 × 256K) is the next gate.
+- D9–D10 [ ] — open. D9 (server + common port; extract fields out of `llama_context`; rename to honest names; delete `llama_context`) is the next gate. Old D11 (renames) folded into D9 — extracting with the right names from the start beats a follow-up cleanup pass. Old D9/D10 swapped in order: heavy-extraction before measurement, because the multi-slot win requires the shared-session pattern that the server port enables.
 
 ## Goal
 
@@ -60,9 +60,8 @@ llama_spec_loop          orchestrator: 1 verify + N draft decoders;
 | D6 | End-to-end CPU forward through new types (no spec, no multi-slot) | `main.cpp` greedy-decode 50 tokens, byte-identical output vs old API on Qwen 3.6 27B |
 | D7 | CUDA single-slot through new types | cli A/B: NEW-API mean eval t/s ≥ 0.95 × OLD-API on Qwen 3.6 27B greedy-50 (3 reps for variance). The original `bench-multiturn-pre-port.sh` test would only exercise OLD code paths until D10 ports the server; it is the D10 verifier, not D7. |
 | D8 | Spec decoding via `llama_spec_loop` (single-slot MTP, draft 3) | multi-turn agentic bench tg ≥ +19% vs nomtp baseline (the measured C config: `-mtp --draft 3` + INLINE_KV) |
-| D9 | Multi-slot MTP (np=3 × 256K) | profile `qwen36-27b-x3-mtp.sh` boots; 48 GB VRAM fit; per-slot tg ≥ 29.6 t/s; no OOM over 1000-token soak |
-| D10 | Delete `llama_context`. Update server, common, scripts, profiles | `git grep -l llama_context src/ common/ examples/server/` returns 0 |
-| D11 | Honest renames: kv_self → session.transformer_kv, etc. | code reads cleanly (judgment, no automated test) |
+| D9 | Server + common port; extract fields out of `llama_context` into `llama_session` and `llama_decoder` (with honest names from the start: kv_self → session.transformer_kv, logits → decoder.output_logits, etc.); delete `llama_context`. Drops dead code: `mtp_speculative_gen_draft`, `mtp_update_kv_cache`, `mtp_accept_tokens` (now bypassed via D8.3 shim), the `mtp_inline_kv_hook` (D8.4 validated removable), the `llama_session_internal_context` bridge, and the `llama_session_adopt` helper. | (a) `git grep -l llama_context src/ common/ examples/server/` returns 0; (b) D8 multi-turn agentic bench still PASSes at +19% on the ported server (no algorithmic regression); (c) D6 byte-identical greedy harness still PASSes. |
+| D10 | Multi-slot validation (np=3 × 256K) — uses the shared-session pattern enabled by D9 | (a) `profiles/qwen36-27b-x3-mtp.sh` boots; (b) recurrent-state smoke check: 3 slots × 1 token each, output-coherent on each slot independently (validates DeltaNet n_seq_max=3 allocation works at all — see hybrid-recurrent risk note); (c) 48 GB VRAM fit, all 3 slots active; (d) per-slot tg ≥ 29.6 t/s on the multi-turn agentic bench, run across all 3 slots concurrently; (e) no OOM and no host-RSS hang over a **200k-token soak per slot** (covers the prior `--parallel 2` host-hang threshold at ~157k from `profiles/qwen36-27b-x1.sh`'s 2026-05-05 incident note). |
 
 ## Architectural decisions (locked before D6)
 
@@ -100,6 +99,20 @@ PHASE39 ported upstream's inline MTP head (`build_mtp_head_qwen35`). PHASE45 wra
 - They share `session.transformer_kv`.
 - Layer N-1 (the MTP head's K/V slot) is written exclusively by the draft decoder — single-canonical-writer, no race, no INLINE_KV hook needed.
 - PHASE39's lift target (+2.5× upstream evidence) remains the binding number for D8.
+- D8.4 confirmed empirically: hook OFF (E config) is within 0.5% of hook ON (C config), both clear +19%. Lock validated; hook deletes at D9.
+
+### Spec_ckpt approach (decision required at D9 kickoff)
+
+Server's existing path uses `slot.spec_ckpt` to roll back recurrent state on rejected drafts (see `restore_speculative_checkpoint` in `server-context.cpp`). PHASE45 design has decoder-internal recurrent rollback (per the Recurrent-state-rollback decision above). Two ways to migrate at D9:
+
+- **(a) Replace** — drop `spec_ckpt` from the slot; route accept/reject through `llama_kv_txn` plus the decoder's internal recurrent checkpoint. Cleanest architecturally; deletes the most code; risk is server's recurrent-rollback semantics depend on `spec_ckpt`'s exact timing relative to MTP hidden-state staging.
+- **(b) Keep** — leave `spec_ckpt` as a libcommon-attached slot detail, untouched. Server keeps calling it; the new `kv_txn` lives alongside, used by spec_loop's transformer K/V rollback path. Lower-risk port; entrenches a libcommon-only concept that should architecturally have died at PHASE45.
+
+Pick at D9 kickoff after re-reading `restore_speculative_checkpoint`. Default lean: (a), with a fallback plan to (b) if the recurrent timing turns out to be load-bearing.
+
+### Hybrid-recurrent risk (D10 explicit smoke check)
+
+Project memory entry `tree_fanout_hybrid_recurrent_blocker` recorded that DeltaNet/Mamba layers limit recurrent-state slots to `n_parallel`, and parallel seq_id branching failed on Qwen 3.5/3.6 for tree fan-out. Tree fan-out is N seq_ids branching from a shared parent — multi-slot is N seq_ids each with its own independent trajectory. Should work, but the assumption is unverified at np=3 on this model. D10's binding test (b) is an explicit early validation: 3 slots × 1 token each, before driving long generation. If that fails, D10 unwinds before any soak runs.
 
 ## Migration housekeeping
 
@@ -114,7 +127,7 @@ Mechanical work that's not architecturally interesting but mustn't be missed:
 
 ## Estimated cost
 
-~150-220k tokens across multiple sessions. D1-D4 parallelizable via subagents (~30k). D5-D11 sequential.
+~150-220k tokens across multiple sessions. D1-D4 parallelizable via subagents (~30k). D5-D10 sequential.
 
 ## Success criteria
 
@@ -139,4 +152,5 @@ Mechanical work that's not architecturally interesting but mustn't be missed:
 - ❌ Compatibility wrapper for `llama_context` — fork is permanent, just delete it.
 - ❌ Phased extraction with stable releases between — branch lives until coherent end-to-end.
 - ❌ Preserving upstream-friendly names — rename for clarity.
-- ❌ Multi-slot via parent_ctx as a fallback — commit to D9 fully or revert the branch.
+- ❌ Multi-slot via parent_ctx as a fallback — commit to D10 fully or revert the branch.
+- ❌ A separate "rename pass" after D9 — extract with honest names from the start; old D11 was a fiction.
