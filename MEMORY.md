@@ -4140,3 +4140,47 @@ ik_llama.cpp does not have (it lives upstream and was not ported).
 - Submodule branch `d10e0-llama-layer-perslot-wip` preserves the
   prior llama-layer env-gated attempt for reference.
 - Plan and analysis at ~/.claude/plans/hi-we-have-a-glowing-glade.md.
+
+---
+
+## 2026 Q2 Production landing (2026-05-09)
+
+After D10.e abandonment, production landed at np=1 with MTP. Profile:
+`/home/llm/profiles/qwen36-27b-x1-mtp.sh`:
+- Qwen 3.6 27B V-F1.T1.qq Q-loose vocab-fix
+- `--parallel 1`, `--ctx-size 262144` (native n_ctx_train, no YaRN)
+- `-mtp --draft 3`
+- `--cache-type-k q4_0 --cache-type-v q4_0 --k-cache-hadamard --v-cache-hadamard`
+- `--cache-ram 16384 --ctx-checkpoints 16` (post-2026-05-05 host-hang
+  incident defaults)
+- `LLAMA_MTP_INLINE_KV=1` (load-bearing per D9.9a)
+
+**Empirical perf at np=1, ctx 256K, on 2× RTX 6000:**
+- TG ≈ 33.5 t/s (smoke 33.47, bench median 33.23, n_predict=128 T=0)
+- VRAM: 27.7 GiB used / 19.2 GiB free across 48 GiB
+
+**MTP --draft sweep that picked depth 3 (3-run median, n_predict=128 T=0):**
+- `--draft 1`: 31.88 t/s
+- `--draft 2`: 31.50 t/s
+- `--draft 3`: **33.23 t/s** (+4% over depth 1)
+
+This overturns the older Phase 36/37/38 memory entry that claimed
+chain rollout > 1 regresses. MTP-IR's verify-step amortisation flips
+the conclusion at depth 3. Cross-depth output divergence exists
+(draft=1 ≠ draft=3 — same kernel batch-shape sensitivity surface as
+PHASE45 D10.e Bug A/B applied to the verify (1+N)-token batch shape).
+Within a fixed `--draft` deployment, runs are bit-stable.
+
+**Branches landed in GitHub:**
+- yarn-agentic `production/2026-q2` @ 3b92dd3
+  (https://github.com/slartibardfast/yarn-agentic/tree/production/2026-q2)
+- ik_llama.cpp `production/2026-q2` @ b07d0bbe
+  (https://github.com/slartibardfast/ik_llama.cpp/tree/production/2026-q2)
+
+**Tradeoff:** byte-deterministic outputs at one conversation in
+flight, full 256K context, ~33 t/s. No multi-slot concurrency. If
+concurrent serving becomes a hard requirement, recovery path is the
+hybrid fork/join workstream (RMSNorm/FFN/main matmul batched,
+DeltaNet+FA mma_f16 forked per-slot, join after) — requires
+`ggml_cuda_concurrent_event`-style infra not present in ik_llama.cpp.
+1–2k LOC new-infra workstream, deferred.
