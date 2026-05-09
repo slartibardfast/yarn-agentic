@@ -2186,7 +2186,6 @@ Reverted the half-done extraction. State is back at the D9.6a commit
 remains canonical.
 
 
-<<<<<<< HEAD
 ## 2026-05-09 — PHASE45 D10 design (multi-slot validation, np=3 × 256K)
 
 D10 closes PHASE45's binding criterion: the architectural keystone of D9.5
@@ -2747,7 +2746,7 @@ ships and the result is interpreted as "today's hardware bound."
 
 PHASE 44 retry (CUDA graph capture) earns a follow-on phase reservation
 once NVLink hardware lands.
-=======
+
 ### Hardware roadmap correction (4× H100 unavailable)
 
 User clarified: 4× 80GB H100s aren't on the path. Realistic NVLink
@@ -2773,4 +2772,3 @@ by maybe 1.5-2× rather than 5-10×, but still meaningfully.
 The "clean architecture extends to NVLink hardware without modification"
 claim still holds. Just calibrate the future hardware ceiling to
 workstation-class.
->>>>>>> ddd175a (MEMORY: hardware roadmap correction — workstation NVLink, not 4× H100)
