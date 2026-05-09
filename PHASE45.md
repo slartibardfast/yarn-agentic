@@ -8,7 +8,18 @@ Permanent fork. Not upstreamable. We can have fun here.
 - D6 [x] — main.cpp greedy-decode through `llama_session` + `llama_decoder(PRIMARY)`; `scripts/diff-d6-reference.sh` reports byte-identical 50-token output vs OLD-API reference on Qwen 3.6 27B (CUDA 0+1, q4_0 hadamard KV, ctx 262144). Binding test bound on the step's actual claim.
 - D7 [x] — cli A/B perf floor: 3 NEW-API reps vs OLD-API reference, mean ratio 0.9994×, worst-case 0.9943×. 0.95 floor cleared by ~10×. Original "scripts/bench-multiturn-pre-port.sh" binding test was misframed (it targets the server, which is on OLD API until D10; it cannot measure wrapper cost). Revised binding test below; full evidence in `data/phase45-d7-perf-floor.md`.
 - D8 [x] — multi-turn agentic bench: C (-mtp --draft 3 + INLINE_KV) at 35.77 tg t/s vs A (nomtp) at 29.69 tg t/s = **1.2049× (+20.5%)**. +19% floor cleared. Acceptance rate 0.663. Hook A/B settled the PHASE39-integration §4 reopened lock: hook OFF E config at 35.58 t/s (+19.84%) is within 0.5% of C — hook is genuinely removable as PHASE45.md framed. Full evidence in `data/phase45-d8.4-perf-floor.md`.
-- D9–D10 [ ] — open. D9 (server + common port; extract fields out of `llama_context`; rename to honest names; delete `llama_context`) is the next gate. Old D11 (renames) folded into D9 — extracting with the right names from the start beats a follow-up cleanup pass. Old D9/D10 swapped in order: heavy-extraction before measurement, because the multi-slot win requires the shared-session pattern that the server port enables.
+- D9.6.b–h [x] — staged extraction of llama_context fields onto llama_decoder, all with bench evidence at +28-30%:
+  - D9.6b (perf counters): +29.66%
+  - D9.6c (output buffers logits/embd/etc): +29.82%
+  - D9.6d (recurrent state s_l): +29.76%
+  - D9.6e (scheduler + buf_compute_meta + abort_callback): +28.62%
+  - D9.6f (~30 MTP/draft/inp_* state): +29.10%
+  - D9.6g (rename kv_self → transformer_kv): +30.37%
+  - D9.6h (expose llama_session struct + document field migration): +28.74%
+  All sub-iterations also pass D6 byte-identical greedy harness. The "default_decoder" approach (ctx holds a llama_decoder member by-value, decoder_ref points at it from ctx ctor onward) replaces the warmup-segfault that the first attempt at D9.6b hit.
+- D9.8 [ ] — open. llama_context struct still has cparams, sampling, transformer_kv, cvec, scale_data, lora_adapters, backends, has_evaluated_once, t_start_us/t_load_us, embd_enc, seq_ids_enc, inp_embd_enc, prev, cache_copies, plus member functions. D9.8 needs to migrate these to llama_session (storage transfer at session_create / _adopt) and rewrite the ~365 callsites in common+server that take llama_context * to take llama_session * / llama_decoder *.
+- D9.9 [ ] — open. Cleanup of mtp_update_kv_cache, mtp_accept_tokens, residual mtp-ubatch-hook artefacts.
+- D9.10 [ ] — open. Binding tests (`git grep -l llama_context` returns 0; D6 + D8 bench remain green).
 
 ## Goal
 

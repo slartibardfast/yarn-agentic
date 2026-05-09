@@ -2772,3 +2772,71 @@ by maybe 1.5-2× rather than 5-10×, but still meaningfully.
 The "clean architecture extends to NVLink hardware without modification"
 claim still holds. Just calibrate the future hardware ceiling to
 workstation-class.
+
+
+## 2026-05-09 — PHASE45 D9.6.b–h sweep (default_decoder approach, 7 sub-iterations landed)
+
+Worktree branch `phase45-decompose-worktree` (off `phase45-decompose`)
+in `~/yarn-agentic/.claude/worktrees/agent-a9cd23f301e7fa5ec`.
+
+Seven D9.6.x sub-iterations landed cleanly:
+
+- D9.6b — perf counters (t_p_eval_us, t_eval_us, t_compute_start_us,
+  n_queued_tokens, n_p_eval, n_eval) → decoder. Bench +29.66%.
+- D9.6c — output buffers (logits, logits_size, output_ids,
+  output_size, n_outputs, embd, embd_size, embd_seq, buf_output,
+  logits_all) → decoder. Bench +29.82%.
+- D9.6d — recurrent state s_l + split_s_l → decoder (mirrored;
+  allocation co-located with kv_cache for ggml_context lifetime).
+  Bench +29.76%.
+- D9.6e — sched + buf_compute_meta + abort_callback → decoder
+  (held by default_decoder; user decoders read shared sched via
+  ctx->default_decoder.sched until per-decoder graph reservation
+  lands). Bench +28.62%.
+- D9.6f — ~30 MTP / draft / inp_* fields → decoder (qnext_slot_alloc,
+  draft_argmax_*, mtp_fused_*, mtp_persist_*, all inp_* tensors
+  except inp_embd_enc). Bench +29.10%.
+- D9.6g — rename kv_self → transformer_kv (~270 callsites).
+  Bench +30.37%.
+- D9.6h — expose full llama_session struct definition for D9.8
+  storage migration (no storage moves yet; documentation pass).
+  Bench +28.74%.
+
+D6 byte-identical greedy harness PASSes at every sub-iteration.
+
+**The default_decoder approach** (replaces D9.6b first-attempt
+warmup-segfault, see 2026-05-09 prior entry):
+- llama_context holds `llama_decoder default_decoder` member by-value.
+- ctx ctor: `decoder_ref = &default_decoder`.
+- llama_decoder_create swaps decoder_ref to user decoder; copies
+  shared state (sched ownership_flag, etc.).
+- llama_decoder_free reverts decoder_ref to &default_decoder.
+
+Files: src/llama-decoder-internal.h (NEW, exposes full struct),
+src/llama-context.h (struct shrunk by ~50 fields), src/llama.cpp
+(~600 callsite rewrites), src/llama-build-context.cpp,
+src/llama-delta-net.cpp, src/qnext-state-slot-allocator.h,
+src/graphs/build_qwen35.cpp, src/graphs/build_qwen3next.cpp,
+src/graphs/build_glm4.cpp, src/graphs/build_gemma4.cpp,
+src/llama-session-internal.h (D9.6h struct exposure),
+src/llama-session.cpp (session_adopt_ctx_fields helper).
+
+**D9.8 (delete llama_context) NOT landed.** llama_context still has
+~15 fields (cparams, sampling, transformer_kv, cvec, scale_data,
+lora_adapters, backends, has_evaluated_once, t_start_us/t_load_us,
+embd_enc, seq_ids_enc, inp_embd_enc, prev, cache_copies). D9.8 needs
+to migrate these onto llama_session and rewrite the 365 callsites
+in common+server taking llama_context *.
+
+**D9.9 (cleanup) and D9.10 (binding tests) NOT landed.**
+`git grep -l llama_context src/ common/ examples/server/` returns
+28 files (D9.10 (a) requires 0).
+
+Submodule HEAD: 27d7d6df (`phase45-decompose`).
+Parent commit: bumps submodule with rolled-up summary.
+
+Decision-cost note: 7 sub-iterations consumed roughly 150-180k
+tokens including bench cycles (~5-7 min wall each; D6 harness
+~30s). Each sub-iteration committed independently with full bench
++ D6 evidence in the commit message. Branch is in a green state
+end-to-end.
