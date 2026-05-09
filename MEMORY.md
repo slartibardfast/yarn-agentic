@@ -4184,3 +4184,47 @@ hybrid fork/join workstream (RMSNorm/FFN/main matmul batched,
 DeltaNet+FA mma_f16 forked per-slot, join after) — requires
 `ggml_cuda_concurrent_event`-style infra not present in ik_llama.cpp.
 1–2k LOC new-infra workstream, deferred.
+
+---
+
+## Qwen 3.6 27B multimodal exploration — abandoned (2026-05-09)
+
+After production landed, briefly investigated enabling
+image-text-to-text on the same model. Abandoned at the converter
+blocker; capturing the state so we don't redo from scratch.
+
+**Key finding:** Qwen 3.6 27B IS multimodal per the upstream HF
+config (`Qwen3_5ForConditionalGeneration`, full `vision_config` block,
+27-layer ViT projecting to 5120, image+video token ids, mrope_interleaved).
+The HF Hub `configuration.json` declares `task: image-text-to-text`.
+Our production GGUF (`qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf`)
+and the BF16 sibling at `/mnt/archive/qwen3.6-stage-b/27b/Qwen3.6-27B-bf16.gguf`
+(52 GiB, 866 tensors) are both text-only — vision tower stripped at
+conversion. `Qwen/Qwen3.6-27B` HF base repo not downloaded locally;
+Intel's AutoRound INT4 IS on disk at
+`/opt/models/hf-cache/models--Intel--Qwen3.6-27B-int4-AutoRound/`
+(~18 GiB, 10 safetensors shards including processor_config + vision tower).
+
+**ik_llama.cpp multimodal capability state:**
+- Runtime: `examples/mtmd/` (clip.cpp + mtmd.cpp + mtmd-audio.cpp)
+  is present and builds as a library.
+- Server: `llama-server` exposes `--mmproj`, `--image`,
+  `--image-min-tokens`, `--image-max-tokens`, `--mtmd-kq-type`.
+- `mtmd-cli` binary not in current build/bin (target exists, not
+  enabled in cmake config).
+- **Blocker — converter:** `convert_hf_to_gguf.py` registers ZERO
+  modern VL architectures. No `Qwen3_5`, `Qwen2VL`, `Qwen3VL`,
+  `Llava`, `MmprojModel`, `VisionModel`, or mmproj-emitting code.
+  The converter predates the modern "emit text GGUF + separate
+  mmproj GGUF" pattern upstream uses.
+
+**To enable** (deferred work, ~1–2k LOC + days of engineering):
+port upstream `MmprojModel`/`VisionModel` framework + register a
+Qwen3_5 multimodal subclass; route text portion through existing
+qwen3_5 text converter; emit separate mmproj GGUF for vision; preserve
+mrope_interleaved + multimodal token IDs in metadata; enable mtmd-cli
+build target; verify clip.cpp handles spatial_merge=2 +
+temporal_patch=2.
+
+If reopened, prefer Intel AutoRound INT4 already on disk as the
+conversion source over a 55 GiB BF16 HF download.
