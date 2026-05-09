@@ -3308,3 +3308,70 @@ relaxing the decoder's argmax discipline.
   e.0.
 - D10.e.3 — opt-in `LLAMA_BATCH_INVARIANT=1` flag (Singh's
   production pattern).
+
+### D10.e.0 dispatch path probe (2026-05-09) — Liu's challenge confirmed
+
+Verified which CUDA dispatch paths the qwen36-27b-x3-mtp profile actually
+exercises. Liu (CUDA engineer in council) was right — assumptions about
+cuBLAS being the variance source are wrong.
+
+**MatMul path:** Q4_0 weights → `ggml_cuda_should_use_mmq(...)` returns
+true (sm_75 supports MMQ for Q4_0). Line 2706-2714 of ggml-cuda.cu:
+```cpp
+use_mul_mat_q = use_mul_mat_q && ggml_cuda_should_use_mmq(src0->type, cc, src1->ne[1]);
+if ((use_mul_mat_vec_q || use_mul_mat_q) && src1->ne[2]*src1->ne[3] == 1) {
+    return ggml_cuda_mul_mat_q(...);  // MMQ path
+}
+```
+**MMQ uses fixed tile sizes by construction** (no Split-K, no
+batch-dependent reductions). cuBLAS path (line 2769) only triggers for
+F16/F32 weights or special permuted cases — not our config.
+
+**Implication:** D10.e.2.B (matmul fixed-algo enforcement) is **misframed**
+— matmul ALREADY is fixed-tile via MMQ. Dropping this subtask.
+
+**FA path:** sm_75 + fp16_mma_available + !new_mma_available + Q->ne[0]==256
++ K/V quantized → falls through to `ggml_cuda_flash_attn_ext_wmma_f16`
+(line 140-143 of fattn.cu). WMMA-FA picks `cols_per_block` tier based on
+Q->ne[1]:
+- ne[1] ≤ 8 → cols_per_block = 8
+- ne[1] ≤ 32 → cols_per_block = 16
+- else → cols_per_block = 32
+
+**For our test M=2 same-prompt at decode steps:** ne[1] = M*(1+n_draft) = 2*4 = 8, hits the ≤8 tier (cols_per_block=8). M=1 decode hits the same tier (ne[1]=4 ≤ 8). **Same FA path for M=1 and M=2.** Cross-tier
+variance only kicks in at ne[1]>8, which is prompt prefill (long prompts).
+
+**Implication:** D10.e.2.C (FA fixed-split-size) is partially misframed
+for the M=1 vs M=2 case. They already use the same split tier in decode
+steps. The variance must come from elsewhere within the same kernel.
+
+**Remaining variance candidates:**
+1. Within-kernel block scheduling (number of blocks scales with ne[1] —
+   more blocks → different L2 cache patterns → potentially different
+   per-row reduction order if the kernel uses cross-block syncs).
+2. KQ_mask shape differences (ne[1] varies → different mask tensor).
+3. KV cell physical layout (slot 0 vs slot 1 cells at different physical
+   addresses → different DRAM access patterns; same FP values, but
+   timing-based scheduling effects on subsequent kernels).
+4. Hadamard transform on KV cache at write time (per-cell deterministic
+   in principle, but might have batch-dependent dispatch).
+
+**CUDA_LAUNCH_BLOCKING=1 probe attempted** — server took >2 min to
+initialize (model load serialized). Aborted. Would have answered "is
+the variance from concurrent kernel scheduling?" — that question
+remains open as a future probe.
+
+**Next-step plan revised given these findings:**
+- D10.e.0.B (NEW priority) — instrument per-layer l_out tensors as outputs;
+  add post-compute first-8 dump for il = 0, 16, 32, 48, 64. Find first
+  layer where slot 0 row 0 vs slot 1 row 1 diverge under M=2 same-prompt.
+  This pinpoints whether the variance is in attention, FFN, RMSNorm, or
+  cross-layer accumulation. Cost ~15-20k tokens.
+- D10.e.2.A (RMSNorm verify) deprioritized — read the kernel; if
+  data-parallel, no work.
+- D10.e.2.B (matmul) deprecated — MMQ is already deterministic.
+- D10.e.2.C (FA fixed split) needs revision — focus on within-tier
+  variance, not cross-tier.
+
+The expert council's "probe before refactoring" was correct. We were
+two layers into a fix for the wrong kernel.
