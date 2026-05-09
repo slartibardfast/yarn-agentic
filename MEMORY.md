@@ -3746,3 +3746,42 @@ comparisons for env=off vs env=on.
 
 This codifies the prior memory entry "incremental builds invalidate
 bisection — CUDA header changes need clean builds per test point".
+
+## D10.e.0.K — sub-layer instrumentation (post_attn / post_ffn)
+
+Two trace points added at il=3 in build_qwen35.cpp (std attn layer):
+- `trace_l3_post_attn` — after build_std_attention call, before FFN
+- `trace_l3_post_ffn`  — after llm_build_ffn, before residual+l_out
+
+Result (PROMPT="def reverse_string(s):", n_predict=2, temp=0):
+
+| tag                | δabs(solo M=1, M=2[r0]) |
+|--------------------|-------------------------|
+| trace_l3_post_attn | **4.58e-3**             |
+| trace_l3_post_ffn  | 3.04e-3                 |
+
+**Verdict: asymmetry enters within the attention sub-pipeline at il=3,
+not after FFN.** δ is already 4.58e-3 at post_attn — FFN does not
+introduce significant new asymmetry (3.04e-3 ≈ slight averaging via
+ffn_norm/proj GEMMs).
+
+Internal δ(M=2 r0, M=2 r1) at post_attn = 1.23e-4: when both rows have
+identical input (same prompt at start of generation), they barely differ.
+The dominant divergence is **solo-vs-batched**, not row-0-vs-row-1.
+
+Candidate sub-ops within il=3 std attention:
+1. attn_norm (RMSNorm) — per-row, no cross-row interaction
+2. Q-proj / K-proj / V-proj (MMQ for quantized weights) — cross-row work
+   partitioning is a candidate for the asymmetry
+3. RoPE — per-row
+4. KV-write — per-row indexed writes
+5. FA (mma_f16 with ncols1 tier dispatch) — strong candidate; M=1 vs
+   M=2 dispatches different ncols1 tiers (lines 155-174 of
+   fattn-mma-f16.cu) → different partitions → different summation orders
+6. attn_out_proj (GEMM/MMQ) — same family as 2
+7. Residual add — per-row
+
+Next: D10.e.0.L — drill into attention sub-pipeline with 4 more trace
+points: trace_l3_attn_norm, trace_l3_q_proj, trace_l3_fa_out,
+trace_l3_attn_proj. Localize whether asymmetry enters at MMQ proj
+or at FA.
