@@ -2426,3 +2426,201 @@ total — tight but feasible.
 (Note: Mamba models override to `kv_size = max(1, n_seq_max)`, but
 Qwen 3.6 27B is a hybrid DeltaNet/transformer, not Mamba; the standard
 formula applies.)
+
+
+## 2026-05-09 — D10 follow-on planning (nsys, batched-draft, post-agent task list)
+
+Three planning artifacts written while the D9.6→D9.10 sub-agent runs.
+None of these block agent completion; they're work that picks up after.
+
+### nsys wrapper for bench-multislot.sh
+
+**Decision: extend the existing harness with `NSYS=1` env-gated mode**
+(not a sister script). Same lifecycle code; cleaner.
+
+Sketch:
+```bash
+NSYS=${NSYS:-0}                 # 0 = no profiling (default)
+NSYS_WINDOW_S=${NSYS_WINDOW_S:-60}  # capture duration after warmup
+NSYS_OUTBASE="$OUTDIR/nsys-d10"
+
+if [ "$NSYS" = "1" ]; then
+    # Wrap the server start with nsys. nsys runs the server until SIGTERM
+    # OR until -y delay + -d duration elapses. We use the duration form
+    # so the .nsys-rep file is bounded; for a short window after warmup
+    # the file is ~1-2 GiB rather than 50+.
+    nsys profile -t cuda,nvtx,osrt \
+        -o "$NSYS_OUTBASE" --force-overwrite=true \
+        -y 30 -d "$NSYS_WINDOW_S" \
+        --stats=true \
+        bash /tmp/d10-server.sh > "$SERVER_LOG" 2>&1 &
+    SRV_PID=$!
+else
+    bash /tmp/d10-server.sh > "$SERVER_LOG" 2>&1 &
+    SRV_PID=$!
+fi
+```
+
+Trade-offs:
+- `-y 30 -d N` skips the first 30s (warmup + np=3 KV alloc) and captures
+  N seconds. Easy bound on file size.
+- `-t cuda,nvtx,osrt` gets GPU kernel timeline + NVTX ranges + OS-runtime
+  syscalls. Skips `cudnn`, `cublas`, etc. — those are huge and not needed
+  for the multi-slot architectural validation.
+- `--stats=true` runs nsys-stats inline at the end so we get a text
+  summary alongside the .nsys-rep.
+
+What we want from the nsys output:
+1. **Kernel batching evidence**: in the GPU timeline during
+   verify forward, do we see a SINGLE batched cuBLAS call covering
+   all 3 slots' tokens, or 3 sequential calls? D10's architectural
+   bet is the former. nsys answers this directly.
+2. **DRAFT_GEN per-slot interleaving**: today's gen_drafts is serial
+   per slot — does that show up as 3 small DRAFT_GEN calls back-to-back
+   on the same stream, or are they overlapping? After D10.b
+   (batched-draft) it should consolidate to one.
+3. **NCCL p2p activity**: at np=3 with split-mode graph, how much
+   time is spent in p2p_send/p2p_recv vs compute? Already-known
+   tensor_split=1,1 effects should show.
+4. **Memory allocation pattern**: any growing pool / leak signature?
+   For a 200k soak this would be visible.
+
+Add to D10.a sub-iteration deliverables: NSYS=1 short-run on a smoke
+config (40 tokens × 3 slots) BEFORE the long soak, just to confirm
+the harness machinery works.
+
+### Batched-draft API (D10.b sub-iteration scope)
+
+**Goal:** consolidate per-slot serial DRAFT_GEN calls into one batched
+forward at np>=2. Estimated +10-15% additional gen tg lift on top of
+the post-D9.5 baseline at np=3.
+
+**Surface area:**
+
+New libllama primitive:
+```c
+// src/llama-spec.h
+LLAMA_API int32_t llama_spec_mtp_draft_batched(
+        struct llama_decoder * verify_decoder,
+        struct llama_decoder * draft_decoder,
+        const llama_token   * id_lasts,       // [n_slots]
+        const llama_seq_id  * seq_ids,        // [n_slots]
+        const llama_pos     * n_pasts,        // [n_slots]
+        int32_t               n_slots,
+        float                 p_min,
+        int32_t               n_draft_max,
+        llama_token         * drafts_out,     // [n_slots * n_draft_max]
+        int32_t             * n_drafts_out);  // [n_slots]
+```
+
+Body changes from llama_spec_mtp_draft (single-slot):
+- Build a multi-row batch (n_tokens=n_slots, one row per slot's
+  current id_last). Each row has its own pos and seq_id.
+- Set inp_mtp_states for each row from the per-slot hidden state
+  buffer (call `llama_set_draft_input_hidden_state_batched(ctx, emb,
+  n_slots)` — new API; the existing `_set_draft_input_hidden_state`
+  takes a single n_embd-sized buffer; this variant takes
+  n_slots × n_embd).
+- DRAFT_GEN forward emits per-slot draft tokens via the device-cache
+  (already n_slots-aware via inp_mtp_states being 2D).
+- Per-slot p_min truncation independently.
+- Per-slot KV-purge on exit (cells written for each slot's
+  speculative range).
+
+Spec_loop wrapper:
+```c
+// include/llama-spec-loop.h
+LLAMA_API int32_t llama_spec_loop_gen_drafts_batched(
+        struct llama_spec_loop * loop,
+        const llama_token   * id_lasts,
+        const llama_seq_id  * seq_ids,
+        const llama_pos     * n_pasts,
+        int32_t               n_slots,
+        float                 p_min,
+        int32_t               n_draft_max,
+        llama_token         * drafts_out,
+        int32_t             * n_drafts_out);
+```
+
+Server consumer:
+- server's main verify+accept loop today calls common_speculative_draft
+  per slot. Change to batched: collect n_slots' (id_last, seq_id,
+  n_past) into arrays, single common_speculative_draft_batched call
+  that internally invokes spec_loop_gen_drafts_batched.
+- common_speculative_state_mtp gets a draft_batched method (parallel
+  to existing per-slot draft).
+
+Risks:
+- All slots must be in the same DRAFT_GEN cycle (no slot mid-verify
+  while others are mid-draft). Server's slot scheduling already
+  enforces this for VERIFY; need to verify same for DRAFT.
+- Hidden-state seed buffer becomes n_slots × n_embd. Memory: at
+  Qwen 3.6 27B's n_embd=8192 × 3 slots × 4 bytes = ~100 KiB. Trivial.
+- Per-slot p_min truncation may break the batched assumption (one
+  slot truncates at step 1, another at step 3). Solution: ALL slots
+  run all n_draft steps; truncation is post-hoc per-slot.
+
+D10.b sub-iteration:
+- Build new primitive + spec_loop wrapper
+- Build common_speculative shim variant (batched method)
+- Port server's main loop to use batched
+- Verify D8 single-slot bench (np=1) still PASSes (batched code path
+  with n_slots=1 should be equivalent)
+- Verify D10.c shows tg lift at np=3
+
+Estimated cost: ~30-50k tokens.
+
+### Post-agent task list update plan
+
+When agent reports back, before merging worktree into phase45-decompose:
+
+1. Run a sanity audit on agent's commits:
+   - All commit messages name a sub-iteration (D9.6b, D9.6c, …)
+   - Each sub-iteration has a bench at /tmp/bench-d9.6X.out OR data/
+   - Bench results stay above +19% floor (ideally +29% baseline)
+   - No bench dropped to single-digit deltas (sign of regression)
+
+2. Verify the binding tests:
+   - `cd ik_llama.cpp && git grep -l llama_context src/ common/ examples/server/` → returns 0
+   - `scripts/diff-d6-reference.sh build/bin/llama-cli` → PASSes
+   - Final D8 bench → ≥ +19%
+
+3. Spot-check critical files:
+   - `src/llama-context.h` either deleted or empty
+   - `include/llama.h` no `llama_decode(ctx, ...)`-style entries
+   - `examples/server/server-context.cpp` no `slot.ctx` references
+   - Honest renames applied: `kv_self` → `transformer_kv`, `logits` →
+     `output_logits`, `s_l` → `recurrent_state_per_layer`
+
+4. Merge worktree into phase45-decompose:
+   - If agent's branch is on phase45-decompose-worktree, fast-forward
+     OR cherry-pick its commits onto phase45-decompose
+   - Resolve any conflicts with my D10 design + harness commits
+     (none expected — different file domains)
+
+5. Update task list:
+   - Task #30 (D9) → completed
+   - Task #29 (D10) → start with D10.a sub-tasks created:
+     - D10.a: smoke np=3 short run + harness validation
+     - D10.b: batched-draft API + impl
+     - D10.c: 200k-token soak (long run)
+     - D10.d: results analysis (nsys + RSS + per-slot tg)
+     - D10.e: D8 single-slot regression check
+
+6. Tag once all binding tests pass:
+   - `phase45-d9-complete` (per the earlier user agreement on tag plan)
+   - On both parent and submodule
+
+7. Auto-memory entry summarizing the D9 closeout:
+   - Agent successfully extracted all fields out of llama_context
+   - Final bench at +N% (whatever it ended at)
+   - Tag phase45-d9-complete created
+
+If agent stopped partway:
+   - Identify the last green sub-iteration (last passing bench)
+   - Reset to that point if subsequent commits broke build
+   - Add follow-up tasks for remaining D9.6.x → D9.10 work
+
+If agent reported a problem it couldn't solve:
+   - Read its summary
+   - Decide: fix in main session, spawn another agent, or revise plan
