@@ -3785,3 +3785,69 @@ Next: D10.e.0.L — drill into attention sub-pipeline with 4 more trace
 points: trace_l3_attn_norm, trace_l3_q_proj, trace_l3_fa_out,
 trace_l3_attn_proj. Localize whether asymmetry enters at MMQ proj
 or at FA.
+
+## D10.e.0.L — per-layer δ scan, two distinct bugs confirmed
+
+`/tmp/d10e0L-traceall.py` ran solo M=1 + M=2 same-prompt with PROMPT=
+"def reverse_string(s):", n_predict=2, temp=0. Captured trace_l_out_il
+at il={0,1,2,3,4,7,11,15,16,24,40,56,63} plus trace_l3_post_attn /
+trace_l3_post_ffn sub-points. Compared first8 element-wise.
+
+| il | δ(solo, M2_r0) | δ(M2_r0, M2_r1) | layer kind     |
+|----|----------------|-----------------|----------------|
+|  0 | 0.0000e+00     | 0.0000e+00      | DeltaNet       |
+|  1 | 1.19e-03       | 0.00            | DeltaNet ★A    |
+|  2 | 2.17e-03       | 0.00            | DeltaNet       |
+|  3 | 3.04e-03       | **1.27e-03 ★B** | std attn (1st) |
+|  4 | 3.21e-03       | 2.07e-03        | DeltaNet       |
+|  7 | 4.76e-03       | 3.79e-03        | std attn       |
+| 11 | 12.65e-03      | 8.17e-03        | std attn       |
+| 15 | 21.74e-03      | 18.65e-03       | std attn       |
+| 16 | 23.56e-03      | 18.67e-03       | DeltaNet       |
+| 24 | 69.03e-03      | 42.88e-03       | DeltaNet       |
+| 40 | 64.70e-03      | 37.47e-03       | DeltaNet       |
+| 56 | 92.82e-03      | 146.21e-03      | DeltaNet       |
+| 63 | 476.59e-03     | 210.20e-03      | std attn       |
+
+**Bug A — batch-shape divergence at DeltaNet layer 1.** δ(solo, M2_r0)
+first appears at il=1 (1.19e-3). δ(r0, r1) is 0 at layers 0-2, so
+within an M=2 batch both rows are identical at the DeltaNet stage —
+batch-shape changes the result vs solo, but does so **symmetrically
+across rows in the same batch**. Mechanism: M=1 vs M=2 selects
+different DeltaNet/MMQ kernel work-partitioning, producing different
+float-summation orders.
+
+**Bug B — row asymmetry at std attn layer 3 (first std attn layer).**
+δ(r0, r1) is exactly 0 at layers 0-2, then jumps to 1.27e-3 at il=3.
+Layer 3 is the FIRST standard attention layer per Qwen 3.6 hybrid
+architecture (`recurrent_layer_arr[i] = ((i+1) % 4 != 0)` → il=3 is
+std attn). Mechanism: ggml_cuda_flash_attn_ext_mma_f16 with
+ncols1-tier dispatch (lines 155-174 of fattn-mma-f16.cu) produces
+row-dependent partial-sum aggregation under multi-row Q.
+
+**Geometric amplification.** Both bugs compound layer-over-layer.
+δ(solo, M2_r0) grows ~400× from layer 1 to layer 63 (1.19e-3 →
+476e-3). At final logits this exceeds typical greedy-decode
+discrimination margins (~50e-3 between top-1 and top-2 candidates),
+explaining why the same prompt diverges in token output.
+
+### Implications
+
+Reframes prior memory: "Bug A — Batch-shape divergence at layer 1"
+was directionally correct; "Bug B — Row asymmetry at layer 3" was
+directionally correct. Both are pinpointed; both must be fixed.
+
+Priority:
+- **Bug A** (DeltaNet layer 1): larger absolute amplitude entering,
+  affects M=1 reproducibility from M=N batched contexts. Fix path:
+  determine which kernel inside `delta.build_layer_attn_linear` sees
+  batch-shape-dependent dispatch. Likely culprits: MMQ for the
+  in-projection / out-projection GEMMs (q4_0 weights), or the SSM
+  recurrent kernel itself (chunkwise vs single-token).
+- **Bug B** (std attn layer 3): row asymmetry within ncols1 tier
+  dispatch in mma_f16. Fix path: lock ncols1 to a fixed value
+  regardless of Q->ne[1], OR fix the partition-aggregation order
+  so it doesn't depend on row index.
+
+Both fixes can be opt-in via `LLAMA_BATCH_INVARIANT=multi_slot`
+(Singh's pattern from earlier council).
