@@ -3895,3 +3895,75 @@ fixing in prompt-processing too.
 
 Next: D10.e.0.O — drill into DeltaNet sub-pipeline at il=1 with
 per-device sub-traces inside build_layer_attn_linear_core.
+
+## D10.e.0.N — mma_f16 ncols1-tier theory was WRONG (failed-fix evidence)
+
+Tried env-gated `LLAMA_BATCH_INVARIANT=1` that pinned ncols1 in
+mma_f16's switch_ncols1 to the smallest tier (8/ncols2). Diagnostic
+fprintf confirmed the gate engaged. Forced largest tier (64/ncols2)
+as a counter-test. **Output unchanged in both directions.**
+
+Per-call dispatch logging revealed the real shapes:
+```
+[BI-mma_f16] D=256 ncols2=2 Q->ne=[256,N,12 or 24] K->ne=[256,256] gqa=6
+```
+
+Where N ∈ {1, 2, 5, 10}. So the model has 24 q heads / 4 kv heads
+(gqa=6), not 64/4 — likely scrubbed via grouping for sm_75 dispatch.
+With ncols2=2, tier table is {4,8,16,32}:
+- M=1, ne[1]=1: tier 1 → ncols1=4
+- M=2, ne[1]=2: tier 1 → ncols1=4 (**SAME tier**)
+
+Both M=1 and M=2 already select the same kernel template instance.
+Forcing different tier values changes the CALLED kernel but does not
+move the FA result for our actual M=1 vs M=2 case — both modes were
+hitting tier 1 with ncols1=4 to begin with.
+
+**Bug B mechanism is INTERNAL to the ncols1=4 kernel**, not in tier
+dispatch. When ne[1]=2, the kernel processes 2 real Q rows + 2
+padding rows in a 4-row block. Within-block cross-row computation
+(softmax denominator, partition aggregation, FP-summation order over
+warp-shared state) makes per-row output depend on the position
+within the block. Padding ne[1] to a fixed value won't fix this
+unless the padding itself is symmetric across M=1 and M=2 (e.g.,
+always pad to ne[1]=4 with 4 fake queries) — but FA on fake queries
+costs roughly proportional to FLOPS-vs-K, not free.
+
+Reverted env-gate; reverted profile var; reverted include.
+
+### Council verdict (post-evidence)
+
+Liu was wrong about ncols1 dispatch. The actual mechanism for Bug B
+is **kernel-internal cross-row reduction in mma_f16_case<D,4,2>**.
+Real fix paths:
+
+1. **Force ncols1=1 always (kernel rewrite)** — current template only
+   instantiates {4,8,16,32}. Adding ncols1=1 case for ncols2=2 means
+   adding the kernel + register pressure check + new template
+   instances (~2-4 .cu files). Output: each Q row processed in
+   isolation, no cross-row interaction, batch-invariant. Cost:
+   throughput regression at small N.
+
+2. **Pad Q->ne[1] to match always** — pad M=1 to ne[1]=2 (or any
+   fixed value), pad M=2 to ne[1]=4 etc. Locks the within-block
+   row layout. May not fully eliminate δ if cross-row interaction
+   depends on ROW INDEX not just block size.
+
+3. **Patch kernel internals to be row-invariant** — change in-block
+   reductions to be row-pure. Same kernel signature, modified
+   summation order. Risk: per-head and per-block performance hit.
+
+4. **Drop FA, use cuBLAS GEMM + softmax + GEMM** — fully batch-
+   invariant (cuBLAS deterministic mode). Cost: drops the FA
+   memory-saving benefit, ~3-5x slower FA call.
+
+5. **Per-slot stream isolation (Patel's option F)** — each slot uses
+   its own CUDA stream, M=N becomes "N independent M=1 calls".
+   Fully bypasses Bug B (each kernel sees ne[1]=1 always).
+
+Recommendation: **Option 5 is the architectural fix that addresses
+both Bug A AND Bug B simultaneously**, since DeltaNet at il=1 also
+shows non-invariance (Bug A). Per-slot stream means each slot's
+DeltaNet runs with all_same_seq=true on its own stream — no blocks
+path, no batch-shape divergence. Same applies to FA — each stream
+sees ne[1]=1 always.
