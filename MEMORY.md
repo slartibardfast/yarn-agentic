@@ -2407,3 +2407,22 @@ multiplier formulation is — tbd at D10.a after checking server's
 --ctx-size semantics at --parallel 3; the open question still applies
 to interpretation, but the TARGET is 256k per slot regardless of
 formulation).
+
+
+### D10 ctx-size semantics resolved
+
+`src/llama.cpp:7169`: `kv_size = cparams.n_ctx` (no multiplication by
+n_seq_max). So `--ctx-size N` allocates N cells TOTAL, shared across
+all slots via seq_id. To get 256k per slot at np=3, the profile sets
+`--ctx-size 786432` (= 3 × 262144).
+
+Resolves the open question from D10 design. Option C is the formulation:
+total cells = per-slot × n_parallel.
+
+KV allocation linear in cells: x1's 4608 MiB at ctx=262144 → ~14 GiB
+at ctx=786432. Memory budget remains the previously-flagged ~47 GiB
+total — tight but feasible.
+
+(Note: Mamba models override to `kv_size = max(1, n_seq_max)`, but
+Qwen 3.6 27B is a hybrid DeltaNet/transformer, not Mamba; the standard
+formula applies.)
