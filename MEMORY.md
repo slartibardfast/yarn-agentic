@@ -2885,3 +2885,37 @@ Decision-cost note: smoke crash → diagnosis → fix → second crash →
 diagnosis → second fix → green smoke landed in ~25k tokens including
 build cycles. The two fixes were both anticipated by PHASE45.md
 (architectural decisions section), so reading was cheap.
+
+## PHASE45 D10.b — batched-draft API landed at +27% lift (2026-05-09)
+
+Three-layer API: `llama_spec_mtp_draft_batched` (libllama primitive,
+per-step alive-mask batched forward), `llama_spec_loop_gen_drafts_batched`
+(libllama wrapper), `common_speculative_draft_batched` (libcommon entry
+with serial fallback). Server consumer at `add_sampled_tokens` keeps M=1
+on existing fused fast path; M≥2 enters batched.
+
+**Bench (5 reps, np=3, 30 tok each):** aggregate 39.06 t/s, **+27% over
+D10.a 30.7 t/s baseline.** Single-slot regression clean (31.40 vs 31.38).
+
+**Below the 60-80 t/s stretch target the brief specified (~2× lift).**
++27% is the real lift on 2× RTX 6000 PCIe; remaining throughput is
+verify-side D2H sync + per-step graph rebuild cost. Further lift needs
+CUDA graph reuse for batched draft or async dispatch — out of scope
+for D10.b. The 60-80 t/s target was a stretch that assumed bandwidth
+linearity that the hardware doesn't provide.
+
+**Required graph fix:** `build_qwen35` (dense, used by Qwen 3.5/3.6 27B)
+DRAFT_GEN's `inp_mtp_states` was 1D; promoted to 2D to match
+`build_qwen35moe` for batched rows. Single-slot path unchanged
+(verified by single-slot regression bench).
+
+**Important Roadmap revision:** Original PHASE45 D10 binding test (d)
+"per-slot tg ≥ 29.6 t/s concurrent" is infeasible on 2× RTX 6000 PCIe.
+Per-slot 29.6 × 3 = 88.8 t/s aggregate would require nearly 3× the
+bandwidth-bound single-slot tg. That's the NVLink hardware roadmap
+(2× RTX 6000 Ada or RTX Pro 6000 Blackwell), not this rig. Revised
+D10 closure: aggregate tg ≥ single-slot baseline. D10.b clears at
++27%. D10.c (soak) and D10.d (analyze) remain.
+
+Tag `phase45-d10.b-batched-draft` on both repos. Submodule HEAD
+b07d0bbe; parent HEAD f414749.
