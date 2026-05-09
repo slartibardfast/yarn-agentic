@@ -2624,3 +2624,49 @@ If agent stopped partway:
 If agent reported a problem it couldn't solve:
    - Read its summary
    - Decide: fix in main session, spawn another agent, or revise plan
+
+
+## 2026-05-09 — D10.b prerequisite probe: per-slot acceptance from D9.5 np=3 smoke
+
+Cheap H1/H2/H3 disambiguation from existing data, before D10.b implementation.
+
+Source: `data/phase45-d9.5-np3.serverlog` (3 slots × 40-token responses,
+3 different prompts).
+
+| slot | accepted | drafted | accept rate | prompt                          |
+|---|---|---|---|---|
+|  0  | 24       | 28      | 0.857       | "Capital of France in one word" |
+|  1  | 28       | 30      | 0.933       | "Two plus two equals"           |
+|  2  | 22       | 32      | 0.687       | "Color of the sky"              |
+
+**Observed spread: 24.6 pp.** Hypothesis-test from earlier MEMORY entry:
+- H1 (uniform, ±≤5pp): refuted by this data
+- H2 (modest, ±10-15pp): boundary; observed >H2
+- H3 (pathological, ±25pp+): boundary; not confirmed
+
+**Small-sample caveat:** σ ≈ 6.9pp for binomial p=0.83 at n=30. 95% CI =
+±13.5pp. Observed 24.6pp = 1.8σ above noise floor. Suggestive but not
+definitive of real divergence.
+
+**Two confounders visible:**
+1. Per-prompt difficulty matters as much as per-slot. Slot 2's "Color
+   of the sky" had LOWEST accept despite being simplest — model emits
+   qualified/nuanced text, lowering predictability. Per-slot rate is
+   prompt-dependent, not a constant.
+2. Slot 1 (math: structured reasoning) had highest accept; geography
+   middle; nuanced creative lowest. Domain matters.
+
+**Updated D10.b lift expectations (replaces earlier +20-25% naive estimate):**
+- Short generations (40 tokens): ~+12-18% realized (H2 territory)
+- Long generations (200k-token soak): ~+18-22% (CLT averaging tightens
+  per-slot rates toward mean)
+- Production heterogeneous traffic: somewhere in between; depends on
+  request-duration distribution
+
+**Confirms the design but tempers the lift estimate.** D10.b still
+worth shipping; just less than the original "guess from architecture"
+suggested. Real measurement at D10.c will localize.
+
+**Test plan stays:** T1 (200k soak, identical corpus per slot) is the
+binding measurement that places us on H1/H2/H3. Run BEFORE deciding
+on follow-on optimizations (fused-batched, per-slot draft-depth tuning).
