@@ -2375,3 +2375,35 @@ Memory budget for ctx-size at np=3:
 Need to check what `--ctx-size` semantics actually are at `--parallel 3`.
 Memory entry on qwen36-27b-x1.sh might have notes; the cli help is the
 ground truth.
+
+
+### D10 ctx-size decision: 256k PER SLOT (not divided)
+
+User locked: each of the 3 slots gets the full 256k context. Three
+options from the open question resolve as **C: ctx-size = 3 × 262144 =
+786432 total cells**.
+
+Memory budget concern (flagged for D10.a verification, not blocking):
+- KV at 786k cells, q4_0 K + q4_0 V + hadamard: ~14 GiB (3× the x1 KV
+  size of 4608 MiB).
+- Model weights (Qwen 3.6 27B, V-F1.T1.qq): ~28 GiB.
+- Compute buffers + scheduler + NCCL: ~3-5 GiB.
+- Estimated total: ~45-47 GiB across 2× 24 GiB. Just fits, no headroom.
+- DeltaNet recurrent state: per-(seq_id × layer) scales with n_seq_max=3.
+  Already accounted for in the x1 → x3 difference.
+
+If the smoke OOMs at np=3 × 256k, options:
+- (a) Drop one of model precision / KV precision / weights bitrate. The
+  Q8 → Q6 model knock saves ~7 GiB. 
+- (b) Drop ctx-size per slot to fit. User said "essential" so this
+  contradicts.
+- (c) Accept np=2 × 256k as the binding test instead of np=3 × 256k.
+
+D10.a's first action: smoke np=3 × 256k boot. If it fits, soak proceeds.
+If it OOMs, surface to user before pivoting to (a)/(c).
+
+The bench harness sets `--ctx-size 786432` (or whatever the per-slot
+multiplier formulation is — tbd at D10.a after checking server's
+--ctx-size semantics at --parallel 3; the open question still applies
+to interpretation, but the TARGET is 256k per slot regardless of
+formulation).
