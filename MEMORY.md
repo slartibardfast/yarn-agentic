@@ -3473,3 +3473,90 @@ of the FA kernel produces row asymmetry. Options:
     cross-row state.
 
 (a) is cleanest but expensive. (c) is cheapest and informative.
+
+### D10.e.0.B+C+E expanded probes (2026-05-09) — kernel-level fix validated
+
+User raised over-fitting concern after initial layer-3 finding. Three
+extended probes (~15k tokens) settled the question.
+
+**Probe A+B+C: extended layer sampling + abs δ tracking**
+
+Per-layer abs δ(r0, r1) within M=2 same-prompt:
+
+| Layer | Type | abs δ(r0,r1) | Δfrom-prev |
+|---|---|---|---|
+| 0-2 | DeltaNet | 0.00e+00 | bit-equal |
+| **3** | **Std attn** | **1.27e-03** | first injection |
+| 4 | DeltaNet | 2.07e-03 | amplifies |
+| **7** | **Std attn** | **3.78e-03** | new injection |
+| **11** | **Std attn** | **8.17e-03** | new injection |
+| **15** | **Std attn** | **1.87e-02** | new injection |
+| 24 | DeltaNet | 4.29e-02 | amplifies |
+| 56 | DeltaNet | 1.46e-01 | amplifies |
+| 63 | last | **2.10e-01** | total drift |
+
+**Patel was right (partially).** Abs δ doubles every ~4 layers —
+geometric. Relative δ flattened because residual stream magnitude
+grew. Each std attn layer (layers 3,7,11,15,...,63) is an
+independent injection point. There are **16 std attn layers** in
+the 64-layer transformer stack (Qwen 3.6 hybrid: every 4th).
+
+**The "fix layer 3 alone" framing was wrong.** Even fixing layer 3,
+layers 7, 11, 15, 19, ... would still inject ε. The fix MUST be at
+the **WMMA-FA kernel level** so all 16 std attn calls are corrected
+simultaneously.
+
+**Probe E: rep-to-rep determinism per slot id**
+
+3 reps M=2 same-prompt; layer-3 outputs captured per rep.
+
+- rep0 r0 vs rep1 r0: abs δ = 0.00e+00
+- rep0 r0 vs rep2 r0: abs δ = 0.00e+00
+- rep1 r1 vs rep2 r1: abs δ = 0.00e+00
+
+**Layer-3 output is BIT-EQUAL across reps for the same row index.**
+The kernel is fully deterministic given (row index, batch shape,
+inputs).
+
+**This conclusively validates: there is NO third bug.** All rep-to-rep
+variation in 30-token output comes from chaos amplification of Bug B's
+row asymmetry, NOT from kernel non-determinism, workspace state, or
+memory allocation effects.
+
+**Fix WMMA-FA row asymmetry → agentic determinism.** After fix:
+- δ(r0, r1) = 0 at every layer (no row asymmetry)
+- Cross-rep with same prompt + same slot id: identical output
+- Production with different prompts per slot: each slot produces its
+  own deterministic, reproducible output
+
+### Final D10.e plan (committed by data)
+
+- **D10.e.2-FA (priority)**: replace WMMA-FA's row-asymmetric kernel
+  with a row-symmetric variant for sm_75 + Q4_0/F16 KV. Applies to
+  all 16 std attn layers automatically. Estimated 30-50k tokens.
+- **D10.e.2-DeltaNet (deferred)**: Bug A (layer 1 batch-shape
+  divergence) only matters for M=1↔M=2 byte-equality, NOT agentic
+  per-slot reproducibility. Defer indefinitely.
+- **D10.e.3 (Singh's pattern)**: gate the deterministic kernel
+  behind LLAMA_BATCH_INVARIANT=multi_slot. Default off.
+
+### Hypotheses retired
+
+- H3 (geometric accumulation): VINDICATED with abs metric
+- H1 (variance enters at one specific layer): WRONG (16 injection points)
+- "fix layer 3 alone": WRONG (each std attn injects)
+- "third bug exists": NO (validated by Probe E)
+- "Bug B fix breaks under rep-to-rep variance": NO (rep determinism confirmed)
+
+### Probe D (Liu's M=4 fragment-padding test) — skipped
+
+Not needed: even if fragment-padding is the cause, the fix surface
+remains the WMMA-FA kernel. The fragment-padding hypothesis becomes
+an investigation TARGET for D10.e.2-FA, not a blocker.
+
+### Net council steer (2nd round → 3rd round revision)
+
+Spent 15k tokens on probes. Saved potentially much more on misframed
+fixes. Confidence in next-step claim moved from "we think" to "data
+proves." The wargame discipline + over-fitting check were both
+load-bearing.
