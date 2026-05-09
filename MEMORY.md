@@ -2957,3 +2957,122 @@ for batched draft removing per-step launch overhead, (ii) async/dual-
 stream verify+draft overlap, or (iii) NVLink hardware. These are out
 of scope for D10; PHASE45's job was to make the multi-slot architecture
 correct + stable + net-positive. All three clear.
+
+## PHASE45 D10.e (planned) — Fixed-N graph capture for multi-slot determinism
+
+### Problem (root cause from 2026-05-09 trace)
+
+Multi-slot verify forward produces per-row hidden states that differ ~1-3%
+from M=1 same-prompt. Diagnostic confirmed via `LLAMA_MTP_INPUT_CHECKSUM`:
+
+  M=2 same prompt "def reverse_string(s):":
+    pack slot 0 first8 = [0.506915 -1.546397 2.439967 -2.316547 ...]
+    pack slot 1 first8 = [0.471266 -1.548356 2.479611 -2.380903 ...]
+    solo M=1   first8 = [0.523812 -1.599007 2.501707 -2.404581 ...]
+
+The drafts in `[mtp-batched-step]` show row 0 and row 1 picking the SAME
+id at each step (so D10.b's batched-draft is logically correct); divergence
+enters via the **verify-side accept**, where the ~1% logit drift flips the
+argmax after ~10-30 tokens. M=1 solo is 3/3 deterministic; M=2 same-prompt
+is 1/3 reps bit-equal across slots, 2/3 reps slot 1 produces a different
+(coherent but non-canonical) continuation.
+
+Cause: **cuBLAS / ggml-cuda picks a different GEMM algorithm at
+`n_tokens=N` vs `n_tokens=1`**, with non-associative float reduction.
+Greedy decoding amplifies ~1% per-step drift until argmax flips. This is
+the same property vLLM and TGI document for "batched output is not
+bit-equal to single-batch output." NOT a logic bug in D10.a/D10.b.
+
+### Goal
+
+Make **per-slot output deterministic and reproducible across reps** by
+locking the kernel choice. Specifically: at np=3, M=2 same-prompt should
+produce **identical output across all reps and across slots**.
+Bit-equality to solo M=1 is a stretch goal (achieved if N-capture aligns
+with solo's shape, which is only possible when n_seq_max=1).
+
+Constraints: keep D10.b's +27% lift. No reverts.
+
+### Mechanism — fixed-N graph capture
+
+Build verify and batched-draft cuda graphs **once at fixed `N = n_seq_max`**.
+Pad inactive slots with no-op tokens; KQ_mask fully masks inactive rows
+out of attention; their KV writes go to a dedicated scratch seq_id never
+read elsewhere. Reuse graphs across decode cycles via `cudaGraphExecUpdate`
+(already infra-present per Phase 35 / Phase B work).
+
+The kernel choice is keyed on shape; a fixed-N shape locks the cuBLAS
+algorithm across all calls. Per-row output becomes deterministic.
+
+M=1 with n_seq_max=1 profile: unchanged (single-slot capture).
+M=1 with n_seq_max=3 profile: pays ~3× compute on each forward (acceptable
+because the operator chose multi-slot serving).
+
+### Subtasks
+
+1. **D10.e.1** — design doc + scaffold; identify all places where graph
+   shape depends on `batch.n_tokens` and need a fixed-N override. Includes
+   inactive-row scratch seq_id allocation strategy.
+2. **D10.e.2** — fixed-N verify graph capture. Extend graph cache to key
+   on (op, fixed N) rather than dynamic n_tokens. Validate
+   `cudaGraphExecUpdate` works across reuses with same N.
+3. **D10.e.3** — fixed-N batched-draft graph capture. Same treatment for
+   the per-step batched forward inside `llama_spec_mtp_draft_batched`.
+4. **D10.e.4** — server consumer pad-and-trim. Always emit N-row batches
+   to `llama_decode`; trim per-slot outputs for inactive rows. Inactive
+   rows route to scratch seq_id.
+5. **D10.e.5** — determinism acceptance gate. At np=3: M=2 same-prompt
+   5 reps must produce IDENTICAL output across all reps AND across slots.
+   M=3 mixed-prompt 5 reps must produce IDENTICAL output across reps for
+   each slot. No throughput regression on the D10.b 3-slot smoke (≥+27%
+   over D10.a baseline).
+
+### Risks / open questions
+
+- **`cudaGraphExecUpdate` numerics**: same graph, same inputs → identical
+  output. Verified in Phase 35; should hold here. Test in D10.e.2.
+- **cuBLAS algo cache**: keyed on (m,n,k,dtype,transpose). Fixed shape →
+  stable choice. Likely fine; verify in D10.e.2.
+- **Single-slot-on-multi-slot-profile cost**: 3× compute on each forward
+  is real. Estimate: tg drops from ~30 t/s (solo M=1 on x3 today) to
+  ~10-12 t/s. If unacceptable, fall back to dynamic shape for M=1
+  (sacrificing determinism for that case only — which is fine because
+  M=1 is its own canonical anyway).
+- **Inactive-row KV writes to scratch seq_id**: must verify no leak
+  across cycles (scratch seq_id cells need to be wiped or remain
+  invisible to attention even at later positions). Subtask in D10.e.4.
+
+### Estimated cost
+
+~95k tokens across D10.e.1–.5. Single-session feasible if scoping is tight.
+
+### Sequencing relative to D10
+
+D10.e supersedes D10.b's "follow-up" framing. The +27% lift remains
+correct under D10.e (graph capture doesn't alter the batched-draft
+algorithm, only locks the kernel choice). D10 closes when D10.e.5 gates
+green.
+
+Tag at start of work: `phase45-d10b-divergence-checkpoint` (already
+landed). Final tag at completion: `phase45-d10.e-deterministic-multislot`.
+
+### B as fallback / first step (user preference 2026-05-09)
+
+User flagged B (pad to fixed N) as a good fallback if E (full graph
+capture) hits unexpected complexity. In practice **B is the natural
+first step toward E**:
+
+- B = pad batch to `n_seq_max` rows in the server consumer before
+  `llama_decode`; KQ_mask masks inactive rows; trim outputs per-slot.
+- The existing Phase 35 / Phase B graph cache (keyed on topology) will
+  observe the same shape every call and reuse the captured graph
+  automatically. Kernel choice locks across calls.
+- E = explicit fixed-N capture treats the same problem one layer down.
+  If B's reliance on the existing cache holds, E is unnecessary.
+
+**Sequencing**: Implement B first. Run the determinism gate
+(D10.e.5). If output is bit-equal across reps with B alone, ship B.
+If the existing graph cache misses the shape (e.g., capture key
+includes other inputs), advance to E.
+
+Tag intermediate point: `phase45-d10.e-pad-to-N` after B lands.
