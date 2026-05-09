@@ -20,6 +20,13 @@ Permanent fork. Not upstreamable. We can have fun here.
 - D9.8 [ ] — open. llama_context struct still has cparams, sampling, transformer_kv, cvec, scale_data, lora_adapters, backends, has_evaluated_once, t_start_us/t_load_us, embd_enc, seq_ids_enc, inp_embd_enc, prev, cache_copies, plus member functions. D9.8 needs to migrate these to llama_session (storage transfer at session_create / _adopt) and rewrite the ~365 callsites in common+server that take llama_context * to take llama_session * / llama_decoder *.
 - D9.9 [ ] — open. Cleanup of mtp_update_kv_cache, mtp_accept_tokens, residual mtp-ubatch-hook artefacts.
 - D9.10 [ ] — open. Binding tests (`git grep -l llama_context` returns 0; D6 + D8 bench remain green).
+- D10.a [x] — np=3 × 256k boot smoke + 3-slot architectural smoke (PHASE45 D10 binding test (b)). qwen36-27b-x3-mtp.sh boots on 2× 24 GiB (~39/48 GiB used: 14.27 GiB CUDA_Split KV + 0.86 GiB CUDA1 + ~21 GiB weights + ~4 GiB compute/NCCL). 3 concurrent /v1/completions return coherent prompt-aware output per slot ("Paris.", "return s[::-1]", "Hola"), MTP accept rate 73-78% across slots, NRestarts=0. DeltaNet n_seq_max=3 allocation works — the hybrid-recurrent risk is REAL but tractable: required two architectural fixes to land on the submodule (commit `eef509d2`):
+  1. `llama_spec_ckpt_init`: PER_STEP save buffers were sized for single-slot draft chain AND restore assumed contiguous-per-slot tokens. Multi-slot batched verify interleaves slot tokens (overflow + restore-can't-dis-interleave). Force GPU_FALLBACK whenever n_seq_max > 1.
+  2. `mtp_update_kv_cache`: read only `batch.seq_id[0][0]` and segfaulted on multi-seq batches in MTP_OP_WARMUP. When LLAMA_MTP_INLINE_KV is on (the hook already wrote MTP KV inline), the dispatch is redundant — short-circuit, matching the same pattern in `mtp_accept_tokens`.
+  Aggregate throughput is flat vs single-slot (~30 t/s) — this is the expected pre-D10.b behavior; the verify forwards still execute serially per slot. D10.b's batched-draft API is the throughput unlock.
+- D10.b [ ] — open. Batched-draft API: `llama_spec_mtp_draft_batched` + `llama_spec_loop_gen_drafts_batched` + `common_speculative_state_mtp::draft_batched` + server consumer port. Struct-based input with alive-mask p_min truncation, opportunistic server scheduling per the queuing-theory analysis.
+- D10.c [ ] — open. 200k-token soak per slot via `scripts/bench-multislot.sh`; nsys capture first 10k + last 10k; RSS log full duration.
+- D10.d [ ] — open. Analyze: per-slot tg ≥ 29.6 t/s concurrent; H1/H2/H3 acceptance hypothesis placement; no host-RSS hang.
 
 ## Goal
 
