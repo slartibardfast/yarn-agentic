@@ -3623,3 +3623,65 @@ ON). Useful for future kernel investigations.
 
 Build clean. Profile back to defaults. Submodule HEAD `b07d0bbe` (D10.b)
 + in-tree layer-trace instrumentation only.
+
+### D10.e.0.H + D10.e.0.J (2026-05-09): mma_f16 read + gqa_opt probe negative
+
+**D10.e.0.H — read fattn-mma-f16.cuh (the correct kernel for sm_75):**
+
+Bug A mechanism IDENTIFIED: lines 155-174 of fattn-mma-f16.cu show
+ncols1 selected as tier based on Q->ne[1]:
+- ne[1] ≤ 8/ncols2  → ncols1 = 8/ncols2
+- ne[1] ≤ 16/ncols2 → ncols1 = 16/ncols2
+- else higher tiers
+
+For our config (gqa_ratio=6 → ncols2=2):
+- M=1 ne[1]=4 → ncols1 = 4
+- M=2 ne[1]=8 → ncols1 = 8
+
+Different ncols1 → different `np` (line 165: `nwarps * (cols_per_warp/
+ncols2) / ncols1`) → different work partitioning across warps →
+different float-summation orders. **This explains Bug A.**
+
+Bug B (within-M=2 row asymmetry) mechanism NOT pinpointed from the
+read alone. The kernel structurally LOOKS row-symmetric within a
+single ncols1 tier — `j = jc / ncols2` correctly maps each row to
+its own warp partition, mma reads are deterministic per-thread, warp
+reductions are warp-internal.
+
+**D10.e.0.J — Reyes' targeted probe: force ncols2=1 (no gqa_opt):**
+
+Env-gated `LLAMA_FA_NO_GQA_OPT=1` forces use_gqa_opt=false → ncols2=1.
+With ncols2=1: np = 4*8/1/8 = 4 (vs np=2 with ncols2=2). Different
+work partitioning.
+
+Result: **IDENTICAL δ values at every layer.** abs δ(r0,r1) at layer 3
+= 1.27e-03 in BOTH cases (gqa_opt and no-gqa_opt).
+
+**Conclusion: the row asymmetry is NOT in the gqa_opt path's
+cross-warp partial-sum aggregation.** Useful negative — narrows the
+search.
+
+### Where the asymmetry remaining candidates lie
+
+Within layer 3 std attn pipeline (11 sub-ops between layer 2's l_out
+and layer 3's l_out):
+1. attn_norm (RMSNorm)
+2. Q-proj (MMQ matmul)
+3. K-proj
+4. V-proj
+5. RoPE
+6. KV cache write (Hadamard transform + quantization)
+7. FA call (mma_f16) — partially eliminated by D10.e.0.J
+8. attn_out_proj (MMQ matmul)
+9. residual add
+10. ffn_norm + FFN (MMQ)
+11. ffn_out_proj + residual add
+
+**D10.e.0.K plan**: instrument 5 sub-points within layer 3 to
+pinpoint which sub-op introduces row asymmetry. ~15-20k tokens.
+
+### Profile + code state
+
+Probe edits reverted. Profile clean. Submodule HEAD `b07d0bbe`.
+Layer-trace instrumentation (in-tree, env-gated) preserved for
+ongoing investigations.
