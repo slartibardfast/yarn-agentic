@@ -1717,3 +1717,172 @@ clean architecture; wrapping would have entrenched libcommon as the
 home of an algorithm that properly belonged in libllama.
 
 Full D8.4 evidence: data/phase45-d8.4-perf-floor.md.
+
+
+## 2026-05-09 — PHASE45 D9 design (server+common port + extract + delete + rename)
+
+D9 is the heaviest single step in PHASE45. Scope from PHASE45.md after
+the D9/D10 reorder + D11-fold:
+- Port server's 127+ callsites and common's ~40 callsites off `llama_*(ctx,…)`
+  onto `llama_session_*` / `llama_decoder_*` / `llama_spec_loop_*`.
+- Switch server slot init from per-slot `slot.ctx` to ONE shared
+  `llama_session` with each slot a seq_id partition (the multi-slot
+  enabler that D10 binds on).
+- Extract fields out of `llama_context` into actual `llama_session` and
+  `llama_decoder` member storage (today they wrap an internal ctx).
+- Apply honest renames during extraction (kv_self → session.transformer_kv,
+  logits → decoder.output_logits, etc.).
+- Delete `llama_context`.
+- Drop dead code: `mtp_speculative_gen_draft`, `mtp_update_kv_cache`,
+  `mtp_accept_tokens` (bypassed by D8.3 shim);
+  `llama_session_internal_context` bridge; `llama_session_adopt`
+  helper; `mtp_inline_kv_hook` decoder param + cparams field +
+  graph-build hook (D8.4 validated removable).
+
+### Sub-iteration ordering (pre-port consumers, then extract)
+
+Consumers ported FIRST while `llama_context` is intact. Each step is
+small, testable, and re-runs the D6 byte-identical + D8 +19% bench
+gates. The architectural extraction is the LAST move, after consumers
+are already on the new API.
+
+- **D9.1** — spec_ckpt decision committed (option a vs b — see below). Only
+  decision; no code yet.
+- **D9.2** — port `examples/server/server-context.cpp` simple callsites
+  (KV ops, get_logits, n_ctx queries, perf, free order). ~30 LoC change.
+  Each slot still has `slot.ctx`; D9.2 just adds `slot.session = adopt(ctx)`
+  + `slot.verify` + `slot.draft` + `slot.loop`, then routes the simple
+  callsites through them. Delegate-everything wrapper. D6 byte-identical
+  greedy via cli must still PASS; server still on per-slot ctx.
+- **D9.3** — port `common/` helpers (common.cpp's gpt_params translation,
+  sampling.cpp's logits access). ~40 callsites. Delegate-everything.
+- **D9.4** — spec_ckpt port per D9.1 decision.
+- **D9.5** — server slot init: replace per-slot `llama_init_from_gpt_params`
+  with ONE `llama_session_create` shared by all slots, plus per-slot
+  `llama_decoder_create` (or shared verify+draft decoders, batched).
+  Each slot becomes a seq_id partition. D8 multi-turn bench at
+  np=1 must still PASS at +19% (this is the architectural switch; if
+  bench regresses, unwind).
+- **D9.6** — extract fields out of `llama_context` into `llama_session`
+  + `llama_decoder` actual member storage. The wrapper struct
+  `llama_session { llama_context * ctx; … }` becomes `llama_session {
+  llama_kv_cache transformer_kv; cells…; positions…; defrag…; …}`.
+  Same for `llama_decoder`. Internal-only refactor; consumers don't
+  see it. After this, `llama_context` is just a forward-decl + zero-impl
+  shim. D6 byte-identical + D8 +19% must still PASS.
+- **D9.7** — apply honest renames as part of D9.6's extraction (not
+  separate commit). Extract `kv_self` → `transformer_kv`,
+  `logits`/`logits_size` → `output_logits`/`output_logits_size`, etc.
+- **D9.8** — delete `llama_context` (now zero references). Delete
+  `llama_session_internal_context` bridge, `llama_session_adopt`
+  helper.
+- **D9.9** — delete dead code: `mtp_speculative_gen_draft` family,
+  `mtp_inline_kv_hook` (everywhere it's referenced — decoder_params,
+  cparams, graph-build branches). Re-run binding tests.
+- **D9.10** — final binding tests:
+  - `git grep -l llama_context src/ common/ examples/server/` returns 0
+  - D6 `scripts/diff-d6-reference.sh` PASSes
+  - D8 `bench-multiturn-pre-port.sh` PASSes at +19% (server now on new API)
+
+### spec_ckpt decision (D9.1) — leaning option (a) replace
+
+Option (a) replace: spec_ckpt API moves from `llama_*(ctx, …)` to
+`llama_decoder_spec_ckpt_*(decoder, seq_id, …)`. Internally calls the
+same body (the decoder forwards to the recurrent-state code that
+today lives at ctx-level). Server's 5 callsites
+(server-context.cpp:39, 48, 54, 56, 3804, 3826) replace `ctx` with
+`slot.draft_decoder` (or a per-slot decoder if we're keeping per-slot
+decoders post-D9.5).
+
+Option (b) keep: leave `llama_spec_ckpt_*(ctx, …)` as raw functions
+on the underlying state object after extraction. Server unchanged.
+Architecturally ugly: a libllama-public `ctx`-shaped API exists with
+no `llama_context`.
+
+Lean: (a). The body of spec_ckpt is recurrent-state save/restore
+which IS architecturally a decoder concern (per the
+"Recurrent-state-rollback" PHASE45 lock). Migration is mechanical —
+new decoder API entry, same body, server callsite swap. Estimated 4
+header lines + 4 cpp lines + 5 server callsite line edits ≈ 30 LoC
+total.
+
+Risk to validate at D9.4: spec_ckpt's exact interaction with MTP
+hidden-state staging in server. If `llama_set_draft_input_hidden_state`
+timing depends on spec_ckpt running before, the migration must
+preserve that order.
+
+### Extraction style (D9.6)
+
+`llama_session` and `llama_decoder` today wrap an internal
+`llama_context * ctx` and forward everything. The extraction migrates
+that wrapper to actual member fields. Two sub-questions:
+
+1. **Where do field definitions live during the migration?**
+   Cleanest: move the field declarations from `src/llama-context.h`
+   into either `src/llama-session.cpp` (private struct definition) or
+   a new private header `src/llama-session-internal.h`. Public
+   `llama_session` stays opaque.
+
+2. **What about `llama_context` definition during the migration?**
+   After fields move out, `llama_context` becomes empty — but it's
+   referenced via type tags in many places. Two ways:
+   - Keep `struct llama_context { llama_session * session; llama_decoder * decoder; }` as a transitional carrier until D9.8 deletes it.
+   - Delete inline as soon as all consumers are off it (which is the goal of D9.5).
+
+   The first is simpler — defer deletion to D9.8.
+
+### Honest naming (D9.7)
+
+Proposed renames during extraction:
+- `kv_self` → `session.transformer_kv` (the actual KV cache; "self" is
+  Karpathy-era confusion)
+- `cells` → `session.kv_cells`
+- `logits` / `logits_size` → `decoder.output_logits` / `output_logits_size`
+- `embd` → `decoder.output_embd`
+- `s_l` → `decoder.recurrent_state_per_layer` (DeltaNet)
+- `mtp_op_type` → `decoder.mtp_op` (the type field on cparams; once
+  decoder.role is the source of truth, this becomes derived; until
+  then mtp_op is just the existing flag renamed)
+
+The `inp_*` graph-input tensor names (inp_pos, inp_KQ_mask,
+inp_mtp_states, t_h_pre_norm) stay where they are — those are
+graph-build internals not in the public API.
+
+### Risk register
+
+- **Spec_ckpt timing** (D9.4) — if MTP hidden-state staging order
+  depends on spec_ckpt position, the migration must preserve. Verify
+  with D8 bench post-D9.4.
+- **Shared session switch** (D9.5) — first time per-slot ctx is
+  collapsed. Server's slot-state operations on KV (cache_tokens,
+  n_past, etc.) must transparently translate to seq_id-scoped session
+  ops. Requires careful audit of slot-state mutations.
+- **Multi-slot recurrent allocation** — covered by D10's binding test
+  (b) smoke check, not D9. But if the ALLOCATION at session_create
+  time is wrong (e.g., DeltaNet's per-(seq_id × layer) state isn't
+  sized for n_seq_max=3), D9.5 fails before D10 even tries. Audit
+  `llama_kv_cache_init`'s recurrent-state allocation in D9.5.
+- **Honest renames affecting many files** (D9.7) — if the new names
+  appear elsewhere unintentionally (e.g., a different `logits` in
+  common/), sed-renames will mis-target. Use compiler errors as the
+  guide; rename only the struct member, let the compiler find consumers.
+- **Dead code that's actually live** (D9.9) — before deleting
+  mtp_speculative_gen_draft etc., grep all consumers including tests/.
+  D8.3 bypassed it from the production path but a stale test or
+  example might still call it.
+
+### Estimated cost
+
+D9 is the largest single step. Rough estimate:
+- D9.1 (decision): 5k tokens
+- D9.2 (server simple callsites): 30k tokens
+- D9.3 (common helpers): 30k tokens
+- D9.4 (spec_ckpt): 15k tokens
+- D9.5 (shared session): 50k tokens
+- D9.6+D9.7 (extract + rename): 60k tokens
+- D9.8 (delete llama_context): 15k tokens
+- D9.9 (dead code): 10k tokens
+- D9.10 (binding tests): 10k tokens
+
+Total ~225k tokens. Multi-session expected. Each sub-iteration ends
+on a green build + bench, so partial progress is durable.
