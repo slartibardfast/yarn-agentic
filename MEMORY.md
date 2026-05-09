@@ -2670,3 +2670,79 @@ suggested. Real measurement at D10.c will localize.
 **Test plan stays:** T1 (200k soak, identical corpus per slot) is the
 binding measurement that places us on H1/H2/H3. Run BEFORE deciding
 on follow-on optimizations (fused-batched, per-slot draft-depth tuning).
+
+
+## 2026-05-09 — Hardware roadmap: design for NVLink, treat PCIe today as correctness probe
+
+User locked: **PHASE45 architecture targets NVLink as the steady-state
+hardware. Today's PCIe (RTX 6000 / TU102) is a structural-correctness
+probe, not a performance ceiling.**
+
+### What this means concretely
+
+**For D10's binding tests:**
+- `per-slot tg ≥ 29.6 t/s` is a CORRECTNESS threshold (output coherent,
+  no host-RSS hang), not a perf ceiling.
+- A measured `+20%` lift on PCIe today might be `+35%` on NVLink without
+  any code change. Bench numbers are hardware-specific data points;
+  they do NOT bound the architecture.
+- D10.c reports realized lift on this hardware, with a note that NVLink
+  is expected to lift the cap by removing per-op p2p latency.
+
+**For D10.b design choices:**
+- The clean batched-draft API ships as designed. Don't add PCIe-specific
+  optimizations (merge p2p calls, coarser sharding, etc.) — they'd
+  complicate the codebase for a hardware-temporary problem.
+- Per-step batched is the right path for D10.b minimum. Fused-batched
+  later if/when NVLink justifies the additional complexity (lower
+  per-op overhead makes fused chain wins compound).
+
+**For future PHASE work:**
+- **CUDA graph capture (PHASE 44 blocker)** becomes more attractive on
+  NVLink: lower per-op latency means kernel-launch overhead dominates a
+  larger fraction. Worth retrying post-NVLink.
+- **Tensor parallelism scaling**: today `--tensor-split 1,1` is the
+  practical ceiling because more GPUs amplifies PCIe latency. NVLink
+  fabric extends this to 4+ GPUs at near-linear compute scaling. Server
+  CLI already supports the syntax.
+- **Multi-slot beyond np=3**: today bounded by 48 GiB. NVLink-connected
+  H100s (80 GiB × 4 = 320 GiB fabric) fit np=10+ at 256k each. Shared-
+  session architecture (D9.5) extends without code changes.
+- **Larger per-slot ctx**: 1M+ tokens per slot becomes feasible on
+  larger fabrics. The yarn-extension and rope-scaling that are
+  currently disabled (per qwen36-27b-x1.sh's 2026-05-06 ctx-cap to
+  native 256k) gate on training, not architecture.
+
+### Decision rules going forward
+
+- Never optimize an architectural choice based on PCIe-specific perf
+  data. If a clean design loses ~5-10% on PCIe due to per-op latency,
+  ship the clean design.
+- Hardware-dependent measurements get tagged "(PCIe; NVLink expected to
+  improve)" in benches and MEMORY entries. Avoid implying the number
+  is a permanent ceiling.
+- "We'll write good code" — quality bar stays high. Tradeoffs against
+  NVLink-bound perf wins are different than against general-purpose
+  perf wins; the former are temporary.
+
+### What this does NOT mean
+
+- Tree fan-out's hybrid-recurrent blocker is NOT NVLink-gated. That's a
+  design problem (DeltaNet n_seq_max constraint), not a hardware one.
+  NVLink doesn't fix it.
+- Host-RSS pressure (the prior --parallel 2 host-hang) is NOT NVLink-
+  related. That's host memory management. D10's RSS_FAIL_GIB threshold
+  is hardware-relevant for the host side.
+- Quantization quality tradeoffs (Q4/Q6/Q8) don't change with NVLink.
+
+### Captured for downstream
+
+The D10.b watertight checklist (six items: A determinism, B KV
+pollution, C heterogeneous corpus, D log rate-limit, E graph cache,
+F p2p latency) — items A-E unchanged. Item F (p2p latency
+investigation) becomes a measurement-and-document task, not a redesign
+trigger. Even if F shows >50% time in p2p on PCIe today, batched-draft
+ships and the result is interpreted as "today's hardware bound."
+
+PHASE 44 retry (CUDA graph capture) earns a follow-on phase reservation
+once NVLink hardware lands.
