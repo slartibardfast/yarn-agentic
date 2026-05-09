@@ -2049,3 +2049,96 @@ real hook-A/B in the future.
 D9.9a bench evidence at data/phase45-d9.9a-hookdel-bench.out.
 Deletion reverted via git checkout; tests/mtp-ubatch-hook/ restored.
 Tag `phase45-d9.5` remains the canonical state.
+
+
+## 2026-05-09 — D9.6 sub-iteration plan (whole-struct extraction, concrete)
+
+`llama_context` is 273 lines / ~50 fields in src/llama-context.h. Touched
+by ~12k LoC across src/llama.cpp via the `lctx.*` access pattern.
+"Whole-struct" can't mean "one atomic commit" — it means "one coherent
+body of work, multi-iteration, no separate rename pass."
+
+### Field categorization (target ownership after D9.6)
+
+**Session-owned** (per-tenant, transformer K/V state):
+- `kv_self` → `session.transformer_kv` (rename during move)
+- `lora_adapters`
+- `cvec`
+- `backends` (vector + backend_metal/blas/cpu) — session-level (one set per ctx)
+- `scale_data`
+- `embd_enc`, `seq_ids_enc` (encoder output, per-tenant)
+
+**Decoder-owned** (per-execution, role-parameterized):
+- `cparams` — most fields are decoder-owned; n_ctx/n_seq_max/n_batch/n_ubatch
+  + flash_attn/offload_kqv/k_cache_hadamard/v_cache_hadamard/mla_attn move to session
+- `sampling` (RNG seed for decode-internal coin flips, not user sampling)
+- Perf: t_load_us, t_start_us, t_p_eval_us, t_eval_us, n_p_eval, n_eval,
+  t_compute_start_us, n_queued_tokens
+- Output buffers: buf_output, logits, logits_size, output_ids, output_size,
+  n_outputs, embd, embd_size, embd_seq, logits_all
+- has_evaluated_once, is_encoding
+- buf_compute_meta, sched (scheduler — per-decoder)
+- abort_callback, abort_callback_data
+- All `inp_*` tensors (graph inputs — per-decode)
+- t_h_pre_norm
+- All MTP state: draft_input_hidden_state*, mtp_cycle_counter,
+  draft_residual_dev*, draft_argmax_*, draft_top2_*, fast_argmax_for_verify,
+  mtp_fused_* (results, offsets, chain_residuals, persist*, pending_*),
+  pending_chain_residual_step, qnext_slot_alloc, qnext_mixed_seq_fallback_count
+- `prev` (cache_copies, can_reuse_graph state)
+
+### Sub-iterations (~6-8 iterations expected)
+
+- **D9.6a**: introduce a transitional `llama_session_ref` + `llama_decoder_ref`
+  pointer on `llama_context` so internal helpers that take `lctx` can find
+  the decoder/session. Set when session_adopt + decoder_create run. This
+  unblocks the extraction (helpers can still take ctx but reach decoder
+  via ctx.decoder_ref). NOT a permanent design — it deletes when ctx does.
+
+- **D9.6b**: extract perf counters (smallest cohesive slice). Move t_*/n_*
+  fields to llama_decoder. llama_get_timings(ctx) reads via ctx.decoder_ref.
+  llama_decode_internal writes to decoder->t_eval_us etc. Same idiom as
+  the spec_ckpt port: bridge via ref pointer until D9.8 deletes ctx.
+
+- **D9.6c**: extract output buffers (logits/embd/output_ids etc.). Move to
+  decoder. llama_get_logits(ctx) → ctx.decoder_ref->output_logits. Renames
+  during the move: logits → output_logits, embd → output_embd.
+
+- **D9.6d**: extract recurrent state (kv_self.s_l per-decoder per the
+  PHASE45 architectural lock). The `s_l` vector moves out of kv_self into
+  decoder.recurrent_state_per_layer. PHASE36 spec_ckpt save/restore now
+  operates on decoder's state, not session's. KV cells/k_l/v_l stay in
+  kv_self (session-owned).
+
+- **D9.6e**: extract scheduler + compute_meta. Move sched + buf_compute_meta
+  to decoder. Backends stay session-owned (shared across decoders on the
+  same session).
+
+- **D9.6f**: extract MTP state (the largest fields blob — ~30 fields).
+  All of it decoder-owned (per spec_loop's draft decoder).
+
+- **D9.6g**: extract kv_self → session.transformer_kv. The big rename. Most
+  visible in the codebase. Internal helpers' `lctx.kv_self` → `lctx.session_ref->transformer_kv`.
+
+- **D9.6h**: extract remaining session-owned fields (lora_adapters, cvec,
+  backends, scale_data, embd_enc, seq_ids_enc).
+
+### After D9.6 sub-iterations: D9.8 (ctx deletion)
+
+`llama_context` is now empty. Delete the struct. All consumers go through
+session+decoder. The `*_ref` pointers also delete. ~250 LoC deletion.
+
+### Risk: build-pause iterations
+
+Each D9.6.x leaves the build green and the D8 bench passing. If one
+sub-iteration breaks the bench, we don't move on — root-cause first.
+
+### Cost estimate
+
+D9.6a: ~5k tokens (just adding ref pointers + setting them at create).
+D9.6b through D9.6h: ~5-15k each depending on scope.
+Total D9.6: ~50-90k tokens, multi-session expected.
+
+This plan replaces the earlier "field extraction in one atomic pass"
+framing. Whole-struct still applies in spirit (one continuous body of
+work, no separate rename pass) but the execution is staged.
