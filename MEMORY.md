@@ -3076,3 +3076,183 @@ If the existing graph cache misses the shape (e.g., capture key
 includes other inputs), advance to E.
 
 Tag intermediate point: `phase45-d10.e-pad-to-N` after B lands.
+
+## PHASE45 D10.e — Multi-slot determinism: rigorous plan from FP / graph-theory perspective (2026-05-09)
+
+### Why this revision exists
+
+The first D10.e plan (sub-option 3 — pad batch input shape + scratch
+seq_id) was implemented and tested. Result: **-36% throughput AND no
+determinism win** (still ~20% corruption rate at 30-token M=2). The
+input-shape padding hypothesis was wrong. This document captures what
+the post-mortem actually told us and rigorously reframes the fix.
+
+### Reframed root cause (FP + graph-theoretic)
+
+**The graph invariant we need:** for an output element `y[r][c]` of any
+GEMM in the forward DAG, the reduction order over the contraction
+dimension must be **independent of the batch dimension B**. Formally:
+`reduce_order(y[r][c]) ≡ f(c, k_in, model_layout)` and explicitly NOT
+`f(B, position_in_batch_of_r)`.
+
+**Why this is violated in current code:**
+
+1. **cuBLAS heuristic algorithm selection.** `cublasGemmEx`'s default
+   path picks an algorithm based on `(m, n, k, batch_size, dtype)`.
+   Different B → different Split-K decomposition → different reduction
+   tree → different FP sums. CUBLAS_WORKSPACE_CONFIG locks workspace
+   memory but does NOT lock algorithm — confirmed empirically (no
+   determinism improvement after setting `:4096:8`).
+2. **FlashAttention block tiling.** The split-size for the K/V
+   block-wise softmax depends on (batch, n_kv, n_heads). Different
+   batch → different split → different per-block partial sums →
+   different final reduction.
+3. **Per-row scheduling.** Even at fixed B, GPU block scheduling
+   varies based on workspace pool state, prior memory traffic, L2
+   warmth. This appears to NOT be a correctness issue when atomics
+   are absent (only one `atomicAdd` exists in ggml-cuda, on integer
+   counters in `ssm-conv.cu` — so atomic float reordering is NOT in
+   play). Schedule order affects performance, not numerics.
+
+**What greedy decoding does to small FP differences:**
+
+The chain has **Lyapunov-like sensitivity** at the argmax. When the top-2
+candidates' logits are within ~ε of each other, a 0.1% logit perturbation
+flips the argmax. The next decode step uses the (different) sampled
+token. From there the chains separate. After N steps, divergence is
+total. Empirically: M=1 at 5 tokens matches solo, M=2 at 30 tokens
+diverges; the chaos exponent is ~0.05-0.1 per step on this prompt class.
+
+**Why padding the batch does not fix it:**
+
+Input-shape padding (the rejected D10.e.1 approach) keeps n_tokens
+constant across calls but does NOT change cuBLAS's per-call algorithm
+choice (verified). cuBLAS picks based on the FULL shape, not just the
+batch-dim. And even if it locked the algo, Split-K reductions inside
+the algorithm still happen on a per-block basis with non-deterministic
+ordering when B varies. The fix has to be inside the kernel, not at
+the input level.
+
+### The three-kernel invariance approach (ports vLLM's solution to Turing)
+
+Per Thinking Machines Lab "Defeating Nondeterminism in LLM Inference"
+(2025) and vLLM's October 2025 batch-invariance feature, the canonical
+fix rewrites three kernels:
+
+| Kernel | Invariant property required | ggml-cuda current state |
+|---|---|---|
+| RMSNorm | One batch element per CUDA block, no cross-block reduction | Likely already data-parallel; verify in D10.e.2.A |
+| MatMul | Fixed tile size, no Split-K dependent on batch dim | Uses cuBLAS heuristic OR ggml-cuda's MMQ; cuBLAS path is the bug |
+| Attention | Fixed split-size for K/V block tiling | Flash-attn varies split based on shape |
+
+**On Turing sm_75 specifically:**
+
+- vLLM ships the solution for sm_90+ (uses Hopper async-copy intrinsics).
+  The TECHNIQUE is hardware-portable per Thinking Machines.
+- ggml-cuda already has CUDA-graph capture infrastructure (Phase 35);
+  graph topology key + cudaGraphExecUpdate gives shape-stability for
+  the same TOPOLOGY but the captured graph itself was built with whatever
+  algo was first chosen.
+- The work is to enforce kernel-level invariants in our specific
+  ggml-cuda kernels, not to port Hopper-only code.
+
+### Performance invariant (user-stated requirement)
+
+D10.e MUST keep:
+1. D10.b's +27% multi-slot lift over D10.a baseline.
+2. MTP enabled at all M (path C is off the table).
+3. M=1 single-slot performance unchanged (no 3× regression).
+
+The bandwidth-bound observation (per-slot tg = 7.83 t/s long-context, GPU
+util 70%+) means **kernel-correctness fixes that increase compute by
+≤2× should be invisible to wall time** as long as they don't move us
+into compute-bound territory. This is the budget for kernel rewrites.
+
+### Implementation plan
+
+**D10.e.2.A — RMSNorm verification (~5k tokens)**
+
+- Read ggml-cuda's RMSNorm kernel; confirm data-parallel (one block per
+  batch-element).
+- If already data-parallel, mark green, no change.
+- If batched-reduction in use, rewrite to data-parallel.
+
+Verification: M=2 same-prompt 5 reps; row 0 vs row 1 of `rms_norm`
+output identical to first 8 floats via per-row checksum diagnostic.
+
+**D10.e.2.B — MatMul fixed-algorithm enforcement (~30-50k tokens)**
+
+Two routes; pick based on D10.e.2.B.0 probe:
+
+*Route 1 (cheap probe):* In `ggml_cuda_op_mul_mat_cublas`, replace the
+heuristic `cublasGemmEx` call with `cublasGemmEx(..., CUBLAS_GEMM_ALGO0)`
+or a similar explicit algo. Single-line change. Test on M=2 same-prompt.
+
+*Route 2 (full fix):* Bypass cuBLAS for the affected matmuls. Use
+ggml-cuda's MMQ path with fixed tile size for all batch sizes. More
+invasive but matches vLLM's approach.
+
+Verification: 5 reps M=2 same-prompt produce identical first-token-after-prompt
+across all reps and slots. Then 5 reps M=2 same-prompt at 30 tokens
+produce identical full output across reps (slot A may still differ
+from slot B due to attention; that's D10.e.2.C's domain).
+
+**D10.e.2.C — Attention fixed-split-size (~50-80k tokens)**
+
+Hardest of the three. Flash-attn's split size affects:
+- Per-block softmax partial sums
+- Block-wise output accumulation
+
+Need to find ggml-cuda's flash-attn kernel for sm_75 and force a
+`KV_BLOCK_SIZE` constant regardless of input shape. May require a new
+kernel variant or significant kernel modifications.
+
+Fallback: if the FA modification is too invasive, swap to non-FA
+attention (much slower but byte-deterministic). Use ONLY for n_seq_max>1
+to preserve M=1 perf.
+
+Verification: 5 reps M=2 same-prompt at 30 tokens produce identical
+output across all reps AND across slots. Same for M=3 mixed-prompt
+(per-slot reproducibility, not cross-slot equality).
+
+**D10.e.2.D — Performance regression gate**
+
+After all three fixes:
+- Run D10.b's smoke (3 slots × 30 tokens) — aggregate tg must be ≥+27%
+  over D10.a baseline (≥38 t/s aggregate).
+- Single-slot regression check — solo M=1 tg must be ≥31 t/s
+  (within 0.5 t/s of pre-D10.e baseline).
+
+If either fails, the kernel work has unintended perf cost — re-evaluate.
+
+### What this plan rejects
+
+- ❌ Disabling MTP at M≥2 (path C — user vetoed).
+- ❌ Padding batch input shape (D10.e.1, attempted, -36% perf, no
+  determinism win).
+- ❌ Switching to `--split-mode layer` (serializes GPUs, tanks
+  performance — user flagged).
+- ❌ Hardware-side workarounds (NCCL_DETERMINISTIC, CUBLAS_WORKSPACE_CONFIG)
+  — verified ineffective.
+- ❌ "Document and accept" — vLLM proves the fix exists; user pushed
+  back on this framing correctly.
+
+### Estimated cost
+
+~85-135k tokens spread across D10.e.2.A/B/C. Multi-session given
+the kernel work involved. D10.e.2.A and probe of B (Route 1) are
+single-session feasible.
+
+### Tag plan
+
+- Start: `phase45-d10b-divergence-checkpoint` (already pushed).
+- After D10.e.2.A: `phase45-d10.e-rmsnorm-verified`
+- After D10.e.2.B: `phase45-d10.e-matmul-fixed-algo`
+- After D10.e.2.C: `phase45-d10.e-attention-fixed-split`
+- D10 closes: `phase45-d10.e-deterministic-multislot`
+
+### References
+
+- [Defeating Nondeterminism in LLM Inference (Thinking Machines Lab, 2025)](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/)
+- [vLLM Batch Invariance docs](https://docs.vllm.ai/en/latest/features/batch_invariance/)
+- [vLLM Issue #9567: Models produce different output with different batch sizes](https://github.com/vllm-project/vllm/issues/9567)
