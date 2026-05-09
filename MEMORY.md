@@ -1886,3 +1886,63 @@ D9 is the largest single step. Rough estimate:
 
 Total ~225k tokens. Multi-session expected. Each sub-iteration ends
 on a green build + bench, so partial progress is durable.
+
+
+## 2026-05-09 — PHASE45 D9.5 milestone (tag: phase45-d9.5)
+
+First time np=3 parallel-slot inference worked on this fork. Tag
+`phase45-d9.5` on both parent and submodule marks the point.
+
+What landed:
+- common_speculative_state_mtp no longer allocates per-slot ctx_mtp.
+  The MTP draft writes layer N-1 of the SHARED ctx_tgt's KV cache;
+  verify writes layers 0..N-2 of the same KV. Single canonical writer
+  per layer, no race, no drift.
+- np=3 architectural smoke: 3 slots × 40-token prompts each, all 3
+  produced prompt-aware coherent responses. DeltaNet n_seq_max=3
+  recurrent state allocation works; seq_id partitioning works
+  end-to-end through libllama spec primitives.
+
+Surprise win: +9 percentage points in the C/A throughput ratio
+(+20.5% → +29.8%) plus +10pp jump in draft acceptance rate (0.66 →
+0.76). Cause: the prior architecture had ctx_mtp's MTP-layer-N-1
+KV cache running ALONGSIDE ctx_tgt's verify cache. Even though only
+layer N-1 was technically duplicated (the existing optimization at
+src/llama.cpp:917-919 skipped non-MTP layers), the layer-N-1 cells
+in the two contexts could drift when MTP draft and verify ran
+asynchronously with separate sched pipelines. Drafts produced from a
+slightly-stale layer-N-1 view would more often disagree with verify,
+hurting acceptance. PHASE36/37/38 layered workarounds (INLINE_KV
+hook, fast-argmax cache, fused chains) without ever fixing the
+underlying drift; PHASE45's collapse fixed it as a side effect of
+the architectural cleanup.
+
+D8.4 had also confirmed empirically that the INLINE_KV hook is
+removable (E config = hook OFF was within 0.5% of C config = hook
+ON, both clearing +19%). With D9.5's collapse, that lock is now
+binding rather than provisional — D9.9 will delete the hook entirely.
+
+Evidence:
+- data/phase45-d9.5-bench-np1.out — A=29.67, C=38.50, ratio=1.2976
+- data/phase45-d9.5-np3-resp{0,1,2}.json — 3 slot responses, coherent
+- data/phase45-d9.5-np3.serverlog — server log of the np=3 run
+- Submodule commit 0c4aefbf+ (the actual D9.5 collapse landed in a
+  later submodule SHA; tag points to it)
+
+Remaining D9 work (per the design memo, half budget remaining,
+concentrated in extraction):
+- 3 server free-function ctx markers from D9.2/D9.4 (small)
+- examples/server/server.cpp callsites (audit pending)
+- common/common.cpp + common/sampling.cpp ctx callsites (~7)
+- ctx_dft / ctx_draft / ctx_guidance secondary contexts
+- D9.6 — extract fields out of llama_context into session/decoder
+  member storage (the big one, ~12k LoC of llama.cpp internals to
+  rewrite, all renames done in the same pass)
+- D9.8 — delete llama_context (trivial after D9.6)
+- D9.9 — dead code: mtp_speculative_gen_draft, INLINE_KV hook,
+  llama_session_internal_context bridge, llama_session_adopt helper
+- D9.10 — final binding: D6 byte-identical + D8 +19% +
+  grep-zero-llama_context
+
+D10 (multi-slot validation at np=3 × 256K + 200k-token soak) gates
+on D9 finishing.
