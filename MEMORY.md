@@ -3560,3 +3560,66 @@ Spent 15k tokens on probes. Saved potentially much more on misframed
 fixes. Confidence in next-step claim moved from "we think" to "data
 proves." The wargame discipline + over-fitting check were both
 load-bearing.
+
+### D10.e.0.G probe outcome (2026-05-09) — Path 3 blocked, kernel-read mistaken target
+
+User instructed to take Path 3 (serial vec dispatch) "knowingly" — accepting
+50-150% slowdown for the probe. Implementation revealed three blockers:
+
+**1. WRONG KERNEL**: my initial deep read of `fattn-wmma-f16.cuh` was of
+the WRONG kernel. `new_mma_available(cc)` returns TRUE for sm_75 (Turing),
+so the actual FA path for our config is `ggml_cuda_flash_attn_ext_mma_f16`
+(line 146 of fattn.cu), NOT `wmma_f16` (line 141). The mma_f16 kernel
+(`fattn-mma-f16.cuh`, 64K) is much larger and not yet read.
+
+**2. VEC_F16 KERNEL CONSTRAINT**: vec_f16 has `if (ncols > 1) NO_DEVICE_CODE; return;`
+on CUDA. Truly single-row only. Path 3's serialization is the only way
+to use it for multi-row.
+
+**3. VEC_F16 LACKS Q4_0 hs=256 SUPPORT**: even with the dispatch case +
+is_supported edit + new template instance file, the underlying kernel
+hits ggml_abort inside `launch_fattn`. The `vec_dot_KQ_f16<256>(Q4_0)`
+specialization doesn't exist in `fattn-vec-common.cuh`. Adding it would
+be a substantial port.
+
+Reverted all Path 3 changes. The probe couldn't run as designed.
+
+**What we DO know now:**
+- The FA kernel for our config is `mma_f16`, not `wmma_f16`. Liu's
+  initial deep read targeted the wrong file.
+- Vec_f16 isn't a viable swap target without significant port work
+  (vec_dot_KQ for Q4_0/hs256, plus accepting single-row serialization
+  cost).
+- The layer-3 row asymmetry IS in `mma_f16` (or its surroundings).
+
+**Next steps (revised council target):**
+
+| Step | What | Cost | Outcome |
+|---|---|---|---|
+| **D10.e.0.H** | Read `fattn-mma-f16.cuh` (the actual kernel) | 10-15k | Identify mma_f16's asymmetry mechanism |
+| **D10.e.0.I** | Test V cache type Q8_0 (instead of Q4_0) — vec_f16 hs=256 Q8_0 IS supported. Try serial vec dispatch with that config. | 10k | Cleaner Path 3 test if user accepts cache-type change |
+| **D10.e.2-FA** | Targeted fix in mma_f16 OR multi-row vec port | 30-80k | Production fix |
+
+### Diagnostic instrumentation status
+
+`LLAMA_LAYER_TRACE` env-gated per-layer trace (5 sample layers, mark
+ggml_dup outputs, post-compute first-8 dump) is functional and clean.
+Reyes' perturbation test passed (trace OFF gives same outputs as trace
+ON). Useful for future kernel investigations.
+
+### What was preserved
+
+- Layer trace instrumentation (env-gated, 0% cost when off)
+- `phase45-d10b-divergence-checkpoint` tag (rollback target)
+- All findings in MEMORY.md
+
+### What was reverted
+
+- Q4_0 hs256 instance file for vec_f16
+- Dispatch case in fattn-vec-f16.cu
+- is_supported edits
+- Serial vec dispatch in fattn.cu
+- LLAMA_FA_SERIAL_VEC env var
+
+Build clean. Profile back to defaults. Submodule HEAD `b07d0bbe` (D10.b)
++ in-tree layer-trace instrumentation only.
