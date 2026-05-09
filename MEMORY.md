@@ -3851,3 +3851,47 @@ Priority:
 
 Both fixes can be opt-in via `LLAMA_BATCH_INVARIANT=multi_slot`
 (Singh's pattern from earlier council).
+
+## D10.e.0.M — Bug A pinpointed: DeltaNet at il=1
+
+Three sub-trace points added: trace_l1_post_delta, trace_l0_post_ffn,
+trace_l3_post_attn/post_ffn (already there). Added 1-line FFN-at-l0
+control trace. Re-ran d10e0M2 script.
+
+Result:
+| point                | δ(solo, M2_r0) | δ(M2_r0, M2_r1) |
+|----------------------|----------------|-----------------|
+| trace_l_out_0        | 0.00           | 0.00            |
+| trace_l0_post_ffn    | **0.00**       | 0.00            |
+| trace_l1_post_delta  | **3.70e-4**    | 0.00            |
+| trace_l_out_1        | 1.19e-3        | 0.00            |
+
+**Bug A source: DeltaNet at il=1.** δ(solo, M2_r0) jumps from 0 (post
+layer 0) to 3.7e-4 immediately after `delta.build_layer_attn_linear`
+returns. FFN at il=0 (control) keeps δ=0 — FFN is batch-invariant
+when given identical input. Therefore FFN's amplification at il=1
+(3.7e-4 → 1.19e-3, ~3.2×) is non-linear amplification of upstream δ,
+not new divergence. Bug A is purely a DeltaNet-side issue.
+
+**Why DeltaNet at il=0 doesn't show it:** layer 0's input is the
+embedding lookup, which is purely indexed read (no MMQ, no batch-shape
+op). DeltaNet at il=0 with identical input is shown to be invariant
+(δ stays at 0 through l_out_0 and l0_post_ffn). The non-invariant
+sub-op inside DeltaNet must be one that's only exercised at il>=1.
+
+**Hypotheses for DeltaNet sub-op at il=1 introducing δ:**
+1. MMQ for QKVZ projection (q4_0 weights) with batch-shape-dependent
+   work partition
+2. MMQ for ssm_dt/ssm_a projections (similar to 1)
+3. SSM/conv1d recurrent kernel reading state at il=1 with some
+   batch-dependent dispatch (the conv state is loaded from prompt
+   processing — if prompt-processing-time batch shape differed
+   between M=1 and M=2, the state itself differs)
+4. ssm_out projection (final MMQ) with batch-shape-dependent partition
+
+Hypothesis 3 is most worrying because it points to a "the saved state
+is wrong" condition not fixable in the decode path — would need
+fixing in prompt-processing too.
+
+Next: D10.e.0.O — drill into DeltaNet sub-pipeline at il=1 with
+per-device sub-traces inside build_layer_attn_linear_core.
