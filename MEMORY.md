@@ -3375,3 +3375,101 @@ remains open as a future probe.
 
 The expert council's "probe before refactoring" was correct. We were
 two layers into a fix for the wrong kernel.
+
+### D10.e.0.B per-layer instrumentation results (2026-05-09) — TWO bugs found
+
+Per-layer first-8 trace at il = 0,1,2,3,4,5,6,8,16,63 of `l_out` under
+M=1 solo and M=2 same-prompt "def reverse_string(s):":
+
+| Layer | type | δ(M2.r0, solo) | δ(M2.r1, solo) | δ(r0, r1) within M=2 |
+|---|---|---|---|---|
+| 0 | DeltaNet | 0 | 0 | **0** (bit-equal) |
+| 1 | DeltaNet | 0.24 | 0.24 | **0** |
+| 2 | DeltaNet | 0.40 | 0.40 | **0** |
+| **3** | **Std attn (FA)** | 0.19 | 0.12 | **0.10** ← row asymmetry ONSET |
+| 4 | DeltaNet | 0.33 | 0.26 | 0.13 |
+| 5 | DeltaNet | 0.12 | 0.12 | 0.23 |
+| 6 | DeltaNet | 0.26 | 0.12 | 0.28 |
+| 8 | DeltaNet | 0.30 | 0.16 | 0.18 |
+| 16 | DeltaNet | 0.52 | 0.41 | 0.19 |
+| 63 | (last) | 0.10 | 0.18 | 0.16 |
+
+**Two distinct bugs identified:**
+
+**Bug A — Batch-shape divergence at layer 1.** δ(M2 vs solo) = 0.24
+yet δ(r0, r1) within M=2 = 0. Same input, same prompt, M=2 batched
+produces a DIFFERENT but row-symmetric output vs M=1. This is
+**batch-size-dependent kernel selection** in layer 1's DeltaNet
+kernel (or the MMQ matmul before it). What input-shape padding was
+designed to fix.
+
+**Bug B — Row asymmetry at layer 3.** δ(r0, r1) jumps from 0 (layers
+0-2) to 0.10 at layer 3. Per Qwen 3.6 hybrid architecture
+(`recurrent_layer_arr[i] = ((i + 1) % 4 != 0)`), layers 0,1,2 are
+DeltaNet and **layer 3 is the FIRST standard attention layer** (FA).
+With Q->ne[0]=256, K/V quantized, sm_75 → falls through to
+`ggml_cuda_flash_attn_ext_wmma_f16`. This kernel is **row-asymmetric**
+under multi-row inputs — same K/V, same Q per-row, different per-row
+output. Liu's H1 prediction was correct.
+
+**Why padding alone failed (D10.e.1 retrospective):** padding
+addressed Bug A (locked the batch shape) but did NOT address Bug B
+(row asymmetry within the WMMA-FA kernel). Once Bug B kicked in at
+layer 3, the chaos amplifies regardless of how we pad.
+
+**Why M=1 is fully deterministic across reps:** at M=1, only one row,
+no row asymmetry possible. WMMA-FA produces reproducible single-row
+output.
+
+**Why M=2 reps vary across runs:** Bug B's row asymmetry interacts
+with which slot id gets which thread (server scheduling
+non-determinism in slot assignment), producing different "tracks"
+per rep.
+
+### Revised D10.e fix plan
+
+The WMMA-FA layer-3 row asymmetry is THE actionable bug for agentic
+multi-slot reproducibility. Fix scope is much narrower than the
+previous "three-kernel vLLM port":
+
+- **D10.e.2-FA (NEW priority)**: investigate
+  `ggml_cuda_flash_attn_ext_wmma_f16` for batch-row-dependent
+  computation. Likely culprits:
+    - Per-block softmax partial sums summed in an order that depends
+      on grid layout (which depends on Q->ne[1])
+    - Cross-row register or shared-memory reuse
+    - WMMA fragment loading with per-row order dependencies
+  Force row-independent computation. Estimated ~30-50k tokens.
+
+- **D10.e.2-DeltaNet (LOWER priority)**: investigate the layer 1
+  DeltaNet kernel for batch-size dependency. Less urgent — fixing Bug A
+  alone doesn't help (Bug B downstream). Fixing Bug B alone may make
+  per-slot output reproducible-across-reps even if M=2 ≠ M=1.
+
+- **D10.e.3**: opt-in flag (Singh's pattern) — keep existing
+  non-deterministic mode as default, gate batch-invariance behind
+  `LLAMA_BATCH_INVARIANT=1`. Only apply on multi-slot.
+
+### What this rules out
+
+- Patel's H3 (geometric accumulation): wrong. Drift doesn't grow
+  geometrically — it spikes at layer 1 (Bug A) and layer 3 (Bug B).
+- The matmul/cuBLAS/MMQ trail (D10.e.2.B as planned): wrong target.
+  MMQ is deterministic; layer-1 batch dependency is in DeltaNet
+  kernel or its chunked-scan internals.
+- The "three-kernel vLLM port" framing: too broad. We need to target
+  WMMA-FA specifically for the actionable agentic-flow concern.
+
+### Next concrete step
+
+D10.e.0.C — narrow probe within layer 3 to identify which sub-stage
+of the FA kernel produces row asymmetry. Options:
+(a) instrument intermediate attention tensors (Q after RoPE, K, V,
+    softmax output, attn output) with same layer-trace mechanism;
+(b) test simpler workarounds first: try forcing the vec_f32 path
+    for layer 3 specifically (since it might be more
+    row-deterministic than wmma_f16);
+(c) read fattn-wmma-f16 kernel source to identify
+    cross-row state.
+
+(a) is cleanest but expensive. (c) is cheapest and informative.
