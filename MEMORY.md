@@ -2186,6 +2186,7 @@ Reverted the half-done extraction. State is back at the D9.6a commit
 remains canonical.
 
 
+<<<<<<< HEAD
 ## 2026-05-09 — PHASE45 D10 design (multi-slot validation, np=3 × 256K)
 
 D10 closes PHASE45's binding criterion: the architectural keystone of D9.5
@@ -2746,3 +2747,30 @@ ships and the result is interpreted as "today's hardware bound."
 
 PHASE 44 retry (CUDA graph capture) earns a follow-on phase reservation
 once NVLink hardware lands.
+=======
+### Hardware roadmap correction (4× H100 unavailable)
+
+User clarified: 4× 80GB H100s aren't on the path. Realistic NVLink
+upgrade is workstation-class:
+- 2× RTX 6000 Ada (48 GiB × 2 = 96 GiB, NVLink 4 ~112 GB/s aggregate), OR
+- 2× RTX Pro 6000 Blackwell (96 GiB × 2 = 192 GiB, NVLink 5)
+
+What this means for D10 sizing and beyond:
+- np=3 × 256k stays the operating point on workstation NVLink (96 GiB
+  is 2× current; gives headroom but not order-of-magnitude).
+- np=5-7 plausible on 192 GiB (Blackwell tier) for the same model and
+  ctx.
+- Larger models (70B class) become feasible at full precision on 192 GiB.
+- Per-slot ctx beyond 256k still gates on training (yarn-extension), not
+  hardware.
+
+NVLink-related architectural decisions stay the same: ship clean designs,
+don't optimize for current PCIe latency, treat today's bench numbers
+as PCIe-bound. The lift cap from per-op latency lifts on workstation
+NVLink in the same way it does on data-center NVLink — magnitude differs
+by maybe 1.5-2× rather than 5-10×, but still meaningfully.
+
+The "clean architecture extends to NVLink hardware without modification"
+claim still holds. Just calibrate the future hardware ceiling to
+workstation-class.
+>>>>>>> ddd175a (MEMORY: hardware roadmap correction — workstation NVLink, not 4× H100)
