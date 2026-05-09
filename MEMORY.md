@@ -4101,3 +4101,42 @@ Two architecture options remain:
 
 Recommend **Option A** for V1 (simpler implementation, immediate
 correctness), upgrade to Option B for V2 if perf is unacceptable.
+
+---
+
+## PHASE45 D10.e — per-slot dispatch evaluated and abandoned (2026-05-09)
+
+After kernel-level fixes (D10.e.0.B–G) failed and the llama-layer
+env-gated `LLAMA_BATCH_INVARIANT=multi_slot` attempt also failed (likely
+because it covered only the verify path, not the MTP draft path), a
+fresh per-slot dispatch plan was scoped (concurrent CUDA streams,
+single backend with per-stream pools/cublas, ~370 LOC, hybrid placement
+inside `llama_decode_internal` with server-owned stream lifecycle).
+
+Cost analysis before commit found per-slot dispatch loses model-weight
+amortisation. In D10.b's batched path, ~28 GB Q8 weights are read once
+per layer per forward and serve all M slots' tokens (12 tokens at np=3
+× draft=3). In per-slot dispatch, M=3 forwards each re-read weights;
+concurrent CUDA streams share GPU memory bandwidth (don't multiply
+it), so at decode batch sizes Qwen 27B is bandwidth-bound and
+aggregate np=3 t/s collapses to roughly np=1 baseline. D10.b's +27%
+lift is fully retired; multi-slot serving becomes a concurrency
+feature with no aggregate-throughput win.
+
+Decision: do not ship per-slot dispatch. Multi-slot MTP remains
+non-deterministic across slots on phase45-decompose @ b07d0bbe (D10.b).
+
+The only realistic recovery path for the +27% under determinism is
+hybrid fork/join — keep RMSNorm/FFN/main matmul batched, fork to
+per-slot only at DeltaNet (Bug A) and FA mma_f16 (Bug B), join after.
+Requires a `ggml_cuda_concurrent_event`-style infrastructure that
+ik_llama.cpp does not have (it lives upstream and was not ported).
+1–2k LOC new-infra workstream, deferred.
+
+**Artifacts kept:**
+- T0 determinism fixture committed at yarn-agentic 54f6974
+  (scripts/test-mtp-multislot-determinism.sh) with negative control
+  divergence signature in data/phase45-t0-negative-control/.
+- Submodule branch `d10e0-llama-layer-perslot-wip` preserves the
+  prior llama-layer env-gated attempt for reference.
+- Plan and analysis at ~/.claude/plans/hi-we-have-a-glowing-glade.md.
