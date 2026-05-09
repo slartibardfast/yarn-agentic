@@ -2840,3 +2840,48 @@ tokens including bench cycles (~5-7 min wall each; D6 harness
 ~30s). Each sub-iteration committed independently with full bench
 + D6 evidence in the commit message. Branch is in a green state
 end-to-end.
+
+## PHASE45 D10.a — np=3 × 256k boots green (2026-05-09)
+
+`profiles/qwen36-27b-x3-mtp.sh` boots on 2× 24 GiB (~39/48 GiB used).
+3 concurrent `/v1/completions` slots return coherent prompt-aware
+output ("Paris.", "return s[::-1]", "Hola"), MTP accept rate 73-78%
+per slot, NRestarts=0. Closes PHASE45 D10 binding test (b):
+"3 slots × 1 token each, output-coherent on each slot independently."
+
+**Hybrid-recurrent risk projection turned out REAL.** PHASE45.md
+flagged the `tree_fanout_hybrid_recurrent_blocker` memory entry as
+unverified at np=3 multi-slot. First boot crashed twice, both in
+DeltaNet/MTP paths the binding test was designed to catch:
+
+1. `llama_spec_ckpt_init`: per-step save buffers (per_step_qkv,
+   per_step_ssm) were sized `max_tokens = 1+n_draft` (single-slot
+   draft chain), and restore assumes contiguous-per-slot tokens.
+   Multi-slot batched verify interleaves slot tokens in the buffer
+   so n_tok_qkv > max_tokens (overflow) AND restore can't
+   dis-interleave. Fix: force GPU_FALLBACK whenever n_seq_max > 1.
+   Cost: full s_l shadow per save (vs incremental); correct under
+   any batching pattern.
+
+2. `mtp_update_kv_cache`: reads only `batch.seq_id[0][0]` for the
+   seq_rm, runs a single `llama_decode` in MTP_OP_WARMUP mode that
+   segfaults on multi-seq-id batches. Fix: short-circuit when
+   `LLAMA_MTP_INLINE_KV` is on (the hook in the verify forward
+   already wrote MTP KV for every batch position) — same pattern
+   as `mtp_accept_tokens` already had at line 1450. Made one of
+   them load-bearing under multi-slot.
+
+Both fixes minimal (12 + 13 lines), gated, committed as
+submodule `eef509d2`. New tag `phase45-d10.a-multislot-boot` on
+both repos.
+
+**Aggregate throughput is flat vs single-slot (~30 t/s).** This is
+expected pre-D10.b behavior — verify forwards still execute serially
+per slot under the current scheduler. D10.b's batched-draft API
+is the throughput unlock; binding test (d) "per-slot tg ≥ 29.6 t/s
+concurrent" is gated on it.
+
+Decision-cost note: smoke crash → diagnosis → fix → second crash →
+diagnosis → second fix → green smoke landed in ~25k tokens including
+build cycles. The two fixes were both anticipated by PHASE45.md
+(architectural decisions section), so reading was cheap.
