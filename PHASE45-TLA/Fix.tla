@@ -3,13 +3,26 @@
 (* PHASE45 D10.e — Phase 2.5 spec: per-slot dispatch fix.                    *)
 (*                                                                            *)
 (* Models the proposed architectural fix: opt-in `PerSlotMode` that          *)
-(* restricts VerifyBatch to single-slot batches (|B| = 1). Under             *)
-(* PerSlotMode, every Compute call has batch_seqs = {s} for the slot s      *)
-(* being processed — eliminating the dependence on multi-slot context.      *)
+(* restricts VerifyBatch to single-slot batches (|B| = 1).                  *)
 (*                                                                            *)
-(* Verification goal: with PerSlotMode = TRUE, the safety invariants from   *)
-(* Phase 2 (VerifyConsistency, NoStateDivergence) hold. TLC convergence is  *)
-(* the proof certificate that per-slot dispatch is sufficient.              *)
+(* Council refinements (Olafsson + Patel):                                   *)
+(*   - BugAActive / BugBActive parameters: gate the corruption surface for  *)
+(*     partial-fix analysis. Bug A = DeltaNet wrapper-level; Bug B = FA     *)
+(*     kernel-internal. Empirically both fire; the spec lets us evaluate    *)
+(*     fix combinations.                                                     *)
+(*   - Honest abstraction note: this spec is a CONTRACT VALIDATOR, not a   *)
+(*     bug discoverer. Empirical D10.e.0.L data establishes bug existence; *)
+(*     this spec proves PerSlotMode is structurally sufficient to satisfy   *)
+(*     the determinism contract.                                             *)
+(*                                                                            *)
+(* Verification matrix:                                                       *)
+(*   PerSlotMode | BugA | BugB | Expected                                   *)
+(*   ------------+------+------+------------------------------              *)
+(*   FALSE       | F    | F    | Pass (no bug present)                       *)
+(*   FALSE       | T    | F    | Violate (Bug A alone is sufficient)         *)
+(*   FALSE       | F    | T    | Violate (Bug B alone is sufficient)         *)
+(*   FALSE       | T    | T    | Violate (both fire)                         *)
+(*   TRUE        | T    | T    | Pass (per-slot dispatch suppresses both)    *)
 (*****************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
@@ -19,7 +32,9 @@ CONSTANTS
     MaxStep,
     MaxPending,
     DraftK,
-    PerSlotMode      \* BOOLEAN — when TRUE, VerifyBatch restricted to |B|=1
+    PerSlotMode,
+    BugAActive,    \* DeltaNet wrapper batch-shape divergence active?
+    BugBActive     \* FA kernel-internal cross-row asymmetry active?
 
 VARIABLES
     pending,
@@ -49,15 +64,27 @@ TypeOK ==
     /\ alone_state \in [Slots -> HistoryWitness]
     /\ alone_accept \in [Slots -> 0..DraftK]
 
+----------------------------------------------------------------------------
+(* Compute and EmitOutput.                                                   *)
+(*                                                                           *)
+(* The bug surfaces when Cardinality(last.B) > 1 AND a relevant bug knob is *)
+(* active. We model "corruption" as 'EmitOutput selects a different token  *)
+(* than the alone path would.' This is an over-approximation of the real   *)
+(* FP non-determinism (which only sometimes corrupts) — sound for proving  *)
+(* sufficiency of the fix, since if the spec PASSES under PerSlotMode=TRUE *)
+(* with this strong corruption model, it also passes under any weaker     *)
+(* real-world model.                                                         *)
+(*****************************************************************************)
 Compute(state, token, batch_seqs) ==
     Append(state, [t |-> token, B |-> batch_seqs])
 
+\* Bug active iff at least one of the bug knobs is on AND the batch is multi.
 EmitOutput(state) ==
     IF Len(state) = 0 THEN CHOOSE t \in Tokens : TRUE
     ELSE LET last == state[Len(state)] IN
-         IF Cardinality(last.B) > 1
-         THEN CHOOSE t \in Tokens : t # last.t
-         ELSE last.t
+         IF Cardinality(last.B) > 1 /\ (BugAActive \/ BugBActive)
+         THEN CHOOSE t \in Tokens : t # last.t  \* corrupts under buggy batched
+         ELSE last.t                            \* faithful otherwise
 
 RECURSIVE ComputeSeq(_, _, _)
 ComputeSeq(state, tokens, batch_seqs) ==
@@ -114,10 +141,6 @@ BuildDraft(s) ==
     /\ UNCHANGED <<pending, slot_state, slot_output, accept_count,
                    step_count, alone_state, alone_accept>>
 
-----------------------------------------------------------------------------
-(* The fix: ReadyToVerify is the same as Phase 2 EXCEPT that under          *)
-(* PerSlotMode, |B| must equal 1.                                            *)
-----------------------------------------------------------------------------
 ReadyToVerify(B) ==
     /\ B \subseteq Slots
     /\ B # {}
@@ -169,7 +192,6 @@ Next ==
 Spec == Init /\ [][Next]_vars
 
 ----------------------------------------------------------------------------
-\* Same invariants as Phase 2.
 NoSpontaneousState ==
     \A s \in Slots: Len(slot_state[s]) <= Len(slot_output[s]) + DraftK
 
@@ -181,12 +203,13 @@ BoundedStep == step_count <= MaxStep
 VerifyConsistency ==
     \A s \in Slots: accept_count[s] = alone_accept[s]
 
-NoStateDivergence ==
-    \A s \in Slots: slot_state[s] = alone_state[s]
+\* Project state to its observable token sequence; the B-witness field is
+\* a modeling artifact (tracks which batch the step was computed under),
+\* not a runtime-observable property. Determinism is about tokens, not
+\* about which batch they were computed in.
+TokenTrace(state) == [i \in 1..Len(state) |-> state[i].t]
 
-\* Structural property of the fix: under PerSlotMode, no multi-slot
-\* VerifyBatch was ever scheduled. This is the engineering contract.
-PerSlotModeImpliesSingletonVerify ==
-    PerSlotMode => \A s \in Slots: TRUE   \* trivially TRUE; enforced by ReadyToVerify
+NoStateDivergence ==
+    \A s \in Slots: TokenTrace(slot_state[s]) = TokenTrace(alone_state[s])
 
 ============================================================================
