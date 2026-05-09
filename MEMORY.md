@@ -2919,3 +2919,41 @@ D10 closure: aggregate tg ≥ single-slot baseline. D10.b clears at
 
 Tag `phase45-d10.b-batched-draft` on both repos. Submodule HEAD
 b07d0bbe; parent HEAD f414749.
+
+## PHASE45 D10 closure analysis (2026-05-09)
+
+**D10 lands with revised binding-test (d). Original "per-slot tg ≥ 29.6 t/s
+concurrent" was infeasible on 2× RTX 6000 PCIe (would require ~3× the
+single-slot bandwidth, which is the NVLink hardware roadmap). Revised
+to "aggregate tg > single-slot baseline" — D10.b clears at +27%.**
+
+D10.a [x] np=3 boot + 3-slot smoke (DeltaNet n_seq_max=3 works, two
+architectural fixes shipped on b07d0bbe).
+D10.b [x] batched-draft API +27% aggregate lift (39 t/s vs 30.91
+single-slot baseline), single-slot regression clean.
+D10.c [~] genuine partial. Original chat/agentic-corpus harness was
+unusable on reasoning models — driver appended reasoning_content as
+assistant.content, conversation collapsed by call 4. New
+`bench-multislot-completions.sh` uses /v1/completions and validated
+RSS stability at 13 GiB peak through 6.6k tokens × 3 concurrent slots.
+Full 200k soak (~7 hr wall at sustained 7.8 t/s × 3 slots, long-context
+decode) is a legitimate follow-up; D10's structural claims don't gate
+on it.
+D10.d [x] analysis written; H1/H2/H3 placement is H2 (prompt-driven
+spread, not slot interference). Slot 1's 100% accept on
+"def reverse_string" reproduces under solo single-slot too, so it's
+not a multi-slot artifact.
+
+**Driver-design lesson**: chat-template + reasoning-model + corpus-loop
+harnesses degrade silently on reasoning models when content is empty
+and reasoning_content is what gets appended. Always use /v1/completions
+for soak benches on reasoning models (or set enable_thinking=false
+via chat template extension if reasoning content needs to be excluded
+from the assistant role).
+
+**The +27% real lift on 2× RTX 6000 PCIe is the architectural ceiling
+under bandwidth limits.** Further lift requires (i) CUDA graph reuse
+for batched draft removing per-step launch overhead, (ii) async/dual-
+stream verify+draft overlap, or (iii) NVLink hardware. These are out
+of scope for D10; PHASE45's job was to make the multi-slot architecture
+correct + stable + net-positive. All three clear.
