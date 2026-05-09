@@ -1667,3 +1667,53 @@ bench is properly D10's verifier. Captured in PHASE45.md D7 row
 revision.
 
 Full evidence: data/phase45-d7-perf-floor.md.
+
+
+## 2026-05-09 — PHASE45 D8 closed: spec_loop extraction validated end-to-end
+
+D8.4 multi-turn agentic bench (`bench-multiturn-pre-port.sh` on the
+ported submodule): C config (-mtp --draft 3 + LLAMA_MTP_INLINE_KV=1)
+at 35.77 tg t/s vs A nomtp at 29.69 tg t/s = **1.2049× (+20.5%)**.
++19% floor cleared by 1.5pp. Acceptance rate 0.663.
+
+The full path tested:
+  server-context.cpp common_speculative_*  (unchanged)
+    → common/speculative.cpp::common_speculative_state_mtp::draft  (D8.3 shim)
+    → llama_spec_loop_gen_drafts                                    (D8.2 wrapper)
+    → llama_spec_mtp_draft                                          (D8.1b/c extraction)
+
+No regression vs the pre-extraction path. Algorithmic behavior
+preserved end-to-end through the libllama lift.
+
+### PHASE39-integration §4 reopened lock — RESOLVED
+
+E config (hook OFF, LLAMA_MTP_INLINE_KV=0) at 35.58 t/s vs
+C config (hook ON) at 35.77 t/s — Δ = 0.5%, within run-to-run noise.
+Both clear +19%.
+
+PHASE45.md's "no INLINE_KV hook needed because draft is single
+canonical writer of layer N-1" is genuinely true post-PHASE45.
+The hook was a measured PHASE36 win (it avoided a per-accept
+UPDATE_ACCEPTED decode by folding layer N-1 writes into the verify
+forward). With the spec_loop architecture, the draft decoder
+already writes layer N-1 during its own forward — there's no
+separate UPDATE_ACCEPTED step to amortize, so the hook becomes
+strictly redundant.
+
+D10 can delete the hook without performance cost. Defer to D10
+cleanup.
+
+### Lesson for future extraction work
+
+The user's "break the cycle by extraction" redirect (away from "wrap
+common_speculative in libcommon") was the right call. The result:
+spec_loop lives in libllama as a peer to session/decoder/kv-txn, the
+algorithmic core is reachable from libllama, and common_speculative
+is now a thin shim that adds only libcommon-level concerns
+(autotune, ctx_mtp lifecycle, vocab compatibility for the draft-model
+impl). PHASE45's "four composable types" framing is preserved
+exactly. Extraction was bigger work in the moment but produced the
+clean architecture; wrapping would have entrenched libcommon as the
+home of an algorithm that properly belonged in libllama.
+
+Full D8.4 evidence: data/phase45-d8.4-perf-floor.md.

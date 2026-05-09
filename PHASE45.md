@@ -2,12 +2,13 @@
 
 Permanent fork. Not upstreamable. We can have fun here.
 
-## Status (2026-05-08)
+## Status (2026-05-09)
 
 - D1–D5 [x] — audits + header sketches landed.
 - D6 [x] — main.cpp greedy-decode through `llama_session` + `llama_decoder(PRIMARY)`; `scripts/diff-d6-reference.sh` reports byte-identical 50-token output vs OLD-API reference on Qwen 3.6 27B (CUDA 0+1, q4_0 hadamard KV, ctx 262144). Binding test bound on the step's actual claim.
 - D7 [x] — cli A/B perf floor: 3 NEW-API reps vs OLD-API reference, mean ratio 0.9994×, worst-case 0.9943×. 0.95 floor cleared by ~10×. Original "scripts/bench-multiturn-pre-port.sh" binding test was misframed (it targets the server, which is on OLD API until D10; it cannot measure wrapper cost). Revised binding test below; full evidence in `data/phase45-d7-perf-floor.md`.
-- D8–D11 [ ] — open. D8 (spec decoding via `llama_spec_loop`) is the next gate.
+- D8 [x] — multi-turn agentic bench: C (-mtp --draft 3 + INLINE_KV) at 35.77 tg t/s vs A (nomtp) at 29.69 tg t/s = **1.2049× (+20.5%)**. +19% floor cleared. Acceptance rate 0.663. Hook A/B settled the PHASE39-integration §4 reopened lock: hook OFF E config at 35.58 t/s (+19.84%) is within 0.5% of C — hook is genuinely removable as PHASE45.md framed. Full evidence in `data/phase45-d8.4-perf-floor.md`.
+- D9–D11 [ ] — open. D9 (multi-slot MTP, np=3 × 256K) is the next gate.
 
 ## Goal
 
