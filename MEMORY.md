@@ -3967,3 +3967,58 @@ shows non-invariance (Bug A). Per-slot stream means each slot's
 DeltaNet runs with all_same_seq=true on its own stream — no blocks
 path, no batch-shape divergence. Same applies to FA — each stream
 sees ne[1]=1 always.
+
+## D10.e.0.O — related-work survey, validates per-slot direction
+
+Two adjacent projects tackle Qwen 3.6 27B + MTP on consumer GPUs.
+
+### vLLM (Genesis fork by Sandermage)
+
+[github.com/Sandermage/genesis-vllm-patches] applies 20 runtime
+monkey-patches at container startup to make TurboQuant + MTP work on
+hybrid (DeltaNet + std attn) models on Ampere. Key patches:
+
+- **Patch 4**: bypasses the hybrid gate by computing boundary
+  protection ONLY over attention layers, ignoring DeltaNet layers —
+  i.e., DeltaNet is special-cased.
+- **Patches 5,6,8,9**: handle downstream bugs from the gate bypass.
+- **P65 (v7.14)**: downgrades TurboQuant's cudagraph support from
+  UNIFORM_BATCH to UNIFORM_SINGLE_TOKEN_DECODE for spec-decode
+  workloads.
+
+P65 is the single-most-relevant pointer to our work. UNIFORM_BATCH
+captures one cudagraph for all batch sizes; UNIFORM_SINGLE_TOKEN_DECODE
+captures a graph specifically for one-token-decode-per-stream and
+replays it per slot. **This is per-slot streams in vLLM
+terminology.** It's the same fix space we converged on for ik_llama.
+
+The fact that vLLM's TurboQuant team had to do this for spec-decode
+on hybrid models confirms: batch-invariant multi-slot speculative
+decoding on Qwen 3.6 (DeltaNet hybrid) is hard, and the upstream
+solution is per-slot/per-token graph replay — Patel's Option F.
+
+### Indras-Mirror llama.cpp-mtp (peer fork)
+
+[github.com/Indras-Mirror/llama.cpp-mtp]. MTP + fused TBQ4 FA + tensor
+sharing. Explicitly states "MTP requires --parallel 1; only supports
+single parallel slot." They **punted** on multi-slot. Same model, same
+hardware class, same FA kernels (mma_f16 templates) — and they did not
+solve multi-slot.
+
+So no llama.cpp peer has solved np>1 MTP on Qwen 3.6 hybrid. The vLLM
+community solution is per-slot single-token-decode mode.
+
+### Implication for our PHASE45 D10.e
+
+The architectural fix (Option F: selective per-slot) is consistent with
+production state-of-the-art for hybrid+MTP. We are not redesigning
+ahead of the field — we are catching up to vLLM's solution.
+
+### MTP architecture invariant (Indras blog)
+
+"Accept or reject happens atomically per token, and DeltaNet state
+advances exactly once per committed token" — MTP n=1..3 with
+single-step propose/verify avoids multi-step state rewind issues with
+DeltaNet recurrent layers. Our INLINE_KV path matches this invariant
+(per D9.5 — KV drift fix). So the MTP/spec-decode side is fine; the
+problem is purely the multi-slot batching dimension.
