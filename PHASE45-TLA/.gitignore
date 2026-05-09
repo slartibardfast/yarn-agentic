@@ -1,0 +1,4 @@
+# TLC working artifacts
+*_TTrace_*.tla
+*_TTrace_*.bin
+states/
