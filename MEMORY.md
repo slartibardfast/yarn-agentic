@@ -4022,3 +4022,82 @@ single-step propose/verify avoids multi-step state rewind issues with
 DeltaNet recurrent layers. Our INLINE_KV path matches this invariant
 (per D9.5 — KV drift fix). So the MTP/spec-decode side is fine; the
 problem is purely the multi-slot batching dimension.
+
+## D10.e.0.P — Phase 1 spike: Bug A is NOT topology-only
+
+Added `LLAMA_DELTA_FORCE_BLOCKS=1` env-gate that bypasses the
+`all_same_seq` fast path in `delta_net::build_layer_attn_linear` and
+forces blocks-loop dispatch always. Single-seq input becomes 1 block
+of N tokens.
+
+**Observation:** d10e0L per-layer scan with FORCE_BLOCKS=1 is
+**identical** to baseline:
+- δ(solo, M2_r0) at il=1: 1.19e-3 (unchanged)
+- δ(M2_r0, M2_r1) at il=3: 1.27e-3 (unchanged)
+- All downstream layers identical to baseline numbers
+
+Implications:
+- Single-seq blocks-path (1 block of N tokens) IS equivalent to
+  fast-path for the same input. Solo M=1 with FORCE_BLOCKS=1 produces
+  the same first8 as solo M=1 without.
+- M=2 case still differs from M=1 even with both using blocks-path.
+- Therefore Bug A is NOT pure topology divergence (fast vs blocks).
+  The mechanism is something else.
+
+Candidate mechanisms:
+1. **Within-batch ggml graph interleaving**: when 2 blocks live in
+   the same `ggml_cgraph`, the topological scheduler may interleave
+   ops across blocks. cuBLAS/MMQ workspace state evolves through
+   the interleaved sequence differently than through sequential
+   single-block execution.
+2. **Graph cache topology keyed on N**: ik_llama's graph cache key
+   may include batch dimension. M=1 (n=1) and M=2 (n=2) produce
+   distinct cached graphs with potentially different kernel choices
+   (cuBLAS algo selection, MMQ tile sizes).
+3. **Shared scratch buffer state**: ggml backend shares scratch
+   buffers across ops; sequential block-0-then-block-1 may have
+   block-0-results-still-in-scratch state that affects block-1's
+   intermediate reads. Independent state buffers (s_l[il]) but
+   shared compute scratch.
+4. **CUDA graph capture topology divergence**: even outside ik_llama's
+   own cache, CUDA's own JIT/code generation may select different
+   PTX paths for grids with N=1 vs N=2 across the wider compute graph.
+
+**Reverted FORCE_BLOCKS env var; left the gate code in place for
+future experiments.**
+
+### Design implication for selective per-slot
+
+Per-slot dispatch must be at a layer where **compute is fully
+isolated** between slots:
+- NOT just the `build_layer_attn_linear` wrapper (the graph still
+  contains both blocks' subgraphs, ggml can interleave).
+- The granularity needs to be: each slot has its OWN call to
+  `llama_decode_internal` with its OWN `ggml_cgraph`. Then ggml never
+  sees multiple slots in the same compute call.
+
+Two architecture options remain:
+
+**A. Engine-level per-slot loop** (Patel's Tier 1 v2):
+- Modify `llama_decode_internal` (or top-level dispatch): when
+  `LLAMA_BATCH_INVARIANT=multi_slot` is set AND batch has >1 seq_id,
+  split into per-seq sub-batches and call the rest of decode N times
+  sequentially.
+- Each sub-batch sees its own ggml graph, no cross-slot interleaving.
+- Cost: N× sequential graph compute. Without streams: ~N× wall time
+  for the divergent-op layers (~1.5-2.5× total slowdown).
+- Pure-Bug-A fix; Bug B (cross-row inside FA kernel for ne[1]=2 case)
+  ALSO disappears because each sub-batch has ne[1]=1 → kernel sees
+  only 1 real Q row.
+
+**B. cudagraph capture-and-replay** (Singh's path):
+- Capture single-token-decode topology on first call.
+- Per slot at decode time: rebind input pointers, replay graph.
+- ik_llama already has graph cache; this requires extending it to
+  multi-slot replay mode.
+- Theoretically same correctness as A.
+- Implementation cost higher (graph cache extension).
+- Perf cost lower (replay cheaper than rebuild).
+
+Recommend **Option A** for V1 (simpler implementation, immediate
+correctness), upgrade to Option B for V2 if perf is unacceptable.
