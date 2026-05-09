@@ -1946,3 +1946,106 @@ concentrated in extraction):
 
 D10 (multi-slot validation at np=3 × 256K + 200k-token soak) gates
 on D9 finishing.
+
+
+## 2026-05-09 — D9.9 hook-deletion attempt: REVERTED. Hook is load-bearing post-D9.5.
+
+Deleted the INLINE_KV hook (D9.9a) believing D8.4's "hook A/B" test had
+shown it was redundant within 0.5%. Reverted after measuring.
+
+**D9.9a empirical result:**
+- A_nomtp: 29.87 tg t/s
+- C_mtp_d3_ikv (hook DELETED, UPDATE_ACCEPTED always runs): 35.11 t/s
+- Ratio: **+17.5% (BELOW the +19% floor)**, accept rate 0.72
+
+Compare to the post-D9.5 hook-ON baseline (D9.x cleanup): +29.0%.
+Hook deletion costs ~11.5pp of throughput.
+
+**Why D8.4's earlier test was invalid:**
+The bench script's HOOK_AB run set `LLAMA_MTP_INLINE_KV=0`. The gating
+code reads `cparams.mtp_inline_kv_hook = (getenv("LLAMA_MTP_INLINE_KV") != nullptr)` —
+**a non-null env value (even "0") triggers hook=TRUE**. So D8.4's "E
+config" (hook ostensibly OFF) was actually hook ON. The 0.5%
+delta to "C config" was just run-to-run noise within the same
+hook-ON path. The "hook is removable" claim never had evidence.
+
+**Why the hook is load-bearing post-D9.5:**
+Pre-D9.5: each cycle had a per-accept UPDATE_ACCEPTED dispatch (1
+extra decode per accept). Hook ON folded that into the verify
+forward, saving a decode.
+
+Post-D9.5: shared cache means draft writes layer N-1 K/V at
+speculative positions, but UPDATE_ACCEPTED is still needed to
+rewrite those cells from the verify-side hidden state on accept
+(otherwise the next iteration's MTP draft seed reads draft-side
+K/V, which differs from verify and hurts accept rate). With hook
+ON, verify's forward writes layer N-1 (replacing draft's stale
+data with verify-side data); UPDATE_ACCEPTED skipped. With hook
+OFF, UPDATE_ACCEPTED runs (extra decode per cycle).
+
+D9.5's accept-rate jump (+10pp) made the hook MORE valuable, not
+less, because UPDATE_ACCEPTED scales with cycle count and accept
+events.
+
+**Corrected PHASE45.md lock:**
+The "no INLINE_KV hook needed" provisional lock that PHASE45
+inherited from PHASE39 integration is **invalidated**. The hook
+stays. PHASE45 D9.9 must NOT delete it. Re-test with a CORRECT hook
+A/B (using `unset LLAMA_MTP_INLINE_KV` rather than `=0`) at some
+future point to characterize the real overhead.
+
+**Lesson for future env-gated A/B tests:**
+`getenv() != nullptr` interprets ANY value (including "0") as
+"set". For boolean env gates this is a footgun. Use `unset VAR` to
+disable, or change the gate to `getenv() && atoi(getenv()) != 0`.
+
+The D9.9a bench data lives at data/phase45-d9.9a-hookdel-bench.out
+for forensics. The deletion was reverted via `git checkout --` on
+the touched files; tests/mtp-ubatch-hook/ restored.
+
+Tag `phase45-d9.5` remains the canonical state.
+
+
+## 2026-05-09 — D9.9 hook-deletion attempt: REVERTED. Hook is load-bearing post-D9.5.
+
+Deleted the INLINE_KV hook (D9.9a) believing D8.4's "hook A/B" test had
+shown it was redundant within 0.5%. Reverted after measuring.
+
+**D9.9a empirical result:**
+- A_nomtp: 29.87 tg t/s
+- C_mtp_d3_ikv (hook DELETED, UPDATE_ACCEPTED always runs): 35.11 t/s
+- Ratio: **+17.5% (BELOW the +19% floor)**, accept rate 0.72
+
+Compare to the post-D9.5 hook-ON baseline (D9.x cleanup): +29.0%.
+Hook deletion costs ~11.5pp of throughput.
+
+**Why D8.4's earlier test was invalid:**
+The bench script's HOOK_AB run set `LLAMA_MTP_INLINE_KV=0`. The gating
+code reads `cparams.mtp_inline_kv_hook = (getenv("LLAMA_MTP_INLINE_KV") != nullptr)` —
+**a non-null env value (even "0") triggers hook=TRUE**. So D8.4's "E
+config" (hook ostensibly OFF) was actually hook ON. The 0.5% delta to
+"C config" was just run-to-run noise within the same hook-ON path. The
+"hook is removable" claim never had evidence.
+
+**Why the hook is load-bearing post-D9.5:**
+With hook OFF, `mtp_accept_tokens` runs an UPDATE_ACCEPTED dispatch
+(an extra decode per cycle) to rewrite layer N-1 K/V from verify-side
+hidden state — otherwise the next MTP draft reads stale draft-side
+K/V which hurts accept rate. With hook ON, verify's forward writes
+layer N-1 directly, eliminating the per-accept UPDATE_ACCEPTED.
+D9.5's collapsed cache + +10pp accept-rate jump made UPDATE_ACCEPTED
+fire MORE often, so the hook's value increased, not decreased.
+
+**Corrected PHASE45.md lock:** The "no INLINE_KV hook needed" lock is
+invalidated. Hook stays. PHASE45 D9.9 must not delete it.
+
+**Lesson for env-gated A/B tests:** `getenv() != nullptr` treats ANY
+value (including "0") as set. Use `unset VAR` to disable, or change
+the gate to `getenv() && atoi(getenv()) != 0`. The hook-A/B variant
+in `scripts/bench-multiturn-pre-port.sh` (HOOK_AB=1 → E config with
+LLAMA_MTP_INLINE_KV=0) is silently broken; will need a fix to do a
+real hook-A/B in the future.
+
+D9.9a bench evidence at data/phase45-d9.9a-hookdel-bench.out.
+Deletion reverted via git checkout; tests/mtp-ubatch-hook/ restored.
+Tag `phase45-d9.5` remains the canonical state.
