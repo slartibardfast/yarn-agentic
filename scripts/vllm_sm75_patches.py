@@ -215,7 +215,7 @@ def _patch_flex_attention_block_n_pow2() -> None:
     fa.get_kernel_options = patched
     print(
         "[vllm-sm75-patch] FlexAttention.get_kernel_options: "
-        "BLOCK_M/BLOCK_N rounded UP to next POW2",
+        "BLOCK_M/BLOCK_N -> largest POW2 divisor of input",
         flush=True,
     )
 
