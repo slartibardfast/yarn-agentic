@@ -212,8 +212,73 @@ def _patch_flex_attention_block_n_pow2() -> None:
     )
 
 
+def _patch_precompute_context_kv_dtype() -> None:
+    """Cast context_states to weight dtype in precompute_and_store_context_kv.
+
+    Bug (predicted)
+    ---------------
+    Same shape as the combine_hidden_states bug — qwen3_dflash.py:409
+    `precompute_and_store_context_kv` calls:
+
+      ops.rms_norm(normed_context_states, context_states, hidden_norm_weight, eps)
+      all_kv_flat = F.linear(normed_context_states, self._fused_kv_weight, ...)
+
+    Both operations expect input dtype to match the weight dtype. On
+    sm_75 the weights are fp16 (cast from BF16 at load), but
+    context_states is `self._dflash_hidden_states` which was stashed
+    from `target_hidden_states` in set_inputs_first_pass without a
+    cast. EagleProposer's hidden-state collection path upcasts to
+    fp32. dummy_run uses synthetic fp16 buffers so it survives;
+    first real verify hits fp32 input → fp16 weight mismatch.
+
+    Fix
+    ---
+    Cast `context_states` to `self._fused_kv_weight.dtype` at the
+    function entry.
+
+    Currently inactive — enable via apply_all() if a future iteration
+    surfaces the matching crash.
+    """
+    from vllm.model_executor.models import qwen3_dflash
+
+    target_cls = None
+    for name in dir(qwen3_dflash):
+        obj = getattr(qwen3_dflash, name)
+        if isinstance(obj, type) and "precompute_and_store_context_kv" in obj.__dict__:
+            target_cls = obj
+            break
+    if target_cls is None:
+        print(
+            "[vllm-sm75-patch] precompute_and_store_context_kv: class not "
+            "found; skipping",
+            flush=True,
+        )
+        return
+
+    original = target_cls.precompute_and_store_context_kv
+
+    def patched(self, context_states, context_positions, context_slot_mapping=None):
+        # Ensure context_states is in the same dtype as the KV
+        # projection weights. The original code computes _fused_kv_buffers
+        # lazily; trigger that path if needed.
+        if not hasattr(self, "_fused_kv_weight"):
+            self._build_fused_kv_buffers()
+        target_dtype = self._fused_kv_weight.dtype
+        if context_states.dtype != target_dtype:
+            context_states = context_states.to(dtype=target_dtype)
+        return original(self, context_states, context_positions, context_slot_mapping)
+
+    target_cls.precompute_and_store_context_kv = patched
+    print(
+        f"[vllm-sm75-patch] {target_cls.__name__}."
+        "precompute_and_store_context_kv: dtype cast applied",
+        flush=True,
+    )
+
+
 def apply_all() -> None:
     """Call once at startup, before constructing an LLM instance."""
     _patch_combine_hidden_states()
     _patch_flex_attention_view_to_reshape()
     _patch_flex_attention_block_n_pow2()
+    _patch_precompute_context_kv_dtype()
