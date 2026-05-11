@@ -1,0 +1,14 @@
+[harness] mode=--slow gate_section=slow
+[harness] thresholds: accept_d3_ratio>=0.95  tg_d3_ratio>=0.85
+
+================ Phase 36 fused gate (--slow) ================
+  per-step  d=3   accept=0.62979   tg=32.58 t/s
+  fused     d=3   accept=0.43071   tg=30.32 t/s
+  ratio          accept=0.6839    tg=0.9306    effective=0.6365
+  threshold      accept>=0.95    tg>=0.85    effective>=0.95
+================================================================
+  [FAIL] accept ratio gate     (0.6839 <  0.95)
+  [PASS] tg ratio gate         (0.9306 >= 0.85)
+  [FAIL] effective ratio gate  (0.6365 <  0.95)  [BINDING]
+================================================================
+RESULT: FAIL

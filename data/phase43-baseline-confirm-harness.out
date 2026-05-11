@@ -1,0 +1,16 @@
+
+===== verify-scaling: noMTP-batch1 (mtp_args='', env='') =====
+[scaling] noMTP-batch1: tg=21.7724102738561 ntoks=256 elapsed_ms=11758 runlog=/home/llm/yarn-agentic/data/phase42-scaling-noMTP-batch1.runlog
+
+===== verify-scaling: MTP-K1-batch2 (mtp_args='-mtp --draft 1', env='') =====
+[scaling] MTP-K1-batch2: tg=21.313795687286657 ntoks=256 elapsed_ms=12011 runlog=/home/llm/yarn-agentic/data/phase42-scaling-MTP-K1-batch2.runlog
+
+===== verify-scaling: MTP-K2-batch3 (mtp_args='-mtp --draft 1', env='LLAMA_MTP_TREE_K=2') =====
+[scaling] MTP-K2-batch3: tg=15.259895088221269 ntoks=256 elapsed_ms=16776 runlog=/home/llm/yarn-agentic/data/phase42-scaling-MTP-K2-batch3.runlog
+
+===== summary =====
+
+verify cycle wall time = N_PREDICT / tg / cycle_factor
+  noMTP cycle_factor = 1.0 (1 token per cycle)
+  MTP K=1 cycle_factor ≈ 1.86 (1 + α with α≈0.86)
+  MTP K=2 cycle_factor ≈ 1.95 (1 + α_top2 with α_top2≈0.95)

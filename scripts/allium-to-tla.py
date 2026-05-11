@@ -26,7 +26,7 @@ otherwise the spec drift goes silent.
 Usage:
   allium parse spec.allium > /tmp/ast.json
   scripts/allium-to-tla.py /tmp/ast.json --module DFlashCycleGenerated \
-      > PHASE_DFLASH-TLA/DFlashCycleGenerated.tla
+      > specs/dflash/DFlashCycleGenerated.tla
 
 Or pipe:
   allium parse spec.allium | scripts/allium-to-tla.py --module FooBar

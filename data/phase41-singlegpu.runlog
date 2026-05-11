@@ -1,0 +1,5 @@
+===== K=2 single-GPU (split-mode none) =====
+[single] starting k2-singlegpu
+curl: (52) Empty reply from server
+[single] k2-singlegpu: rc=0 ntoks=0
+  log: /home/llm/yarn-agentic/data/phase41-single-k2-singlegpu.runlog

@@ -1,0 +1,280 @@
+INFO [                    main] build info | tid="139626827018240" timestamp=1778238277 build=4520 commit="5ba2a805"
+INFO [                    main] system info | tid="139626827018240" timestamp=1778238277 n_threads=16 n_threads_batch=-1 total_threads=32 system_info="AVX = 1 | AVX_VNNI = 0 | AVX2 = 1 | AVX512 = 0 | AVX512_VBMI = 0 | AVX512_VNNI = 0 | AVX512_BF16 = 0 | FMA = 1 | NEON = 0 | SVE = 0 | ARM_FMA = 0 | F16C = 1 | FP16_VA = 0 | WASM_SIMD = 0 | BLAS = 1 | SSE3 = 1 | SSSE3 = 1 | VSX = 0 | MATMUL_INT8 = 0 | "
+ggml_cuda_init: GGML_CUDA_FORCE_MMQ:    no
+ggml_cuda_init: GGML_CUDA_FORCE_CUBLAS: no
+ggml_cuda_init: found 2 CUDA devices:
+  Device 0: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24022 MiB
+  Device 1: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24019 MiB
+CUDA0: using device CUDA0 - 23826 MiB free
+CUDA1: using device CUDA1 - 23815 MiB free
+llama_model_loader: loaded meta data with 37 key-value pairs and 866 tensors from /opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+llama_model_loader: - kv   4:                      general.sampling.temp f32              = 1.000000
+llama_model_loader: - kv   5:                               general.name str              = Snapshot Fixed Template
+llama_model_loader: - kv   6:                         general.size_label str              = 27B
+llama_model_loader: - kv   7:                         qwen35.block_count u32              = 65
+llama_model_loader: - kv   8:                      qwen35.context_length u32              = 262144
+llama_model_loader: - kv   9:                    qwen35.embedding_length u32              = 5120
+llama_model_loader: - kv  10:                 qwen35.feed_forward_length u32              = 17408
+llama_model_loader: - kv  11:                qwen35.attention.head_count u32              = 24
+llama_model_loader: - kv  12:             qwen35.attention.head_count_kv u32              = 4
+llama_model_loader: - kv  13:             qwen35.rope.dimension_sections arr[i32,4]       = [11, 11, 10, 0]
+llama_model_loader: - kv  14:                      qwen35.rope.freq_base f32              = 10000000.000000
+llama_model_loader: - kv  15:    qwen35.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  16:                qwen35.attention.key_length u32              = 256
+llama_model_loader: - kv  17:              qwen35.attention.value_length u32              = 256
+llama_model_loader: - kv  18:                          general.file_type u32              = 1
+llama_model_loader: - kv  19:                     qwen35.ssm.conv_kernel u32              = 4
+llama_model_loader: - kv  20:                      qwen35.ssm.state_size u32              = 128
+llama_model_loader: - kv  21:                     qwen35.ssm.group_count u32              = 16
+llama_model_loader: - kv  22:                  qwen35.ssm.time_step_rank u32              = 48
+llama_model_loader: - kv  23:                      qwen35.ssm.inner_size u32              = 6144
+llama_model_loader: - kv  24:             qwen35.full_attention_interval u32              = 4
+llama_model_loader: - kv  25:                qwen35.rope.dimension_count u32              = 64
+llama_model_loader: - kv  26:                qwen35.nextn_predict_layers u32              = 1
+llama_model_loader: - kv  27:               general.quantization_version u32              = 2
+llama_model_loader: - kv  28:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  29:                         tokenizer.ggml.pre str              = qwen35
+llama_model_loader: - kv  30:                      tokenizer.ggml.tokens arr[str,248320]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+llama_model_loader: - kv  31:                  tokenizer.ggml.token_type arr[i32,248320]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  32:                      tokenizer.ggml.merges arr[str,247587]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+llama_model_loader: - kv  33:                tokenizer.ggml.eos_token_id u32              = 248046
+llama_model_loader: - kv  34:            tokenizer.ggml.padding_token_id u32              = 248044
+llama_model_loader: - kv  35:                tokenizer.ggml.bos_token_id u32              = 248044
+llama_model_loader: - kv  36:                    tokenizer.chat_template str              = {%- set image_count = namespace(value...
+llama_model_loader: - type  f32:  360 tensors
+llama_model_loader: - type  f16:   98 tensors
+llama_model_loader: - type q4_0:  359 tensors
+llama_model_loader: - type bf16:    1 tensors
+llama_model_loader: - type q4_0_ar16:   48 tensors
+load: 0 unused tokens
+load: printing all EOG tokens:
+load:   - 248044 ('<|endoftext|>')
+load:   - 248046 ('<|im_end|>')
+load:   - 248063 ('<|fim_pad|>')
+load:   - 248064 ('<|repo_name|>')
+load:   - 248065 ('<|file_sep|>')
+load: special tokens cache size = 33
+load: token to piece cache size = 1.7581 MB
+llm_load_print_meta: format           = GGUF V3 (latest)
+llm_load_print_meta: arch             = qwen35
+llm_load_print_meta: n_ctx_train      = 262144
+llm_load_print_meta: n_embd           = 5120
+llm_load_print_meta: n_layer          = 65
+llm_load_print_meta: n_head           = 24
+llm_load_print_meta: n_head_kv        = 4
+llm_load_print_meta: n_rot            = 64
+llm_load_print_meta: n_swa            = 0
+llm_load_print_meta: n_swa_pattern    = 1
+llm_load_print_meta: n_embd_head_k    = 256
+llm_load_print_meta: n_embd_head_v    = 256
+llm_load_print_meta: n_gqa            = 6
+llm_load_print_meta: n_embd_k_gqa     = 1024
+llm_load_print_meta: n_embd_v_gqa     = 1024
+llm_load_print_meta: f_norm_eps       = 0.0e+00
+llm_load_print_meta: f_norm_rms_eps   = 1.0e-06
+llm_load_print_meta: f_clamp_kqv      = 0.0e+00
+llm_load_print_meta: f_max_alibi_bias = 0.0e+00
+llm_load_print_meta: f_logit_scale    = 0.0e+00
+llm_load_print_meta: n_ff             = 17408
+llm_load_print_meta: n_expert         = 0
+llm_load_print_meta: n_expert_used    = 0
+llm_load_print_meta: causal attn      = 1
+llm_load_print_meta: pooling type     = 0
+llm_load_print_meta: rope type        = 40
+llm_load_print_meta: rope scaling     = linear
+llm_load_print_meta: freq_base_train  = 10000000.0
+llm_load_print_meta: freq_scale_train = 1
+llm_load_print_meta: n_ctx_orig_yarn  = 262144
+llm_load_print_meta: rope_finetuned   = unknown
+llm_load_print_meta: mrope sections   = [11, 11, 10, 0]
+llm_load_print_meta: ssm_d_conv       = 4
+llm_load_print_meta: ssm_d_inner      = 6144
+llm_load_print_meta: ssm_d_state      = 128
+llm_load_print_meta: ssm_dt_rank      = 48
+llm_load_print_meta: ssm_n_group      = 16
+llm_load_print_meta: model type       = 27B
+llm_load_print_meta: model ftype      = F16
+llm_load_print_meta: model params     = 27.321 B
+llm_load_print_meta: model size       = 17.915 GiB (5.633 BPW) 
+llm_load_print_meta: repeating layers = 13.179 GiB (4.569 BPW, 24.778 B parameters)
+llm_load_print_meta: general.name     = Snapshot Fixed Template
+print_info: vocab type            = BPE
+print_info: n_vocab               = 248320
+print_info: n_merges              = 247587
+print_info: BOS token             = 248044 '<|endoftext|>'
+print_info: EOS token             = 248046 '<|im_end|>'
+print_info: EOT token             = 248046 '<|im_end|>'
+print_info: PAD token             = 248044 '<|endoftext|>'
+print_info: LF token              = 198 'Ċ'
+print_info: FIM PRE token         = 248060 '<|fim_prefix|>'
+print_info: FIM SUF token         = 248062 '<|fim_suffix|>'
+print_info: FIM MID token         = 248061 '<|fim_middle|>'
+print_info: FIM PAD token         = 248063 '<|fim_pad|>'
+print_info: FIM REP token         = 248064 '<|repo_name|>'
+print_info: FIM SEP token         = 248065 '<|file_sep|>'
+print_info: EOG token             = 248044 '<|endoftext|>'
+print_info: EOG token             = 248046 '<|im_end|>'
+print_info: EOG token             = 248063 '<|fim_pad|>'
+print_info: EOG token             = 248064 '<|repo_name|>'
+print_info: EOG token             = 248065 '<|file_sep|>'
+print_info: max token length      = 256
+======================================= HAVE_FANCY_SIMD is NOT defined
+------------------- Layer sizes:
+Layer  0:    208.32,      3.12,    211.44       98.00  MiB
+Layer  1:    208.32,      3.12,    211.44       98.00  MiB
+Layer  2:    208.32,      3.12,    211.44       98.00  MiB
+Layer  3:    199.73,     16.00,    215.73       98.00  MiB
+Layer  4:    208.32,      3.12,    211.44       98.00  MiB
+Layer  5:    208.32,      3.12,    211.44       98.00  MiB
+Layer  6:    208.32,      3.12,    211.44       98.00  MiB
+Layer  7:    199.73,     16.00,    215.73       98.00  MiB
+Layer  8:    208.32,      3.12,    211.44       98.00  MiB
+Layer  9:    208.32,      3.12,    211.44       98.00  MiB
+Layer 10:    208.32,      3.12,    211.44       98.00  MiB
+Layer 11:    199.73,     16.00,    215.73       98.00  MiB
+Layer 12:    208.32,      3.12,    211.44       98.00  MiB
+Layer 13:    208.32,      3.12,    211.44       98.00  MiB
+Layer 14:    208.32,      3.12,    211.44       98.00  MiB
+Layer 15:    199.73,     16.00,    215.73       98.00  MiB
+Layer 16:    208.32,      3.12,    211.44       98.00  MiB
+Layer 17:    208.32,      3.12,    211.44       98.00  MiB
+Layer 18:    208.32,      3.12,    211.44       98.00  MiB
+Layer 19:    199.73,     16.00,    215.73       98.00  MiB
+Layer 20:    208.32,      3.12,    211.44       98.00  MiB
+Layer 21:    208.32,      3.12,    211.44       98.00  MiB
+Layer 22:    208.32,      3.12,    211.44       98.00  MiB
+Layer 23:    199.73,     16.00,    215.73       98.00  MiB
+Layer 24:    208.32,      3.12,    211.44       98.00  MiB
+Layer 25:    208.32,      3.12,    211.44       98.00  MiB
+Layer 26:    208.32,      3.12,    211.44       98.00  MiB
+Layer 27:    199.73,     16.00,    215.73       98.00  MiB
+Layer 28:    208.32,      3.12,    211.44       98.00  MiB
+Layer 29:    208.32,      3.12,    211.44       98.00  MiB
+Layer 30:    208.32,      3.12,    211.44       98.00  MiB
+Layer 31:    199.73,     16.00,    215.73       98.00  MiB
+Layer 32:    208.32,      3.12,    211.44       98.00  MiB
+Layer 33:    208.32,      3.12,    211.44       98.00  MiB
+Layer 34:    208.32,      3.12,    211.44       98.00  MiB
+Layer 35:    199.73,     16.00,    215.73       98.00  MiB
+Layer 36:    208.32,      3.12,    211.44       98.00  MiB
+Layer 37:    208.32,      3.12,    211.44       98.00  MiB
+Layer 38:    208.32,      3.12,    211.44       98.00  MiB
+Layer 39:    199.73,     16.00,    215.73       98.00  MiB
+Layer 40:    208.32,      3.12,    211.44       98.00  MiB
+Layer 41:    208.32,      3.12,    211.44       98.00  MiB
+Layer 42:    208.32,      3.12,    211.44       98.00  MiB
+Layer 43:    199.73,     16.00,    215.73       98.00  MiB
+Layer 44:    208.32,      3.12,    211.44       98.00  MiB
+Layer 45:    208.32,      3.12,    211.44       98.00  MiB
+Layer 46:    208.32,      3.12,    211.44       98.00  MiB
+Layer 47:    199.73,     16.00,    215.73       98.00  MiB
+Layer 48:    208.32,      3.12,    211.44       98.00  MiB
+Layer 49:    208.32,      3.12,    211.44       98.00  MiB
+Layer 50:    208.32,      3.12,    211.44       98.00  MiB
+Layer 51:    199.73,     16.00,    215.73       98.00  MiB
+Layer 52:    208.32,      3.12,    211.44       98.00  MiB
+Layer 53:    208.32,      3.12,    211.44       98.00  MiB
+Layer 54:    208.32,      3.12,    211.44       98.00  MiB
+Layer 55:    199.73,     16.00,    215.73       98.00  MiB
+Layer 56:    208.32,      3.12,    211.44       98.00  MiB
+Layer 57:    208.32,      3.12,    211.44       98.00  MiB
+Layer 58:    208.32,      3.12,    211.44       98.00  MiB
+Layer 59:    199.73,     16.00,    215.73       98.00  MiB
+Layer 60:    208.32,      3.12,    211.44       98.00  MiB
+Layer 61:    208.32,      3.12,    211.44       98.00  MiB
+Layer 62:    208.32,      3.12,    211.44       98.00  MiB
+Layer 63:    199.73,     16.00,    215.73       98.00  MiB
+Layer 64:    299.79,     16.00,    315.79       98.00  MiB
+Layer 65:   2425.00,    387.00,   2812.00 MiB (output layer)
+--------------------------------------------------------------------------
+Total   :  13494.86,    808.62,  14303.48 MiB
+Memory required for model tensors + cache: 16728 MiB
+Memory available on all devices - compute: 45399 MiB
+Setting default device in layer  0 to 0
+Setting default device in layer  1 to 0
+Setting default device in layer  2 to 0
+Setting default device in layer  3 to 0
+Setting default device in layer  4 to 0
+Setting default device in layer  5 to 0
+Setting default device in layer  6 to 0
+Setting default device in layer  7 to 0
+Setting default device in layer  8 to 0
+Setting default device in layer  9 to 0
+Setting default device in layer 10 to 0
+Setting default device in layer 11 to 0
+Setting default device in layer 12 to 0
+Setting default device in layer 13 to 0
+Setting default device in layer 14 to 0
+Setting default device in layer 15 to 0
+Setting default device in layer 16 to 0
+Setting default device in layer 17 to 0
+Setting default device in layer 18 to 0
+Setting default device in layer 19 to 0
+Setting default device in layer 20 to 0
+Setting default device in layer 21 to 0
+Setting default device in layer 22 to 0
+Setting default device in layer 23 to 0
+Setting default device in layer 24 to 0
+Setting default device in layer 25 to 0
+Setting default device in layer 26 to 0
+Setting default device in layer 27 to 0
+Setting default device in layer 28 to 0
+Setting default device in layer 29 to 0
+Setting default device in layer 30 to 0
+Setting default device in layer 31 to 0
+Setting default device in layer 32 to 0
+Setting default device in layer 33 to 0
+Setting default device in layer 34 to 0
+Setting default device in layer 35 to 0
+Setting default device in layer 36 to 0
+Setting default device in layer 37 to 0
+Setting default device in layer 38 to 0
+Setting default device in layer 39 to 1
+Setting default device in layer 40 to 1
+Setting default device in layer 41 to 1
+Setting default device in layer 42 to 1
+Setting default device in layer 43 to 1
+Setting default device in layer 44 to 1
+Setting default device in layer 45 to 1
+Setting default device in layer 46 to 1
+Setting default device in layer 47 to 1
+Setting default device in layer 48 to 1
+Setting default device in layer 49 to 1
+Setting default device in layer 50 to 1
+Setting default device in layer 51 to 1
+Setting default device in layer 52 to 1
+Setting default device in layer 53 to 1
+Setting default device in layer 54 to 1
+Setting default device in layer 55 to 1
+Setting default device in layer 56 to 1
+Setting default device in layer 57 to 1
+Setting default device in layer 58 to 1
+Setting default device in layer 59 to 1
+Setting default device in layer 60 to 1
+Setting default device in layer 61 to 1
+Setting default device in layer 62 to 1
+Setting default device in layer 63 to 1
+Setting default device in layer 64 to 1
+Setting default device in layer 65 to 1
+llm_load_tensors: ggml ctx size =    5.57 MiB
+================================ max_gpu = 0
+Estimated model buffer size per device:
+    Device 0:   6598.81 MiB
+    Device 1:   6598.81 MiB
+No tensors in buffer type CUDA0
+llm_load_tensors: offloading 65 repeating layers to GPU
+llm_load_tensors: offloading non-repeating layers to GPU
+llm_load_tensors: offloaded 66/66 layers to GPU
+llm_load_tensors:        CPU buffer size =  2425.00 MiB
+llm_load_tensors: CUDA_Split buffer size = 13198.38 MiB
+llm_load_tensors:      CUDA1 buffer size =  2724.81 MiB
+......................................................................Collecting data...
+Generating '/tmp/nsys-report-df2e.qdstrm'
+[1/1] [0%                          ] phase41-nsys-test.nsys-rep[1/1] [0%                          ] phase41-nsys-test.nsys-rep[1/1] [8%                          ] phase41-nsys-test.nsys-rep[1/1] [9%                          ] phase41-nsys-test.nsys-rep[1/1] [10%                         ] phase41-nsys-test.nsys-rep[1/1] [============55%             ] phase41-nsys-test.nsys-rep[1/1] [========================100%] phase41-nsys-test.nsys-rep[1/1] [========================100%] phase41-nsys-test.nsys-rep
+Generated:
+	/home/llm/yarn-agentic/data/phase41-nsys-test.nsys-rep

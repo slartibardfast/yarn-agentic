@@ -1,0 +1,107 @@
+=== Building with IK_PRINT_TIMING=1 ===
+-- OpenMP found
+-- Using optimized iqk matrix multiplications
+-- Enabling IQK Flash Attention kernels
+-- Including all IQK FA kernels
+-- CUDA found
+-- Using CUDA architectures: 75
+-- Could NOT find NCCL (missing: NCCL_INCLUDE_DIRS NCCL_LIBRARIES) 
+==================== NCCL NOT found -> building wihout NCCL support
+-- CUDA Toolkit: 13.2.78
+-- CUDA host compiler is GNU 15.2.1
+
+-- ccache found, compilation results will be cached. Disable with GGML_CCACHE=OFF.
+-- CMAKE_SYSTEM_PROCESSOR: x86_64
+-- x86 detected
+-- ARCH_FLAGS = -march=native
+TARGET_SRCS contains: /home/llm/yarn-agentic/ik_llama.cpp/examples/server/public/index.html.gz
+TARGET_SRCS contains: /home/llm/yarn-agentic/ik_llama.cpp/examples/server/public_llamacpp/index_llamacpp.html.gz
+TARGET_SRCS contains: /home/llm/yarn-agentic/ik_llama.cpp/examples/server/public_llamacpp/loading.html
+-- Configuring done (0.1s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/llm/yarn-agentic/ik_llama.cpp/build-profile
+ninja: no work to do.
+  build complete: /home/llm/yarn-agentic/ik_llama.cpp/build-profile/bin/llama-server
+=== Profiling mode=nomtp draft=0 ctx=4096 temp=0 prompt_id=synthetic ===
+  tg=33.26 t/s  pp=81.41 t/s  predicted_n=200
+  log: /home/llm/yarn-agentic/data/profile-step0-cycle-fused/nomtp.log
+  --- Timing summary (nomtp) ---
+  build_graph:
+    n=15 mean=898 us
+  sched_alloc_graph:
+    n=7 mean=2053 us
+  graph_compute:
+    n=219 mean=31163 us
+  set_inputs:
+    n=219 mean=137 us
+
+=== Profiling mode=mtp-d1 draft=1 ctx=4096 temp=0 prompt_id=synthetic ===
+  tg=37.91 t/s  pp=75.01 t/s  predicted_n=200
+  log: /home/llm/yarn-agentic/data/profile-step0-cycle-fused/mtp-d1.log
+  --- Timing summary (mtp-d1) ---
+  build_graph:
+    n=257 mean=877 us
+  sched_alloc_graph:
+    n=128 mean=1159 us
+  graph_compute:
+    n=244 mean=22934 us
+  set_inputs:
+    n=242 mean=2 us
+  draft_step_decode:
+    n=118 mean=5190 us
+  draft_step_emb_d2h:
+    n=118 mean=3 us
+  draft_step_hidden_h2d:
+    n=118 mean=0 us
+  --- Draft stats ---
+  statistics mtp: #calls(b,g,a) = 1 8 8, #gen drafts = 8, #acc drafts = 7, #gen tokens = 8, #acc tokens = 7, dur(b,g,a) = 0.001, 41.481, 0.003 ms
+  draft acceptance rate = 0.80909 (   89 accepted /   110 generated)
+  statistics mtp: #calls(b,g,a) = 2 118 118, #gen drafts = 118, #acc drafts = 96, #gen tokens = 118, #acc tokens = 96, dur(b,g,a) = 0.001, 615.521, 0.037 ms
+
+=== Profiling mode=mtp-d3 draft=3 ctx=4096 temp=0 prompt_id=synthetic ===
+  tg=30.21 t/s  pp=74.79 t/s  predicted_n=200
+  log: /home/llm/yarn-agentic/data/profile-step0-cycle-fused/mtp-d3.log
+  --- Timing summary (mtp-d3) ---
+  build_graph:
+    n=459 mean=740 us
+  sched_alloc_graph:
+    n=226 mean=705 us
+  graph_compute:
+    n=271 mean=25911 us
+  set_inputs:
+    n=273 mean=4 us
+  draft_step_decode:
+    n=98 mean=5389 us
+  draft_step_emb_d2h:
+    n=98 mean=3 us
+  draft_step_hidden_h2d:
+    n=98 mean=1 us
+  --- Draft stats ---
+  statistics mtp: #calls(b,g,a) = 1 9 9, #gen drafts = 9, #acc drafts = 5, #gen tokens = 21, #acc tokens = 6, dur(b,g,a) = 0.000, 117.515, 0.002 ms
+  draft acceptance rate = 0.39754 (   97 accepted /   244 generated)
+  statistics mtp: #calls(b,g,a) = 2 110 110, #gen drafts = 110, #acc drafts = 65, #gen tokens = 266, #acc tokens = 103, dur(b,g,a) = 0.000, 1453.076, 0.032 ms
+
+=== Profiling mode=mtp-d5 draft=5 ctx=4096 temp=0 prompt_id=synthetic ===
+  tg=24.32 t/s  pp=75.63 t/s  predicted_n=200
+  log: /home/llm/yarn-agentic/data/profile-step0-cycle-fused/mtp-d5.log
+  --- Timing summary (mtp-d5) ---
+  build_graph:
+    n=483 mean=646 us
+  sched_alloc_graph:
+    n=241 mean=676 us
+  graph_compute:
+    n=278 mean=31304 us
+  set_inputs:
+    n=278 mean=4 us
+  draft_step_decode:
+    n=94 mean=5463 us
+  draft_step_emb_d2h:
+    n=94 mean=3 us
+  draft_step_hidden_h2d:
+    n=94 mean=0 us
+  --- Draft stats ---
+  statistics mtp: #calls(b,g,a) = 1 9 9, #gen drafts = 9, #acc drafts = 5, #gen tokens = 31, #acc tokens = 6, dur(b,g,a) = 0.000, 171.503, 0.003 ms
+  draft acceptance rate = 0.25779 (   91 accepted /   353 generated)
+  statistics mtp: #calls(b,g,a) = 2 116 116, #gen drafts = 116, #acc drafts = 60, #gen tokens = 389, #acc tokens = 97, dur(b,g,a) = 0.001, 2111.418, 0.042 ms
+
+=== All profiles complete. Logs in /home/llm/yarn-agentic/data/profile-step0-cycle-fused/ ===

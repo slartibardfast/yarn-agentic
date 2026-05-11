@@ -1,0 +1,73 @@
+=== Building with IK_PRINT_TIMING=1 ===
+-- OpenMP found
+-- Using optimized iqk matrix multiplications
+-- Enabling IQK Flash Attention kernels
+-- Including all IQK FA kernels
+-- CUDA found
+-- Using CUDA architectures: 75
+-- Could NOT find NCCL (missing: NCCL_INCLUDE_DIRS NCCL_LIBRARIES) 
+==================== NCCL NOT found -> building wihout NCCL support
+-- CUDA Toolkit: 13.2.78
+-- CUDA host compiler is GNU 15.2.1
+
+-- ccache found, compilation results will be cached. Disable with GGML_CCACHE=OFF.
+-- CMAKE_SYSTEM_PROCESSOR: x86_64
+-- x86 detected
+-- ARCH_FLAGS = -march=native
+TARGET_SRCS contains: /home/llm/yarn-agentic/ik_llama.cpp/examples/server/public/index.html.gz
+TARGET_SRCS contains: /home/llm/yarn-agentic/ik_llama.cpp/examples/server/public_llamacpp/index_llamacpp.html.gz
+TARGET_SRCS contains: /home/llm/yarn-agentic/ik_llama.cpp/examples/server/public_llamacpp/loading.html
+-- Configuring done (0.1s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/llm/yarn-agentic/ik_llama.cpp/build-profile
+ninja: no work to do.
+  build complete: /home/llm/yarn-agentic/ik_llama.cpp/build-profile/bin/llama-server
+=== Profiling mode=nomtp draft=0 ctx=262144 temp=0 prompt_id=X02 ===
+  tg=31.28 t/s  pp=383.74 t/s  predicted_n=384
+  log: /home/llm/yarn-agentic/data/profile-step0-x02-c256k-vocab-fix-fused-final/nomtp.log
+  --- Timing summary (nomtp) ---
+  build_graph:
+    n=21 mean=905 us
+  sched_alloc_graph:
+    n=10 mean=1930 us
+  graph_compute:
+    n=404 mean=36948 us
+  set_inputs:
+    n=404 mean=93 us
+
+=== Profiling mode=mtp-d1 draft=1 ctx=262144 temp=0 prompt_id=X02 ===
+  tg=34.45 t/s  pp=306.08 t/s  predicted_n=384
+  log: /home/llm/yarn-agentic/data/profile-step0-x02-c256k-vocab-fix-fused-final/mtp-d1.log
+  --- Timing summary (mtp-d1) ---
+  build_graph:
+    n=470 mean=952 us
+  sched_alloc_graph:
+    n=234 mean=1384 us
+  graph_compute:
+    n=453 mean=28079 us
+  set_inputs:
+    n=453 mean=21 us
+  draft_step_decode:
+    n=220 mean=5338 us
+  draft_step_emb_d2h:
+    n=220 mean=2 us
+  draft_step_hidden_h2d:
+    n=220 mean=1 us
+  --- Draft stats ---
+  statistics mtp: #calls(b,g,a) = 1 8 8, #gen drafts = 8, #acc drafts = 7, #gen tokens = 8, #acc tokens = 7, dur(b,g,a) = 0.000, 52.589, 0.003 ms
+  draft acceptance rate = 0.80189 (  170 accepted /   212 generated)
+  statistics mtp: #calls(b,g,a) = 2 220 220, #gen drafts = 220, #acc drafts = 177, #gen tokens = 220, #acc tokens = 177, dur(b,g,a) = 0.001, 1479.446, 0.055 ms
+
+=== Profiling mode=mtp-d3 draft=3 ctx=262144 temp=0 prompt_id=X02 ===
+  tg=34.30 t/s  pp=303.14 t/s  predicted_n=384
+  log: /home/llm/yarn-agentic/data/profile-step0-x02-c256k-vocab-fix-fused-final/mtp-d3.log
+  --- Timing summary (mtp-d3) ---
+  build_graph:
+    n=649 mean=557 us
+  sched_alloc_graph:
+    n=323 mean=912 us
+  graph_compute:
+    n=322 mean=40980 us
+  set_inputs:
+    n=324 mean=33 us
+  draft_step_decode:

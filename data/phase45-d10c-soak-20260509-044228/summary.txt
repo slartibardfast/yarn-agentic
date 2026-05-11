@@ -1,0 +1,18 @@
+==== bench-multislot.sh ====
+OUTDIR=/home/llm/yarn-agentic/data/phase45-d10c-soak-20260509-044228
+PROFILE=/home/llm/profiles/qwen36-27b-x3-mtp.sh
+N_PARALLEL=3
+TARGET_TOKENS_PER_SLOT=200000
+RSS_FAIL_GIB=32
+PORT=18181
+----
+server healthy after 11s
+spawned slot=0 pid=259337
+spawned slot=1 pid=259340
+spawned slot=2 pid=259344
+----
+PER-SLOT RESULTS:
+  slot=0 DID NOT FINISH ()
+  slot=1 DID NOT FINISH ()
+  slot=2 DID NOT FINISH ()
+PEAK_RSS_GIB=10.56

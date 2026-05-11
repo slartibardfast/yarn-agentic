@@ -12,7 +12,7 @@ slots (multi-slot). Not a message-passing protocol.
 
 Primary sources for the model:
 
-- Allium spec `yarn-agentic/dflash_speculative.allium` — 6 contracts,
+- Allium spec `specs/dflash/dflash.allium` — 6 contracts,
   34 invariants, 13 entities. The contracts are the speculative
   cycle actions; the invariants are the safety properties to verify.
 - vLLM PR #40898 source at `/opt/models/refs/vllm-pr-40898/` and

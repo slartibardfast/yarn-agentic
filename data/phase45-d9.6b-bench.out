@@ -1,0 +1,57 @@
+=== bench-multiturn-pre-port ===
+  binary: /home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-server
+  model:  /opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf
+  ctx:    262144
+  corpus: /home/llm/yarn-agentic/scripts/agentic-multiturn-corpus.json
+  runs:   2
+
+Submodule HEAD: 382265b8
+Submodule branch: phase45-decompose
+
+=== A_nomtp : -no-mtp  ===
+  server failed to start (A_nomtp) — last 20 lines of log:
+    llama_init_from_model: grouped er    = 0
+    llama_init_from_model: fused_up_gate = 1
+    llama_init_from_model: fused_mmad    = 1
+    llama_init_from_model: rope_cache    = 0
+    llama_init_from_model: graph_reuse   = 1
+    llama_init_from_model: k_cache_hadam = 1
+    llama_init_from_model: v_cache_hadam = 1
+    llama_init_from_model: split_mode_graph_scheduling = 0
+    llama_init_from_model: reduce_type   = f16
+    llama_init_from_model: sched_async   = 0
+    llama_init_from_model: ser           = -1, 0
+    llama_init_from_model: freq_base     = 10000000.0
+    llama_init_from_model: freq_scale    = 1
+     =========================== ggml_cuda_set_peer_access: Enabling Peer Access between Devices 0->1
+     =========================== ggml_cuda_set_peer_access: Enabling Peer Access between Devices 1->0
+    llama_kv_cache_init: CUDA_Split KV buffer size =  4469.63 MiB
+    llama_kv_cache_init:      CUDA1 KV buffer size =   576.00 MiB
+    llama_kv_cache_init: KV cache size per device:
+    llama_init_from_model: KV self size  = 4608.00 MiB, K (q4_0): 2304.00 MiB, V (q4_0): 2304.00 MiB
+    llama_init_from_model:  CUDA_Host  output buffer size =     0.95 MiB
+/home/llm/yarn-agentic/scripts/bench-multiturn-pre-port.sh: line 170: 219322 Segmentation fault         (core dumped) env $extra_env "$BIN" -m "$MODEL" --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 -ngl 999 -fa on $mtp_flag --ctx-size 262144 --parallel 1 --threads 16 --batch-size 2048 --ubatch-size 512 --cache-type-k q4_0 --cache-type-v q4_0 --k-cache-hadamard --v-cache-hadamard --no-context-shift --jinja --chat-template-file "$TEMPLATE" --metrics --port "$PORT" --host 127.0.0.1 > "$logfile" 2>&1
+=== C_mtp_d3_ikv : -mtp --draft 3 LLAMA_MTP_INLINE_KV=1 ===
+  server failed to start (C_mtp_d3_ikv) — last 20 lines of log:
+    llama_init_from_model: grouped er    = 0
+    llama_init_from_model: fused_up_gate = 1
+    llama_init_from_model: fused_mmad    = 1
+    llama_init_from_model: rope_cache    = 0
+    llama_init_from_model: graph_reuse   = 1
+    llama_init_from_model: k_cache_hadam = 1
+    llama_init_from_model: v_cache_hadam = 1
+    llama_init_from_model: split_mode_graph_scheduling = 0
+    llama_init_from_model: reduce_type   = f16
+    llama_init_from_model: sched_async   = 0
+    llama_init_from_model: ser           = -1, 0
+    llama_init_from_model: freq_base     = 10000000.0
+    llama_init_from_model: freq_scale    = 1
+     =========================== ggml_cuda_set_peer_access: Enabling Peer Access between Devices 0->1
+     =========================== ggml_cuda_set_peer_access: Enabling Peer Access between Devices 1->0
+    llama_kv_cache_init: CUDA_Split KV buffer size =  4757.63 MiB
+    llama_kv_cache_init:      CUDA1 KV buffer size =   288.00 MiB
+    llama_kv_cache_init: KV cache size per device:
+    llama_init_from_model: KV self size  = 4896.00 MiB, K (q4_0): 2448.00 MiB, V (q4_0): 2448.00 MiB
+    llama_init_from_model:  CUDA_Host  output buffer size =     0.97 MiB
+/home/llm/yarn-agentic/scripts/bench-multiturn-pre-port.sh: line 171: 219926 Segmentation fault         (core dumped) env $extra_env "$BIN" -m "$MODEL" --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 -ngl 999 -fa on $mtp_flag --ctx-size 262144 --parallel 1 --threads 16 --batch-size 2048 --ubatch-size 512 --cache-type-k q4_0 --cache-type-v q4_0 --k-cache-hadamard --v-cache-hadamard --no-context-shift --jinja --chat-template-file "$TEMPLATE" --metrics --port "$PORT" --host 127.0.0.1 > "$logfile" 2>&1
+done

@@ -1,0 +1,24 @@
+Submodule HEAD: 973300f8
+Submodule branch: phase36-mtp-throughput
+Prompt: X02 (len=5237, n_predict=64)
+
+=== nsys profile A_nomtp : -no-mtp  ===
+  tg=26.63 t/s pp=352.17 predicted_n=64
+  trace: /home/llm/yarn-agentic/data/nsys-graphcache/A_nomtp/trace.nsys-rep
+
+=== nsys profile B_mtp_d1_ikv : -mtp --draft 1 LLAMA_MTP_INLINE_KV=1 ===
+  tg=32.77 t/s pp=283.69 predicted_n=64
+  draft acceptance: 0.77143
+  trace: /home/llm/yarn-agentic/data/nsys-graphcache/B_mtp_d1_ikv/trace.nsys-rep
+
+=== nsys profile C_mtp_d3_ikv : -mtp --draft 3 LLAMA_MTP_INLINE_KV=1 ===
+  tg=35.83 t/s pp=285.30 predicted_n=64
+  draft acceptance: 0.64912
+  trace: /home/llm/yarn-agentic/data/nsys-graphcache/C_mtp_d3_ikv/trace.nsys-rep
+
+=== nsys profile D_mtp_d3_ikv_fused_minprob : -mtp --draft 3 LLAMA_MTP_INLINE_KV=1 LLAMA_MTP_FUSED=1 LLAMA_MTP_CHAIN_MIN_PROB=0.5 ===
+  tg=34.44 t/s pp=282.96 predicted_n=64
+  draft acceptance: 0.67273
+  trace: /home/llm/yarn-agentic/data/nsys-graphcache/D_mtp_d3_ikv_fused_minprob/trace.nsys-rep
+
+done. traces in: /home/llm/yarn-agentic/data/nsys-graphcache
