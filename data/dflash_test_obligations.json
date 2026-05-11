@@ -8,7 +8,7 @@
       "source_construct": "Tensor",
       "source_span": {
         "start": 3968,
-        "end": 4011
+        "end": 4002
       },
       "detail": {
         "fields": [
@@ -22,8 +22,8 @@
       "description": "Verify all declared fields on TargetModel are present with correct types",
       "source_construct": "TargetModel",
       "source_span": {
-        "start": 4339,
-        "end": 4732
+        "start": 4330,
+        "end": 4714
       },
       "detail": {
         "fields": [
@@ -43,8 +43,8 @@
       "description": "Verify all declared fields on DraftModel are present with correct types",
       "source_construct": "DraftModel",
       "source_span": {
-        "start": 5325,
-        "end": 5829
+        "start": 5307,
+        "end": 5802
       },
       "detail": {
         "fields": [
@@ -63,8 +63,8 @@
       "description": "Verify all declared fields on DraftBlock are present with correct types",
       "source_construct": "DraftBlock",
       "source_span": {
-        "start": 6050,
-        "end": 6279
+        "start": 6023,
+        "end": 6243
       },
       "detail": {
         "fields": [
@@ -80,8 +80,8 @@
       "description": "Verify all declared fields on HiddenFeatures are present with correct types",
       "source_construct": "HiddenFeatures",
       "source_span": {
-        "start": 6586,
-        "end": 6927
+        "start": 6550,
+        "end": 6882
       },
       "detail": {
         "fields": [
@@ -98,8 +98,8 @@
       "description": "Verify all declared fields on InjectedKV are present with correct types",
       "source_construct": "InjectedKV",
       "source_span": {
-        "start": 7231,
-        "end": 7415
+        "start": 7186,
+        "end": 7361
       },
       "detail": {
         "fields": [
@@ -114,8 +114,8 @@
       "description": "Verify all declared fields on KVPair are present with correct types",
       "source_construct": "KVPair",
       "source_span": {
-        "start": 7650,
-        "end": 7824
+        "start": 7596,
+        "end": 7761
       },
       "detail": {
         "fields": [
@@ -132,8 +132,8 @@
       "description": "Verify all declared fields on AnchorToken are present with correct types",
       "source_construct": "AnchorToken",
       "source_span": {
-        "start": 7948,
-        "end": 8083
+        "start": 7885,
+        "end": 8011
       },
       "detail": {
         "fields": [
@@ -148,8 +148,8 @@
       "description": "Verify all declared fields on TargetKVCache are present with correct types",
       "source_construct": "TargetKVCache",
       "source_span": {
-        "start": 8236,
-        "end": 8392
+        "start": 8164,
+        "end": 8311
       },
       "detail": {
         "fields": [
@@ -164,8 +164,8 @@
       "description": "Verify all declared fields on DraftKVCache are present with correct types",
       "source_construct": "DraftKVCache",
       "source_span": {
-        "start": 8638,
-        "end": 8849
+        "start": 8557,
+        "end": 8759
       },
       "detail": {
         "fields": [
@@ -181,8 +181,8 @@
       "description": "Verify all declared fields on VerifyBatch are present with correct types",
       "source_construct": "VerifyBatch",
       "source_span": {
-        "start": 9127,
-        "end": 9340
+        "start": 9037,
+        "end": 9241
       },
       "detail": {
         "fields": [
@@ -199,8 +199,8 @@
       "description": "Verify all declared fields on VerifyLogits are present with correct types",
       "source_construct": "VerifyLogits",
       "source_span": {
-        "start": 9409,
-        "end": 9535
+        "start": 9310,
+        "end": 9427
       },
       "detail": {
         "fields": [
@@ -215,8 +215,8 @@
       "description": "Verify all declared fields on AcceptDecision are present with correct types",
       "source_construct": "AcceptDecision",
       "source_span": {
-        "start": 9871,
-        "end": 10051
+        "start": 9763,
+        "end": 9934
       },
       "detail": {
         "fields": [
@@ -232,8 +232,8 @@
       "description": "Verify fields typed with enum SamplerMode are comparable",
       "source_construct": "SamplerMode",
       "source_span": {
-        "start": 10424,
-        "end": 10467
+        "start": 10307,
+        "end": 10350
       }
     },
     {
@@ -242,8 +242,8 @@
       "description": "Verify fields typed with enum AcceptMode are comparable",
       "source_construct": "AcceptMode",
       "source_span": {
-        "start": 10726,
-        "end": 10774
+        "start": 10609,
+        "end": 10657
       }
     },
     {
@@ -252,8 +252,8 @@
       "description": "Verify fields typed with enum DenoiseSchedule are comparable",
       "source_construct": "DenoiseSchedule",
       "source_span": {
-        "start": 11046,
-        "end": 11095
+        "start": 10929,
+        "end": 10978
       }
     },
     {
@@ -262,8 +262,8 @@
       "description": "Verify fields typed with enum FeatureSource are comparable",
       "source_construct": "FeatureSource",
       "source_span": {
-        "start": 11465,
-        "end": 11529
+        "start": 11348,
+        "end": 11412
       }
     },
     {
@@ -272,8 +272,8 @@
       "description": "Verify fields typed with enum DrafterLayerType are comparable",
       "source_construct": "DrafterLayerType",
       "source_span": {
-        "start": 11711,
-        "end": 11771
+        "start": 11594,
+        "end": 11654
       }
     },
     {
@@ -282,8 +282,8 @@
       "description": "Verify implementation satisfies contract ExtractFeatures.invoke",
       "source_construct": "ExtractFeatures.invoke",
       "source_span": {
-        "start": 12191,
-        "end": 12282
+        "start": 12074,
+        "end": 12165
       }
     },
     {
@@ -292,8 +292,8 @@
       "description": "Verify implementation satisfies contract ProjectAndFuse.invoke",
       "source_construct": "ProjectAndFuse.invoke",
       "source_span": {
-        "start": 13524,
-        "end": 13591
+        "start": 13407,
+        "end": 13474
       }
     },
     {
@@ -302,8 +302,8 @@
       "description": "Verify implementation satisfies contract DraftBlockEmit.invoke",
       "source_construct": "DraftBlockEmit.invoke",
       "source_span": {
-        "start": 16567,
-        "end": 16778
+        "start": 16450,
+        "end": 16661
       }
     },
     {
@@ -312,8 +312,8 @@
       "description": "Verify implementation satisfies contract TargetVerifyBlock.invoke",
       "source_construct": "TargetVerifyBlock.invoke",
       "source_span": {
-        "start": 22135,
-        "end": 22285
+        "start": 22018,
+        "end": 22168
       }
     },
     {
@@ -322,8 +322,8 @@
       "description": "Verify implementation satisfies contract AcceptPrefixDecision.invoke",
       "source_construct": "AcceptPrefixDecision.invoke",
       "source_span": {
-        "start": 26221,
-        "end": 26367
+        "start": 26104,
+        "end": 26250
       }
     },
     {
@@ -332,8 +332,8 @@
       "description": "Verify implementation satisfies contract AdvanceState.invoke",
       "source_construct": "AdvanceState.invoke",
       "source_span": {
-        "start": 29376,
-        "end": 29533
+        "start": 29259,
+        "end": 29416
       }
     },
     {
@@ -343,8 +343,8 @@
       "source_construct": "SharedEmbedAndLMHead",
       "expression": "}",
       "source_span": {
-        "start": 31830,
-        "end": 32121
+        "start": 31713,
+        "end": 32004
       }
     },
     {
@@ -354,8 +354,8 @@
       "source_construct": "FeatureSourceFixedPerDeployment",
       "expression": "}",
       "source_span": {
-        "start": 32309,
-        "end": 32464
+        "start": 32192,
+        "end": 32347
       }
     },
     {
@@ -365,8 +365,8 @@
       "source_construct": "BlockSizeFixedAtContextStart",
       "expression": "}",
       "source_span": {
-        "start": 32815,
-        "end": 33380
+        "start": 32698,
+        "end": 33263
       }
     },
     {
@@ -376,8 +376,8 @@
       "source_construct": "PerDeploymentDeterminism",
       "expression": "}",
       "source_span": {
-        "start": 33810,
-        "end": 34146
+        "start": 33693,
+        "end": 34029
       }
     },
     {
@@ -387,8 +387,8 @@
       "source_construct": "SpeculativeCycleAtomicity",
       "expression": "}",
       "source_span": {
-        "start": 34473,
-        "end": 34691
+        "start": 34356,
+        "end": 34574
       }
     },
     {
@@ -398,8 +398,8 @@
       "source_construct": "DraftKVViaInjectionNotCrossAttention",
       "expression": "}",
       "source_span": {
-        "start": 35091,
-        "end": 36076
+        "start": 34974,
+        "end": 35959
       }
     },
     {
@@ -409,8 +409,8 @@
       "source_construct": "PerSlotDraftKVCache",
       "expression": "}",
       "source_span": {
-        "start": 36286,
-        "end": 36927
+        "start": 36169,
+        "end": 36810
       }
     },
     {
@@ -420,8 +420,8 @@
       "source_construct": "HybridTargetRecurrentStateTracking",
       "expression": "}",
       "source_span": {
-        "start": 37675,
-        "end": 38737
+        "start": 37558,
+        "end": 38620
       }
     },
     {
@@ -431,8 +431,8 @@
       "source_construct": "DPAttentionNotSupported",
       "expression": "}",
       "source_span": {
-        "start": 38949,
-        "end": 39359
+        "start": 38832,
+        "end": 39242
       }
     },
     {
@@ -442,8 +442,8 @@
       "source_construct": "PipelineParallelismRequiresPpSizeEq1",
       "expression": "}",
       "source_span": {
-        "start": 39361,
-        "end": 39750
+        "start": 39244,
+        "end": 39633
       }
     },
     {
@@ -453,8 +453,8 @@
       "source_construct": "ContextBudgetAtNp8",
       "expression": "}",
       "source_span": {
-        "start": 40063,
-        "end": 40730
+        "start": 39946,
+        "end": 40613
       }
     },
     {
@@ -464,8 +464,8 @@
       "source_construct": "DrafterIsDenseQwen3",
       "expression": "}",
       "source_span": {
-        "start": 41040,
-        "end": 41246
+        "start": 40923,
+        "end": 41129
       }
     },
     {
@@ -475,8 +475,8 @@
       "source_construct": "DrafterTargetVocabIdentity",
       "expression": "}",
       "source_span": {
-        "start": 41512,
-        "end": 41741
+        "start": 41395,
+        "end": 41624
       }
     },
     {
@@ -486,8 +486,8 @@
       "source_construct": "MultimodalTurnsRoutedAroundDrafter",
       "expression": "}",
       "source_span": {
-        "start": 42547,
-        "end": 43090
+        "start": 42430,
+        "end": 42973
       }
     },
     {
@@ -497,8 +497,8 @@
       "source_construct": "SourceLayerCountMatchesDrafterTraining",
       "expression": "}",
       "source_span": {
-        "start": 43491,
-        "end": 43775
+        "start": 43374,
+        "end": 43658
       }
     },
     {
@@ -508,8 +508,8 @@
       "source_construct": "TargetLayerIdsPlusOneAtRuntime",
       "expression": "}",
       "source_span": {
-        "start": 44213,
-        "end": 44554
+        "start": 44096,
+        "end": 44437
       }
     },
     {
@@ -519,8 +519,8 @@
       "source_construct": "NoTreeDraftingNoChainRollout",
       "expression": "}",
       "source_span": {
-        "start": 44762,
-        "end": 44887
+        "start": 44645,
+        "end": 44770
       }
     }
   ]

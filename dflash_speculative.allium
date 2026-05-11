@@ -76,7 +76,7 @@
 -- A ggml tensor flowing through the speculative path. We
 -- reference only its existence as a typed reference; ggml manages
 -- shape and dtype.
-external entity Tensor {
+entity Tensor {
     name: String
 }
 
@@ -85,7 +85,7 @@ external entity Tensor {
 -- in 3:1 ratio), 64 layers, hidden 5120, 24 Q heads, 4 KV heads,
 -- vocab 248320, n_ctx_train 262144. The spec references only the
 -- properties the speculative path actually touches.
-external entity TargetModel {
+entity TargetModel {
     n_layers:         Integer    -- 64 for Qwen3.6-27B
     hidden_size:      Integer    -- 5120
     n_kv_heads:       Integer    -- 4 (GQA ratio 6 with 24 Q heads)
@@ -104,7 +104,7 @@ external entity TargetModel {
 -- Reuses the target's embedding and LM head (paper §4.2). The
 -- drafter's K/V projection inputs are augmented at every layer by
 -- the InjectedKV produced from ProjectAndFuse (see below).
-external entity DraftModel {
+entity DraftModel {
     n_layers:         Integer
     hidden_size:      Integer    -- must equal TargetModel.hidden_size for shared embed/LM head
     n_kv_heads:       Integer
@@ -117,7 +117,7 @@ external entity DraftModel {
 -- in one forward pass. Block size is configurable (default 16, vLLM
 -- uses 15). Position k in the block predicts the token at
 -- anchor_pos + k + 1.
-external entity DraftBlock {
+entity DraftBlock {
     block_size:       Integer   -- N; default 16
     tokens:           List<Integer>   -- length N, in step order
     anchor_pos:       Integer   -- position of the anchor token in target's sequence
@@ -128,7 +128,7 @@ external entity DraftBlock {
 -- layers (uniformly sampled across depth) and fused into a single
 -- compact representation via a lightweight learned projection that
 -- ships with the drafter weights.
-external entity HiddenFeatures {
+entity HiddenFeatures {
     n_source_layers:  Integer   -- size of the layer subset target was probed at
     source_indices:   List<Integer>   -- which target layer indices were sampled
     hidden_size:      Integer   -- target's hidden_size
@@ -140,7 +140,7 @@ external entity HiddenFeatures {
 -- emits a (K, V) pair to inject into every draft layer's attention
 -- block. Stored in the draft KV cache for re-use across drafting
 -- steps of the same anchor.
-external entity InjectedKV {
+entity InjectedKV {
     per_draft_layer:  List<KVPair>   -- length = DraftModel.n_layers
     anchor_pos:       Integer        -- one InjectedKV is associated with one anchor
 }
@@ -149,7 +149,7 @@ external entity InjectedKV {
 -- cache slot reserved for "fused-feature" content; coexists with
 -- the draft's normal autoregressive K/V history at the anchor and
 -- earlier accepted positions.
-external entity KVPair {
+entity KVPair {
     k_dim_per_head:   Integer
     v_dim_per_head:   Integer
     n_kv_heads:       Integer
@@ -158,7 +158,7 @@ external entity KVPair {
 
 -- The last verified token at which the next draft block is
 -- conditioned. Anchors advance only when the target accepts.
-external entity AnchorToken {
+entity AnchorToken {
     token_id:         Integer
     pos:              Integer   -- absolute position in target's sequence
 }
@@ -166,7 +166,7 @@ external entity AnchorToken {
 -- The target's KV cache state. Single-slot in our production
 -- (np=1) deployment. Advances only by the AcceptPrefix length per
 -- speculative cycle.
-external entity TargetKVCache {
+entity TargetKVCache {
     seq_id:           Integer   -- always 0 in np=1
     n_cells:          Integer   -- = anchor_pos + 1 after each advance
 }
@@ -175,7 +175,7 @@ external entity TargetKVCache {
 -- current anchor's fused features and (b) the drafter's own
 -- autoregressive K/V history at the anchor and previously accepted
 -- positions. Advances paired with TargetKVCache.
-external entity DraftKVCache {
+entity DraftKVCache {
     seq_id:           Integer
     n_cells_self:     Integer   -- drafter's own KV at accepted positions
     n_cells_injected: Integer   -- injected KV slots (1 per active anchor)
@@ -186,7 +186,7 @@ external entity DraftKVCache {
 -- tokens, all in one contiguous run. The target emits one logit
 -- row per input position; row k predicts the token at
 -- anchor_pos + k + 1.
-external entity VerifyBatch {
+entity VerifyBatch {
     seq_id:           Integer
     anchor_pos:       Integer
     block_size:       Integer
@@ -194,7 +194,7 @@ external entity VerifyBatch {
 }
 
 -- The per-position logits the target emits over the verify batch.
-external entity VerifyLogits {
+entity VerifyLogits {
     n_positions:      Integer   -- = VerifyBatch.block_size + 1
     n_vocab:          Integer
 }
@@ -205,7 +205,7 @@ external entity VerifyLogits {
 -- sample) at the position immediately after the last accepted
 -- draft, always committed regardless of how many drafts were
 -- accepted.
-external entity AcceptDecision {
+entity AcceptDecision {
     n_accepted:       Integer   -- 0 .. block_size
     bonus_token:      Integer
     bonus_pos:        Integer   -- = anchor_pos + n_accepted + 1
