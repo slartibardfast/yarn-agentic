@@ -9,8 +9,8 @@
 (* Source: specs/dflash/dflash.allium top-level + in-contract @invariants.    *)
 (*                                                                            *)
 (* Bug families (modeling-brief §2) verified here:                            *)
-(*   A — Rejection-propagation chain breaks       BugAFamilyActive            *)
-(*   C — Anchor-pos misalignment between block + anchor    BugCFamilyActive   *)
+(*   A — Rejection-propagation chain breaks       RejectionDropped            *)
+(*   C — Anchor-pos misalignment between block + anchor    AnchorDrift   *)
 (*                                                                            *)
 (* (B and D are multi-slot — phase 2.)                                        *)
 (*                                                                            *)
@@ -25,13 +25,13 @@ EXTENDS Integers, Sequences, FiniteSets, TLC
 CONSTANTS
     MaxStep,             \* TLC bound on cycle counter
     BlockSize,           \* From Allium DraftBlock.block_size (16 for Qwen3.6-27B-DFlash)
-    BugAFamilyActive,    \* Inject Family A bug at AdvanceState
-    BugCFamilyActive     \* Inject Family C bug at DraftBlockEmit
+    RejectionDropped,    \* Inject Family A bug at AdvanceState
+    AnchorDrift     \* Inject Family C bug at DraftBlockEmit
 
 ASSUME MaxStep   \in Nat /\ MaxStep   > 0
 ASSUME BlockSize \in Nat /\ BlockSize > 0
-ASSUME BugAFamilyActive \in BOOLEAN
-ASSUME BugCFamilyActive \in BOOLEAN
+ASSUME RejectionDropped \in BOOLEAN
+ASSUME AnchorDrift \in BOOLEAN
 
 PCValues == { "draft", "verify", "accept", "advance" }
 NoBlock  == [present |-> FALSE, anchor_pos |-> 0, n_tokens |-> 0]
@@ -95,7 +95,7 @@ DraftBlockEmit ==
     /\ step < MaxStep
     /\ LET correct_p == anchor_pos
            buggy_p   == anchor_pos + 1
-           emit_p    == IF BugCFamilyActive THEN buggy_p ELSE correct_p
+           emit_p    == IF AnchorDrift THEN buggy_p ELSE correct_p
        IN  in_flight_block' =
               [ present    |-> TRUE,
                 anchor_pos |-> emit_p,
@@ -140,7 +140,7 @@ AdvanceState ==
            n_rej_new   == BlockSize - n_acc
            correct_c   == n_rej_new
            buggy_c     == 0
-           carry       == IF BugAFamilyActive THEN buggy_c ELSE correct_c
+           carry       == IF RejectionDropped THEN buggy_c ELSE correct_c
        IN
        /\ target_kv_n_cells'         = target_kv_n_cells + n_acc + 1
        /\ draft_kv_self_n_cells'     = draft_kv_self_n_cells + n_acc
@@ -230,19 +230,28 @@ AnchorPosPreserved ==
 NAcceptedWithinBound ==
     last_n_accepted \in 0..BlockSize
 
+\* Transition invariant: meaningful in the accept->advance window, when
+\* bonus_pos has just been computed and the block is still in flight.
+\* After AdvanceState clears the block we let it hold trivially.
 BonusPosIsAnchorPlusNAcceptedPlusOne ==
-    \/ last_bonus_pos = 0
-    \/ (in_flight_block.present /\
-        last_bonus_pos = in_flight_block.anchor_pos + last_n_accepted + 1)
+    pc = "advance" =>
+        /\ in_flight_block.present
+        /\ last_bonus_pos = in_flight_block.anchor_pos + last_n_accepted + 1
 
 NumRejectedTokensFlowsBackToProposer ==
     (pc = "draft" /\ step > 0) =>
         n_rejected_prev = BlockSize - last_n_accepted
 
+\* Transition invariant: meaningful in the post-TargetVerifyBlock window
+\* (pc in {accept, advance}) when verify_*_seen reflect the just-completed
+\* verify AND n_rejected_prev still holds the value used to compute them.
+\* After AdvanceState, n_rejected_prev refreshes for the NEXT cycle; the
+\* old verify values are stale and the relation holds trivially.
 EffectiveSeqLensSubtractsRejected ==
-    /\ verify_seq_lens_seen >= verify_effective_seen
-    /\ (verify_seq_lens_seen > 0 =>
-            verify_effective_seen = verify_seq_lens_seen - n_rejected_prev)
+    pc \in { "accept", "advance" } =>
+        /\ verify_seq_lens_seen >= verify_effective_seen
+        /\ (verify_seq_lens_seen > 0 =>
+                verify_effective_seen = verify_seq_lens_seen - n_rejected_prev)
 
 TargetKVAdvancesByAcceptedPlusBonus ==
     LET R[i \in 0..Len(accept_history)] ==

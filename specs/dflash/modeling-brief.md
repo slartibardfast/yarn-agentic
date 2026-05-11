@@ -79,7 +79,7 @@ positions reflect garbage state.
 **Modeled as**: state variable `n_rejected_prev` updated only in
 `AdvanceState`, consumed only in the *next* `TargetVerifyBlock`'s
 preconditions and effective_seq_lens computation. Bug-injection
-flag `BugAFamilyActive` lets one branch model the "drop the rejected
+flag `RejectionDropped` lets one branch model the "drop the rejected
 count" failure (clear `n_rejected_prev` after AdvanceState instead
 of preserving it for the next cycle).
 
@@ -143,7 +143,7 @@ HiddenFeatures.position and InjectedKV.anchor_pos).
 **Modeled as**: state variable `anchor_pos` per slot (single-slot
 phase: scalar). Each action that produces a `block` records the
 anchor_pos it was emitted at; downstream actions check equality.
-Bug-injection flag `BugCFamilyActive` allows one branch to set
+Bug-injection flag `AnchorDrift` allows one branch to set
 `block.anchor_pos = anchor.pos + 1` (off-by-one drift). The
 invariant is then violated reproducibly.
 
@@ -288,10 +288,10 @@ Claims that should hold or fail predictably under TLC:
 
 ### §6.1 Should HOLD (safety property + correct fix)
 
-- **F1**: With `BugAFamilyActive = FALSE`, `RejectionFlowsForward`
+- **F1**: With `RejectionDropped = FALSE`, `RejectionFlowsForward`
   and `EffectiveSeqLensCorrect` are inductive invariants. TLC
   finds no counterexample in `DFlashCycle.tla`.
-- **F2**: With `BugCFamilyActive = FALSE`,
+- **F2**: With `AnchorDrift = FALSE`,
   `AnchorPosPreservedThroughCycle` holds inductively.
 - **F3**: With `DispatchMode = "PerSlot"`, `PerSlotDispatchOnly`
   holds at every state in `DFlashMultiSlot.tla`. TLC explores
@@ -302,11 +302,11 @@ Claims that should hold or fail predictably under TLC:
 
 ### §6.2 Should FAIL (negative controls)
 
-- **N1**: With `BugAFamilyActive = TRUE` (clear n_rejected_prev at
+- **N1**: With `RejectionDropped = TRUE` (clear n_rejected_prev at
   AdvanceState instead of preserving), `EffectiveSeqLensCorrect`
   fails — TLC produces a counterexample where the next cycle's
   TargetVerifyBlock pre-condition is violated.
-- **N2**: With `BugCFamilyActive = TRUE` (anchor_pos drift),
+- **N2**: With `AnchorDrift = TRUE` (anchor_pos drift),
   `AnchorPosPreservedThroughCycle` fails.
 - **N3**: With `DispatchMode = "SingleGrid"`, `PerSlotDispatch-
   Only` fails. Counterexample: a state where `batch_seqs_history`
