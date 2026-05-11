@@ -85,7 +85,9 @@ What we explicitly do NOT take from upstream's PR #22105:
        │  input = [anchor_token, MASK, MASK, …, MASK]            │
        │  positions = [anchor_pos, +1, +2, …, +block_size-1]     │
        │                                                         │
-       │  self-attention with causal SWA mask, window = W        │
+       │  self-attention, layer-type-dependent mask:             │
+       │    sliding layers: causal SWA, window = 2048            │
+       │    full layer    : bidirectional (non-causal)           │
        │  K/V at anchor_pos come from prewritten cache slots     │
        │  K/V at anchor_pos+k for k≥1 are computed from MASK     │
        │                                                         │
@@ -125,10 +127,11 @@ For ik_llama.cpp on branch `production/2026-q2-next`. Numbers are rough estimate
 ## 5. Where we differ from each reference impl on hot details
 
 ### Block-emit mask
-- **vLLM:** non-causal in the drafter (`use_non_causal=True`).
-- **SGLang:** plain causal (`custom_mask=None`).
-- **Upstream llama.cpp:** no mask (full attention, every position attends to all).
-- **Us:** **causal SWA** with window from drafter GGUF metadata. The trained model has causal SWA layers per the HF model card; SGLang's causal choice matches the trained model. vLLM's non-causal choice may exploit something specific to their trainer; without access to z-lab's training code we default to "match the trained mask" = causal SWA.
+- **vLLM:** layer-type-dependent. sliding_attention layers get `causal=True` (causal SWA); full_attention layers get `causal=False` (bidirectional). Asserted at `vllm/v1/spec_decode/dflash.py:435-444`.
+- **SGLang:** `custom_mask=None` defaults to causal across all layers — does NOT match the trained drafter's full_attention layer.
+- **Upstream llama.cpp:** no mask (full attention, every position attends to all) — wrong for the SWA layers.
+- **z-lab transformers reference:** `is_causal=False` on the drafter forward (`dflash/model.py`), enabling the trained model's internal layer-type-dependent masking.
+- **Us:** **layer-type-dependent**, matching vLLM. For Qwen3.6-27B-DFlash specifically: layers 0–3 causal-SWA window=2048, layer 4 bidirectional. Read per-layer from drafter GGUF metadata (`dflash.layer_types`). The block-diffusion bidirectional mixing happens at layer 4 — that's where every mask position attends to every other mask position in the block.
 
 ### Sampling at draft step
 - **vLLM:** sampler config.
