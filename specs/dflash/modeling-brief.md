@@ -21,9 +21,9 @@ Primary sources for the model:
   `vllm/model_executor/models/qwen3_dflash.py` (703 lines).
 - DFlash paper arXiv:2602.06036 §4.1 (block-diffusion training), §4.2
   (mask conventions), §5.4.4 (block-size generalisation).
-- PHASE45 TLA work at `PHASE45-TLA/StreamFix.tla` for multi-slot
+- Prior multi-slot TLA work at `specs/multislot/StreamFix.tla` for
   concurrent dispatch primitives (cudaStream lifecycle, in-flight-
-  region tracking) — directly reused here.
+  region tracking) — directly reused here. Originally PHASE45 D10.e.
 
 The goal is multi-slot from the start. Single-slot bug families
 (A, C) establish the cycle structure; multi-slot families (B, D)
