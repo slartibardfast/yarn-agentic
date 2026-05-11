@@ -190,18 +190,26 @@ def _patch_flex_attention_block_n_pow2() -> None:
 
     original = fa.get_kernel_options
 
-    def next_pow2(n: int) -> int:
-        if n <= 1:
+    def largest_pow2_divisor(n: int) -> int:
+        """Largest power of 2 that divides n. For n=864 = 2^5 * 27 -> 32."""
+        if n <= 0:
             return 1
-        return 1 << (n - 1).bit_length()
+        # bit trick: n & -n = lowest set bit = largest pow2 divisor
+        return n & -n
 
-    def patched(*args, **kwargs):
-        opts = original(*args, **kwargs)
-        for key in ("BLOCK_M", "BLOCK_N"):
-            if key in opts and isinstance(opts[key], int):
-                pow2 = next_pow2(opts[key])
-                if pow2 != opts[key]:
-                    opts[key] = pow2
+    def patched(query, block_m, block_n, use_direct_build):
+        # The kernel needs BLOCK_M/BLOCK_N to be (a) POW2 (Triton tl.arange
+        # constraint) AND (b) divisor of the logical block_m/block_n (so
+        # the kernel grid lines up with the block mask). The intersection
+        # is "largest POW2 that divides the input". For typical block_n
+        # like 864 (=32*27), that's 32.
+        opts = original(query, block_m, block_n, use_direct_build)
+        if "BLOCK_M" in opts and isinstance(opts["BLOCK_M"], int):
+            pow2_m = largest_pow2_divisor(block_m if use_direct_build else opts["BLOCK_M"])
+            opts["BLOCK_M"] = max(1, pow2_m)
+        if "BLOCK_N" in opts and isinstance(opts["BLOCK_N"], int):
+            pow2_n = largest_pow2_divisor(block_n if use_direct_build else opts["BLOCK_N"])
+            opts["BLOCK_N"] = max(1, pow2_n)
         return opts
 
     fa.get_kernel_options = patched
