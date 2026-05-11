@@ -71,6 +71,10 @@ os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR",  "/opt/models/cache/torch-induc
 os.environ.setdefault("FLASHINFER_WORKSPACE_BASE","/opt/models/cache/flashinfer")
 os.environ.setdefault("VLLM_LOGGING_LEVEL",       "WARNING")
 
+sys.path.insert(0, "/home/llm/yarn-agentic/scripts")
+import vllm_sm75_patches
+vllm_sm75_patches.apply_all()
+
 
 def run_pass(spec_enabled: bool, label: str) -> dict:
     from vllm import LLM, SamplingParams
