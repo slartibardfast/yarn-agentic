@@ -155,7 +155,7 @@ For ik_llama.cpp on branch `production/2026-q2-next`. Numbers are rough estimate
 - **vLLM:** default 16, configurable.
 - **SGLang:** default 16, configurable.
 - **Upstream:** GGUF metadata, default 16.
-- **Us:** **GGUF metadata default 16, CLI override `--dflash-block-size N`**. Start with **block_size=8** for first measurement to keep verify shape (`ne[1]=9`) in a kernel-batch shape we know is byte-deterministic on sm_75 (per PHASE5 unit tests at `nh=24, nh_kv=4, ne[1] ∈ {2, 4, 8}`). Move to 16 after the determinism property is rebound at the larger shape.
+- **Us:** **block_size=16 from the start, matching the trained model.** GGUF metadata is the source of truth; CLI override `--dflash-block-size N` exists for experimentation but defaults to whatever the drafter declared (16 for Qwen3.6-27B-DFlash). Earlier plan was to start at 8 for kernel-determinism safety, but the drafter was trained at 16 — running at 8 means the drafter sees a mask pattern it never saw in training, and acceptance is unpredictable. Better to absorb the verify-shape (`ne[1]=17`) uncertainty as a Gate-5 binding test than to mis-match training. If Gate-5 shows non-determinism at `ne[1]=17`, that becomes a kernel-side problem to solve, not a parameter to dodge.
 
 ### Multi-slot
 - **vLLM:** supports through standard speculative path.
