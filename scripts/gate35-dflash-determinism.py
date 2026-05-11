@@ -53,11 +53,16 @@ MAX_TOKENS = 96
 NUM_SPECULATIVE_TOKENS = 15
 SEED = 42
 
-# Route caches off /
-os.environ.setdefault("HF_HOME", "/mnt/archive/hf-cache")
-os.environ.setdefault("VLLM_CACHE_ROOT", "/opt/vllm-runtime-cache")
-os.environ.setdefault("TMPDIR", "/opt/tmp")
-os.environ.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
+# Route ALL caches off / — pinned via both env vars AND symlinks in
+# /home/llm/.cache/*. The host's / partition runs at 95+% steady-state;
+# any cache that defaults to $HOME/.cache/ will fill /.
+os.environ.setdefault("HF_HOME",                  "/mnt/archive/hf-cache")
+os.environ.setdefault("TMPDIR",                   "/opt/models/tmp")
+os.environ.setdefault("VLLM_CACHE_ROOT",          "/opt/models/cache/vllm")
+os.environ.setdefault("TRITON_CACHE_DIR",         "/opt/models/cache/triton")
+os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR",  "/opt/models/cache/torch-inductor")
+os.environ.setdefault("FLASHINFER_WORKSPACE_BASE","/opt/models/cache/flashinfer")
+os.environ.setdefault("VLLM_LOGGING_LEVEL",       "WARNING")
 
 
 def main() -> int:
