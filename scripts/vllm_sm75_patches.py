@@ -289,4 +289,11 @@ def apply_all() -> None:
     _patch_combine_hidden_states()
     _patch_flex_attention_view_to_reshape()
     _patch_flex_attention_block_n_pow2()
-    _patch_precompute_context_kv_dtype()
+    # _patch_precompute_context_kv_dtype()  # DISABLED:
+    #   The outer ForCausalLM class has no _build_fused_kv_buffers
+    #   (only the inner Qwen3DFlashModel does). The patched method
+    #   crashes on 'self._build_fused_kv_buffers' lookup. Patch 1
+    #   (combine_hidden_states cast) already prevents the dtype
+    #   mismatch upstream in the pipeline — context_states arrives
+    #   already-cast. Leaving the function body intact for reference
+    #   in case the upstream pipeline changes.
