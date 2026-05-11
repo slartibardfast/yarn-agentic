@@ -362,6 +362,28 @@ contract DraftBlockEmit {
         -- exactly one forward. For multi_step, K forwards where
         -- K is the schedule length; out of scope for the current
         -- spec.
+        --
+        -- Provenance: vllm dflash.py:319 dummy_run docstring
+        --   "Only one forward pass due to parallel drafting"
+
+    @invariant QuerySpanIsOnePlusN
+        -- The drafter forward's query span per request is exactly
+        -- (1 + block_size) positions: 1 anchor at position 0 plus
+        -- block_size mask-token positions at positions 1..N. This
+        -- is the input shape vLLM's
+        -- copy_and_expand_dflash_inputs_kernel writes — it places
+        -- next_token_ids[i] at out_input_ids[i*(1+N)] (the anchor)
+        -- and parallel_drafting_token_id at the remaining N
+        -- positions of slot i's query span.
+        --
+        -- Implementations that emit the anchor outside the query
+        -- span, or use a different per-request shape, diverge from
+        -- the trained drafter and cannot share weights with vLLM's
+        -- impl.
+        --
+        -- Provenance: vllm dflash.py:217 (num_query_per_req =
+        --   1 + self.num_speculative_tokens), :246-275 (kernel
+        --   call site), :246 in copy_and_expand_dflash_inputs_kernel.
 
     @invariant InjectionConsumedAtEveryLayer
         -- The forward consumes injected.per_draft_layer[i] at
@@ -498,6 +520,26 @@ contract TargetVerifyBlock {
         -- surface (cf. multi-slot determinism investigation memory
         -- entry); per-deployment with fixed block_size, runs are
         -- bit-stable.
+
+    @invariant EffectiveSeqLensSubtractsRejected
+        -- In padded-batch mode, cad.seq_lens includes positions
+        -- corresponding to rejected tokens from the previous
+        -- accept step (those positions still exist in the slot
+        -- block table even though their KV must be overwritten).
+        -- Before attention runs on the verify batch, the impl
+        -- MUST compute:
+        --   effective_seq_lens = cad.seq_lens - num_rejected_tokens
+        -- and pass effective_seq_lens (not raw cad.seq_lens) into
+        -- the attention metadata.
+        --
+        -- Otherwise the attention sees stale rejected-suffix
+        -- positions as live context and the verify logits drift
+        -- arbitrarily from the trained model's expectations.
+        --
+        -- Provenance: vllm dflash.py:283-287 explicit calc
+        --   "In padded mode, cad.seq_lens includes rejected tokens.
+        --    Subtract them so attention only sees the valid prefix
+        --    of context states."
 }
 
 -- Decides how many drafts to accept and what bonus token to commit,
@@ -543,6 +585,29 @@ contract AcceptPrefixDecision {
         -- 2026-q2-next implementation. Greedy-only at first
         -- landing; expand once the greedy path is shipped and
         -- measured.
+
+    @invariant NumRejectedTokensFlowsBackToProposer
+        -- After AcceptPrefixDecision returns AcceptDecision, the
+        -- value (block.block_size - decision.n_accepted) is the
+        -- number of rejected drafts. This count MUST be passed
+        -- forward into the next DraftBlockEmit cycle's input
+        -- preparation as num_rejected_tokens, so that:
+        --   (1) draft KV slots corresponding to rejected positions
+        --       are overwritten rather than treated as live context,
+        --   (2) effective_seq_lens in the next verify can subtract
+        --       the rejected count (see
+        --       EffectiveSeqLensSubtractsRejected),
+        --   (3) the anchor for the next cycle is the bonus token at
+        --       block.anchor_pos + decision.n_accepted + 1 (see
+        --       BonusPosIsAnchorPlusNAcceptedPlusOne).
+        --
+        -- Implementations that drop the rejected-count between
+        -- cycles produce subtly wrong attention as soon as a
+        -- non-full accept occurs.
+        --
+        -- Provenance: vllm dflash.py:211 (num_rejected_tokens_gpu
+        --   parameter of set_inputs_first_pass), :262 (passed into
+        --   kernel call), :286 (used to compute effective_seq_lens).
 }
 
 -- Advances target and draft KV caches by the accepted prefix +
