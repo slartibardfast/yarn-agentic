@@ -288,6 +288,22 @@ contract ExtractFeatures {
 contract ProjectAndFuse {
     invoke: (features: HiddenFeatures, draft: DraftModel) -> InjectedKV
 
+    @invariant FuseProjectionFcWeight
+        -- The drafter weights include a learned linear `fc` of shape
+        -- (num_target_layers * hidden_size, hidden_size) — 5*5120 →
+        -- 5120 for Qwen3.6-27B-DFlash. This `fc` is applied FIRST,
+        -- after concatenating the 5 target hidden states channel-wise
+        -- and BEFORE any K/V projection. Without this `fc` the
+        -- injected K/V is garbage even if every other tensor is
+        -- correct. vLLM names this `model.fc` and invokes it via
+        -- `combine_hidden_states` (qwen3_dflash.py:656).
+        --
+        -- ik_llama.cpp must load `fc` from the drafter GGUF as a
+        -- regular weight; conversion must surface it with the
+        -- correct shape and dtype (BF16 for z-lab/Qwen3.6-27B-DFlash).
+        -- The shared embedding/lm_head are reused from the target
+        -- (per SharedEmbedAndLMHead) but `fc` is drafter-exclusive.
+
     @invariant PerLayerArity
         -- Length of InjectedKV.per_draft_layer = draft.n_layers.
         -- Every draft layer receives a K/V injection.
@@ -298,6 +314,19 @@ contract ProjectAndFuse {
         --   draft.n_kv_heads (or whatever the drafter's loaded
         --   weights declare). The projection respects the drafter's
         --   declared head shape; it does not rebroadcast.
+
+    @invariant KAsymmetricallyNormedVNot
+        -- vLLM precompute_and_store_context_kv (qwen3_dflash.py:441-
+        -- 468) shows K and V are treated asymmetrically:
+        --   - Both K and V come from one fused KV-projection GEMM
+        --     across all 5 drafter layers, applied to the fc-projected
+        --     context state pre-RMSNorm'd by hidden_norm.
+        --   - K is then per-layer K-normed (each layer's own k_norm
+        --     weight).
+        --   - V is NOT normed — only projected.
+        --   - K is RoPE'd; V is NOT RoPE'd.
+        -- Matches Qwen3 transformer architecture (q_norm + k_norm,
+        -- no v_norm; standard RoPE on Q+K, not V).
 
     @invariant InjectedAnchorAlignment
         -- InjectedKV.anchor_pos = features.position (the position
