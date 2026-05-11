@@ -154,7 +154,66 @@ def _patch_flex_attention_view_to_reshape() -> None:
     )
 
 
+def _patch_flex_attention_block_n_pow2() -> None:
+    """Force FlexAttention BLOCK_M/BLOCK_N to powers of 2.
+
+    Bug
+    ---
+    `vllm/v1/attention/backends/flex_attention.py::get_kernel_options`
+    computes `BLOCK_M` and `BLOCK_N` for the Triton kernel. When
+    `attn_metadata.direct_build` is True (which it is for DFlash's
+    KV-cache layout) the function passes `block_n` straight through
+    from `attn_metadata.block_mask.BLOCK_SIZE`, which can be non-POW2.
+    Triton then rejects:
+
+      offs_n = kv_start + tl.arange(0, BLOCK_N)
+      arange's range must be a power of 2
+
+    Fix
+    ---
+    Wrap `get_kernel_options` and round `BLOCK_M` / `BLOCK_N` UP to
+    the next power of 2 before returning. Larger-than-needed is fine
+    (just rounds query coords up); the kernel internally masks oob
+    positions.
+    """
+    import math
+
+    from vllm.v1.attention.backends import flex_attention as fa
+
+    if not hasattr(fa, "get_kernel_options"):
+        print(
+            "[vllm-sm75-patch] flex_attention: get_kernel_options "
+            "not found; skipping",
+            flush=True,
+        )
+        return
+
+    original = fa.get_kernel_options
+
+    def next_pow2(n: int) -> int:
+        if n <= 1:
+            return 1
+        return 1 << (n - 1).bit_length()
+
+    def patched(*args, **kwargs):
+        opts = original(*args, **kwargs)
+        for key in ("BLOCK_M", "BLOCK_N"):
+            if key in opts and isinstance(opts[key], int):
+                pow2 = next_pow2(opts[key])
+                if pow2 != opts[key]:
+                    opts[key] = pow2
+        return opts
+
+    fa.get_kernel_options = patched
+    print(
+        "[vllm-sm75-patch] FlexAttention.get_kernel_options: "
+        "BLOCK_M/BLOCK_N rounded UP to next POW2",
+        flush=True,
+    )
+
+
 def apply_all() -> None:
     """Call once at startup, before constructing an LLM instance."""
     _patch_combine_hidden_states()
     _patch_flex_attention_view_to_reshape()
+    _patch_flex_attention_block_n_pow2()
