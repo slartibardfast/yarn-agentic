@@ -435,6 +435,27 @@ contract TargetVerifyBlock {
         -- completes; the net mutation is exactly the accepted
         -- prefix.
 
+    @invariant PerSlotVerifyDispatchAtMultiSlot
+        -- At n_parallel > 1, the verify forward is dispatched
+        -- per-slot (|B|=1 in every transformer compute call), NOT
+        -- as a single batched forward over all slots. Each slot's
+        -- verify runs on its own contiguous (anchor + block_size)
+        -- positions, producing its own VerifyLogits independently.
+        --
+        -- Rationale: the PHASE45 D10.e investigation
+        -- (project_mtp_multislot_determinism_investigation_failed
+        -- memory entry) could not pin down whether the
+        -- multi-slot-batched-verify divergence on Qwen 3.6 27B was
+        -- on-target-MTP-specific or a general target property. Until
+        -- empirical resolution of OQ-DFLASH-INHERITS-MTP-MULTISLOT-BUG,
+        -- per-slot verify is the only path with byte-deterministic
+        -- output across slots.
+        --
+        -- Batched verify (single forward over (1+block_size)*n_parallel
+        -- positions) is a Gate-7+ perf optimization, conditional on
+        -- the empirical result coming back GREEN. Until then, per-slot
+        -- dispatch is the only supported path.
+
     @invariant DeterminismPerDeployment
         -- Two TargetVerifyBlock invocations with byte-identical
         -- (target, block, target_kv, anchor) produce byte-identical
@@ -599,6 +620,67 @@ invariant SpeculativeCycleAtomicity {
     -- KV writes, no half-committed bonus tokens.
 }
 
+-- The drafter is implemented via KV-injection, not via T5-style
+-- cross-attention. Per-anchor target features are projected through
+-- the drafter's per-layer wk/wv weights and written to the drafter's
+-- own K/V cache; the drafter then runs plain self-attention against
+-- that cache. The encoder/decoder dual-context pattern used by
+-- upstream llama.cpp PR #22105 is explicitly rejected here.
+invariant DraftKVViaInjectionNotCrossAttention {
+    -- Rationale (see PHASE_DFLASH_DESIGN.md §"Core decision"):
+    --   - Cross-attention has graph-reuse=0 cost (cross.n_enc grows
+    --     monotonically; the encoder graph rebuilds every step).
+    --     Upstream PR #22105's own "Future Performance Work"
+    --     flags this as the dominant cost.
+    --   - At our context scales (np=8 × ctx=64k), cross-attention
+    --     storage is ~10x what KV-injection requires
+    --     (5 source layers × 5120 hidden × 2 bytes per anchor =
+    --     10 KiB per commit × 64k commits × 8 slots = 5 GiB;
+    --     KV-injection stores ~0.7 GiB at the same configuration).
+    --   - KV-injection produces a stable drafter forward shape
+    --     across cycles, CUDA-graph-cache-friendly.
+    -- The implementation enforces this at the architecture-handler
+    -- level: dflash arch builds a self-attention drafter graph with
+    -- its own KV cache, not an encoder-decoder pair.
+}
+
+-- The drafter holds n_parallel sets of K/V cache slots, one per
+-- active sequence. Each slot's cache is independently keyed by
+-- its seq_id and contains the K/V derived from that slot's anchor
+-- history.
+invariant PerSlotDraftKVCache {
+    -- DraftKVCache.seq_id partitions storage. Multi-slot serving
+    -- with shared drafter cache slots is forbidden — that would
+    -- re-introduce cross-slot KV pollution analogous to what the
+    -- D10.e investigation could not rule out for target KV.
+    -- Each per-slot drafter K/V cache is sized:
+    --   - SWA layers: window_size cells per slot (independent of ctx)
+    --   - full-attention layer: ctx-per-slot cells per slot
+    -- For Qwen3.6-27B-DFlash (4 SWA + 1 full, window=2048),
+    -- per-slot KV is dominated by the full-attention layer and
+    -- scales linearly with ctx-per-slot.
+}
+
+-- Memory budget at multi-slot must fit the host hardware. Production
+-- 2× Quadro RTX 6000 has 48 GiB aggregate VRAM. Target weights,
+-- drafter weights, target KV (scales with np × ctx-per-slot for
+-- full-attention layers), drafter KV (mostly window-bounded),
+-- and compute scratch all share this budget.
+invariant ContextBudgetAtNp8 {
+    -- For Qwen3.6-27B target on 2× RTX 6000 at n_parallel = 8:
+    --   - Target weights (Q-loose / IQ4_KS): ~28 GiB
+    --   - Drafter weights (BF16): ~3.5 GiB
+    --   - Target KV (16 full-attention layers × KV per slot):
+    --     dominant scaling cost
+    --   - Drafter KV: ~10% of target KV at every scale
+    --   - Compute + sched + NCCL: ~3 GiB
+    -- This bounds ctx-per-slot ≤ ~64k at np=8 with q4_0+hadamard
+    -- KV; ctx=128k requires np≤4; ctx=256k requires np≤2 (and even
+    -- np=2 at 256k is tight).
+    -- The production profile for np=8 must declare
+    -- max-model-len ≤ 65536 to stay within budget.
+}
+
 -- The drafter is architecturally dense Qwen3 (not hybrid). vLLM
 -- enforces this at load (`_DFLASH_VALID_LAYER_TYPES = {full_attention,
 -- sliding_attention}` in `qwen3_dflash.py:55`). We bind the same
@@ -702,7 +784,9 @@ open question "OQ-BLOCK-SIZE-MISMATCH-AT-INFERENCE [RESOLVED 2026-05-11 by decid
 
 open question "OQ-THINK-MODE-EQUIVALENT: the upstream PR records LLAMA_SPEC_NO_THINK as a significant accept-rate lever for Qwen3-family targets. Our production server uses a Jinja chat template; the equivalent control on this stack is whether the prompt enables the thinking sentinel. PHASE_DFLASH_DESIGN.md commits to a new CLI flag --dflash-think on|off with default off matching upstream's measurement."
 
-open question "OQ-MULTI-SLOT: this spec is np=1 only. Adding np>1 reintroduces the multi-slot determinism surface captured in project_mtp_multislot_determinism_investigation_failed memory entry, where production-shape kernels are byte-deterministic in isolation yet np>1 same-prompt diverges. DFlash adds nothing that solves that surface and may amplify it. np=1 stays the only supported configuration until that underlying determinism gap closes."
+open question "OQ-MULTI-SLOT [REVISED 2026-05-11]: design supports n_parallel up to 8 from day one via per-slot dispatch (see PerSlotVerifyDispatchAtMultiSlot, PerSlotDraftKVCache, ContextBudgetAtNp8). The PHASE45 D10.e investigation could not pin down whether the multi-slot determinism gap was on-target-MTP-specific or a general target property — DFlash uses zero on-target MTP code, so the empirical test (OQ-DFLASH-INHERITS-MTP-MULTISLOT-BUG) is meaningful and cheap. Per-slot dispatch is the correctness baseline. Batched verify (single forward over (1+block_size)*n_parallel positions, reusing the multi-slot batched amortization that the abandoned MTP per-slot work also wanted) becomes a Gate-7+ optimization conditional on that empirical result coming back GREEN."
+
+open question "OQ-DFLASH-INHERITS-MTP-MULTISLOT-BUG: when DFlash is run at n_parallel > 1 with same-prompt across slots and greedy decode, do the slot outputs match byte-for-byte? The MTP investigation could not determine whether the np>1 divergence was specific to the on-target MTP head's dispatch or a general property of the target's multi-slot path. DFlash uses zero on-target MTP code (external drafter), so a positive (GREEN) result here means DFlash dodges the MTP-era bug — and batched verify at np>1 becomes safe to ship. A negative (RED) result means the bug is in the target's general multi-slot path and DFlash inherits it; per-slot dispatch is the only safe ceiling. Resolved at Gate-3.5 by running same-prompt np=2 against the upstream vLLM PR #40898 build with z-lab/Qwen3.6-27B-DFlash drafter."
 
 open question "OQ-VLLM-PR-MERGE-RISK: the reference impls (vLLM PR #40898, SGLang PR #23000, upstream llama.cpp PR #22105) are all draft. PHASE_DFLASH_DESIGN.md commits to anchoring on the published paper plus our design, not on upstream's PR; upstream PR is reference only and may pivot without affecting our work."
 

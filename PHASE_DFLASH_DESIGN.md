@@ -158,10 +158,23 @@ For ik_llama.cpp on branch `production/2026-q2-next`. Numbers are rough estimate
 - **Us:** **block_size=16 from the start, matching the trained model.** GGUF metadata is the source of truth; CLI override `--dflash-block-size N` exists for experimentation but defaults to whatever the drafter declared (16 for Qwen3.6-27B-DFlash). Earlier plan was to start at 8 for kernel-determinism safety, but the drafter was trained at 16 — running at 8 means the drafter sees a mask pattern it never saw in training, and acceptance is unpredictable. Better to absorb the verify-shape (`ne[1]=17`) uncertainty as a Gate-5 binding test than to mis-match training. If Gate-5 shows non-determinism at `ne[1]=17`, that becomes a kernel-side problem to solve, not a parameter to dodge.
 
 ### Multi-slot
-- **vLLM:** supports through standard speculative path.
-- **SGLang:** supports.
-- **Upstream:** **hard gated to np=1**.
-- **Us:** **hard gated to np=1.** The multi-slot determinism bug captured in `project_mtp_multislot_determinism_investigation_failed` memory entry is orthogonal to DFlash. DFlash on np>1 would amplify the same surface (more positions per verify batch). np=1 only.
+- **vLLM:** supports through standard speculative path (batched verify).
+- **SGLang:** supports (batched verify, with `--mamba-scheduler-strategy extra_buffer` for hybrid targets).
+- **Upstream llama.cpp:** hard gated to np=1.
+- **Us:** **support np up to 8 from day one via per-slot dispatch.** The PHASE45 D10.e MTP investigation never determined whether the np>1 same-prompt divergence was specific to the on-target MTP head or a general property of the target's multi-slot path. DFlash uses zero on-target MTP code — that test (`OQ-DFLASH-INHERITS-MTP-MULTISLOT-BUG`) becomes meaningful and cheap to run at Gate-3.5. **Per-slot dispatch is correctness-deterministic by construction** (|B|=1 in every verify), at the cost of losing batched amortization. If Gate-3.5 comes back GREEN (DFlash dodges the bug), batched verify at np>1 becomes a Gate-7+ optimization.
+
+### VRAM budget at np=8
+
+Production 2× Quadro RTX 6000 = 48 GiB aggregate. Drafter K/V (4 SWA layers cap at window=2048, 1 full layer scales with ctx) is ~10% of target K/V at every scale; the binding cost is **target K/V**.
+
+| ctx/slot | Target KV @ np=8 | Drafter KV @ np=8 | Total (with 28 GiB target + 3.5 GiB drafter + 3 GiB scratch) | Fits |
+|---|---|---|---|---|
+| 256k | ~36 GiB | ~2.7 GiB | ~73 GiB | ✗ |
+| 128k | ~18 GiB | ~1.4 GiB | ~54 GiB | ✗ |
+| **64k** | **~9 GiB** | **~0.7 GiB** | **~44 GiB** | ✓ |
+| 32k | ~4.6 GiB | ~0.4 GiB | ~39 GiB | ✓ |
+
+**Production profile target for np=8: ctx-per-slot ≤ 64k.** This is the binding constraint, not a perf knob. Spec invariant `ContextBudgetAtNp8` codifies it.
 
 ### Determinism guarantees
 - **vLLM:** silent.
@@ -222,14 +235,33 @@ Plumb `common_speculative_dflash_*` into `examples/speculative-simple`. Run the 
 
 Token cost: 30-50k.
 
-### Gate 5 — 27B determinism
+### Gate 3.5 — DFlash multi-slot empirical test (vLLM)
 
-Run the determinism fixture (`scripts/test-mtp-multislot-determinism.sh` adapted to DFlash) at np=1 on Qwen3.6-27B + Qwen3.6-27B-DFlash. Compare to non-DFlash np=1 production baseline for byte-equivalence after a fixed-temperature greedy run.
+Cheap experiment run as soon as the vLLM PR #40898 build is operational. Same prompt at np=2 with greedy decode against `Qwen/Qwen3.6-27B` target + `z-lab/Qwen3.6-27B-DFlash` drafter. Compare slot outputs byte-for-byte. **This single experiment disambiguates whether the MTP-era multi-slot determinism bug is on-target-MTP-specific or a general target property.**
 
-- **PASS:** Within-deployment byte-identical across 3 runs with same prompt + fixed block_size.
-- **FAIL:** Variance across runs. Diagnose (likely DFlash KV cache state isn't fully deterministic across cycles — check anchor advance, slot eviction).
+- **GREEN (slot outputs match byte-for-byte):** DFlash dodges the bug. Batched verify at np>1 becomes safe to ship → Gate-7 unlocks. Per-slot dispatch becomes a fallback / measurement baseline.
+- **RED (slot outputs diverge):** DFlash inherits the bug. **Per-slot dispatch is the permanent ceiling** for our implementation; batched verify is permanently gated unless someone solves the target-side multi-slot determinism question that PHASE45 D10.e failed to close.
+
+Token cost: 5-10k once vLLM is operational. Critical-path: every other np>1 design decision depends on this outcome.
+
+### Gate 5 — 27B determinism (np=1 single-slot)
+
+Run the determinism fixture (`scripts/test-mtp-multislot-determinism.sh` adapted to DFlash) at np=1 on Qwen3.6-27B + Qwen3.6-27B-DFlash. Compare to non-DFlash np=1 production baseline for byte-equivalence after a fixed-temperature greedy run. **Also bind FA kernel determinism at ne[1]=17 (verify shape with block_size=16) on sm_75** — this is the kernel-shape question the earlier block-size decision deferred to this gate.
+
+- **PASS:** Within-deployment byte-identical across 3 runs with same prompt + fixed block_size; FA at ne[1]=17 byte-deterministic across 3 runs.
+- **FAIL on output determinism:** Diagnose (likely DFlash KV cache state isn't fully deterministic across cycles — check anchor advance, slot eviction).
+- **FAIL on ne[1]=17 FA determinism:** specialize the FA dispatcher for this shape, or extend the kernel-determinism test matrix. Block-size stays at 16; do not fall back to 8 (would mis-match training).
 
 Token cost: 10-20k.
+
+### Gate 7 — Batched verify at np>1 (conditional on Gate 3.5 GREEN)
+
+Open only if Gate 3.5 came back GREEN. Restructure the per-slot verify dispatch to batched verify (single target forward over `(1 + block_size) * n_parallel` positions per cycle). Re-bind determinism at the new verify shape (ne[1] up to 17*8 = 136 at np=8).
+
+- **PASS:** byte-identical outputs across slots match per-slot dispatch baseline; aggregate throughput jumps by ~4-8×.
+- **FAIL:** revert to per-slot dispatch; document why the empirical test missed the actual failure mode; reassess.
+
+Token cost: 30-50k. Pure perf optimization; correctness baseline is per-slot dispatch.
 
 ### Gate 6 — Qwen3.6-27B speedup
 
