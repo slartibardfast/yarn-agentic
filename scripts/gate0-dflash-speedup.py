@@ -76,7 +76,7 @@ def run_pass(spec_enabled: bool, label: str) -> dict:
     init_kwargs = dict(
         model=TARGET_DIR,
         tensor_parallel_size=2,
-        dtype="bfloat16",
+        dtype="float16",             # sm_75 has no BF16
         gpu_memory_utilization=0.92,
         cpu_offload_gb=12,
         enforce_eager=True,

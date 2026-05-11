@@ -86,9 +86,9 @@ def main() -> int:
             "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
         },
         tensor_parallel_size=2,
-        dtype="bfloat16",
+        dtype="float16",             # sm_75 has no BF16; vLLM casts BF16->fp16 at load
         gpu_memory_utilization=0.92,
-        cpu_offload_gb=12,           # absorb 27B BF16 > 48 GiB VRAM
+        cpu_offload_gb=12,           # absorb 27B fp16 > 48 GiB VRAM
         enforce_eager=True,          # rule out CUDA-graph capture as noise source
         seed=SEED,
         max_model_len=8192,          # tight for determinism test, not a perf run
