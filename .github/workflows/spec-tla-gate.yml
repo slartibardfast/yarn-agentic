@@ -62,19 +62,22 @@ jobs:
           allium parse specs/dflash/dflash.allium > /tmp/ast.json
           python3 scripts/allium-to-tla.py /tmp/ast.json --module DFlashCycle \
               > /tmp/DFlashCycle_skeleton.tla 2>/dev/null
-          # Every top-level + in-contract Allium invariant name must appear
-          # in the hand-tuned TLA file. The strict version of the synergy
-          # contract: NO drift in invariant names.
-          for inv in $(grep -E '^\s*\\?\* Allium' /tmp/DFlashCycle_skeleton.tla \
-                       | sed -E 's/.*: //; s/[^A-Za-z0-9_]+/ /g' \
-                       | awk '{print $1}' | sort -u); do
-            if ! grep -qE "^${inv}\b" specs/dflash/DFlashCycle.tla \
-                 && ! grep -qE "^${inv}\b" specs/dflash/DFlashMultiSlot.tla; then
+          # Extract Allium invariant names from skeleton comment lines.
+          # Only match lines of the form "\* Allium ...: <Name>" where
+          # <Name> begins with an uppercase letter — this rejects the
+          # section-header lines that end with a bare colon.
+          NAMES=$(grep -hoE '\\?\* Allium[^:]*: [A-Z][A-Za-z0-9_]+' /tmp/DFlashCycle_skeleton.tla \
+                   | sed -E 's/.*: //' | sort -u)
+          DRIFT=0
+          for inv in $NAMES; do
+            if ! grep -qE "^${inv}[[:space:]]" specs/dflash/DFlashCycle.tla \
+                 && ! grep -qE "^${inv}[[:space:]]" specs/dflash/DFlashMultiSlot.tla; then
               echo "DRIFT: Allium invariant '${inv}' not bound in TLA"
-              exit 1
+              DRIFT=1
             fi
           done
-          echo "All Allium invariants bound in TLA — no name drift."
+          [ "$DRIFT" -eq 0 ] || exit 1
+          echo "All Allium invariants bound in TLA — no name drift. ($(echo "$NAMES" | wc -l) names checked)"
 
       - name: TLC — DFlashCycle base (must PASS)
         run: |
@@ -82,12 +85,12 @@ jobs:
           java -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
             -workers 4 -config DFlashCycle.cfg DFlashCycle.tla \
             > /tmp/tlc.log 2>&1
-          if grep -q "Error: Invariant" /tmp/tlc.log; then
-            echo "TLC found a counterexample on the BASE config — invariant violated unexpectedly:"
-            grep -A2 "Error: Invariant" /tmp/tlc.log
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on the BASE config:"
+            grep -A2 "Error:" /tmp/tlc.log
             exit 1
           fi
-          echo "DFlashCycle base PASSES — no counterexample."
+          echo "DFlashCycle base PASSES — no errors."
 
       - name: TLC — DFlashCycle negative control RejectionDropped (must FAIL)
         run: |
@@ -122,12 +125,12 @@ jobs:
           java -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
             -workers 4 -config DFlashMultiSlot.cfg DFlashMultiSlot.tla \
             > /tmp/tlc.log 2>&1
-          if grep -q "Error: Invariant" /tmp/tlc.log; then
-            echo "TLC found a counterexample on the BASE multi-slot config:"
-            grep -A2 "Error: Invariant" /tmp/tlc.log
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on the BASE multi-slot config:"
+            grep -A2 "Error:" /tmp/tlc.log
             exit 1
           fi
-          echo "DFlashMultiSlot base PASSES — no counterexample."
+          echo "DFlashMultiSlot base PASSES — no errors."
 
       - name: TLC — multi-slot SingleGridDispatch (must FAIL)
         run: |

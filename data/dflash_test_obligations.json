@@ -392,14 +392,36 @@
       }
     },
     {
+      "id": "invariant.SyncBeforeStepAdvance",
+      "category": "invariant",
+      "description": "Verify invariant SyncBeforeStepAdvance holds after every state-changing rule that touches constrained entities",
+      "source_construct": "SyncBeforeStepAdvance",
+      "expression": "}",
+      "source_span": {
+        "start": 34977,
+        "end": 35354
+      }
+    },
+    {
+      "id": "invariant.NoCrossSlotRegionOverlap",
+      "category": "invariant",
+      "description": "Verify invariant NoCrossSlotRegionOverlap holds after every state-changing rule that touches constrained entities",
+      "source_construct": "NoCrossSlotRegionOverlap",
+      "expression": "}",
+      "source_span": {
+        "start": 35942,
+        "end": 36800
+      }
+    },
+    {
       "id": "invariant.DraftKVViaInjectionNotCrossAttention",
       "category": "invariant",
       "description": "Verify invariant DraftKVViaInjectionNotCrossAttention holds after every state-changing rule that touches constrained entities",
       "source_construct": "DraftKVViaInjectionNotCrossAttention",
       "expression": "}",
       "source_span": {
-        "start": 34974,
-        "end": 35959
+        "start": 37200,
+        "end": 38185
       }
     },
     {
@@ -409,8 +431,8 @@
       "source_construct": "PerSlotDraftKVCache",
       "expression": "}",
       "source_span": {
-        "start": 36169,
-        "end": 36810
+        "start": 38395,
+        "end": 39036
       }
     },
     {
@@ -420,8 +442,8 @@
       "source_construct": "HybridTargetRecurrentStateTracking",
       "expression": "}",
       "source_span": {
-        "start": 37558,
-        "end": 38620
+        "start": 39784,
+        "end": 40846
       }
     },
     {
@@ -431,8 +453,8 @@
       "source_construct": "DPAttentionNotSupported",
       "expression": "}",
       "source_span": {
-        "start": 38832,
-        "end": 39242
+        "start": 41058,
+        "end": 41468
       }
     },
     {
@@ -442,8 +464,8 @@
       "source_construct": "PipelineParallelismRequiresPpSizeEq1",
       "expression": "}",
       "source_span": {
-        "start": 39244,
-        "end": 39633
+        "start": 41470,
+        "end": 41859
       }
     },
     {
@@ -453,8 +475,8 @@
       "source_construct": "ContextBudgetAtNp8",
       "expression": "}",
       "source_span": {
-        "start": 39946,
-        "end": 40613
+        "start": 42172,
+        "end": 42839
       }
     },
     {
@@ -464,8 +486,8 @@
       "source_construct": "DrafterIsDenseQwen3",
       "expression": "}",
       "source_span": {
-        "start": 40923,
-        "end": 41129
+        "start": 43149,
+        "end": 43355
       }
     },
     {
@@ -475,8 +497,8 @@
       "source_construct": "DrafterTargetVocabIdentity",
       "expression": "}",
       "source_span": {
-        "start": 41395,
-        "end": 41624
+        "start": 43621,
+        "end": 43850
       }
     },
     {
@@ -486,8 +508,8 @@
       "source_construct": "MultimodalTurnsRoutedAroundDrafter",
       "expression": "}",
       "source_span": {
-        "start": 42430,
-        "end": 42973
+        "start": 44656,
+        "end": 45199
       }
     },
     {
@@ -497,8 +519,8 @@
       "source_construct": "SourceLayerCountMatchesDrafterTraining",
       "expression": "}",
       "source_span": {
-        "start": 43374,
-        "end": 43658
+        "start": 45600,
+        "end": 45884
       }
     },
     {
@@ -508,8 +530,8 @@
       "source_construct": "TargetLayerIdsPlusOneAtRuntime",
       "expression": "}",
       "source_span": {
-        "start": 44096,
-        "end": 44437
+        "start": 46322,
+        "end": 46663
       }
     },
     {
@@ -519,8 +541,8 @@
       "source_construct": "NoTreeDraftingNoChainRollout",
       "expression": "}",
       "source_span": {
-        "start": 44645,
-        "end": 44770
+        "start": 46871,
+        "end": 46996
       }
     }
   ]

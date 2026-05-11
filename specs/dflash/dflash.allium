@@ -730,6 +730,53 @@ invariant SpeculativeCycleAtomicity {
     -- KV writes, no half-committed bonus tokens.
 }
 
+-- Sync barrier — a slot's cycle counter advances only when its
+-- in-flight stream is no longer running. Prevents reading
+-- pre-completion KV state on the next cycle.
+--
+-- Provenance: lifted from specs/multislot/StreamFix.tla — equivalent
+-- to F3 (StepDoesNotAdvanceWithRunningStream) from PHASE45 work.
+-- Bound by TLA+ invariant SyncBeforeStepAdvance in
+-- specs/dflash/DFlashMultiSlot.tla.
+invariant SyncBeforeStepAdvance {
+    -- For every slot s and every cycle transition:
+    --   step[s] post-AdvanceState > step[s] pre-AdvanceState
+    --   => stream_status[s] != "running" between the two.
+    -- Implementation: server's per-slot SyncBarrier action waits
+    -- for all of that slot's in-flight CUDA streams before issuing
+    -- the next per-slot dispatch.
+}
+
+-- Cross-slot KV-write-region disjointness — at any moment in time,
+-- no two slots' in-flight KV writes share a write region. Together
+-- with PerSlotDraftKVCache this gives slot-level serialisation
+-- without locks (regions are seq_id-keyed; the per-slot stream
+-- never touches another slot's regions).
+--
+-- Provenance: lifted from specs/multislot/StreamFix.tla
+-- NoCrossStreamRace; re-verified for DFlash's three-region-per-slot
+-- layout (target_kv, draft_kv_self, draft_kv_injected). Bound by
+-- TLA+ invariant NoCrossSlotRegionOverlap in
+-- specs/dflash/DFlashMultiSlot.tla.
+invariant NoCrossSlotRegionOverlap {
+    -- For all distinct slots s, t with stream_status[s] = "running"
+    -- and stream_status[t] = "running":
+    --   in_flight_writes[s] \cap in_flight_writes[t] = {}
+    --
+    -- Modeled regions per slot: { target_kv, draft_kv_self,
+    -- draft_kv_injected }. The TLA model in DFlashMultiSlot.tla
+    -- exhaustively explores |Slots| = 2..4 and finds no
+    -- counterexample under PerSlot dispatch.
+    --
+    -- Violation symptom (per CrossSlotRace negative control): a
+    -- StartStreamWithBugD action models the bug where slot s's
+    -- stream writes into slot t's KV regions. TLC catches this
+    -- in 33 states at depth ~10. ik_llama.cpp implementation must
+    -- have the per-slot KV-region partitioning structurally
+    -- enforced (each kv_cache lives under its slot's seq_id with
+    -- no aliasing).
+}
+
 -- The drafter is implemented via KV-injection, not via T5-style
 -- cross-attention. Per-anchor target features are projected through
 -- the drafter's per-layer wk/wv weights and written to the drafter's
