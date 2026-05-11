@@ -4228,3 +4228,79 @@ temporal_patch=2.
 
 If reopened, prefer Intel AutoRound INT4 already on disk as the
 conversion source over a 55 GiB BF16 HF download.
+
+---
+
+## Multi-slot MTP determinism investigation — terminal dead end (2026-05-10/11)
+
+After the per-slot dispatch abandonment, a sub-agent at
+`/home/llm/mtp-agentic/` (repo `slartibardfast/mtp-agentic`)
+attempted to close the same-prompt multi-slot divergence via
+kernel-level work and fork-join experiments. **Failed.** ~50
+iterations + 15 PHASE46 commits in the submodule; no binding fix.
+
+### Critical correction to prior memory
+
+The "Bug A in DeltaNet all_same_seq fast path" and "Bug B in FA
+mma_f16 row asymmetry" framing in earlier entries **named kernel
+sites that are not the active divergence source on sm_75 at
+production shape**. PHASE5 unit tests proved:
+
+- **MUL_MAT** at production shapes (5120×5120, 12288×5120,
+  5120×12288) is byte-deterministic across n=1..16 for F32, Q4_0,
+  Q8_0, IQ4_NL.
+- **FA decode** at production shape (nh=24, nh_kv=4, kv=256,
+  ne[1]=1, gqa=6) routes to **mma_new** (not mma_f16, not wmma_f16
+  — `new_mma_available(750)=true` on sm_75) and is byte-deterministic.
+- **DeltaNet `all_same_seq`** is already gated on |B|==1, so at
+  np>1 the buggy fast path doesn't fire.
+
+Yet 27B np>1 same-prompt still diverges. The real source is in an
+unaccounted surface — KV cache write coordination across slots,
+RoPE state, SSM/DeltaNet intermediate state shared across slots,
+slot-index-dependent padding/masking, CUDA Graphs interaction, or
+higher-layer (scheduler/KV-view-recycle) determinism. None of those
+were diagnosed.
+
+### Fork-join attempts that empirically failed
+
+- **F.3 per-token FA fork** in `llm_build_kqv`: did not bind 27B
+  np>1; the FA path it wrapped (mma_new) is already deterministic
+  → pure overhead, zero coverage on real bug.
+- **F.5 per-token mm fork** in `llm_build_lora_mm`: did not bind;
+  MUL_MAT at production shapes is already deterministic.
+- **PHASE4 wave 3a/3b/4 kernel patches**: some correct fixes (combine
+  sequence-axis, ne31 IMA) but production doesn't hit those kernels
+  on sm_75; behavior unchanged.
+- **Per-op fork-join** (~50 iter): insufficient ops forked. Full
+  coverage = per-slot graph build in disguise.
+- **Per-slot graph build**: same weight-amortization-collapse
+  conclusion already captured.
+
+### Final state
+
+- `production/2026-q2` branch in `ik_llama.cpp` force-pushed back to
+  `b07d0bbe` after investigation drift.
+- Investigation commits preserved on branch
+  `mtp-multislot-investigation-failed` at `ac994b7d`
+  (https://github.com/slartibardfast/ik_llama.cpp/tree/mtp-multislot-investigation-failed).
+- mtp-agentic repo (https://github.com/slartibardfast/mtp-agentic)
+  carries the terminal writeup at PLAN.md plus the 140 KiB
+  sub-agent MEMORY.md research log.
+- Production service untouched — running the binary built from
+  `b07d0bbe` (2026-05-09). No rebuild was triggered during the
+  investigation.
+
+### How to apply
+
+- Do not re-propose per-slot dispatch, F.3-style per-token FA fork,
+  F.5-style per-token mm fork, or PHASE4-style kernel batched-Q
+  patches as a fix for multi-slot determinism. All have been
+  empirically tested and proven non-binding for the production
+  same-prompt bug on Qwen 3.6 27B / sm_75.
+- If multi-slot determinism is reopened, start from
+  `scripts/np8-sameprompt-sha256.sh` in mtp-agentic (the binding
+  test the sub-agent used) and instrument the unaccounted surfaces
+  (KV writes, RoPE state, SSM state, scheduler, partial CUDA Graphs
+  interaction) — not the kernel layer.
+- Production stays at np=1 + MTP `--draft 3` indefinitely.
