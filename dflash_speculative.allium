@@ -1,0 +1,592 @@
+-- allium: 3
+-- dflash_speculative.allium
+--
+-- Scope: the behavioural contract for serving Qwen3.6-27B with the
+-- DFlash drafter on the 2026-q2-next branch of yarn-agentic /
+-- ik_llama.cpp. DFlash (Chen, Liang, Liu 2026; arXiv 2602.06036) is
+-- a block-diffusion speculative-decoding method: the drafter emits
+-- a contiguous block of N candidate tokens in a single forward pass,
+-- conditioned on fused hidden features extracted from layers of the
+-- target model and on the last verified target token (the anchor).
+-- The target then verifies the block in a single multi-position
+-- forward and the longest matching prefix is committed.
+--
+-- This spec describes the BEHAVIOUR an implementation must
+-- guarantee — feature extraction, projection-and-fuse, K/V
+-- injection into draft layers, single-forward block emit, target
+-- verify, prefix accept, paired state advance. It does NOT pick an
+-- integration shape (port vs upstream vs sidecar — see
+-- PHASE_DFLASH_SCOPING.md in mtp-agentic for option A/B/C/D).
+--
+-- The spec is precision-agnostic: target may run at IQ4_KS, draft
+-- at BF16; only the relationships between tensors are constrained,
+-- not their dtypes.
+--
+-- Why this spec exists: a behavioural-level contract decouples the
+-- correctness argument from the integration choice. We will pick A,
+-- B, C, or D after running M0 (reproduce upstream's published
+-- speedup on RTX 6000 sm_75); the spec stays valid regardless.
+-- `allium:propagate` against it should generate the binding
+-- property tests for whichever integration we pick — most
+-- importantly: same-prompt determinism per-deployment under the
+-- DFlash path, given that the prior np>1 same-prompt bug remains
+-- unsolved on Qwen3.6-27B.
+--
+-- Includes:
+--   - External entities for the two models, KV caches, hidden
+--     features, anchor token, draft block, verify logits, accept
+--     decision.
+--   - Enumerations for sampler mode, accept mode, denoising
+--     schedule, feature-source policy.
+--   - Contracts for ExtractFeatures, ProjectAndFuse,
+--     DraftBlockEmit, TargetVerifyBlock, AcceptPrefixDecision,
+--     AdvanceState.
+--   - System-wide invariants binding feature dimensionality, K/V
+--     injection symmetry across draft layers, block-emit
+--     single-forward semantics, accept-prefix contiguity, paired KV
+--     advance, embed/LM-head sharing, causal-SWA mask construction,
+--     greedy-mode determinism per deployment.
+--   - Open questions naming the implementation choices that
+--     2026-q2-next must commit to before code lands.
+--
+-- Excludes:
+--   - Training-time procedures (anchor-conditioned block diffusion
+--     training loss). The drafter is a frozen artefact from z-lab;
+--     the spec covers inference only.
+--   - The DFlash drafter's internal layer composition beyond the
+--     SWA mask shape and the K/V-injection contract. Drafter
+--     weights are loaded as a GGUF; the spec does not constrain
+--     hidden_size, layer count, or attention head count beyond
+--     consistency with the loaded weights.
+--   - vLLM- and SGLang-side reference impls. They inform but do
+--     not constrain ik_llama.cpp's implementation; the
+--     PHASE_DFLASH_SCOPING.md document records their existence.
+--   - Multimodal inputs. Qwen3.6-27B is multimodal at the HF
+--     config level but the production GGUF is text-only and the
+--     DFlash drafter does not consume images. The speculative
+--     path is text-only.
+--   - The prior Qwen-provided MTP head (`--draft N` production
+--     path). DFlash is an external-draft speculative-decoding
+--     method; the on-target MTP head is dead under this spec.
+
+-- ============================================================
+-- External entities — runtime objects we constrain
+-- ============================================================
+
+-- A ggml tensor flowing through the speculative path. We
+-- reference only its existence as a typed reference; ggml manages
+-- shape and dtype.
+external entity Tensor {
+    name: String
+}
+
+-- The target language model: Qwen3.6-27B in its current ik_llama.cpp
+-- representation. Hybrid attention (linear_attention + full_attention
+-- in 3:1 ratio), 64 layers, hidden 5120, 24 Q heads, 4 KV heads,
+-- vocab 248320, n_ctx_train 262144. The spec references only the
+-- properties the speculative path actually touches.
+external entity TargetModel {
+    n_layers:         Integer    -- 64 for Qwen3.6-27B
+    hidden_size:      Integer    -- 5120
+    n_kv_heads:       Integer    -- 4 (GQA ratio 6 with 24 Q heads)
+    vocab_size:       Integer    -- 248320
+    n_ctx_train:      Integer    -- 262144
+    embedding:        Tensor     -- shared with drafter
+    lm_head:          Tensor     -- shared with drafter
+}
+
+-- The DFlash drafter: a small (~2B) transformer with causal SWA
+-- (sliding-window attention) layers. Reuses the target's embedding
+-- and LM head; only intermediate layers are independent weights.
+-- The drafter's K/V projection inputs are augmented at every layer
+-- by the InjectedKV produced from ProjectAndFuse (see below).
+external entity DraftModel {
+    n_layers:         Integer
+    hidden_size:      Integer    -- must equal TargetModel.hidden_size for shared embed/LM head
+    n_kv_heads:       Integer
+    swa_window:       Integer    -- W; causal SWA window size in tokens
+    n_param:          Integer    -- ≈ 2 × 10^9 for Qwen3.6-27B-DFlash
+}
+
+-- A single block of contiguous draft tokens emitted by the drafter
+-- in one forward pass. Block size is configurable (default 16, vLLM
+-- uses 15). Position k in the block predicts the token at
+-- anchor_pos + k + 1.
+external entity DraftBlock {
+    block_size:       Integer   -- N; default 16
+    tokens:           List<Integer>   -- length N, in step order
+    anchor_pos:       Integer   -- position of the anchor token in target's sequence
+}
+
+-- The hidden-feature snapshot extracted from the target at the end
+-- of one target step. Features are pulled from a SUBSET of target
+-- layers (uniformly sampled across depth) and fused into a single
+-- compact representation via a lightweight learned projection that
+-- ships with the drafter weights.
+external entity HiddenFeatures {
+    n_source_layers:  Integer   -- size of the layer subset target was probed at
+    source_indices:   List<Integer>   -- which target layer indices were sampled
+    hidden_size:      Integer   -- target's hidden_size
+    n_positions:      Integer   -- typically 1 (only the anchor position) but may extend
+}
+
+-- The output of the lightweight projection that maps HiddenFeatures
+-- → K/V-injection tensors. This is per-draft-layer: the projection
+-- emits a (K, V) pair to inject into every draft layer's attention
+-- block. Stored in the draft KV cache for re-use across drafting
+-- steps of the same anchor.
+external entity InjectedKV {
+    per_draft_layer:  List<KVPair>   -- length = DraftModel.n_layers
+    anchor_pos:       Integer        -- one InjectedKV is associated with one anchor
+}
+
+-- A K/V pair injected into one draft layer. Lives in the draft's KV
+-- cache slot reserved for "fused-feature" content; coexists with
+-- the draft's normal autoregressive K/V history at the anchor and
+-- earlier accepted positions.
+external entity KVPair {
+    k_dim_per_head:   Integer
+    v_dim_per_head:   Integer
+    n_kv_heads:       Integer
+    n_positions:      Integer   -- typically 1 per anchor
+}
+
+-- The last verified token at which the next draft block is
+-- conditioned. Anchors advance only when the target accepts.
+external entity AnchorToken {
+    token_id:         Integer
+    pos:              Integer   -- absolute position in target's sequence
+}
+
+-- The target's KV cache state. Single-slot in our production
+-- (np=1) deployment. Advances only by the AcceptPrefix length per
+-- speculative cycle.
+external entity TargetKVCache {
+    seq_id:           Integer   -- always 0 in np=1
+    n_cells:          Integer   -- = anchor_pos + 1 after each advance
+}
+
+-- The drafter's KV cache state. Holds (a) injected K/V from the
+-- current anchor's fused features and (b) the drafter's own
+-- autoregressive K/V history at the anchor and previously accepted
+-- positions. Advances paired with TargetKVCache.
+external entity DraftKVCache {
+    seq_id:           Integer
+    n_cells_self:     Integer   -- drafter's own KV at accepted positions
+    n_cells_injected: Integer   -- injected KV slots (1 per active anchor)
+}
+
+-- The verify-batch: a single target forward over the drafted block.
+-- ne[1] = block_size + 1: the anchor itself plus the N drafted
+-- tokens, all in one contiguous run. The target emits one logit
+-- row per input position; row k predicts the token at
+-- anchor_pos + k + 1.
+external entity VerifyBatch {
+    seq_id:           Integer
+    anchor_pos:       Integer
+    block_size:       Integer
+    tokens:           List<Integer>   -- length block_size + 1: [anchor, t_0, ..., t_{N-1}]
+}
+
+-- The per-position logits the target emits over the verify batch.
+external entity VerifyLogits {
+    n_positions:      Integer   -- = VerifyBatch.block_size + 1
+    n_vocab:          Integer
+}
+
+-- The result of the accept test: how many drafts of the block are
+-- accepted by longest-prefix match (greedy) or by rejection
+-- sampling (probabilistic). bonus_token is the target's argmax (or
+-- sample) at the position immediately after the last accepted
+-- draft, always committed regardless of how many drafts were
+-- accepted.
+external entity AcceptDecision {
+    n_accepted:       Integer   -- 0 .. block_size
+    bonus_token:      Integer
+    bonus_pos:        Integer   -- = anchor_pos + n_accepted + 1
+}
+
+-- ============================================================
+-- Enumerations
+-- ============================================================
+
+-- Target sampling mode at verify time. Production runs greedy
+-- (temperature=0); the contract supports probabilistic for parity
+-- with future server features but currently rejects it (see
+-- ProbabilisticVerifyOutOfScope).
+enum SamplerMode { greedy | probabilistic }
+
+-- Accept-decision algorithm. argmax_match is the byte-deterministic
+-- variant: draft k is accepted iff it equals argmax of verify
+-- logits at row k. probabilistic is the Leviathan/Chen rejection
+-- sampling variant, gated by SamplerMode = probabilistic.
+enum AcceptMode { argmax_match | probabilistic }
+
+-- DFlash block-diffusion denoising schedule. The published method
+-- uses a single denoising step; longer schedules are admissible by
+-- the architecture but not measured. The spec binds single-step
+-- and treats multi-step as a future extension (OQ-DENOISE-SCHEDULE).
+enum DenoiseSchedule { single_step | multi_step }
+
+-- Feature-source policy: which target layers HiddenFeatures is
+-- pulled from. uniform_sample is the published method ("layers
+-- uniformly sampled across the target"); specific indices remain
+-- an implementation choice (OQ-SOURCE-LAYERS).
+enum FeatureSource { uniform_sample | trained_indices | custom }
+
+-- ============================================================
+-- Contracts
+-- ============================================================
+
+-- Extracts hidden-state features from the target after one target
+-- step completes. Reads the target's residual stream at a configured
+-- subset of layer indices. No effect on the target's forward path;
+-- features are a side-output snapshot.
+contract ExtractFeatures {
+    invoke: (target: TargetModel, anchor_pos: Integer, policy: FeatureSource) -> HiddenFeatures
+
+    @invariant SourceLayersWithinTarget
+        -- Every index in HiddenFeatures.source_indices is in the
+        -- range [0, target.n_layers). The implementation must
+        -- reject (or assert-fail) if a configured source index is
+        -- out of range.
+
+    @invariant UniformSampleSpacing
+        -- When policy = uniform_sample, source_indices are
+        -- approximately evenly spaced across [0, target.n_layers).
+        -- The exact subset is an implementation choice (see
+        -- OQ-SOURCE-LAYERS) but must be deterministic per
+        -- deployment.
+
+    @invariant FeatureWidthMatchesTarget
+        -- HiddenFeatures.hidden_size = target.hidden_size. The
+        -- features are residual-stream snapshots; no projection
+        -- yet.
+
+    @invariant DeterminismPerDeployment
+        -- Two ExtractFeatures invocations with identical target
+        -- state at anchor_pos and identical policy produce
+        -- byte-identical HiddenFeatures.
+}
+
+-- Projects HiddenFeatures via a small learned projection and emits
+-- per-draft-layer K/V injection tensors. The projection weights
+-- ship as part of the drafter GGUF. Result is stored in the draft
+-- KV cache, indexed by the active anchor.
+contract ProjectAndFuse {
+    invoke: (features: HiddenFeatures, draft: DraftModel) -> InjectedKV
+
+    @invariant PerLayerArity
+        -- Length of InjectedKV.per_draft_layer = draft.n_layers.
+        -- Every draft layer receives a K/V injection.
+
+    @invariant HeadShapeMatchesDraft
+        -- For every KVPair in per_draft_layer:
+        --   k_dim_per_head = v_dim_per_head = draft.hidden_size /
+        --   draft.n_kv_heads (or whatever the drafter's loaded
+        --   weights declare). The projection respects the drafter's
+        --   declared head shape; it does not rebroadcast.
+
+    @invariant InjectedAnchorAlignment
+        -- InjectedKV.anchor_pos = features.position (the position
+        -- features were extracted at). The injected K/V is logically
+        -- attached to this anchor; cache eviction tied to anchor
+        -- advancement (see AdvanceState).
+
+    @invariant ReuseAcrossDenoiseSteps
+        -- When DenoiseSchedule = multi_step, the same InjectedKV is
+        -- consumed by every denoising step of the same anchor. The
+        -- projection runs once per anchor, not per denoising step.
+}
+
+-- Emits a block of candidate tokens in a single forward pass,
+-- conditioned on the anchor token and the injected K/V from
+-- ProjectAndFuse. Uses block diffusion: the drafter sees masked
+-- positions for t_0 .. t_{N-1} and denoises them in one forward
+-- (single-step) or in K forwards (multi-step; out of scope).
+contract DraftBlockEmit {
+    invoke: (
+        draft: DraftModel,
+        anchor: AnchorToken,
+        injected: InjectedKV,
+        draft_kv: DraftKVCache,
+        block_size: Integer,
+        schedule: DenoiseSchedule,
+    ) -> DraftBlock
+
+    @invariant SingleForwardPerStep
+        -- The drafter produces all block_size candidate tokens
+        -- from a number of forwards equal to the denoising
+        -- schedule's step count. For schedule = single_step,
+        -- exactly one forward. For multi_step, K forwards where
+        -- K is the schedule length; out of scope for the current
+        -- spec.
+
+    @invariant InjectionConsumedAtEveryLayer
+        -- The forward consumes injected.per_draft_layer[i] at
+        -- draft layer i for every i in [0, draft.n_layers). No
+        -- draft layer runs without its injected K/V. Implementations
+        -- that route K/V via cross-attention satisfy this contract
+        -- iff the cross-attention input at every layer is exactly
+        -- the projected feature for that layer.
+
+    @invariant CausalSWAMaskWithinBlock
+        -- Inside the drafted block, token k attends to anchor and
+        -- to tokens 0 .. k-1 within the block, masked by a causal
+        -- sliding window of size draft.swa_window. The mask is
+        -- standard causal-SWA: position k attends to positions
+        --   max(0, k - swa_window + 1) .. k.
+        -- Across the anchor boundary, the anchor is always
+        -- attendable (acts as a global-attend slot).
+
+    @invariant AnchorEmbeddingFromTarget
+        -- The anchor token's embedding is fetched from the shared
+        -- target.embedding tensor, NOT from a duplicate drafter
+        -- embedding. The drafter does not own embedding weights.
+
+    @invariant BlockSizeBindsToConfig
+        -- DraftBlock.block_size = the block_size argument. The
+        -- forward emits exactly block_size masked positions plus
+        -- the anchor; downstream verify constructs a verify batch
+        -- of length block_size + 1.
+
+    @invariant AnchorPosPreserved
+        -- DraftBlock.anchor_pos = anchor.pos. The contract
+        -- preserves the anchor position so the verify path can
+        -- align its KV writes.
+
+    @invariant DeterminismPerDeployment
+        -- Two DraftBlockEmit invocations with byte-identical
+        -- (draft, anchor, injected, draft_kv, block_size, schedule)
+        -- produce byte-identical DraftBlock under
+        -- SamplerMode = greedy (i.e. argmax over draft logits at
+        -- each position). This is the per-deployment determinism
+        -- contract; cross-deployment with different block_size or
+        -- different feature sampling indices is NOT required to be
+        -- bit-stable (cf. memory entry on cross-config kernel
+        -- batch-shape sensitivity at verify (1+N) shape).
+}
+
+-- Verifies a draft block against the target. Constructs a verify
+-- batch [anchor, t_0, ..., t_{N-1}] in a single contiguous run at
+-- positions [anchor_pos, anchor_pos+1, ..., anchor_pos+block_size]
+-- and runs one target forward. Returns per-position logits used by
+-- AcceptPrefixDecision.
+contract TargetVerifyBlock {
+    invoke: (
+        target: TargetModel,
+        block: DraftBlock,
+        target_kv: TargetKVCache,
+        anchor: AnchorToken,
+    ) -> VerifyLogits
+
+    @invariant VerifyBatchShape
+        -- VerifyLogits.n_positions = block.block_size + 1. The
+        -- target consumes anchor + block; it emits one logit row
+        -- per input position. Row 0 predicts next-after-anchor
+        -- (corresponds to draft t_0). Row k predicts
+        -- next-after-t_{k-1}.
+
+    @invariant SingleContiguousRun
+        -- The verify batch is one contiguous run in seq_id = block
+        -- owner's seq_id. No multi-slot batching. (Under np=1
+        -- production, this is trivially the case; np>1 with DFlash
+        -- is out of scope of this spec.)
+
+    @invariant TargetKVNotAdvancedDuringVerify
+        -- Verify runs against the target's KV state at
+        -- target_kv.n_cells = anchor_pos + 1 (the state AFTER the
+        -- anchor was committed). The verify forward does NOT mutate
+        -- target_kv; KV advancement happens later in AdvanceState
+        -- and only by the accepted prefix.
+        --
+        -- Implementations that write KV during the verify forward
+        -- must roll back the rejected suffix before AdvanceState
+        -- completes; the net mutation is exactly the accepted
+        -- prefix.
+
+    @invariant DeterminismPerDeployment
+        -- Two TargetVerifyBlock invocations with byte-identical
+        -- (target, block, target_kv, anchor) produce byte-identical
+        -- VerifyLogits. Block-shape sensitivity is a known kernel
+        -- surface (cf. multi-slot determinism investigation memory
+        -- entry); per-deployment with fixed block_size, runs are
+        -- bit-stable.
+}
+
+-- Decides how many drafts to accept and what bonus token to commit,
+-- given verify logits over the drafted block. Pure host-side
+-- computation; no GPU state mutation.
+contract AcceptPrefixDecision {
+    invoke: (
+        block: DraftBlock,
+        logits: VerifyLogits,
+        sampler: SamplerMode,
+        mode: AcceptMode,
+    ) -> AcceptDecision
+
+    @invariant LongestPrefixMatchUnderArgmax
+        -- mode = argmax_match implies n_accepted is the largest k
+        -- in [0, block.block_size] such that for every i in [0, k):
+        -- block.tokens[i] = argmax(logits at row i). Ties in argmax
+        -- broken by lowest token id.
+
+    @invariant NAcceptedWithinBound
+        -- 0 <= n_accepted <= block.block_size.
+
+    @invariant BonusIsArgmaxAtFirstUnacceptedRow
+        -- bonus_token = argmax(logits at row n_accepted), ties
+        -- broken by lowest token id. The bonus is committed
+        -- regardless of n_accepted; if n_accepted = block_size,
+        -- the bonus comes from the last logit row (predicting
+        -- next-after-last-accepted-draft).
+
+    @invariant BonusPosIsAnchorPlusNAcceptedPlusOne
+        -- bonus_pos = block.anchor_pos + n_accepted + 1. The bonus
+        -- token occupies the position immediately after the last
+        -- accepted draft (or after the anchor if zero accepted).
+
+    @invariant DeterminismUnderFixedInputs
+        -- Pure function of inputs. Two invocations with byte-
+        -- identical (block, logits, sampler, mode) produce
+        -- byte-identical AcceptDecision.
+
+    @invariant ProbabilisticVerifyOutOfScope
+        -- mode = probabilistic and sampler = probabilistic are
+        -- rejected at the contract boundary in the initial
+        -- 2026-q2-next implementation. Greedy-only at first
+        -- landing; expand once the greedy path is shipped and
+        -- measured.
+}
+
+-- Advances target and draft KV caches by the accepted prefix +
+-- bonus, evicts the rejected tail from the draft KV, and produces
+-- the new anchor for the next cycle. The single source of state
+-- change after one speculative cycle.
+contract AdvanceState {
+    invoke: (
+        decision: AcceptDecision,
+        block: DraftBlock,
+        target_kv: TargetKVCache,
+        draft_kv: DraftKVCache,
+    ) -> AnchorToken
+
+    @invariant TargetKVAdvancesByAcceptedPlusBonus
+        -- target_kv.n_cells (after) = target_kv.n_cells (before) +
+        -- decision.n_accepted + 1. The +1 is the bonus, which is
+        -- always committed.
+
+    @invariant DraftKVAdvancesPaired
+        -- draft_kv.n_cells_self (after) = draft_kv.n_cells_self
+        -- (before) + decision.n_accepted + 1. The drafter's own
+        -- autoregressive state advances by the same amount as the
+        -- target's: every committed token contributes a KV cell
+        -- on both sides.
+
+    @invariant DraftKVRollbackOnRejection
+        -- If the drafter's verify-time forward wrote KV cells for
+        -- the full block_size, the implementation must drop cells
+        -- (n_accepted .. block_size-1) from draft_kv before the
+        -- next cycle. The drafter never sees the rejected tail
+        -- again.
+
+    @invariant InjectedKVEvictedOnAnchorAdvance
+        -- draft_kv.n_cells_injected decreases by the number of
+        -- InjectedKV anchors whose anchor_pos < new_anchor.pos.
+        -- Stale fused features for past anchors are evicted as
+        -- soon as the anchor moves past them.
+
+    @invariant NewAnchorIsBonus
+        -- The returned AnchorToken has token_id = decision.bonus_token
+        -- and pos = decision.bonus_pos. The next cycle's
+        -- ExtractFeatures runs against the new anchor.
+
+    @invariant AtomicityPerCycle
+        -- AdvanceState is the single mutation point per
+        -- speculative cycle. Implementations must not partially
+        -- advance: either all four side-effects (target KV, draft
+        -- self KV, draft injected KV eviction, new anchor) happen
+        -- consistently, or the cycle fails and no state changes.
+        -- This is the rollback boundary if any step fails.
+}
+
+-- ============================================================
+-- System-wide invariants — cross-contract obligations
+-- ============================================================
+
+-- Targets and drafters share the embedding and LM head tensors. The
+-- drafter GGUF must declare a reference to the target's embed and
+-- head; the loader must materialise a single underlying tensor for
+-- both models. Doubling these would waste ~5 GiB at BF16 for
+-- vocab=248320 × hidden=5120 × 2 (embed + head).
+invariant SharedEmbedAndLMHead {
+    -- TargetModel.embedding === DraftModel.embedding (same
+    -- underlying memory). TargetModel.lm_head ===
+    -- DraftModel.lm_head. The convert pipeline that produces the
+    -- DFlash GGUF must encode this sharing; the runtime must honour
+    -- it.
+}
+
+-- Feature extraction layers are a fixed subset, deterministic per
+-- deployment. Changing the subset between sessions yields different
+-- drafter behaviour even with identical weights.
+invariant FeatureSourceFixedPerDeployment {
+    -- HiddenFeatures.source_indices is a deployment-time constant.
+    -- Mid-session changes are forbidden.
+}
+
+-- The block_size is a deployment-time constant. Changing it
+-- mid-session would invalidate the drafter's positional mask
+-- assumptions and the verify-batch shape contract.
+invariant BlockSizeFixedPerDeployment {
+    -- DraftBlock.block_size is constant for the lifetime of a
+    -- llama_context. Reconfiguring requires a fresh context.
+}
+
+-- Per-deployment determinism: greedy + fixed block_size + fixed
+-- feature source = byte-identical outputs across runs. Cross-
+-- deployment (different block_size, different source layers) is
+-- explicitly NOT bit-stable; the kernel batch-shape sensitivity
+-- captured in the multi-slot investigation memory entry applies to
+-- the (anchor + block_size) verify batch in the same way it
+-- applied to multi-slot verify batches.
+invariant PerDeploymentDeterminism {
+    -- Under SamplerMode = greedy and AcceptMode = argmax_match,
+    -- two runs with identical (TargetModel state, DraftModel
+    -- state, block_size, source_indices) produce byte-identical
+    -- token streams. Across runs that differ in block_size or
+    -- source_indices, outputs may differ.
+}
+
+-- The speculative cycle is atomic. Within a cycle, the order is:
+--   ExtractFeatures → ProjectAndFuse → DraftBlockEmit →
+--   TargetVerifyBlock → AcceptPrefixDecision → AdvanceState.
+-- Implementations may pipeline or overlap on-GPU, but the host-side
+-- observable state changes only at the end of AdvanceState.
+invariant SpeculativeCycleAtomicity {
+    -- A cycle either completes fully (AdvanceState commits) or
+    -- fails and reverts to the state at cycle start. No partial
+    -- KV writes, no half-committed bonus tokens.
+}
+
+-- ============================================================
+-- Open questions for 2026-q2-next implementation
+-- ============================================================
+
+open question "OQ-SOURCE-LAYERS: which target layer indices feed HiddenFeatures? Uniformly sampled across depth is the published guidance, but the trained projection may have specific indices it was trained against. The drafter GGUF should encode this metadata; the loader must read it. PHASE_DFLASH_DESIGN.md commits to GGUF metadata at load time with no CLI override."
+
+open question "OQ-DENOISE-SCHEDULE: single-step is the only schedule the published method measures. The drafter weights are trained for single-step denoising. Multi-step is admissible by the architecture but not by the trained weights; out of scope for 2026-q2-next."
+
+open question "OQ-BLOCK-SIZE-FOR-TURING: default block_size is 16 (vLLM uses 15, SGLang 16). On sm_75 the verify batch at ne[1]=17 hits FA kernels at a shape we have not characterised for kernel-determinism. Smaller block_size (8) trades accept-prefix length for tighter verify-shape predictability. PHASE_DFLASH_DESIGN.md commits to starting at 8 and moving to 16 after Gate-5 binds determinism at the larger verify shape."
+
+open question "OQ-QUANT-MIX: production target runs at IQ4_KS. The drafter ships BF16. The convert path that ik_llama.cpp eventually grows must support the cross-model SharedEmbedAndLMHead invariant when the two models declare different quants for the shared tensors. PHASE_DFLASH_DESIGN.md commits to materialising shared embed/lm_head from the target's IQ4_KS tensor; drafter never re-quantizes."
+
+open question "OQ-SWA-WINDOW: the drafter's swa_window must be read from the loaded GGUF. The HF model card declares interleaved SWA layers but does not state the window size in the surfaces we have fetched. The spec leaves this as a loaded-from-weights value; the implementation must surface it via llama_model_meta or equivalent."
+
+open question "OQ-THINK-MODE-EQUIVALENT: the upstream PR records LLAMA_SPEC_NO_THINK as a significant accept-rate lever for Qwen3-family targets. Our production server uses a Jinja chat template; the equivalent control on this stack is whether the prompt enables the thinking sentinel. PHASE_DFLASH_DESIGN.md commits to a new CLI flag --dflash-think on|off with default off matching upstream's measurement."
+
+open question "OQ-MULTI-SLOT: this spec is np=1 only. Adding np>1 reintroduces the multi-slot determinism surface captured in project_mtp_multislot_determinism_investigation_failed memory entry, where production-shape kernels are byte-deterministic in isolation yet np>1 same-prompt diverges. DFlash adds nothing that solves that surface and may amplify it. np=1 stays the only supported configuration until that underlying determinism gap closes."
+
+open question "OQ-VLLM-PR-MERGE-RISK: the reference impls (vLLM PR #40898, SGLang PR #23000, upstream llama.cpp PR #22105) are all draft. PHASE_DFLASH_DESIGN.md commits to anchoring on the published paper plus our design, not on upstream's PR; upstream PR is reference only and may pivot without affecting our work."
+
+open question "OQ-FAILURE-MODE-ON-MISSING-DRAFT: what happens if the drafter fails to emit a coherent block (e.g. the model returns NaN, or the injected K/V slot is missing for an active anchor)? At first landing the choice is hard failure with logged context, matching MTP-IR. Move to graceful fallback to non-speculative decode after the path is shipped and measured."
