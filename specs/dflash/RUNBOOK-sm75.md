@@ -121,6 +121,33 @@ runtime monkey-patch in `vllm_sm75_patches.py`. Pattern:
 6. Smoke-test via standalone python import.
 7. Re-fire the gate.
 
+## Escalation: force flashinfer backend (cheaper)
+
+vLLM normally falls through its backend preference list:
+1. `FLASH_ATTN` (rejected on sm_75 — no FA2 sm_75 wheel + capability check)
+2. `FLASHINFER` (claims sm_75 support, head=128 supported, JIT-builds fine)
+3. `TRITON_ATTN`
+4. `FLEX_ATTENTION`
+5. `TURBOQUANT`
+
+When the current run falls to FlexAttention (where our patches live),
+flashinfer was apparently skipped for some reason. To force flashinfer:
+
+```python
+from vllm.config import AttentionConfig
+from vllm.platforms.interface import AttentionBackendEnum
+
+llm = LLM(
+    ...,
+    attention_config=AttentionConfig(
+        backend=AttentionBackendEnum.FLASHINFER,
+    ),
+)
+```
+
+Cheaper escalation than rebuilding flashinfer AoT. If flashinfer
+accepts the workload, our FlexAttention patches become moot.
+
 ## Escalation: build flashinfer AoT for sm_75
 
 If patches accumulate into more than 5–6 and the failure surface
