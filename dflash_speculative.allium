@@ -95,17 +95,22 @@ external entity TargetModel {
     lm_head:          Tensor     -- shared with drafter
 }
 
--- The DFlash drafter: a small (~2B) transformer with causal SWA
--- (sliding-window attention) layers. Reuses the target's embedding
--- and LM head; only intermediate layers are independent weights.
--- The drafter's K/V projection inputs are augmented at every layer
--- by the InjectedKV produced from ProjectAndFuse (see below).
+-- The DFlash drafter: a small (~2B = 865M trainable + shared
+-- embed/LM head ≈ 1.73 GB BF16 on disk for Qwen3.6-27B-DFlash) DENSE
+-- Qwen3 transformer. NOT a hybrid like the target: drafter layer
+-- composition is strictly `full_attention` and `sliding_attention`,
+-- never `linear_attention` (DeltaNet). vLLM enforces this via
+-- `_DFLASH_VALID_LAYER_TYPES`; we enforce via DrafterIsDenseQwen3.
+-- Reuses the target's embedding and LM head (paper §4.2). The
+-- drafter's K/V projection inputs are augmented at every layer by
+-- the InjectedKV produced from ProjectAndFuse (see below).
 external entity DraftModel {
     n_layers:         Integer
     hidden_size:      Integer    -- must equal TargetModel.hidden_size for shared embed/LM head
     n_kv_heads:       Integer
-    swa_window:       Integer    -- W; causal SWA window size in tokens
-    n_param:          Integer    -- ≈ 2 × 10^9 for Qwen3.6-27B-DFlash
+    swa_window:       Integer    -- W; causal SWA window size in tokens (per-layer; layers may differ)
+    n_param:          Integer    -- ≈ 1.73 × 10^9 for Qwen3.6-27B-DFlash drafter (BF16 file size)
+    layer_types:      List<DrafterLayerType>   -- per-layer; each element ∈ {full_attention, sliding_attention}
 }
 
 -- A single block of contiguous draft tokens emitted by the drafter
@@ -229,10 +234,17 @@ enum AcceptMode { argmax_match | probabilistic }
 enum DenoiseSchedule { single_step | multi_step }
 
 -- Feature-source policy: which target layers HiddenFeatures is
--- pulled from. uniform_sample is the published method ("layers
--- uniformly sampled across the target"); specific indices remain
--- an implementation choice (OQ-SOURCE-LAYERS).
-enum FeatureSource { uniform_sample | trained_indices | custom }
+-- pulled from. trained_indices is the published method — 5 source
+-- layers uniformly selected between layer 2 and the third-to-last
+-- target layer, per paper §5. The drafter weights were trained
+-- against specific layer outputs; using different indices at
+-- inference is a correctness violation.
+enum FeatureSource { trained_indices | uniform_sample | custom }
+
+-- Per-layer attention type for the drafter. The drafter is dense
+-- Qwen3; only these two types are valid. Hybrid `linear_attention`
+-- is rejected at load (DrafterIsDenseQwen3).
+enum DrafterLayerType { full_attention | sliding_attention }
 
 -- ============================================================
 -- Contracts
@@ -569,11 +581,90 @@ invariant SpeculativeCycleAtomicity {
     -- KV writes, no half-committed bonus tokens.
 }
 
+-- The drafter is architecturally dense Qwen3 (not hybrid). vLLM
+-- enforces this at load (`_DFLASH_VALID_LAYER_TYPES = {full_attention,
+-- sliding_attention}` in `qwen3_dflash.py:55`). We bind the same
+-- contract: if a loaded drafter declares any `linear_attention`
+-- (DeltaNet) layer type, fail at load.
+invariant DrafterIsDenseQwen3 {
+    -- For every layer index i in [0, DraftModel.n_layers):
+    -- DraftModel.layer_types[i] ∈ {full_attention, sliding_attention}.
+    -- Reject load on any other value.
+}
+
+-- DFlash drafter and target share token-id space exactly. Anything
+-- in the target's vocab the drafter must be able to draft; anything
+-- the drafter drafts the target must verify. No extra or missing
+-- token ids. This is what makes shared embed/LM head sound.
+invariant DrafterTargetVocabIdentity {
+    -- TargetModel.vocab_size = DraftModel.vocab_size (where the
+    -- drafter inherits the target's vocab via the converter's
+    -- --target-model-dir mechanism). Verified at GGUF load.
+}
+
+-- Drafter has no vision tower. Multimodal turns (prompts containing
+-- image or video tokens) must bypass the DFlash speculative path
+-- and decode against the bare target. The drafter's logits at
+-- vision-special-token positions (e.g. Qwen3.6-27B's
+-- image_token_id=248056, video_token_id=248057) are
+-- statistical-noise quality because the drafter never saw vision
+-- attention; rejecting them at verify is wasted work; routing
+-- multimodal around the drafter is the correct shape.
+invariant MultimodalTurnsRoutedAroundDrafter {
+    -- If the incoming prompt contains any of the target's vision
+    -- token ids (vision_start, vision_end, image_token_id,
+    -- video_token_id), the speculative-decoding path is bypassed
+    -- for that request. The server falls through to bare-target
+    -- decode.
+}
+
+-- The hidden-feature extraction count matches what the drafter
+-- was trained against. The paper (§5) uses 5 source layers
+-- uniformly selected between layer 2 and the third-to-last target
+-- layer. Both the upstream llama.cpp PR and vLLM hardcode an
+-- assumption of len(target_layer_ids) == 5; ik_llama.cpp's
+-- implementation must read this from GGUF metadata and apply
+-- without assumption.
+invariant SourceLayerCountMatchesDrafterTraining {
+    -- HiddenFeatures.n_source_layers equals the count declared
+    -- in the drafter GGUF metadata key dflash.target_layer_ids.
+    -- For Qwen3.6-27B-DFlash this is expected to be 5; the
+    -- implementation must not hardcode 5.
+}
+
+-- Cross-engine convention: dflash_config.target_layer_ids in the
+-- HF drafter config refers to "the layer whose post-output we want
+-- as a feature". The runtime extract hook fires at the residual
+-- stream entering the NEXT layer (one position later). Both
+-- llama.cpp's converter (convert_hf_to_gguf.py:4913) and vLLM's
+-- algos.py apply a `+1` shift when translating
+-- dflash_config.target_layer_ids → runtime extract indices.
+invariant TargetLayerIdsPlusOneAtRuntime {
+    -- Runtime extract index i_runtime = dflash_config_index + 1.
+    -- The GGUF metadata stored by the converter is the runtime
+    -- index (already shifted). Implementations that read the GGUF
+    -- value directly are correct; implementations that re-read the
+    -- HF config must apply +1.
+}
+
+-- DFlash does not do tree drafting. SGLang enforces num_steps==1
+-- and eagle_topk==1 (server_args.py:3272, 3281). Block emit
+-- produces ONE block at the bonus's position; no fan-out, no
+-- multi-branch.
+invariant NoTreeDraftingNoChainRollout {
+    -- One DraftBlockEmit per cycle; one block; no parallel
+    -- draft branches.
+}
+
 -- ============================================================
 -- Open questions for 2026-q2-next implementation
 -- ============================================================
 
-open question "OQ-SOURCE-LAYERS: which target layer indices feed HiddenFeatures? Uniformly sampled across depth is the published guidance, but the trained projection may have specific indices it was trained against. The drafter GGUF should encode this metadata; the loader must read it. PHASE_DFLASH_DESIGN.md commits to GGUF metadata at load time with no CLI override."
+open question "OQ-SOURCE-LAYERS: paper §5 specifies 5 source layers uniformly between layer 2 and the third-to-last target layer of the target model. For Qwen3.6-27B (64 layers) the candidate set is layers 2..61; the trained projection may not be at the obviously-uniform indices (e.g. {12, 25, 38, 51, 61} or {7, 20, 33, 46, 59}) and we cannot verify until the drafter config.json is accessible (currently HF-gated, 401). PHASE_DFLASH_DESIGN.md commits to GGUF metadata at load time with no CLI override; this open question records that we have no public confirmation of the exact indices."
+
+open question "OQ-DRAFTER-CONFIG-GATED: z-lab/Qwen3.6-27B-DFlash is HF-gated (401). Reading its config.json requires HF authentication and an approved access request. Until access is granted, we cannot directly verify drafter hidden_size, n_layers, head_dim, layer_types pattern, sliding_window value, rope_theta, dflash_config.target_layer_ids, or dflash_config.mask_token_id. The HF API reveals architectures=DFlashDraftModel, model_type=qwen3, safetensors size ~1.73 GB BF16; the rest is inferred."
+
+open question "OQ-HYBRID-TARGET-EXTRACT: target Qwen3.6-27B is hybrid (3× linear_attention + 1× full_attention pattern, 64 layers). When source-layer indices land on a linear_attention (DeltaNet) layer, the extracted feature is the residual stream entering that layer (pre-DeltaNet), not the DeltaNet output. Whether the drafter was trained against pre-DeltaNet residuals or post-DeltaNet outputs is unknown without access to z-lab's training code. The upstream llama.cpp PR does not validate this; it extracts blindly via cb(inpL, dflash_extract_<i>, il). Production gate: if Gate 4 in PHASE_DFLASH_DESIGN.md shows low acceptance on Qwen3.6-27B-DFlash, this is a likely cause."
 
 open question "OQ-DENOISE-SCHEDULE: single-step is the only schedule the published method measures. The drafter weights are trained for single-step denoising. Multi-step is admissible by the architecture but not by the trained weights; out of scope for 2026-q2-next."
 
@@ -581,7 +672,9 @@ open question "OQ-BLOCK-SIZE-FOR-TURING: default block_size is 16 (vLLM uses 15,
 
 open question "OQ-QUANT-MIX: production target runs at IQ4_KS. The drafter ships BF16. The convert path that ik_llama.cpp eventually grows must support the cross-model SharedEmbedAndLMHead invariant when the two models declare different quants for the shared tensors. PHASE_DFLASH_DESIGN.md commits to materialising shared embed/lm_head from the target's IQ4_KS tensor; drafter never re-quantizes."
 
-open question "OQ-SWA-WINDOW: the drafter's swa_window must be read from the loaded GGUF. The HF model card declares interleaved SWA layers but does not state the window size in the surfaces we have fetched. The spec leaves this as a loaded-from-weights value; the implementation must surface it via llama_model_meta or equivalent."
+open question "OQ-SWA-WINDOW: the drafter's swa_window must be read from drafter config.layer_types (per-layer, not global). The HF model card declares interleaved SWA layers; we cannot read the exact pattern or window size until OQ-DRAFTER-CONFIG-GATED resolves. Cross-engine subtlety to bind one way: SGLang sets window_left = sliding_window - 1 (dflash_utils.py:321); vLLM stores sliding_window as-is. ik_llama.cpp must pick one convention and document it. PHASE_DFLASH_DESIGN.md will commit when the actual drafter config is readable."
+
+open question "OQ-WINDOW-CONVENTION: regardless of which window convention we pick, the binding test must verify against a known reference (e.g. SGLang or vLLM output on the same prompt with the same drafter). If our convention produces different drafts than the reference, the trained mask doesn't match our runtime mask."
 
 open question "OQ-THINK-MODE-EQUIVALENT: the upstream PR records LLAMA_SPEC_NO_THINK as a significant accept-rate lever for Qwen3-family targets. Our production server uses a Jinja chat template; the equivalent control on this stack is whether the prompt enables the thinking sentinel. PHASE_DFLASH_DESIGN.md commits to a new CLI flag --dflash-think on|off with default off matching upstream's measurement."
 
