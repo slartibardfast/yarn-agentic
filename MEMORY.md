@@ -4304,3 +4304,54 @@ were diagnosed.
   (KV writes, RoPE state, SSM state, scheduler, partial CUDA Graphs
   interaction) — not the kernel layer.
 - Production stays at np=1 + MTP `--draft 3` indefinitely.
+
+---
+
+## Dream-flow memory consolidation (2026-05-11)
+
+First periodic consolidation pass on this project's private auto-memory
+at `~/.claude/projects/-home-llm-yarn-agentic/memory/`. Triggered
+because the entry count had grown to 81 and the index was approaching
+its truncation limit.
+
+This append-only public `MEMORY.md` was **not rewritten**. The pass
+operated entirely on the private auto-memory. This note records that
+it happened and what changed there, so anyone reading public memory
+sees a coherent picture.
+
+**Reduction:** 81 → 59 entries (−27%); index 80 → 59 lines.
+
+**Four phases:**
+
+1. **MTP-IR project lineage** (14 → 1 archival entry,
+   `project_mtp_ir_history_archived.md`). Step snapshots from initial
+   single-pass MTP port through Phase 36 / 39 / 41+42 / 45 D9.5 /
+   D10.e abandonment distilled. Three terminal entries kept
+   authoritative: draft-depth correction, 2026 Q2 production landing,
+   multi-slot investigation dead end.
+2. **TURBO / HARP_2B 2-bit research** (7 → 1,
+   `project_turbo_harp_research_abandoned.md`). TURBO_KV_4B, TURBO_4B
+   weight quant, HARP_2B family, PPV ceiling, throughput ceiling,
+   TURBO_2B parking, Unsloth pivot collapsed. Durable lessons
+   preserved (PPV Shannon floor, codebook-NMSE-vs-kernel-correctness,
+   AVX2 ceiling, 0.8B-as-signal yardstick).
+3. **Test-first discipline** (3 → 1, `feedback_test_first_discipline.md`).
+   `test_first_no_defer` + `no_skip_tests` +
+   `test_first_negative_claims` merged as three facets of one
+   principle.
+4. **Never-bail discipline** (2 → 1, `feedback_never_bail.md`).
+   `never_stop_at_friction` + `no_premature_exits` merged — same
+   failure mode (premature wind-down) at different friction points.
+
+**Preserved intact:**
+
+- All durable rules (40 feedback entries).
+- Terminal-state project entries.
+- Reference entries.
+- Plan files at `~/.claude/plans/*.md`.
+- Branches, tags, and test fixtures cited inside archive entries.
+
+**Procedure for future passes:** documented in private auto-memory as
+`feedback_dream_flow_procedure.md` (when to trigger, four-phase
+pattern, index-regeneration script, what to preserve vs distil,
+verification steps).
