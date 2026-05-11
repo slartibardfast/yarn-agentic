@@ -30,10 +30,13 @@ jobs:
 
       - name: Install Allium CLI
         run: |
-          # Allium is a Rust binary distributed via crates.io.
+          # The crate name is `allium-cli` (not `allium` — that's an
+          # unrelated library). Installs the `allium` binary into
+          # ~/.cargo/bin/. Local install used same path; binary debug
+          # symbols reference index.crates.io/allium-cli-3.0.5.
           curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
           source "$HOME/.cargo/env"
-          cargo install allium --quiet
+          cargo install allium-cli --quiet
           allium --version
 
       - name: Fetch TLC tools
