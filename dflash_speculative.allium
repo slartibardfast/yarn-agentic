@@ -586,12 +586,22 @@ invariant FeatureSourceFixedPerDeployment {
     -- Mid-session changes are forbidden.
 }
 
--- The block_size is a deployment-time constant. Changing it
--- mid-session would invalidate the drafter's positional mask
--- assumptions and the verify-batch shape contract.
-invariant BlockSizeFixedPerDeployment {
-    -- DraftBlock.block_size is constant for the lifetime of a
-    -- llama_context. Reconfiguring requires a fresh context.
+-- block_size is fixed at context creation and must match the
+-- value the drafter was trained at. vLLM allows per-KV-group
+-- runtime override via kernel_block_sizes (qwen3_dflash.py:267),
+-- but that's a perf-tuning lever for vLLM's block manager; it
+-- does not change the drafter's trained block_size, which is
+-- a model-architecture constant.
+invariant BlockSizeFixedAtContextStart {
+    -- block_size = drafter GGUF metadata dflash.block_size at
+    -- llama_set_dflash() time. It is read once and locked for
+    -- the context's lifetime. CLI override --dflash-block-size
+    -- exists for experimentation but must equal the GGUF value
+    -- or load fails with LLAMA_DFLASH_BLOCK_SIZE_MISMATCH.
+    -- Mid-session reconfiguration is forbidden — the drafter's
+    -- positional mask construction and verify-batch shape
+    -- contract both depend on block_size being constant within
+    -- the context.
 }
 
 -- Per-deployment determinism: greedy + fixed block_size + fixed
@@ -661,6 +671,63 @@ invariant PerSlotDraftKVCache {
     -- scales linearly with ctx-per-slot.
 }
 
+-- Hybrid target's recurrent state (DeltaNet / linear_attention
+-- layers) requires per-slot tracking with ping-pong buffering at
+-- n_parallel > 1 + overlap scheduling. Qwen 3.6 27B has 48 of 64
+-- layers as linear_attention; each maintains a recurrent state that
+-- must not be corrupted by interleaved draft/verify cycles across
+-- slots. SGLang's HybridReqToTokenPool (memory_pool.py:540-735)
+-- implements this via req_index_to_mamba_ping_pong_track_buffer_mapping
+-- with size 2 for overlap and size 1 for non-overlap. ik_llama.cpp's
+-- implementation must provide an equivalent at any multi-slot
+-- configuration on a hybrid target — even without overlap scheduling
+-- (size 1 is still tracked, in case rejection forces a state revert).
+invariant HybridTargetRecurrentStateTracking {
+    -- For each slot s, the target's recurrent (linear_attention /
+    -- DeltaNet) state is partitioned by seq_id and tracked through
+    -- the speculative cycle:
+    --
+    --   - Per-slot recurrent state is saved before the verify
+    --     forward (the verify may mutate the state through all
+    --     block_size positions optimistically).
+    --   - On rejection of any draft beyond accept_prefix, the
+    --     recurrent state at positions > accept_prefix MUST be
+    --     reverted before the next cycle's verify uses it as
+    --     input.
+    --
+    -- The block_size=16 verify in DFlash makes this 16x more
+    -- aggressive than np=1 MTP's --draft 3 (which only had 3 draft
+    -- positions to potentially revert). At np=8 the system handles
+    -- up to 128 simultaneous in-flight recurrent-state writes that
+    -- may need reverting.
+    --
+    -- Without this tracking, a rejected slot's recurrent state
+    -- contaminates the next cycle's draft, breaking determinism
+    -- per-deployment.
+}
+
+-- Distributed parallelism mode constraints. The target+drafter
+-- pair assumes co-located devices for KV cache sharing and
+-- attention computation order. SGLang enforces these at
+-- server_args.py:3247-3306.
+invariant DPAttentionNotSupported {
+    -- Data-parallel attention (DP) changes the attention computation
+    -- order in ways that DFlash's mask shapes don't survive.
+    -- llama_set_dflash() must reject any configuration that enables
+    -- DP attention (return LLAMA_DFLASH_DP_NOT_SUPPORTED) at bind
+    -- time. ik_llama.cpp currently doesn't have DP attention; this
+    -- invariant is forward-looking.
+}
+
+invariant PipelineParallelismRequiresPpSizeEq1 {
+    -- DFlash assumes target and drafter models are co-located on
+    -- the same device(s); pipeline parallelism (pp_size > 1)
+    -- spreads layers across devices and breaks the K/V cache
+    -- sharing contract between drafter K/V (per-anchor injected)
+    -- and target K/V (per-bonus committed). Reject at bind if
+    -- pp_size > 1.
+}
+
 -- Memory budget at multi-slot must fit the host hardware. Production
 -- 2× Quadro RTX 6000 has 48 GiB aggregate VRAM. Target weights,
 -- drafter weights, target KV (scales with np × ctx-per-slot for
@@ -710,12 +777,21 @@ invariant DrafterTargetVocabIdentity {
 -- statistical-noise quality because the drafter never saw vision
 -- attention; rejecting them at verify is wasted work; routing
 -- multimodal around the drafter is the correct shape.
+--
+-- Note: vLLM PR #40898 has a no-op _warn_if_multimodal override
+-- (dflash.py:120-124) that allows multimodal inputs without
+-- implementing actual routing. ik_llama.cpp must implement the
+-- bypass at the SERVER / caller layer, not rely on inheritance —
+-- this is a real implementation effort, not a no-op.
 invariant MultimodalTurnsRoutedAroundDrafter {
     -- If the incoming prompt contains any of the target's vision
     -- token ids (vision_start, vision_end, image_token_id,
     -- video_token_id), the speculative-decoding path is bypassed
-    -- for that request. The server falls through to bare-target
-    -- decode.
+    -- for that request. The server-level router must detect this
+    -- before the speculative loop starts and route the request
+    -- through bare-target decode. Returning
+    -- LLAMA_DFLASH_MULTIMODAL_PROMPT from llama_dflash_draft_*
+    -- if the caller failed to route is the defensive fallback.
 }
 
 -- The hidden-feature extraction count matches what the drafter

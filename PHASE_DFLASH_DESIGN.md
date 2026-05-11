@@ -158,10 +158,26 @@ For ik_llama.cpp on branch `production/2026-q2-next`. Numbers are rough estimate
 - **Us:** **block_size=16 from the start, matching the trained model.** GGUF metadata is the source of truth; CLI override `--dflash-block-size N` exists for experimentation but defaults to whatever the drafter declared (16 for Qwen3.6-27B-DFlash). Earlier plan was to start at 8 for kernel-determinism safety, but the drafter was trained at 16 — running at 8 means the drafter sees a mask pattern it never saw in training, and acceptance is unpredictable. Better to absorb the verify-shape (`ne[1]=17`) uncertainty as a Gate-5 binding test than to mis-match training. If Gate-5 shows non-determinism at `ne[1]=17`, that becomes a kernel-side problem to solve, not a parameter to dodge.
 
 ### Multi-slot
-- **vLLM:** supports through standard speculative path (batched verify).
-- **SGLang:** supports (batched verify, with `--mamba-scheduler-strategy extra_buffer` for hybrid targets).
+- **vLLM:** supports through standard speculative path with **batched verify across slots** (single target forward over all slots' tokens). dflash.py:289-305.
+- **SGLang:** supports (batched verify), plus mandatory **`--mamba-scheduler-strategy extra_buffer`** for hybrid targets — a ping-pong track buffer per request for the recurrent state at np>1 + overlap scheduling (memory_pool.py:540-735).
 - **Upstream llama.cpp:** hard gated to np=1.
-- **Us:** **support np up to 8 from day one via per-slot dispatch.** The PHASE45 D10.e MTP investigation never determined whether the np>1 same-prompt divergence was specific to the on-target MTP head or a general property of the target's multi-slot path. DFlash uses zero on-target MTP code — that test (`OQ-DFLASH-INHERITS-MTP-MULTISLOT-BUG`) becomes meaningful and cheap to run at Gate-3.5. **Per-slot dispatch is correctness-deterministic by construction** (|B|=1 in every verify), at the cost of losing batched amortization. If Gate-3.5 comes back GREEN (DFlash dodges the bug), batched verify at np>1 becomes a Gate-7+ optimization.
+- **Us:** **support np up to 8 from day one via per-slot dispatch.** We **diverge from vLLM and SGLang** on this — both ship batched verify at np>1, but we don't know from the PHASE45 D10.e MTP investigation whether the np>1 same-prompt divergence was specific to the on-target MTP head or a general property of the target's multi-slot path. DFlash uses zero on-target MTP code — that test (`OQ-DFLASH-INHERITS-MTP-MULTISLOT-BUG`) becomes meaningful and cheap to run at Gate-3.5. **Per-slot dispatch is correctness-deterministic by construction** (|B|=1 in every verify), at the cost of losing batched amortization. If Gate-3.5 comes back GREEN (DFlash dodges the bug), batched verify at np>1 becomes a Gate-7+ optimization.
+
+### Hybrid target recurrent state at np>1
+
+Qwen3.6-27B has **48 of 64 layers as `linear_attention`** (DeltaNet) and **16 as `full_attention`**. The DeltaNet layers have a recurrent state per slot that must be saved-and-revertable across the speculative cycle: verify mutates the state across all `block_size=16` positions optimistically; on rejection the state must revert to the accept-prefix boundary.
+
+SGLang's `HybridReqToTokenPool` implements this via `req_index_to_mamba_ping_pong_track_buffer_mapping` — size 2 for overlap scheduling, size 1 for non-overlap. **At our `block_size=16` (vs MTP's `--draft 3`), the per-cycle recurrent-state revert footprint is ~16× more aggressive than the MTP path. At np=8 that's 128 simultaneous in-flight states to track and potentially revert.**
+
+Spec invariant `HybridTargetRecurrentStateTracking` codifies this requirement. Our implementation must provide an equivalent of SGLang's mamba ping-pong tracking, regardless of whether we adopt overlap scheduling (we don't, at first landing) — even sequential per-slot dispatch needs to revert recurrent state on rejection.
+
+### Distributed parallelism constraints
+
+Spec invariants `DPAttentionNotSupported` and `PipelineParallelismRequiresPpSizeEq1` mirror SGLang's hard-block enforcement (`server_args.py:3247-3306`). ik_llama.cpp currently has neither DP nor PP, so these are forward-looking guards. Tensor parallelism (which we use: `--tensor-parallel-size 2` for our 2× RTX 6000 split) is supported.
+
+### Multimodal bypass is implementation work, not inherited
+
+vLLM PR #40898 has a no-op `_warn_if_multimodal` override (`dflash.py:120-124`) that *allows* multimodal inputs without implementing actual routing. **Inheriting that "support" is unsafe** — drafter logits at vision tokens are statistical noise (no vision tower in drafter weights), and the verify path will reject them slowly. ik_llama.cpp must implement bypass at the SERVER layer: detect vision/video/audio tokens in the incoming prompt and route around the speculative path before `llama_dflash_draft_block` is called. Spec invariant `MultimodalTurnsRoutedAroundDrafter` now explicitly names this as caller-side enforcement, not inherited.
 
 ### VRAM budget at np=8
 
