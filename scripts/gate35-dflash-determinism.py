@@ -112,22 +112,54 @@ def main() -> int:
         max_tokens=MAX_TOKENS,
     )
 
+    def _capture(out_obj):
+        """Pull token_ids + text + finish_reason from a RequestOutput."""
+        comp = out_obj.outputs[0]
+        return {
+            "token_ids":     list(comp.token_ids),
+            "text":          comp.text,
+            "finish_reason": comp.finish_reason,
+        }
+
     # A: single request (np=1 shape)
     print("\n[A] single request (np=1) ...")
+    t_a = time.time()
     out_a = llm.generate([PROMPT], sp)
-    tok_a = list(out_a[0].outputs[0].token_ids)
+    secs_a = time.time() - t_a
+    cap_a = _capture(out_a[0])
+    tok_a = cap_a["token_ids"]
+    print(f"  A took {secs_a:.2f}s, {len(tok_a)} toks")
 
     # B: two identical requests in one batch (np=2 shape)
     print("[B] two identical requests (np=2) ...")
+    t_b = time.time()
     out_b = llm.generate([PROMPT, PROMPT], sp)
-    tok_b0 = list(out_b[0].outputs[0].token_ids)
-    tok_b1 = list(out_b[1].outputs[0].token_ids)
+    secs_b = time.time() - t_b
+    cap_b0 = _capture(out_b[0])
+    cap_b1 = _capture(out_b[1])
+    tok_b0 = cap_b0["token_ids"]
+    tok_b1 = cap_b1["token_ids"]
+    print(f"  B took {secs_b:.2f}s")
 
     # C: rerun np=2 (self-stability)
     print("[C] np=2 again (self-stability) ...")
+    t_c = time.time()
     out_c = llm.generate([PROMPT, PROMPT], sp)
-    tok_c0 = list(out_c[0].outputs[0].token_ids)
-    tok_c1 = list(out_c[1].outputs[0].token_ids)
+    secs_c = time.time() - t_c
+    cap_c0 = _capture(out_c[0])
+    cap_c1 = _capture(out_c[1])
+    tok_c0 = cap_c0["token_ids"]
+    tok_c1 = cap_c1["token_ids"]
+    print(f"  C took {secs_c:.2f}s")
+
+    captures = {
+        "A   (np=1)":  cap_a,
+        "B[0] (np=2)": cap_b0,
+        "B[1] (np=2)": cap_b1,
+        "C[0] (np=2)": cap_c0,
+        "C[1] (np=2)": cap_c1,
+    }
+    timings = {"A": secs_a, "B": secs_b, "C": secs_c}
 
     streams = {
         "A   (np=1)": tok_a,
@@ -165,6 +197,25 @@ def main() -> int:
     print(f"\n=== Gate-3.5 verdict: {verdict} ===")
     print(f"({n_diff} pairs diverged from the np=1 reference)")
 
+    # Per-pair divergence index (where streams first differ vs A).
+    divergence = {}
+    for k, v in streams.items():
+        if k.startswith("A "): continue
+        if v == ref:
+            divergence[k] = None
+        else:
+            idx = next(
+                (i for i in range(min(len(ref), len(v))) if ref[i] != v[i]),
+                min(len(ref), len(v)),
+            )
+            divergence[k] = {
+                "first_diff_idx": idx,
+                "ref_token":  ref[idx]  if idx < len(ref) else None,
+                "got_token":  v[idx]    if idx < len(v) else None,
+                "ref_prefix": ref[:idx][-20:],
+                "got_prefix": v[:idx][-20:],
+            }
+
     out_path = Path("/home/llm/yarn-agentic/data/gate35-dflash-determinism.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
@@ -173,6 +224,9 @@ def main() -> int:
                 "verdict": verdict,
                 "n_diff_pairs": n_diff,
                 "streams": {k: v for k, v in streams.items()},
+                "captures": captures,            # token_ids + text + finish_reason per output
+                "timings_secs": timings,         # wall time per of the three runs
+                "divergence": divergence,        # first-diff idx + surrounding context
                 "prompt": PROMPT,
                 "max_tokens": MAX_TOKENS,
                 "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
