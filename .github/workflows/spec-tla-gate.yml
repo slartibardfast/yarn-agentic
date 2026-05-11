@@ -1,0 +1,156 @@
+name: Spec / TLA synergy gate
+
+# Runs every push and PR. Catches Allium ↔ TLA+ ↔ test-name drift.
+# The negative-control runs make the gate strict: an invariant that no
+# longer fires under its bug-injection flag means the invariant has been
+# weakened — CI fails.
+
+on:
+  push:
+    branches: [main, "production/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  spec-tla:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Java (for TLC) + Python
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq default-jre python3
+          java -version
+          python3 --version
+
+      - name: Install Allium CLI
+        run: |
+          # Allium is a Rust binary distributed via crates.io.
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+          source "$HOME/.cargo/env"
+          cargo install allium --quiet
+          allium --version
+
+      - name: Fetch TLC tools
+        run: |
+          mkdir -p .tla-tools
+          curl -fsSL -o .tla-tools/tla2tools.jar \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+          ls -la .tla-tools/
+
+      - name: Allium syntax check
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/dflash/dflash.allium
+
+      - name: Allium obligation ledger drift check
+        run: |
+          source "$HOME/.cargo/env"
+          allium plan specs/dflash/dflash.allium > /tmp/obligations.json
+          # The committed ledger must match what `allium plan` produces now.
+          # Drift means someone edited the spec without regenerating.
+          diff data/dflash_test_obligations.json /tmp/obligations.json
+
+      - name: Generator skeleton names match TLA file
+        run: |
+          source "$HOME/.cargo/env"
+          allium parse specs/dflash/dflash.allium > /tmp/ast.json
+          python3 scripts/allium-to-tla.py /tmp/ast.json --module DFlashCycle \
+              > /tmp/DFlashCycle_skeleton.tla 2>/dev/null
+          # Every top-level + in-contract Allium invariant name must appear
+          # in the hand-tuned TLA file. The strict version of the synergy
+          # contract: NO drift in invariant names.
+          for inv in $(grep -E '^\s*\\?\* Allium' /tmp/DFlashCycle_skeleton.tla \
+                       | sed -E 's/.*: //; s/[^A-Za-z0-9_]+/ /g' \
+                       | awk '{print $1}' | sort -u); do
+            if ! grep -qE "^${inv}\b" specs/dflash/DFlashCycle.tla \
+                 && ! grep -qE "^${inv}\b" specs/dflash/DFlashMultiSlot.tla; then
+              echo "DRIFT: Allium invariant '${inv}' not bound in TLA"
+              exit 1
+            fi
+          done
+          echo "All Allium invariants bound in TLA — no name drift."
+
+      - name: TLC — DFlashCycle base (must PASS)
+        run: |
+          cd specs/dflash
+          java -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config DFlashCycle.cfg DFlashCycle.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -q "Error: Invariant" /tmp/tlc.log; then
+            echo "TLC found a counterexample on the BASE config — invariant violated unexpectedly:"
+            grep -A2 "Error: Invariant" /tmp/tlc.log
+            exit 1
+          fi
+          echo "DFlashCycle base PASSES — no counterexample."
+
+      - name: TLC — DFlashCycle negative control RejectionDropped (must FAIL)
+        run: |
+          cd specs/dflash
+          java -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config DFlashCycle_RejectionDropped.cfg DFlashCycle.tla \
+            > /tmp/tlc.log 2>&1 || true
+          if ! grep -q "Invariant NumRejectedTokensFlowsBackToProposer is violated" /tmp/tlc.log; then
+            echo "NEGATIVE CONTROL FAILED: expected 'NumRejectedTokensFlowsBackToProposer' violation, did not see it."
+            echo "Either the invariant was weakened or the bug-injection no longer triggers it."
+            tail -30 /tmp/tlc.log
+            exit 1
+          fi
+          echo "Negative control RejectionDropped correctly falsifies NumRejectedTokensFlowsBackToProposer."
+
+      - name: TLC — DFlashCycle negative control AnchorDrift (must FAIL)
+        run: |
+          cd specs/dflash
+          java -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config DFlashCycle_AnchorDrift.cfg DFlashCycle.tla \
+            > /tmp/tlc.log 2>&1 || true
+          if ! grep -q "Invariant AnchorPosPreserved is violated" /tmp/tlc.log; then
+            echo "NEGATIVE CONTROL FAILED: expected 'AnchorPosPreserved' violation."
+            tail -30 /tmp/tlc.log
+            exit 1
+          fi
+          echo "Negative control AnchorDrift correctly falsifies AnchorPosPreserved."
+
+      - name: TLC — DFlashMultiSlot base (must PASS)
+        run: |
+          cd specs/dflash
+          java -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config DFlashMultiSlot.cfg DFlashMultiSlot.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -q "Error: Invariant" /tmp/tlc.log; then
+            echo "TLC found a counterexample on the BASE multi-slot config:"
+            grep -A2 "Error: Invariant" /tmp/tlc.log
+            exit 1
+          fi
+          echo "DFlashMultiSlot base PASSES — no counterexample."
+
+      - name: TLC — multi-slot SingleGridDispatch (must FAIL)
+        run: |
+          cd specs/dflash
+          java -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config DFlashMultiSlot_SingleGridDispatch.cfg DFlashMultiSlot.tla \
+            > /tmp/tlc.log 2>&1 || true
+          if ! grep -q "Invariant PerSlotVerifyDispatchAtMultiSlot is violated" /tmp/tlc.log; then
+            echo "NEGATIVE CONTROL FAILED: expected 'PerSlotVerifyDispatchAtMultiSlot' violation."
+            tail -30 /tmp/tlc.log
+            exit 1
+          fi
+          echo "Negative control SingleGridDispatch correctly falsifies PerSlotVerifyDispatchAtMultiSlot."
+
+      - name: TLC — multi-slot CrossSlotRace (must FAIL)
+        run: |
+          cd specs/dflash
+          java -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config DFlashMultiSlot_CrossSlotRace.cfg DFlashMultiSlot.tla \
+            > /tmp/tlc.log 2>&1 || true
+          if ! grep -q "Invariant NoCrossSlotRegionOverlap is violated" /tmp/tlc.log; then
+            echo "NEGATIVE CONTROL FAILED: expected 'NoCrossSlotRegionOverlap' violation."
+            tail -30 /tmp/tlc.log
+            exit 1
+          fi
+          echo "Negative control CrossSlotRace correctly falsifies NoCrossSlotRegionOverlap."
