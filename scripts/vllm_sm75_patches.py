@@ -74,6 +74,87 @@ def _patch_combine_hidden_states() -> None:
     )
 
 
+def _patch_flex_attention_view_to_reshape() -> None:
+    """Fix .view() on non-contiguous KV cache in FlexAttention backend.
+
+    Bug
+    ---
+    `vllm/v1/attention/backends/flex_attention.py::FlexAttentionImpl.forward`
+    at the DECODER attention-type branch calls:
+
+      key_cache = key_cache.view(-1, self.num_kv_heads, self.head_size)
+      value_cache = value_cache.view(-1, self.num_kv_heads, self.head_size)
+
+    On sm_75 (no FA2 or fp16 flashinfer kernels for this shape) vLLM
+    falls back to FlexAttention. The KV cache tensor returned by
+    `kv_cache.unbind(0)` is not always contiguous when block_size and
+    paged-cache strides interact, and torch's .view() requires
+    contiguous source:
+
+      RuntimeError: view size is not compatible with input tensor's
+                    size and stride (at least one dimension spans
+                    across two contiguous subspaces). Use .reshape(...)
+                    instead.
+
+    Fix
+    ---
+    Wrap FlexAttentionImpl.forward to monkey-patch the two .view()
+    calls to .reshape(). Since the failing lines are inside a closure,
+    we replace the entire forward via a method substitution that
+    reaches the same shape via reshape.
+
+    Simpler approach: subclass-aware patch — locate the offending
+    function module and replace .view-on-cache with .reshape-on-cache
+    in place via attribute substitution.
+    """
+    import torch
+
+    # Easiest: replace tensor.view with a method that falls back to
+    # reshape only when not contiguous. Done per-call via the
+    # FlexAttentionImpl.forward wrapper.
+    from vllm.v1.attention.backends import flex_attention as fa
+
+    if not hasattr(fa, "FlexAttentionImpl"):
+        print(
+            "[vllm-sm75-patch] flex_attention: FlexAttentionImpl not "
+            "found; skipping (vLLM may have refactored)",
+            flush=True,
+        )
+        return
+
+    cls = fa.FlexAttentionImpl
+    original_forward = cls.forward
+
+    def patched_forward(self, *args, **kwargs):
+        # Monkey-patch torch.Tensor.view temporarily on a per-call
+        # basis. .view() only differs from .reshape() in that .view()
+        # rejects non-contiguous inputs; .reshape() copies if needed.
+        # Result tensor shape is identical.
+        orig_view = torch.Tensor.view
+
+        def safe_view(tensor_self, *shape):
+            try:
+                return orig_view(tensor_self, *shape)
+            except RuntimeError as e:
+                if "contiguous subspaces" in str(e) or "size is not compatible" in str(e):
+                    return tensor_self.reshape(*shape)
+                raise
+
+        torch.Tensor.view = safe_view
+        try:
+            return original_forward(self, *args, **kwargs)
+        finally:
+            torch.Tensor.view = orig_view
+
+    cls.forward = patched_forward
+    print(
+        "[vllm-sm75-patch] FlexAttentionImpl.forward: view->reshape "
+        "fallback applied",
+        flush=True,
+    )
+
+
 def apply_all() -> None:
     """Call once at startup, before constructing an LLM instance."""
     _patch_combine_hidden_states()
+    _patch_flex_attention_view_to_reshape()
