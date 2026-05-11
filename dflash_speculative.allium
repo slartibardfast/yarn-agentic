@@ -363,6 +363,12 @@ contract DraftBlockEmit {
         --     mask position together and produces all block_size
         --     candidate tokens in one forward.
         --
+        -- Paper §4.2 (Figure 4) confirms the training-time mask:
+        --   "Tokens attend bidirectionally within the same block
+        --    and to the corresponding injected target context
+        --    features, while attention across different blocks is
+        --    disallowed."
+        --
         -- vLLM PR #40898 enforces this split: dflash.py lines 397-444
         -- specialise SWA layers with causal=True attention metadata
         -- while keeping full_attention layers at causal=False.
@@ -844,7 +850,7 @@ open question "OQ-HYBRID-TARGET-EXTRACT [RESOLVED 2026-05-11]: prior concern (dr
 
 open question "OQ-DENOISE-SCHEDULE: single-step is the only schedule the published method measures. The drafter weights are trained for single-step denoising. Multi-step is admissible by the architecture but not by the trained weights; out of scope for 2026-q2-next."
 
-open question "OQ-BLOCK-SIZE-FOR-TURING [RESOLVED 2026-05-11]: match the trained model — block_size=16 from the start. Drafter was trained at block_size=16; running at 8 means showing the model a mask pattern (anchor + 7 masks) it never saw in training, with unpredictable acceptance. The verify-shape ne[1]=17 uncertainty becomes a Gate-5 binding test (does FA at this shape stay byte-deterministic on sm_75?) rather than a parameter to dodge. If Gate-5 binds RED, that becomes a kernel-side problem (specialise FA dispatch for ne[1]=17) not a draft-size choice."
+open question "OQ-BLOCK-SIZE-FOR-TURING [RESOLVED 2026-05-11; refined with paper finding]: ship at block_size=16 (drafter's trained value) to match training exactly. Paper §5.4.4 explicitly states: 'A model trained with a larger block size generalizes well to smaller inference-time block sizes' — so block_size=8 at inference is a *paper-blessed* fallback if Gate-5 shows FA non-determinism at ne[1]=17 on sm_75. (The reverse — trained-smaller, infer-larger — does NOT generalize, so we cannot go above 16.) Decision order: (a) ship at 16; (b) if Gate-5 binds RED at ne[1]=17, specialise FA dispatch for that shape OR fall back to block_size=8 (cite paper §5.4.4)."
 
 open question "OQ-QUANT-MIX: production target runs at IQ4_KS. The drafter ships BF16. The convert path that ik_llama.cpp eventually grows must support the cross-model SharedEmbedAndLMHead invariant when the two models declare different quants for the shared tensors. PHASE_DFLASH_DESIGN.md commits to materialising shared embed/lm_head from the target's IQ4_KS tensor; drafter never re-quantizes."
 
