@@ -454,17 +454,23 @@ contract DraftBlockEmit {
         -- batch-shape sensitivity at verify (1+N) shape).
 }
 
--- Verifies a draft block against the target. Constructs a verify
--- batch [anchor, t_0, ..., t_{N-1}] in a single contiguous run at
--- positions [anchor_pos, anchor_pos+1, ..., anchor_pos+block_size]
--- and runs one target forward. Returns per-position logits used by
--- AcceptPrefixDecision.
+-- Verifies a draft block against the target. The verify batch
+-- [anchor, t_0, ..., t_{N-1}] is a single contiguous run at
+-- positions [anchor_pos, anchor_pos+1, ..., anchor_pos+block_size];
+-- the target consumes it in one forward pass and returns
+-- per-position logits used by AcceptPrefixDecision.
+--
+-- The contract takes a VerifyBatch (which records anchor +
+-- block_size + tokens together) rather than the (block, anchor)
+-- pair. Either form is computationally equivalent; VerifyBatch
+-- makes the canonical input shape explicit and is what
+-- ConstructVerifyBatch (out of scope here; trivially derivable
+-- from DraftBlock + AnchorToken) would emit.
 contract TargetVerifyBlock {
     invoke: (
         target: TargetModel,
-        block: DraftBlock,
+        batch: VerifyBatch,
         target_kv: TargetKVCache,
-        anchor: AnchorToken,
     ) -> VerifyLogits
 
     @invariant VerifyBatchShape

@@ -312,8 +312,8 @@
       "description": "Verify implementation satisfies contract TargetVerifyBlock.invoke",
       "source_construct": "TargetVerifyBlock.invoke",
       "source_span": {
-        "start": 22018,
-        "end": 22168
+        "start": 22386,
+        "end": 22508
       }
     },
     {
@@ -322,8 +322,8 @@
       "description": "Verify implementation satisfies contract AcceptPrefixDecision.invoke",
       "source_construct": "AcceptPrefixDecision.invoke",
       "source_span": {
-        "start": 26104,
-        "end": 26250
+        "start": 26444,
+        "end": 26590
       }
     },
     {
@@ -332,8 +332,8 @@
       "description": "Verify implementation satisfies contract AdvanceState.invoke",
       "source_construct": "AdvanceState.invoke",
       "source_span": {
-        "start": 29259,
-        "end": 29416
+        "start": 29599,
+        "end": 29756
       }
     },
     {
@@ -343,8 +343,8 @@
       "source_construct": "SharedEmbedAndLMHead",
       "expression": "}",
       "source_span": {
-        "start": 31713,
-        "end": 32004
+        "start": 32053,
+        "end": 32344
       }
     },
     {
@@ -354,8 +354,8 @@
       "source_construct": "FeatureSourceFixedPerDeployment",
       "expression": "}",
       "source_span": {
-        "start": 32192,
-        "end": 32347
+        "start": 32532,
+        "end": 32687
       }
     },
     {
@@ -365,8 +365,8 @@
       "source_construct": "BlockSizeFixedAtContextStart",
       "expression": "}",
       "source_span": {
-        "start": 32698,
-        "end": 33263
+        "start": 33038,
+        "end": 33603
       }
     },
     {
@@ -376,8 +376,8 @@
       "source_construct": "PerDeploymentDeterminism",
       "expression": "}",
       "source_span": {
-        "start": 33693,
-        "end": 34029
+        "start": 34033,
+        "end": 34369
       }
     },
     {
@@ -387,8 +387,8 @@
       "source_construct": "SpeculativeCycleAtomicity",
       "expression": "}",
       "source_span": {
-        "start": 34356,
-        "end": 34574
+        "start": 34696,
+        "end": 34914
       }
     },
     {
@@ -398,8 +398,8 @@
       "source_construct": "SyncBeforeStepAdvance",
       "expression": "}",
       "source_span": {
-        "start": 34977,
-        "end": 35354
+        "start": 35317,
+        "end": 35694
       }
     },
     {
@@ -409,8 +409,8 @@
       "source_construct": "NoCrossSlotRegionOverlap",
       "expression": "}",
       "source_span": {
-        "start": 35942,
-        "end": 36800
+        "start": 36282,
+        "end": 37140
       }
     },
     {
@@ -420,8 +420,8 @@
       "source_construct": "DraftKVViaInjectionNotCrossAttention",
       "expression": "}",
       "source_span": {
-        "start": 37200,
-        "end": 38185
+        "start": 37540,
+        "end": 38525
       }
     },
     {
@@ -431,8 +431,8 @@
       "source_construct": "PerSlotDraftKVCache",
       "expression": "}",
       "source_span": {
-        "start": 38395,
-        "end": 39036
+        "start": 38735,
+        "end": 39376
       }
     },
     {
@@ -442,8 +442,8 @@
       "source_construct": "HybridTargetRecurrentStateTracking",
       "expression": "}",
       "source_span": {
-        "start": 39784,
-        "end": 40846
+        "start": 40124,
+        "end": 41186
       }
     },
     {
@@ -453,8 +453,8 @@
       "source_construct": "DPAttentionNotSupported",
       "expression": "}",
       "source_span": {
-        "start": 41058,
-        "end": 41468
+        "start": 41398,
+        "end": 41808
       }
     },
     {
@@ -464,8 +464,8 @@
       "source_construct": "PipelineParallelismRequiresPpSizeEq1",
       "expression": "}",
       "source_span": {
-        "start": 41470,
-        "end": 41859
+        "start": 41810,
+        "end": 42199
       }
     },
     {
@@ -475,8 +475,8 @@
       "source_construct": "ContextBudgetAtNp8",
       "expression": "}",
       "source_span": {
-        "start": 42172,
-        "end": 42839
+        "start": 42512,
+        "end": 43179
       }
     },
     {
@@ -486,8 +486,8 @@
       "source_construct": "DrafterIsDenseQwen3",
       "expression": "}",
       "source_span": {
-        "start": 43149,
-        "end": 43355
+        "start": 43489,
+        "end": 43695
       }
     },
     {
@@ -497,8 +497,8 @@
       "source_construct": "DrafterTargetVocabIdentity",
       "expression": "}",
       "source_span": {
-        "start": 43621,
-        "end": 43850
+        "start": 43961,
+        "end": 44190
       }
     },
     {
@@ -508,8 +508,8 @@
       "source_construct": "MultimodalTurnsRoutedAroundDrafter",
       "expression": "}",
       "source_span": {
-        "start": 44656,
-        "end": 45199
+        "start": 44996,
+        "end": 45539
       }
     },
     {
@@ -519,8 +519,8 @@
       "source_construct": "SourceLayerCountMatchesDrafterTraining",
       "expression": "}",
       "source_span": {
-        "start": 45600,
-        "end": 45884
+        "start": 45940,
+        "end": 46224
       }
     },
     {
@@ -530,8 +530,8 @@
       "source_construct": "TargetLayerIdsPlusOneAtRuntime",
       "expression": "}",
       "source_span": {
-        "start": 46322,
-        "end": 46663
+        "start": 46662,
+        "end": 47003
       }
     },
     {
@@ -541,8 +541,8 @@
       "source_construct": "NoTreeDraftingNoChainRollout",
       "expression": "}",
       "source_span": {
-        "start": 46871,
-        "end": 46996
+        "start": 47211,
+        "end": 47336
       }
     }
   ]
