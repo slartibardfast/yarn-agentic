@@ -1,0 +1,58 @@
+{
+  "_schema_version": 1,
+  "_comment": [
+    "Explicit binding file for the DFlash Allium <-> TLA+ synergy contract.",
+    "",
+    "Three sections:",
+    "",
+    "  tla_helpers       — TLA+ symbols that are intentionally NOT invariants:",
+    "                      types, actions, state-machine scaffolding, helper",
+    "                      functions, symmetry sets. These are whitelisted",
+    "                      so the reverse-direction drift check skips them.",
+    "",
+    "  divergences       — pairs where a TLA+ INVARIANT must have a different",
+    "                      name from its source Allium invariant. Each entry",
+    "                      records the Allium name, the TLA+ name, and a",
+    "                      rationale. Should stay empty under normal use; the",
+    "                      naming convention prefers identical names. Adding",
+    "                      a divergence requires a justification (TLA+",
+    "                      keyword conflict, semantic split, etc.).",
+    "",
+    "  bindings_external — Allium invariants that are intentionally NOT",
+    "                      bound by a TLA+ invariant. Either bound by a C++",
+    "                      load-time test, an empirical Gate, or out-of-scope.",
+    "                      Recording them here suppresses the forward-drift",
+    "                      check for that name, with rationale."
+  ],
+
+  "tla_helpers": [
+    "Init",
+    "Next",
+    "Spec",
+    "TypeOK",
+    "BoundedStep",
+    "BlockRecord",
+    "PCValues",
+    "StreamStatus",
+    "NoBlock",
+    "AllRegions",
+    "SlotSymmetry",
+    "DraftBlockEmit",
+    "TargetVerifyBlock",
+    "AcceptPrefixDecision",
+    "AdvanceState",
+    "CycleStepPerSlot",
+    "CycleStepSingleGrid",
+    "CompleteSlotStream",
+    "ResetSlot",
+    "StartStreamPerSlot",
+    "CompleteStream",
+    "DispatchSingleGrid",
+    "StartStreamWithBugD",
+    "RegionsOf"
+  ],
+
+  "divergences": [],
+
+  "bindings_external": []
+}

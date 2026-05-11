@@ -56,28 +56,17 @@ jobs:
           # Drift means someone edited the spec without regenerating.
           diff data/dflash_test_obligations.json /tmp/obligations.json
 
-      - name: Generator skeleton names match TLA file
+      - name: Binding integrity (Allium ↔ TLA ↔ C++)
         run: |
           source "$HOME/.cargo/env"
-          allium parse specs/dflash/dflash.allium > /tmp/ast.json
-          python3 scripts/allium-to-tla.py /tmp/ast.json --module DFlashCycle \
-              > /tmp/DFlashCycle_skeleton.tla 2>/dev/null
-          # Extract Allium invariant names from skeleton comment lines.
-          # Only match lines of the form "\* Allium ...: <Name>" where
-          # <Name> begins with an uppercase letter — this rejects the
-          # section-header lines that end with a bare colon.
-          NAMES=$(grep -hoE '\\?\* Allium[^:]*: [A-Z][A-Za-z0-9_]+' /tmp/DFlashCycle_skeleton.tla \
-                   | sed -E 's/.*: //' | sort -u)
-          DRIFT=0
-          for inv in $NAMES; do
-            if ! grep -qE "^${inv}[[:space:]]" specs/dflash/DFlashCycle.tla \
-                 && ! grep -qE "^${inv}[[:space:]]" specs/dflash/DFlashMultiSlot.tla; then
-              echo "DRIFT: Allium invariant '${inv}' not bound in TLA"
-              DRIFT=1
-            fi
-          done
-          [ "$DRIFT" -eq 0 ] || exit 1
-          echo "All Allium invariants bound in TLA — no name drift. ($(echo "$NAMES" | wc -l) names checked)"
+          # scripts/check-bindings.py enforces five independent checks:
+          #   1. Forward — every Allium invariant bound in TLA or external
+          #   2. Reverse — every TLA def is an invariant, helper, or divergence
+          #   3. C++ test citations map to real Allium invariants
+          #   4. Divergence entries are well-formed
+          #   5. External-binding entries are well-formed
+          # Exit code is the failure count.
+          python3 scripts/check-bindings.py
 
       - name: TLC — DFlashCycle base (must PASS)
         run: |
