@@ -18,7 +18,9 @@ Concretely:
 - Draft forward becomes plain self-attention against pre-written K/V cache slots — no encoder/decoder dual-context, no `cross.v_embd` monotonic growth, no graph-cache invalidation per cycle.
 - The drafter's self-attention path on sm_75 routes to **`mma_new`** (per PHASE5 unit tests) which is byte-deterministic at production shape — we keep the existing kernel determinism guarantees.
 
-The cost is one extra `K_proj + V_proj + RMSNorm(K) + RoPE(K) + cache_write` per draft layer per accepted token. vLLM and SGLang have fused Triton kernels for it on Hopper; **we write the Turing-tuned bespoke equivalent from day one**. Reason: the Gate 0 vLLM measurement showed DFlash round time is ~70% fixed overhead (~108 ms of 148 ms total at spec=15, dominated by PIECEWISE CUDA graphs + drafter forward + per-step kernel launches). On sm_75 we don't pay vLLM's torch.compile/Pythonic tax, but per-layer scalar K/V projection alone would still cost 5-10 ms × 30 drafter layers × MAL anchor tokens per cycle — adding back the overhead we're trying to avoid. **Fused KV projection is load-bearing for Gate 6, not a deferred perf knob.** Scalar reference exists only as a correctness oracle for the unit tests; production code path is always fused. See companion `kernel-design.md` for the kernel signatures and SM_75 register/SMEM budget.
+The cost is one extra `K_proj + V_proj + RMSNorm(K) + RoPE(K) + cache_write` per draft layer per accepted token. vLLM and SGLang have fused Triton kernels for it on Hopper; **we write the Turing-tuned bespoke equivalent from day one**. Reason: the Gate 0 vLLM measurement showed DFlash round time is ~70% fixed overhead (~108 ms of 148 ms total at spec=15, dominated by PIECEWISE CUDA graphs + drafter forward + per-step kernel launches). On sm_75 we don't pay vLLM's torch.compile/Pythonic tax, but per-layer scalar K/V projection would still cost meaningful time per cycle. **Fused KV projection is load-bearing for Gate 6, not a deferred perf knob.** Scalar reference exists only as a correctness oracle for the unit tests; production code path is always fused. See companion `kernel-design.md` for the kernel signatures and SM_75 register/SMEM budget.
+
+**Drafter is small.** Confirmed from `/opt/models/qwen36-27b-dflash/config.json`: 5 layers (4 sliding-window + 1 full), hidden_size=5120, num_attention_heads=32, num_kv_heads=8 (GQA factor 4), head_dim=128, intermediate_size=17408. Target_layer_ids = [1, 16, 31, 46, 61] (one extracted feature per drafter layer). This reframes the "is a mega-kernel viable on sm_75?" question — the research caution was about 30-layer mega-kernels; 5-layer is well within the published envelope.
 
 ## 2. Reuse, don't port
 
@@ -143,7 +145,7 @@ For ik_llama.cpp on branch `production/2026-q2-next`. Numbers are rough estimate
 - **vLLM:** one fused `F.linear` emitting `[L * 2 * kv_size, hidden]` for all draft layers at once + fused norm+RoPE Triton kernel.
 - **SGLang:** same fused path on supported hardware, per-layer fallback otherwise.
 - **Upstream:** the encoder graph IS the projection (one mul_mat + RMSNorm), then per-layer K/V are computed inside the decoder graph via standard wk/wv on the projected feature.
-- **Us:** **bespoke fused CUDA kernel from day one** — fused `K_proj + V_proj + RMSNorm + RoPE + cache_write` per layer, tuned for sm_75 register/SMEM budget. Lives at `ggml-cuda/dflash-inject-kv.cu`. Scalar reference path exists in the same file under a unit-test-only compile flag and is driven by `tests/test-dflash-inject-fused.cpp` for bit-identical correctness validation. **Production code never branches on a scalar-vs-fused mode.** Rationale: per-layer scalar dispatch at 5-10 ms × 30 layers × MAL≈3.3 anchors per cycle would consume ~500 ms-1.5 s on every accept loop — would never clear Gate 6. Fused is the only viable path on sm_75. See `kernel-design.md` for kernel signature, threadblock geometry, and the Allium-invariant ↔ kernel binding table.
+- **Us:** **bespoke fused CUDA kernel from day one** — fused `K_proj + V_proj + RMSNorm + RoPE + cache_write` per layer per anchor, tuned for sm_75 register/SMEM budget. Lives at `ggml-cuda/dflash-inject-kv.cu`. Scalar reference path exists in the same file under a unit-test-only compile flag and is driven by `tests/test-dflash-inject-fused.cpp` for bit-identical correctness validation. **Production code never branches on a scalar-vs-fused mode.** With 5 drafter layers and MAL≈3 anchors per cycle, total inject work is 15 fused-kernel CTAs per cycle — small but on the hot path. Fused execution + WMMA m16n16k16 fp16 path is what keeps it under the per-cycle budget. See `kernel-design.md` for kernel signature, threadblock geometry, and the Allium-invariant ↔ kernel binding table.
 
 ### Source-layer indices
 - **vLLM:** from drafter checkpoint config (`dflash_config.target_layer_ids`).
@@ -210,6 +212,37 @@ Production 2× Quadro RTX 6000 = 48 GiB aggregate. Drafter K/V (4 SWA layers cap
 ### CLI surface
 - **Upstream:** `--dflash` flag in `llama-speculative-simple`.
 - **Us:** `--dflash` plus `--dflash-block-size N` plus `--dflash-think on|off` (the equivalent of `LLAMA_SPEC_NO_THINK` for Qwen3-family — major accept-rate lever per upstream PR notes). The server picks these up via the existing `params_base.speculative.*` plumbing.
+
+## 5.5 Batch-invariance recipe (np>1 ship target requires this)
+
+We design for np>1 from day one (np=1 is a subset). Gate 5b binds: drafter logits per slot must be **bit-identical across np ∈ {1, 2, 4, 8}** for the same slot input. vLLM's Gate 0 measurement showed what happens otherwise — accept rate collapses to 0% at np=8 because batched-matmul logit drift trips `argmax_match`. Bit-invariance is enforced by the Thinking Machines Lab 3-kernel pattern (see [Defeating Nondeterminism in LLM Inference](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/) and llama.cpp PR #16016 for a CUDA reference implementation).
+
+The three batch-invariant kernels and their constraints:
+
+- **RMSNorm** — one CUDA block per row. No cross-block reduction. Inner sum via `__shfl_xor_sync` warp-shuffle butterfly; block-level via `__syncthreads` + SMEM tree where needed. **No `atomicAdd<float>` ever.**
+- **MatMul / GEMM** — fixed compile-time tile dims for every matmul on the drafter path. No Split-K, no global_reduce. Each output tile is fully accumulated within one CTA across the entire K dimension. Persistent-style: tiles are dispatched by `blockIdx`, not by arrival order.
+- **Attention (verify-shape FA)** — fix split-**size**, not split-count. `KV_BLOCK_SIZE` is a compile-time constant. The number of splits varies with sequence length, but each split's accumulation is independent of how many concurrent rows the kernel is processing. One block per output row.
+
+**Forbidden on the drafter path:**
+- **Marlin INT4 kernels** — Marlin uses Split-K with `global_reduce` barrier; per-row output is M-dependent (confirmed by source reading of `IST-DASLab/marlin/marlin/marlin_cuda_kernel.cu`). Cannot be made batch-invariant without rewriting `global_reduce`. **Build infrastructure forbids linking Marlin on the drafter path.** Drafter weights stay fp16 (no quantization) for the first landing; if drafter ever quantized in the future, ggml's MMQ Q4_0 path is the only allowed kernel (already batch-invariant on sm_75).
+- **`ggml_cuda_flash_attn_ext_wmma_f16` as-is** — PHASE45 D10.e probe (`MEMORY.md:3300-3500`) measured row asymmetry at layer 3 onward (δ=1.27e-3, doubling every ~4 layers). The verify kernel must be a new file (`dflash-verify-attn.cu`) implementing the fixed-split-size pattern from scratch; we don't inherit WMMA-FA's row-asymmetry bug.
+- **Cross-block `atomicAdd<float>`** — non-deterministic accumulation order. Inner reductions via warp-shuffle, block-level via SMEM tree, grid-level via explicit kernel ordering (grid.sync).
+- **Occupancy-tuned heuristics for tile shape** — every tile dim must be a compile-time constant. No "pick best tile based on M".
+
+**Reference implementations to study (in this order):**
+
+1. [llama.cpp PR #16016](https://github.com/ggml-org/llama.cpp/pull/16016) — deterministic inference mode in CUDA. Implements the TML 3-kernel pattern. Closest reference for what we need to write.
+2. [thinking-machines-lab/batch_invariant_ops](https://github.com/thinking-machines-lab/batch_invariant_ops) — canonical Triton implementation (architecture-agnostic).
+3. [ssiu/flash-attention-turing](https://github.com/ssiu/flash-attention-turing) — only public FA forward kernel actually tuned for sm_75 with head_dim=128, ~63% of peak on T4. Read for the verify-attn layout (we write our variant; this is the structural reference).
+4. [CUTLASS sm_75 paths](https://github.com/NVIDIA/cutlass/tree/main/include/cutlass/gemm/warp) — `ldmatrix` swizzle and per-warp tile patterns.
+
+**Numerical determinism layered constraints:**
+- `wmma::mma_sync` is itself deterministic on sm_75 (tensor cores produce identical output for identical input).
+- `ldmatrix.sync` on sm_75 has **no per-lane predication** — all 32 lanes must provide valid SMEM addresses (sm_80+ tolerated unused lanes). For verify-shape kernels with M<16, this means padding SMEM addresses, not masking lanes.
+- SMEM swizzle pattern (or `+8 halves` row-stride padding) is required to avoid 32-way bank conflicts on the K-major operand of `ldmatrix`. CUTLASS-style XOR swizzle `(row * stride) ^ ((row & 0x7) << 3)` is conflict-free for fp16 K=64.
+- Block-to-SM mapping is non-deterministic, but block_idx → output tile mapping is fixed at kernel design time. Tiles assigned by `blockIdx`, not by arrival order. SM-arrival order is irrelevant to output values.
+
+**Acceptance gate**: Gate 5b binds bit-invariance via test-dflash-determinism-np-invariance (new test). The test hashes per-slot drafter logits at np∈{1,2,4,8} for the same slot input and asserts all hashes match.
 
 ## 6. Gates — order of work and falsifiable stop conditions
 
@@ -304,13 +337,30 @@ Run the determinism fixture (`scripts/test-mtp-multislot-determinism.sh` adapted
 
 Token cost: 10-20k.
 
-### Gate 7 — Batched verify at np>1 (CLOSED — no path)
+### Gate 5b — Drafter np-invariance (NEW; binds np>1 ship target)
 
-Originally conditional on Gate 3.5 GREEN. Gate 3.5 came back GREEN but Gate 0's multi-prompt np>1 measurements showed DFlash's accept rate collapses at np>1 even with stable byte-determinism (rejection sampler is brittle to batched-matmul logit drift). vLLM data on the same hardware shows DFlash at np=8 = 0.21× vanilla; MTP-method at np=8 = 0.79× vanilla. Neither spec method beats vanilla batched at np>1 on this stack.
+After Gate 5 (np=1 determinism). Verify that drafter logits per slot are bit-identical across np ∈ {1, 2, 4, 8} for the same slot input. The test runs the bespoke drafter forward kernel at each np value with N identical-content slots and hashes per-slot output logits. All hashes must match.
 
-**Closed without implementation.** The bandwidth amortization win at np>1 belongs to vanilla batched decode (4.75× aggregate at np=8 per vLLM measurement), not to spec-decode. If ik_llama.cpp wants the np>1 aggregate uplift, the path is continuous-batching for vanilla — not multi-slot DFlash. See companion memory `project_continuous_batching_vs_perslot_dispatch.md`.
+- **PASS:** SHA-256 of per-slot drafter logits identical across np ∈ {1, 2, 4, 8}. The TML 3-kernel batch-invariance recipe (§5.5) is correctly implemented. Gate 7 unlocks.
+- **FAIL:** Some slot's logits differ across np values. Diagnose: which kernel introduced shape-dependence (likely a matmul tile heuristic or an attention split-count variation). Fix per §5.5 constraints. Re-run.
 
-Token cost saved: ~30-50k.
+Test file: `tests/test-dflash-determinism-np-invariance.cpp`. Runs at every PR.
+
+Token cost: 15-25k.
+
+### Gate 7 — Batched verify at np>1 (REOPENED, conditional on Gate 5b)
+
+vLLM's Gate 0 measurement showed DFlash and MTP both lose to vanilla batched at np>1 on the vLLM stack. Root cause: drafter logits drift under batched matmul → rejection sampler argmax-mismatches → accept rate collapses to 0% → spec decode becomes "vanilla + drafter overhead" = slower.
+
+**Our bespoke kernels are designed to defeat this**: §5.5 commits the TML 3-kernel batch-invariance recipe + Gate 5b binds it. **If Gate 5b passes**, accept rate at np>1 should preserve at np=1 levels (MAL ≈ 2.91 at spec=4). With preserved accept rate, DFlash at np=8 produces ~3 × N = 24 tokens per round vs vanilla's 8, giving ~3× aggregate speedup over vanilla batched. **This is the actual prize.**
+
+Open Gate 7 only after Gate 5b GREEN.
+
+- **PASS:** Aggregate DFlash throughput at np=8 ≥ 1.8× vanilla batched throughput at np=8 (measured on same hardware, same prompt set). Ship np=8 profile.
+- **NEUTRAL (1.0–1.8×):** DFlash wins at np>1 but not by enough to justify the operational complexity. Document; ship np=1 only as Gate 6.
+- **FAIL (<1.0×):** Gate 5b passed but DFlash still loses to vanilla batched. Diagnose: kernel-level inefficiency in our verify pass, or DFlash's verify-cost growth at higher np exceeds its accept-rate advantage. Document; ship np=1 only.
+
+Token cost: 30-50k.
 
 ### Gate 6 — Qwen3.6-27B speedup
 
@@ -360,7 +410,7 @@ We have not stress-tested causal-SWA self-attention on sm_75 at the drafter's la
 
 ## 9. What success doesn't try to achieve
 
-- **np>1 concurrency for spec decoding.** Gate 0 closed this empirically: DFlash and MTP both lose to vanilla batched at np>1 on this hardware. Continuous-batching vanilla decode is the np>1 path; see `project_continuous_batching_vs_perslot_dispatch.md`. Separate workstream if pursued.
+- **(MOVED IN-SCOPE 2026-05-12) np>1 concurrency for spec decoding** — was closed by Gate 0 empirically (DFlash/MTP both lose to vanilla batched at np>1 on vLLM). The vLLM failure mode was batch-shape-dependent drafter logit drift collapsing accept rate, NOT a structural property of multi-slot spec decoding. Our bespoke kernels are designed to defeat this via the TML 3-kernel batch-invariance recipe (§5.5); Gate 5b binds it. If Gate 5b passes, np>1 is the actual prize (Gate 7). See companion memory `project_continuous_batching_vs_perslot_dispatch.md` for the architectural reasoning.
 - **Multimodal image-text-to-text.** Separate workstream (`project_qwen36_27b_multimodal_exploration` memory entry).
 - **Replacing MTP entirely.** MTP stays as the fallback profile; DFlash adds an alternative. The user can flip between them. Per Gate 6 NEUTRAL outcome handling, even if DFlash doesn't clear 1.5× we ship as an option.
 - **Tree drafting / multi-branch DFlash.** Block-emit only. Tree drafting on hybrid recurrent attention is unsolved (`project_tree_fanout_hybrid_recurrent_blocker` memory entry).
@@ -389,6 +439,11 @@ Resolved from `dflash_speculative.allium`'s open questions, where this doc commi
 - **OQ-VLLM-PR-MERGE-RISK:** we anchor on the empirical Gate 0 vLLM measurements + the published paper, not on the PR's implementation choices. vLLM PR is correctness oracle.
 - **OQ-FAILURE-MODE-ON-MISSING-DRAFT:** at first landing, hard fail (matches MTP-IR's current pattern). Move to graceful-fallback after the path is shipped and measured.
 - **OQ-FUSION-PATH:** **bespoke fused CUDA kernel from day one** (resolved 2026-05-12). Scalar reference exists only as unit-test oracle. See `kernel-design.md` for kernel signatures and SM_75 budget. (§5 "Projection fan-out")
+- **OQ-NP-SCOPE:** np>1 is design target from day one; np=1 is a subset (resolved 2026-05-12). Reopens Gate 7 conditional on Gate 5b GREEN. (§5 "Multi-slot", §5.5 "Batch-invariance recipe")
+- **OQ-DRAFTER-PRECISION:** drafter weights stay fp16 (no quantization). Drafter was trained against BF16 targets; quantizing drafter weights compounds drift on top of target INT4 perturbation. ~3.3 GiB on disk fits comfortably at fp16 (~1.65 GiB/GPU at TP=2). Marlin kernels are explicitly forbidden on the drafter path (build-time guard) — if drafter ever quantized later, only ggml MMQ Q4_0 is allowed (already batch-invariant on sm_75). (§5.5)
+- **OQ-DRAFTER-FORWARD-STRUCTURE:** persistent single mega-kernel — all 5 drafter layers + lm_head in one cooperative launch with grid.sync between layers. The original "30-layer mega-kernel on sm_75 is outside published envelope" concern doesn't apply at 5 layers. (Lock #11, resolved 2026-05-12)
+- **OQ-VERIFY-ATTN:** dedicated `ggml-cuda/dflash-verify-attn.cu` written from scratch using Thinking Machines Lab's fixed-split-size pattern + sm_75-specific PTX `mma.sync.m16n8k8` (NOT WMMA C++ API, NOT the existing `wmma_f16` FA path — both have batch-shape sensitivity that violates Gate 5b). Reference layout from `ssiu/flash-attention-turing` for head_dim=128. (§5.5)
+- **OQ-BATCH-INVARIANCE-RECIPE:** TML 3-kernel pattern + llama.cpp PR #16016 as CUDA reference. Bit-identical drafter logits across np ∈ {1,2,4,8} for same slot input is the Gate 5b binding test. (§5.5)
 
 ## 12. Companion documents
 
