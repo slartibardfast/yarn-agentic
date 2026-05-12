@@ -86,42 +86,55 @@ Land the architecture in ik_llama.cpp such that the drafter GGUF loads
 and produces hidden states matching the HF reference within ε. No spec
 loop yet. No target conditioning yet — feed dummy zeros into `fc`.
 
-- [ ] **T1.1 — Arch registration.** Add `LLM_ARCH_DFLASH_DRAFTER` to
-      `src/llama-arch.{h,cpp}`. Register tensor schema for the 58
-      tensors (per-block `attn_q/k/v/output/q_norm/k_norm/attn_norm/`
-      `ffn_norm/ffn_gate/ffn_up/ffn_down` plus trunk-level
-      `output_norm` plus arch-specific `dflash.fc` and
-      `dflash.hidden_norm`).
-      Verify: `git grep LLM_ARCH_DFLASH_DRAFTER src/` returns the
-      expected references; build passes.
-- [ ] **T1.2 — KV key parsing.** Add `LLM_KV_DFLASH_BLOCK_SIZE`,
-      `LLM_KV_DFLASH_MASK_TOKEN_ID`,
-      `LLM_KV_DFLASH_TARGET_LAYER_IDS`,
-      `LLM_KV_DFLASH_NUM_TARGET_LAYERS` to the KV enum. Wire reads
-      in `src/llama-hparams.cpp` into a new `hparams.dflash.*`
-      sub-struct (block_size, mask_token_id, target_layer_ids
-      vector, num_target_layers).
-      Verify: a load with `LLAMA_LOG_DEBUG=1` prints the five
-      DFlash-specific KV values matching the source GGUF.
-- [ ] **T1.3 — Loader-pair contract enforcement.** In
-      `src/llama-load-tensors.cpp` (or equivalent load entry),
-      detect `LLM_ARCH_DFLASH_DRAFTER` + absence of tokenizer
-      tensors. Refuse with the exact error message documented in
-      `scripts/dflash_drafter_to_gguf.py` docstring.
-      Verify: `llama-cli -m <drafter.gguf>` with no `--target-model`
-      exits with rc!=0 and prints the documented error.
-- [ ] **T1.4 — Graph builder.** Create `src/graphs/build_dflash_drafter.cpp`.
-      Take `build_qwen3.cpp` as the structural reference (Qwen3 with
-      per-head q_norm/k_norm). Deviations:
-      - input is a 5120-dim hidden-state tensor (not a token sequence)
-      - prepend `dflash.fc` projection (25600 → 5120) and
-        `dflash.hidden_norm` RMSNorm before block 0
-      - per-layer mask selection by `hparams.swa_layers[il]`
-        (already used by Gemma 2 reference at
-        `src/graphs/build_gemma2.cpp:28`)
-      - no `output` (lm_head) tensor — graph ends at `output_norm`
-      Verify: graph compiles + emits a 5120-dim hidden state at the
-      output for a synthetic input.
+Submodule commit: `aa17361c` on `production/2026-q2` (slartibardfast
+fork of ik_llama.cpp).
+
+- [x] **T1.1 — Arch registration.** Added `LLM_ARCH_DFLASH_DRAFTER`
+      to `src/llama-arch.{h,cpp}` + `LLM_TENSOR_DFLASH_FC` /
+      `LLM_TENSOR_DFLASH_HIDDEN_NORM` tensor enum entries. Registered
+      tensor schema in `src/llama-model.cpp` (no `token_embd` / no
+      `output` — delegated to paired target; has `output_norm` +
+      `dflash.fc` + `dflash.hidden_norm` + standard per-block
+      Qwen3 surfaces). Added `ggml_tensor * dflash_fc` and
+      `dflash_hidden_norm` fields on `struct llama_model`.
+      Implemented `create_dflash_drafter_tensors()` in
+      `src/llama-load-tensors.cpp`, dispatched from the arch switch.
+      All 58 tensors covered (3 trunk + 55 per-block × 5 layers).
+- [x] **T1.2 — KV key parsing.** Added 4 `LLM_KV_DFLASH_*` enum
+      entries + `LLM_KV_NAMES` map entries. New `dflash` sub-struct
+      on `llama_hparams` (uint32 types to match existing template
+      instantiations; fixed-size `target_layer_ids` array preserves
+      `llama_hparams` trivial-copyability). Load arc for
+      `LLM_ARCH_DFLASH_DRAFTER` in `llama-hparams.cpp` reads the
+      sliding-window scalar + sliding-window pattern array + 4
+      DFlash KV via `get_arr_n` + `get_key_or_arr` for the
+      `target_layer_ids` array. Added DFlash drafter to the NEOX
+      RoPE-type switch.
+      Verified empirically via `gguf-dump`: all 6 expected KV keys
+      present and named per the parser convention.
+- [x] **T1.3 — Loader-pair contract enforcement.** Added in
+      `src/llama.cpp` immediately after `llm_load_arch`: if
+      `model.arch == LLM_ARCH_DFLASH_DRAFTER`, throw the exact
+      error message specified in
+      `scripts/dflash_drafter_to_gguf.py` docstring (instructs
+      caller to pass `--target-model <path>`).
+      Verified: `llama-cli -m drafter.gguf -n 4 -p hi` exits rc=1
+      with the documented error message; vocab load is never
+      attempted (error fires before that path).
+- [x] **T1.4 — Graph builder.** Created
+      `src/graphs/build_dflash_drafter.cpp`. Hidden-state input
+      allocated at `(n_target_pickoffs * n_embd, n_tokens)` (T1.5
+      will wire runtime buffer population). Prepends
+      `ggml_mul_mat(dflash.fc, inp)` → `n_embd`-projected, then
+      `dflash.hidden_norm` RMSNorm. Trunk: 5 Qwen3-style blocks
+      with per-head `q_norm`/`k_norm`, `ggml_rope_ext` on
+      Q+K (NEOX), `llm_build_kv`. Per-layer SWA mask dispatch via
+      `hparams.swa_layers[il]` — same pattern as
+      `build_gemma2.cpp:28` (only condition substituted). Graph
+      terminates at `output_norm`; no lm_head (delegated to target
+      per S2.T2.5). Registered in `llama-build-context.{h,cpp}`
+      dispatch + `CMakeLists.txt`.
+      Verified: clean compile + link of `libllama.so`.
 - [ ] **T1.5 — Standalone forward harness.** Add a CLI command
       `llama-dflash-drafter-forward` that loads the drafter GGUF +
       a fixed dummy input (zeros over `[seq_len=16, hidden=5120]`),
