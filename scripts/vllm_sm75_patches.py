@@ -284,11 +284,70 @@ def _patch_precompute_context_kv_dtype() -> None:
     )
 
 
+def _patch_serial_utils_allow_functions() -> None:
+    """Allow cloudpickle-serialised function objects through MsgpackEncoder /
+    MsgpackDecoder without flipping the global VLLM_ALLOW_INSECURE_SERIALIZATION
+    env var.
+
+    Bug
+    ---
+    `vllm.v1.serial_utils.MsgpackEncoder.enc_hook` raises TypeError for any
+    type it doesn't recognise unless VLLM_ALLOW_INSECURE_SERIALIZATION=1, at
+    which point it falls through to a generic pickle.dumps for arbitrary
+    objects (the FunctionType branch uses cloudpickle.dumps). The matching
+    decoder (`MsgpackDecoder.ext_hook`) only accepts CUSTOM_TYPE_PICKLE /
+    CUSTOM_TYPE_CLOUDPICKLE under the same env-var gate.
+
+    We need to pass a Python function to collective_rpc to install layer
+    forward hooks in the worker process. The blanket env-var fallback also
+    permits arbitrary-object pickle deserialisation in untrusted contexts,
+    which is more surface than we need.
+
+    Fix
+    ---
+    Wrap enc_hook to handle FunctionType (and MethodType) explicitly via
+    cloudpickle; wrap ext_hook to accept CUSTOM_TYPE_CLOUDPICKLE
+    unconditionally. CUSTOM_TYPE_PICKLE (generic-object pickle) stays gated
+    by the env var.
+    """
+    import types as _types
+    import cloudpickle
+    import msgpack
+
+    from vllm.v1 import serial_utils
+
+    CLOUDPICKLE = serial_utils.CUSTOM_TYPE_CLOUDPICKLE
+    Encoder = serial_utils.MsgpackEncoder
+    Decoder = serial_utils.MsgpackDecoder
+
+    original_enc = Encoder.enc_hook
+    original_ext = Decoder.ext_hook
+
+    def patched_enc(self, obj):
+        if isinstance(obj, (_types.FunctionType, _types.MethodType)):
+            return msgpack.Ext(CLOUDPICKLE, cloudpickle.dumps(obj))
+        return original_enc(self, obj)
+
+    def patched_ext(self, code, data):
+        if code == CLOUDPICKLE:
+            return cloudpickle.loads(data)
+        return original_ext(self, code, data)
+
+    Encoder.enc_hook = patched_enc
+    Decoder.ext_hook = patched_ext
+    print(
+        "[vllm-sm75-patch] serial_utils: cloudpickle FunctionType encode/decode "
+        "allowed without VLLM_ALLOW_INSECURE_SERIALIZATION",
+        flush=True,
+    )
+
+
 def apply_all() -> None:
     """Call once at startup, before constructing an LLM instance."""
     _patch_combine_hidden_states()
     _patch_flex_attention_view_to_reshape()
     _patch_flex_attention_block_n_pow2()
+    _patch_serial_utils_allow_functions()
     # _patch_precompute_context_kv_dtype()  # DISABLED:
     #   The outer ForCausalLM class has no _build_fused_kv_buffers
     #   (only the inner Qwen3DFlashModel does). The patched method
