@@ -135,13 +135,27 @@ fork of ik_llama.cpp).
       per S2.T2.5). Registered in `llama-build-context.{h,cpp}`
       dispatch + `CMakeLists.txt`.
       Verified: clean compile + link of `libllama.so`.
-- [ ] **T1.5 — Standalone forward harness.** Add a CLI command
-      `llama-dflash-drafter-forward` that loads the drafter GGUF +
-      a fixed dummy input (zeros over `[seq_len=16, hidden=5120]`),
-      runs forward, dumps the output hidden states to a `.npy`
-      file at `data/phase46-t1.5-drafter-forward.npy`.
-      Verify: harness binary builds and produces the expected output
-      shape (16, 5120) in fp32.
+- [x] **T1.5 — Standalone forward harness.** Added the API surface
+      and CLI binary that exercises the drafter graph end-to-end.
+      `llama_model_params::is_drafter` flag (default false) bypasses
+      T1.3 enforcement + skips vocab/tokenizer load when set. New
+      public API `llama_dflash_drafter_forward(ctx, hidden_in,
+      n_tokens, hidden_out, capacity)` bypasses `llama_decode`
+      (which assumes token/embd batch inputs): builds the drafter
+      graph, custom-populates `inp_pos` + `inp_KQ_mask{,_swa}` +
+      `inp_dflash_target_hidden`, computes, reads back via
+      scheduler-resolved backend's async-get + synchronize. New CLI
+      binary at `examples/dflash-drafter-forward/` with inline
+      minimal NPY writer.
+      Reconverted drafter GGUF emits 1D norm weights as F32 (CUDA
+      fused_rms_norm requires F32 norm); 2D matmul weights stay BF16.
+      Verified:
+      `./build/bin/llama-dflash-drafter-forward --model
+       qwen3.6-27b-dflash-bf16.gguf --out forward.npy --n-tokens 16
+       --gpu-layers 999`
+      rc=0; output shape `(16, 5120)` fp32; all-zero (zero input →
+      RMSNorm → 0 → matmul → 0, mathematically consistent). T1.6
+      will provide non-zero input + HF reference check.
 - [ ] **T1.6 — HF reference match.** Write
       `scripts/phase46-t1.6-hf-drafter-reference.py` that loads the
       HF DFlash drafter with the same dummy input, dumps the
