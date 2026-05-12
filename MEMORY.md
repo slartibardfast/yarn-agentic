@@ -4355,3 +4355,62 @@ sees a coherent picture.
 `feedback_dream_flow_procedure.md` (when to trigger, four-phase
 pattern, index-regeneration script, what to preserve vs distil,
 verification steps).
+
+## 2026-05-12 — PHASE_DFLASH T1 closed: drafter GGUF converter landed
+
+ik_llama.cpp on `production/2026-q2-next` now converts
+`z-lab/Qwen3.6-27B-DFlash` end-to-end via `convert_hf_to_gguf.py`.
+Closes Gate 1 per `specs/dflash/DESIGN.md` §6.
+
+**What landed (one branch, ik_llama.cpp submodule):**
+
+- `LLM_ARCH_DFLASH` enum + name mapping (`src/llama-arch.{h,cpp}`).
+- 6 new `LLM_KV_DFLASH_*` metadata keys with `{arch}.*` format
+  strings (target_arch, target_n_embd, target_layer_ids, block_size,
+  mask_token_id, layer_types). Sliding window reuses existing
+  `Attention.SLIDING_WINDOW` rather than a DFlash-specific key.
+- 2 new `LLM_TENSOR_DFLASH_*` entries (FC, HIDDEN_NORM) +
+  `LLM_TENSOR_NAMES[LLM_ARCH_DFLASH]` mapping in `llama-model.cpp`.
+  Drafter intentionally omits `token_embd` / `output` — shared from
+  target per Allium invariant SharedEmbedAndLMHead.
+- Python side (`gguf-py/gguf/`): `MODEL_ARCH.DFLASH`,
+  `MODEL_TENSOR.DFLASH_FC`/`HIDDEN_NORM`, `MODEL_TENSORS[DFLASH]`
+  list, `Keys.LLM.DFLASH_*`, `add_dflash_*` writer helpers,
+  `tensor_mapping.py` entries for `fc`/`hidden_norm`.
+- `class DFlashModel(Qwen3Model)` registered for
+  `@Model.register("DFlashDraftModel")`. Overrides:
+  - `set_vocab` → no-op (drafter has no tokenizer; vocab from target).
+  - `set_gguf_parameters` → emits the 6 dflash.* keys plus
+    sliding_window=2048 (Qwen2Model doesn't emit this for plain Qwen3).
+  - `modify_tensors` → prepends `model.` to `layers.N.*` and `norm`
+    (drafter safetensors lack the `model.` prefix); casts BF16 → FP16
+    per kernel-design.md Lock #20.
+
+**R1 drafter pinning (recorded for re-pin decisions):**
+
+- Source repo: `z-lab/Qwen3.6-27B-DFlash` (local at
+  `/opt/models/qwen36-27b-dflash/`).
+- `model.safetensors` SHA256:
+  `e0c050b34798d32728a164d2c3f1681746ff85c11945701b0205b654e2f1fdbe`
+  (3300 MiB, BF16).
+- `config.json` SHA256:
+  `fcdec9ee2da902d24e69ba3fc666e50a0aa723147689ffc900f425db0381bc54`.
+- Output GGUF:
+  `/opt/models/qwen36-27b-dflash/qwen36-27b-dflash-f16.gguf`,
+  3300 MiB, F16, SHA256:
+  `34390c8166f4f798ba8be295d632ef5c0188576a0b3329508bfd8f29f1142ae8`.
+- 58 tensors emitted (= 11 per-layer × 5 layers + 3 non-layer):
+  `dflash_fc.weight` (25600 × 5120 F16), `dflash_hidden_norm.weight`
+  (5120 F32), `output_norm.weight` (5120 F32).
+- All 6 dflash.* metadata keys present in dump, plus standard arch
+  metadata with `dflash.*` prefix. Sliding window = 2048 confirmed.
+
+R1 mitigation per the plan: re-pin only by deliberate decision. If
+HF repo updates and we re-download, the safetensors SHA changes and
+that triggers a re-bind of Gate 5 + Gate 6 measurements before
+shipping.
+
+**What's next:** T2 (extract-features hook) against the Qwen 3.6
+target build graph. Closure binds residual-stream snapshot at the
+recorded `target_layer_ids = [1, 16, 31, 46, 61]` against a vLLM
+PR #40898 reference on the same prompt.
