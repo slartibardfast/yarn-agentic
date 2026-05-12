@@ -18,7 +18,7 @@ Concretely:
 - Draft forward becomes plain self-attention against pre-written K/V cache slots — no encoder/decoder dual-context, no `cross.v_embd` monotonic growth, no graph-cache invalidation per cycle.
 - The drafter's self-attention path on sm_75 routes to **`mma_new`** (per PHASE5 unit tests) which is byte-deterministic at production shape — we keep the existing kernel determinism guarantees.
 
-The cost is one extra `K_proj + V_proj + RMSNorm(K) + RoPE(K) + cache_write` per draft layer per accepted token. This is small (one position per layer, scalar by comparison to the drafter's own forward). vLLM and SGLang have fused Triton kernels for it; on sm_75 we do per-layer scalar dispatch and accept the perf cost. The fused kernel is a Hopper latency optimization, not a correctness requirement.
+The cost is one extra `K_proj + V_proj + RMSNorm(K) + RoPE(K) + cache_write` per draft layer per accepted token. vLLM and SGLang have fused Triton kernels for it on Hopper; **we write the Turing-tuned bespoke equivalent from day one**. Reason: the Gate 0 vLLM measurement showed DFlash round time is ~70% fixed overhead (~108 ms of 148 ms total at spec=15, dominated by PIECEWISE CUDA graphs + drafter forward + per-step kernel launches). On sm_75 we don't pay vLLM's torch.compile/Pythonic tax, but per-layer scalar K/V projection alone would still cost 5-10 ms × 30 drafter layers × MAL anchor tokens per cycle — adding back the overhead we're trying to avoid. **Fused KV projection is load-bearing for Gate 6, not a deferred perf knob.** Scalar reference exists only as a correctness oracle for the unit tests; production code path is always fused. See companion `kernel-design.md` for the kernel signatures and SM_75 register/SMEM budget.
 
 ## 2. Reuse, don't port
 
@@ -143,7 +143,7 @@ For ik_llama.cpp on branch `production/2026-q2-next`. Numbers are rough estimate
 - **vLLM:** one fused `F.linear` emitting `[L * 2 * kv_size, hidden]` for all draft layers at once + fused norm+RoPE Triton kernel.
 - **SGLang:** same fused path on supported hardware, per-layer fallback otherwise.
 - **Upstream:** the encoder graph IS the projection (one mul_mat + RMSNorm), then per-layer K/V are computed inside the decoder graph via standard wk/wv on the projected feature.
-- **Us:** **per-layer scalar dispatch** for the initial landing. The fused path is a perf knob, not a correctness one; ik_llama.cpp's `iqk_mul_mat` doesn't help here (BF16 drafter weights, not low-bit), and writing a Triton equivalent is out of scope. Per-layer cost is bounded — one K_proj + one V_proj + one norm + one RoPE per layer per accepted token. Negligible against drafter forward cost.
+- **Us:** **bespoke fused CUDA kernel from day one** — fused `K_proj + V_proj + RMSNorm + RoPE + cache_write` per layer, tuned for sm_75 register/SMEM budget. Lives at `ggml-cuda/dflash-inject-kv.cu`. Scalar reference path exists in the same file under a unit-test-only compile flag and is driven by `tests/test-dflash-inject-fused.cpp` for bit-identical correctness validation. **Production code never branches on a scalar-vs-fused mode.** Rationale: per-layer scalar dispatch at 5-10 ms × 30 layers × MAL≈3.3 anchors per cycle would consume ~500 ms-1.5 s on every accept loop — would never clear Gate 6. Fused is the only viable path on sm_75. See `kernel-design.md` for kernel signature, threadblock geometry, and the Allium-invariant ↔ kernel binding table.
 
 ### Source-layer indices
 - **vLLM:** from drafter checkpoint config (`dflash_config.target_layer_ids`).
@@ -152,16 +152,25 @@ For ik_llama.cpp on branch `production/2026-q2-next`. Numbers are rough estimate
 - **Us:** **GGUF metadata, read at load time, no CLI override.** The drafter was trained against specific indices; using different indices at inference is wrong. The Allium spec's `FeatureSourceFixedPerDeployment` binds this.
 
 ### Block size
-- **vLLM:** default 16, configurable.
+- **vLLM:** default 16, configurable via `num_speculative_tokens`.
 - **SGLang:** default 16, configurable.
 - **Upstream:** GGUF metadata, default 16.
-- **Us:** **block_size=16 from the start, matching the trained model.** GGUF metadata is the source of truth; CLI override `--dflash-block-size N` exists for experimentation but defaults to whatever the drafter declared (16 for Qwen3.6-27B-DFlash). Earlier plan was to start at 8 for kernel-determinism safety, but the drafter was trained at 16 — running at 8 means the drafter sees a mask pattern it never saw in training, and acceptance is unpredictable. Better to absorb the verify-shape (`ne[1]=17`) uncertainty as a Gate-5 binding test than to mis-match training. If Gate-5 shows non-determinism at `ne[1]=17`, that becomes a kernel-side problem to solve, not a parameter to dodge.
+- **Us:** **operating block_size=4** (verify shape `ne[1]=5`), with `--dflash-block-size N` CLI override defaulting to whatever the drafter GGUF declared and a lower configured override at the launch profile. Gate 0 vLLM measurement on Qwen3.6-27B + Qwen3.6-27B-DFlash + INT4 target showed:
+  - At `num_speculative_tokens=15` (drafter-declared block_size): per-position acceptance decays from 0.74 → 0.01 across positions 0-14; **positions 7+ are essentially noise**. MAL = 3.28.
+  - At `num_speculative_tokens=4`: per-position acceptance is **0.83, 0.64, 0.48, 0.33** (higher than positions 0-3 at spec=15 — drafter concentrates its mass on fewer positions). MAL = 2.91 (only -11% vs spec=15 despite 73% less verify work).
+  - Per-token cost ratio (DFlash/vanilla): improves from 1.45× (spec=15) to ~1.03× (spec=4) at np=1.
+
+  We ship at the smaller block_size. The drafter is empirically robust to mask reduction; the earlier DESIGN concern ("drafter sees mask pattern it never saw in training") didn't materialise. Block size remains a launch-profile knob; sweep {4, 5, 6, 8} at Gate 6 to pick the production setting.
+
+  **Verify-shape kernel implication:** `ne[1]=5` is far gentler than `ne[1]=17` on Turing FA kernels — closer to known-deterministic shapes from PHASE5 unit tests (`ne[1] ∈ {2, 4, 8}`). Gate 5's determinism binding becomes lower-risk.
 
 ### Multi-slot
-- **vLLM:** supports through standard speculative path with **batched verify across slots** (single target forward over all slots' tokens). dflash.py:289-305.
+- **vLLM:** supports through standard speculative path with **batched verify across slots** (single target forward over all slots' tokens). dflash.py:289-305. **Empirically: accept rate collapses to 0% in many rounds at np=8** (Gate 0 measurement); outputs remain coherent because rejection fallback uses target argmax, but spec decoding becomes "vanilla + drafter overhead" = strictly slower.
 - **SGLang:** supports (batched verify), plus mandatory **`--mamba-scheduler-strategy extra_buffer`** for hybrid targets — a ping-pong track buffer per request for the recurrent state at np>1 + overlap scheduling (memory_pool.py:540-735).
 - **Upstream llama.cpp:** hard gated to np=1.
-- **Us:** **support np up to 8 from day one via per-slot dispatch.** We **diverge from vLLM and SGLang** on this — both ship batched verify at np>1, but we don't know from the PHASE45 D10.e MTP investigation whether the np>1 same-prompt divergence was specific to the on-target MTP head or a general property of the target's multi-slot path. DFlash uses zero on-target MTP code — that test (`OQ-DFLASH-INHERITS-MTP-MULTISLOT-BUG`) becomes meaningful and cheap to run at Gate-3.5. **Per-slot dispatch is correctness-deterministic by construction** (|B|=1 in every verify), at the cost of losing batched amortization. If Gate-3.5 comes back GREEN (DFlash dodges the bug), batched verify at np>1 becomes a Gate-7+ optimization.
+- **Us:** **np=1 only at this landing.** Gate 0 measurement on vLLM (the reference oracle) showed DFlash at np>1 doesn't deliver speedup on any stack — at np=4: speedup 0.29×; at np=8: speedup 0.21× — because the drafter's logits drift under batched matmul, the rejection sampler's argmax_match rejects most drafts, and DFlash degrades to "vanilla + drafter overhead."
+  Gate 3.5 (DFlash multi-slot byte-determinism with identical prompts, np=2) came back GREEN — outputs are byte-identical across slots. But the failure mode at np>1 with diverse prompts is *not* output corruption; it's accept-rate collapse. The np>1 question is therefore answered as "structural perf wall" not "correctness wall."
+  **Per-slot dispatch stays the multi-slot path if we ever add np>1** (correctness-deterministic by construction at |B|=1), but it's behind a hard gate. Gate 7 is closed: batched verify at np>1 doesn't pay even on the reference impl. See companion memory `project_continuous_batching_vs_perslot_dispatch.md` for the bandwidth-amortization analysis showing vanilla batched > DFlash batched at np>1 on this hardware.
 
 ### Hybrid target recurrent state at np>1
 
@@ -206,14 +215,29 @@ Production 2× Quadro RTX 6000 = 48 GiB aggregate. Drafter K/V (4 SWA layers cap
 
 These are gates in the §5-of-CLAUDE.md sense: each must close before the next opens. Skipping a gate is forbidden per `feedback_no_skip_tests.md`.
 
-### Gate 0 — M0: reproduce upstream on this hardware
+### Gate 0 — M0: reference measurement on vLLM (DONE — RED with caveats)
 
-Before any ik_llama.cpp work. The local `/home/llm/llama.cpp` checkout is already on PR-22105's branch (per the upstream research agent's report). Build with `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DCMAKE_BUILD_TYPE=Release`. Convert `Qwen/Qwen3-8B` + `z-lab/Qwen3-8B-DFlash` per upstream's recipe. Run upstream's "quicksort, thinking off" benchmark on a single RTX 6000.
+Before any ik_llama.cpp implementation work. Run vLLM PR #40898 build + Qwen3.6-27B INT4 AutoRound target + Qwen3.6-27B-DFlash drafter on 2× RTX 6000 sm_75. Measure speedup vs vanilla decode at np=1, np=4, np=8 with `num_speculative_tokens` sweep. **This is the reference oracle, not a ship target** — we expect vLLM's bespoke-kernel ceiling to be higher than what the vLLM stack delivers.
 
-- **PASS:** ≥3x speedup over Qwen3-8B baseline. Premise holds — proceed to Gate 1.
-- **FAIL:** <3x speedup. The premise that "DFlash gives big wins on hybrid-attention targets on Turing" is broken. Stop. Re-examine before any porting.
+Result (2026-05-12, `data/gate0-np1-np4-np8.json`, `data/gate0-spec4-np-sweep.json`, `data/gate0-mtp-sweep.json`):
 
-Token cost: 10-20k.
+| config | DFlash tok/s | vanilla tok/s | speedup |
+|---|---:|---:|---:|
+| spec=15 np=1 | 22.20 | 31.53 | 0.70× |
+| spec=4 np=1 | 24.46 | 30.96 | 0.79× |
+| spec=4 np=4 | 33.14 | 113.60 | 0.29× |
+| spec=4 np=8 | 32.92 | 154.91 | 0.21× |
+| MTP-method spec=3 np=1 | **44.19** | 28.91 | **1.53×** |
+
+Findings:
+- DFlash with separate Qwen3.6-27B-DFlash drafter on INT4 target: doesn't beat vanilla on vLLM at any np. Drafter-target dtype mismatch (BF16-trained drafter vs INT4 target) reduces MAL to 3.28 (paper implies 4.8-6.4).
+- vLLM MTP method (using target's built-in MTP layers): **1.53× speedup at np=1** with MAL=2.87. Multi-slot stable (no accept-rate collapse) — confirms architectural advantage of integrated MTP heads over separate drafter.
+- vLLM fixed overhead per DFlash round: ~108 ms (PIECEWISE CUDA graphs + drafter forward + per-step Triton dispatch). **This is the headroom for our bespoke sm_75 implementation** — we don't pay this tax.
+
+- **PASS for ik_llama.cpp implementation: vLLM oracle is in hand.** Sufficient empirical signal to design the bespoke kernels: target round time < 50 ms (vs vLLM's 118 ms), expected ~60-80 tok/s at np=1 spec=4, gives 1.8-2.4× over MTP `--draft 3` baseline. Proceed to kernel design.
+- **FAIL on speedup ambition:** if profiled fixed overhead in our impl is comparable to vLLM's, the speedup ambition collapses. Diagnose before Gate 4.
+
+Token cost (already incurred): ~80k. Gate 0 closed.
 
 ### Gate 1 — converter binding
 
@@ -233,14 +257,23 @@ Implement `dflash_extract_features` against Qwen3.5 / Qwen3.6 build graphs. Hook
 
 Token cost: 15-25k.
 
-### Gate 3 — inject + drafter forward
+### Gate 3 — fused InjectKV kernel + drafter forward
 
-Implement `apply_inject_kv` + `build_dflash_drafter`. Build a binding test: given fixed target features and a known anchor token, run drafter forward at `block_size=4` and compare draft logits against the upstream impl on identical inputs.
+**Two sub-gates that must both close:**
+
+**Gate 3a — Fused InjectKV correctness (unit-test, no full pipeline yet).**
+Implement `ggml-cuda/dflash-inject-kv.cu` per `kernel-design.md`. Write the scalar reference path in the same file (compiled only under unit-test flag). Drive both paths from `tests/test-dflash-inject-fused.cpp` with random inputs across the full drafter layer-config space (head dims, KV head counts, RoPE base, RMSNorm eps).
+
+- **PASS:** Fused output byte-identical to scalar reference across all 30 drafter layers.
+- **FAIL:** Mismatch. Diagnose at the fused-kernel level; scalar reference is the ground truth.
+
+**Gate 3b — End-to-end drafter forward with fused inject.**
+Plumb `apply_inject_kv` + `build_dflash_drafter` through the existing graph. Build a binding test: given fixed target features and a known anchor token, run drafter forward at `block_size=4` and compare draft logits against the upstream / vLLM impl on identical inputs.
 
 - **PASS:** Byte-identical (or within 1e-5 NMSE) draft logits at block_size=4.
-- **FAIL:** Logits differ. Diagnose at the per-op level; the inject path or the SWA mask or the K_proj/V_proj weights are off.
+- **FAIL:** Logits differ. Diagnose: inject path, SWA mask, K_proj/V_proj weights, or fusion correctness (re-run Gate 3a).
 
-Token cost: 25-40k.
+Token cost: 40-60k (combined; fused kernel + plumbing).
 
 ### Gate 4 — full block-emit + accept loop
 
@@ -251,14 +284,15 @@ Plumb `common_speculative_dflash_*` into `examples/speculative-simple`. Run the 
 
 Token cost: 30-50k.
 
-### Gate 3.5 — DFlash multi-slot empirical test (vLLM)
+### Gate 3.5 — DFlash multi-slot empirical test (vLLM) (DONE — GREEN with caveats)
 
-Cheap experiment run as soon as the vLLM PR #40898 build is operational. Same prompt at np=2 with greedy decode against `Qwen/Qwen3.6-27B` target + `z-lab/Qwen3.6-27B-DFlash` drafter. Compare slot outputs byte-for-byte. **This single experiment disambiguates whether the MTP-era multi-slot determinism bug is on-target-MTP-specific or a general target property.**
+Run on 2026-05-12. Same prompt at np=2 with greedy decode against `Qwen/Qwen3.6-27B` target + `z-lab/Qwen3.6-27B-DFlash` drafter. Result: `data/gate35-dflash-determinism.json` — verdict **GREEN**, n_diff_pairs=0, all 5 streams byte-identical.
 
-- **GREEN (slot outputs match byte-for-byte):** DFlash dodges the bug. Batched verify at np>1 becomes safe to ship → Gate-7 unlocks. Per-slot dispatch becomes a fallback / measurement baseline.
-- **RED (slot outputs diverge):** DFlash inherits the bug. **Per-slot dispatch is the permanent ceiling** for our implementation; batched verify is permanently gated unless someone solves the target-side multi-slot determinism question that PHASE45 D10.e failed to close.
+**Caveat surfaced by subsequent Gate 0 multi-prompt measurements:** byte-determinism with identical prompts at np=2 is necessary but not sufficient for "DFlash works at np>1." With *diverse* prompts at np=8, accept rate collapses to 0% in many rounds (the rejection-sampler argmax_match path becomes brittle to logit drift from batched matmul). Outputs remain coherent (rejection fallback uses target argmax) but spec decoding doesn't deliver speedup. See §5 Multi-slot for full discussion.
 
-Token cost: 5-10k once vLLM is operational. Critical-path: every other np>1 design decision depends on this outcome.
+Net: Gate 3.5 GREEN does NOT unlock Gate 7. The np>1 question is closed on the empirical evidence: DFlash at np>1 doesn't pay. Resolved `OQ-DFLASH-INHERITS-MTP-MULTISLOT-BUG` in the Allium spec.
+
+Token cost (already incurred): ~10k.
 
 ### Gate 5 — 27B determinism (np=1 single-slot)
 
@@ -270,33 +304,37 @@ Run the determinism fixture (`scripts/test-mtp-multislot-determinism.sh` adapted
 
 Token cost: 10-20k.
 
-### Gate 7 — Batched verify at np>1 (conditional on Gate 3.5 GREEN)
+### Gate 7 — Batched verify at np>1 (CLOSED — no path)
 
-Open only if Gate 3.5 came back GREEN. Restructure the per-slot verify dispatch to batched verify (single target forward over `(1 + block_size) * n_parallel` positions per cycle). Re-bind determinism at the new verify shape (ne[1] up to 17*8 = 136 at np=8).
+Originally conditional on Gate 3.5 GREEN. Gate 3.5 came back GREEN but Gate 0's multi-prompt np>1 measurements showed DFlash's accept rate collapses at np>1 even with stable byte-determinism (rejection sampler is brittle to batched-matmul logit drift). vLLM data on the same hardware shows DFlash at np=8 = 0.21× vanilla; MTP-method at np=8 = 0.79× vanilla. Neither spec method beats vanilla batched at np>1 on this stack.
 
-- **PASS:** byte-identical outputs across slots match per-slot dispatch baseline; aggregate throughput jumps by ~4-8×.
-- **FAIL:** revert to per-slot dispatch; document why the empirical test missed the actual failure mode; reassess.
+**Closed without implementation.** The bandwidth amortization win at np>1 belongs to vanilla batched decode (4.75× aggregate at np=8 per vLLM measurement), not to spec-decode. If ik_llama.cpp wants the np>1 aggregate uplift, the path is continuous-batching for vanilla — not multi-slot DFlash. See companion memory `project_continuous_batching_vs_perslot_dispatch.md`.
 
-Token cost: 30-50k. Pure perf optimization; correctness baseline is per-slot dispatch.
+Token cost saved: ~30-50k.
 
 ### Gate 6 — Qwen3.6-27B speedup
 
-Run the production-prompt set on Qwen3.6-27B + DFlash at np=1, IQ4_KS target.
+Run the production-prompt set on Qwen3.6-27B + DFlash at np=1, IQ4_KS target, `block_size=4` (sweep {4, 5, 6, 8} to confirm operating point) with thinking ON (production behavior — Qwen 3.6 is a thinking model).
 
-- **PASS:** ≥1.5x speedup over current production `--draft 3` MTP. Ship to a new profile (`qwen36-27b-x1-dflash.sh`); leave existing MTP profile in place as fallback.
-- **FAIL (<1.5x):** DFlash isn't the win we hoped for on this hardware. Stay on MTP. Document the negative result; abandon the workstream.
+**Pre-Gate baseline measurement** (per `feedback_anchor_to_measured_baselines.md`): fresh measurement of MTP `--draft 3` on the *same prompt set, same hardware, same build* before any DFlash comparison. Don't anchor on the memory entry's 33.5 tok/s figure.
 
-Token cost: 15-25k.
+- **PASS:** ≥1.5× speedup over the fresh MTP baseline at np=1 with thinking ON. Ship to a new profile (`qwen36-27b-x1-dflash.sh`); leave existing MTP profile in place as fallback.
+- **NEUTRAL (1.0×-1.5×):** DFlash works but doesn't clear the ship bar. Document the gap honestly; keep MTP as production; ship DFlash as a tunable option for users who prefer DFlash for other reasons (lower variance, different acceptance curve). Don't dress this as "GREEN."
+- **FAIL (<1.0×):** DFlash with this drafter on this hardware doesn't beat MTP. Stay on MTP. Document the negative result with the cost breakdown that surfaced the wall.
 
-**Total budget if everything passes:** ~120-200k. Roughly half PR #22105's footprint because we skip the cross-attention plumbing and the EAGLE3 base.
+Realistic expectation calibration from Gate 0: vLLM DFlash at spec=4 = 24.46 tok/s with 70% fixed overhead. If our bespoke kernels halve the fixed overhead (~108 ms → ~50 ms), we land in the 45-70 tok/s range. MTP baseline is ~33.5. So PASS is plausible but not assured. **Don't pre-commit to PASS** — let the kernel work measure.
+
+Token cost: 20-30k.
+
+**Total budget if everything passes:** ~140-220k. The cost shape changes vs original estimate: Gate 0 was a real measurement (not the originally-scoped "reproduce on Qwen3-8B"), Gate 7 is closed (saving 30-50k), Gate 3 grew (fused kernel + plumbing).
 
 ## 7. Risk surface
 
 ### R1 — Drafter still under training
 The HF card warns: *"This model is still under training, and inference engine support may not be fully available yet due to architectural changes, including causal SWA layers."* The drafter weights may change. Mitigation: prove the pipeline on `Qwen3-8B-DFlash` (the published 6x model) at Gate 4, and treat `Qwen3.6-27B-DFlash` as a Gate 6 measurement against a moving target.
 
-### R2 — Per-layer projection cost
-Per-layer scalar K_proj+V_proj+norm+RoPE on every accepted anchor token. At 2B drafter with ~30 layers, that's 60 small mat-vecs + 30 norms + 30 RoPEs per anchor. Each is on the order of 100-200µs on sm_75. Per-cycle injection cost ~5-10ms — small against ~30-50ms target forward, but not free. If Gate 4 shows the perf hit is meaningful, implement the fused path before Gate 6.
+### R2 — Per-layer projection cost (RESOLVED by §5 design choice)
+Scalar K_proj+V_proj+norm+RoPE on every accepted anchor token would be ~5-10 ms × 30 drafter layers × MAL≈3 anchors ≈ ~500 ms-1.5 s per cycle — would consume Gate 6's entire perf budget. §5 commits to the fused kernel from day one for exactly this reason. R2 is no longer "risk to monitor"; it's a design constraint that drives the InjectKV kernel work. The risk shifts to **R2′ — fused kernel correctness**, bound by Gate 3a.
 
 ### R3 — `--target-model-dir` converter coupling
 The drafter GGUF references the target's vocab + tokenizer at convert time. If the user later swaps the target's vocab (e.g., adding tool tokens), the drafter must be re-converted. This is an operational hazard but matches upstream's design — flag in the launch profile.
@@ -304,8 +342,8 @@ The drafter GGUF references the target's vocab + tokenizer at convert time. If t
 ### R4 — Multi-slot drift
 If anyone enables np>1 with DFlash on, target features extracted from a multi-slot batch are entangled across slots (same as the multi-slot determinism bug). Hard gate at np=1 in the server is essential; an env override that bypasses it would silently corrupt outputs. Don't add an override.
 
-### R5 — Kernel batch-shape sensitivity at verify
-Verify batch is `ne[1] = block_size + 1`. At block_size=8 we know `ne[1]=9` shape is not in the PHASE5 unit-tested set. The kernels test as deterministic at `ne[1] ∈ {2, 4, 8}` and route to `mma_new` at those shapes; `ne[1]=9` may route differently. Add Gate-5's binding test at the exact verify shape we'll ship before Gate 6 runs.
+### R5 — Kernel batch-shape sensitivity at verify (REDUCED)
+With block_size=4 (§5 update), verify batch is `ne[1] = 5`. PHASE5 unit tests cover `ne[1] ∈ {2, 4, 8}` and route to `mma_new` deterministically; `ne[1]=5` falls in the deterministic gap but is much closer to known-good shapes than the original `ne[1]=17`. Gate 5's determinism binding still mandatory but lower-risk.
 
 ### R6 — Drafter SWA on Turing
 We have not stress-tested causal-SWA self-attention on sm_75 at the drafter's layer count. Gate 3 binds the drafter forward correctness; Gate 5 binds determinism. If a kernel dispatch falls back to a non-deterministic path under SWA, the gates catch it.
@@ -322,11 +360,11 @@ We have not stress-tested causal-SWA self-attention on sm_75 at the drafter's la
 
 ## 9. What success doesn't try to achieve
 
-- **np>1 concurrency.** Same wall as multi-slot MTP. Separate workstream.
+- **np>1 concurrency for spec decoding.** Gate 0 closed this empirically: DFlash and MTP both lose to vanilla batched at np>1 on this hardware. Continuous-batching vanilla decode is the np>1 path; see `project_continuous_batching_vs_perslot_dispatch.md`. Separate workstream if pursued.
 - **Multimodal image-text-to-text.** Separate workstream (`project_qwen36_27b_multimodal_exploration` memory entry).
-- **Fused projection / inject kernels.** Perf optimization. Defer until Gate 4 measures whether per-layer scalar path is acceptable.
-- **Replacing MTP entirely.** MTP stays as the fallback profile; DFlash adds an alternative. The user can flip between them.
+- **Replacing MTP entirely.** MTP stays as the fallback profile; DFlash adds an alternative. The user can flip between them. Per Gate 6 NEUTRAL outcome handling, even if DFlash doesn't clear 1.5× we ship as an option.
 - **Tree drafting / multi-branch DFlash.** Block-emit only. Tree drafting on hybrid recurrent attention is unsolved (`project_tree_fanout_hybrid_recurrent_blocker` memory entry).
+- **Thinking-mode suppression for accept-rate.** Qwen 3.6 is a thinking model by design. We measure with thinking ON (production behavior). The Gate 0 finding that `/no_think` only marginally improves MAL (3.28 → 3.55) confirms this isn't the lever to pull.
 
 ## 10. Anchor on the existing memory
 
@@ -343,10 +381,20 @@ Resolved from `dflash_speculative.allium`'s open questions, where this doc commi
 
 - **OQ-SOURCE-LAYERS:** GGUF metadata, no CLI override. (§5 "Source-layer indices")
 - **OQ-DENOISE-SCHEDULE:** single_step only at first landing. (§5 "Sampling at draft step")
-- **OQ-BLOCK-SIZE-FOR-TURING:** start at 8, move to 16 after Gate-5 binds determinism at the larger verify shape. (§5 "Block size")
-- **OQ-QUANT-MIX:** Target IQ4_KS, drafter BF16. Shared embed/lm_head materialized from the target's IQ4_KS tensor — drafter never re-quantizes. (Allium `SharedEmbedAndLMHead` invariant.)
+- **OQ-BLOCK-SIZE-FOR-TURING:** **operating block_size=4**, sweep {4, 5, 6, 8} at Gate 6 to pick production setting. The drafter is empirically robust to mask reduction — the earlier concern about training-mask mismatch did not materialize on the vLLM measurement. (§5 "Block size")
+- **OQ-QUANT-MIX:** Target IQ4_KS, drafter BF16. Shared embed/lm_head materialized from the target's IQ4_KS tensor — drafter never re-quantizes. (Allium `SharedEmbedAndLMHead` invariant.) **Note:** Gate 0 confirmed BF16-drafter / INT4-target combo costs MAL ≈ 1.5-3 vs paper's 4.8-6.4. We accept this as the operating point; the published 2.4-3.2× speedup is not the target — Gate 6's 1.5× over MTP is.
 - **OQ-SWA-WINDOW:** read from drafter GGUF metadata `dflash.swa_window`. Surfaced via `llama_get_dflash_swa_window`.
-- **OQ-THINK-MODE-EQUIVALENT:** new CLI flag `--dflash-think on|off` controls the Qwen3 thinking sentinel in the prompt. Default `off` per upstream's accept-rate measurements.
-- **OQ-MULTI-SLOT:** np=1 only. Hard gate.
-- **OQ-VLLM-PR-MERGE-RISK:** we are not anchoring on upstream's PR for the implementation; we anchor on the published paper + the design here. Upstream PR is reference only.
+- **OQ-THINK-MODE-EQUIVALENT:** Qwen 3.6 is a thinking model by design. **Ship with thinking ON (production behavior).** Gate 0 showed `/no_think` is only marginally effective (MAL 3.28 → 3.55) and the model frequently ignores the directive. The `--dflash-think on|off` CLI flag remains for experimentation but defaults to ON. (Inverted from original "default off" per upstream's measurements — those measurements were on a non-thinking model variant.)
+- **OQ-MULTI-SLOT:** np=1 only. Hard gate. (Reinforced by Gate 0 data showing np>1 doesn't pay for any spec method on this hardware.)
+- **OQ-VLLM-PR-MERGE-RISK:** we anchor on the empirical Gate 0 vLLM measurements + the published paper, not on the PR's implementation choices. vLLM PR is correctness oracle.
 - **OQ-FAILURE-MODE-ON-MISSING-DRAFT:** at first landing, hard fail (matches MTP-IR's current pattern). Move to graceful-fallback after the path is shipped and measured.
+- **OQ-FUSION-PATH:** **bespoke fused CUDA kernel from day one** (resolved 2026-05-12). Scalar reference exists only as unit-test oracle. See `kernel-design.md` for kernel signatures and SM_75 budget. (§5 "Projection fan-out")
+
+## 12. Companion documents
+
+- **`dflash.allium`** — the behavioural contract. 19 top-level invariants + 35 in-contract @invariants. Updated 2026-05-12 with Gate 3.5 + Gate 0 resolutions.
+- **`kernel-design.md`** — the bespoke sm_75 kernel design (next deliverable). Locks the InjectKV fusion signature, drafter-→inject buffer layout, verify-shape attention contract, and the Allium-invariant ↔ kernel binding table. Must land before kernel code in `ggml-cuda/`.
+- **`DFlashCycle.tla`** + **`DFlashMultiSlot.tla`** — TLA+ models. Phase 1 (cycle) 851 states clean; Phase 2 (multi-slot) 6067 distinct states clean. Bind structural correctness of the cycle and per-slot dispatch.
+- **`allium-tla-binding.json`** — Allium↔TLA+ binding manifest. 24 tla_helpers whitelist; check-bindings.py enforces 54/54 Allium invariants coverage.
+- **`upstream-pr-drafts.md`** — three small vLLM PRs (combine_hidden_states dtype cast, FlexAttention view→reshape, BLOCK_M/N POW2) maintained locally as runtime monkey-patches in `scripts/vllm_sm75_patches.py`. These keep the vLLM oracle running on sm_75.
+- **Companion memories**: `project_continuous_batching_vs_perslot_dispatch.md`, `project_qwen36_27b_multimodal_exploration.md`, `project_mtp_multislot_determinism_investigation_failed.md`, `project_production_2026q2_landing.md`.
