@@ -119,7 +119,7 @@ For ik_llama.cpp on branch `production/2026-q2-next`. Numbers are rough estimate
 | `src/llama-context.cpp` | `llama_set_dflash(ctx_tgt, model_dft)` API; `extract_dflash_features(ubatch)` async D→H copy at target post-step; `apply_inject_kv(ctx_dft, features, anchor_pos)` runs inject graph and writes to draft KV; per-step orchestration hook. | +250 |
 | `include/llama.h` | Public C API surface: `llama_set_dflash`, `llama_get_dflash_block_size`, `llama_get_dflash_mask_token_id`, `llama_get_dflash_swa_window`, `llama_dflash_extract_features`, `llama_dflash_draft_block`. No new types beyond `llama_dflash_state` opaque handle. | +50 |
 | `common/speculative.cpp` | `common_speculative_dflash_init/free/draft/accept`. The draft step runs the block-emit, the accept step reuses existing `argmax_match` longest-prefix logic. | +180 |
-| `convert_hf_to_gguf.py` | `class DFlashModel(Qwen3Model)` for ik_llama (port from upstream PR's #22105 converter); `--target-model-dir` flag; write fc, hidden_norm, metadata; share tokenizer/vocab from target. | +200 |
+| `convert_hf_to_gguf.py` | `class DFlashModel` for ik_llama extending the existing Qwen 3.5/3.6 converter base (port adapted from upstream llama.cpp PR #22105's converter and cross-checked against vLLM PR #40898); `--target-model-dir` flag; write fc, hidden_norm, metadata; share tokenizer/vocab from target; BF16→FP16 cast for drafter weights + target's AutoRound-preserved-precision `linear_attn.in_proj_a/b`. | +200 |
 | `examples/speculative-simple/speculative-simple.cpp` | Add `--dflash` flag; wire `common_speculative_dflash_*` into the existing speculative loop. | +50 |
 | `tools/server/server-context.cpp` | 20-line gate: `if (params.speculative.dflash && params.n_parallel == 1) llama_set_dflash(...)`. Error out at np>1. | +20 |
 | Tests | `tests/test-dflash-extract.sh` (residual-stream capture binding test); `tests/test-dflash-inject.sh` (per-layer K/V write binding); `tests/test-dflash-block.cpp` (drafter forward + accept under known prompt); reuse `test_flash_attn_ext_batched_det` at the verify shape (ne[1] = block_size+1). | +250 |
@@ -274,7 +274,7 @@ Token cost (already incurred): ~80k. Gate 0 closed.
 
 ### Gate 1 — converter binding
 
-Port `class DFlashModel(Qwen3Model)` into ik_llama.cpp's `convert_hf_to_gguf.py`. Convert `z-lab/Qwen3-8B-DFlash` (target = `Qwen/Qwen3-8B`) into a `.gguf` that has all expected tensors (fc, hidden_norm, drafter layers) and metadata (target_layer_ids, block_size, mask_token_id, swa_window, target_arch, target_n_embd). Verify by `gguf_dump` and tensor-name match against the upstream-converted version.
+Port `class DFlashModel` into ik_llama.cpp's `convert_hf_to_gguf.py`, extending the existing Qwen 3.5/3.6 converter base. Convert `z-lab/Qwen3.6-27B-DFlash` (target = `Qwen/Qwen3.6-27B` Int4 AutoRound) into a `.gguf` that has all expected tensors (fc, hidden_norm, drafter layers) and metadata (target_layer_ids, block_size, mask_token_id, swa_window, target_arch, target_n_embd, layer_types). Verify by `gguf_dump` and tensor-name match against the upstream-converted version on the same source repo.
 
 - **PASS:** Tensors and metadata match.
 - **FAIL:** Missing or mismatched. Diagnose; don't proceed.
@@ -283,7 +283,7 @@ Token cost: 15-25k.
 
 ### Gate 2 — extract hook
 
-Implement `dflash_extract_features` against Qwen3.5 / Qwen3.6 build graphs. Hook the residual-stream snapshot at K source-layer indices. Build a binding test that runs a known prompt through `Qwen3-8B` target and captures hidden states at the source layers; compare against the upstream-converted reference output (which the upstream PR's extract emits on the same prompt).
+Implement `dflash_extract_features` against the Qwen 3.6 build graph (`Qwen3_5ForConditionalGeneration` arch class — hybrid linear_attention + full_attention). Hook the residual-stream snapshot at K source-layer indices (`target_layer_ids = [1, 16, 31, 46, 61]`). Build a binding test that runs a known prompt through `Qwen3.6-27B` target and captures hidden states at the source layers; compare against an upstream-converted reference run (vLLM PR #40898's extract path) on the same prompt + same target weights.
 
 - **PASS:** Byte-identical hidden-state snapshots at all source-layer indices.
 - **FAIL:** Either the hook fires at the wrong tensor or the snapshot mis-orders the layer/position dimensions. Fix; re-run.
@@ -297,7 +297,7 @@ Token cost: 15-25k.
 **Gate 3a — Fused InjectKV correctness (unit-test, no full pipeline yet).**
 Implement `ggml-cuda/dflash-inject-kv.cu` per `kernel-design.md`. Write the scalar reference path in the same file (compiled only under unit-test flag). Drive both paths from `tests/test-dflash-inject-fused.cpp` with random inputs across the full drafter layer-config space (head dims, KV head counts, RoPE base, RMSNorm eps).
 
-- **PASS:** Fused output byte-identical to scalar reference across all 30 drafter layers.
+- **PASS:** Fused output byte-identical to scalar reference across all 5 drafter layers.
 - **FAIL:** Mismatch. Diagnose at the fused-kernel level; scalar reference is the ground truth.
 
 **Gate 3b — End-to-end drafter forward with fused inject.**
@@ -310,9 +310,9 @@ Token cost: 40-60k (combined; fused kernel + plumbing).
 
 ### Gate 4 — full block-emit + accept loop
 
-Plumb `common_speculative_dflash_*` into `examples/speculative-simple`. Run the "quicksort, thinking off" benchmark on Qwen3-8B target + DFlash drafter on a single RTX 6000.
+Plumb `common_speculative_dflash_*` into `examples/speculative-simple`. Run the "quicksort, thinking on" benchmark on Qwen3.6-27B target + Qwen3.6-27B-DFlash drafter at np=1 on the production TP=2 layout.
 
-- **PASS:** Within 10% of the Gate-0 baseline measurement (we now have ik_llama.cpp's kernel advantage on the target side, which should help, not hurt).
+- **PASS:** Within 10% of the Gate-0 vLLM oracle measurement (24.46 tok/s at spec=4 np=1) on the same hardware. We expect to beat it once Gate 6 measurements run; Gate 4 only binds that the end-to-end loop produces coherent output with non-zero accept rate.
 - **FAIL:** Substantial regression. Drafter is producing low-acceptance blocks, or the accept loop is mis-counting. Diagnose.
 
 Token cost: 30-50k.
@@ -376,15 +376,15 @@ Realistic expectation calibration from Gate 0: vLLM DFlash at spec=4 = 24.46 tok
 
 Token cost: 20-30k.
 
-**Total budget if everything passes:** ~140-220k. The cost shape changes vs original estimate: Gate 0 was a real measurement (not the originally-scoped "reproduce on Qwen3-8B"), Gate 7 is closed (saving 30-50k), Gate 3 grew (fused kernel + plumbing).
+**Total budget if everything passes:** ~140-220k. Gate 0 was a real measurement (closed with data), Gate 3 grew (fused kernel + plumbing), Gate 7 is reopened conditional on Gate 5b GREEN.
 
 ## 7. Risk surface
 
 ### R1 — Drafter still under training
-The HF card warns: *"This model is still under training, and inference engine support may not be fully available yet due to architectural changes, including causal SWA layers."* The drafter weights may change. Mitigation: prove the pipeline on `Qwen3-8B-DFlash` (the published 6x model) at Gate 4, and treat `Qwen3.6-27B-DFlash` as a Gate 6 measurement against a moving target.
+The HF card warns: *"This model is still under training, and inference engine support may not be fully available yet due to architectural changes, including causal SWA layers."* The drafter weights may change. Mitigation: pin to a specific Qwen3.6-27B-DFlash revision (commit + safetensor hashes captured at convert time and recorded in MEMORY.md); re-pin only by deliberate decision. Treat any upstream weight change as a separate phase that re-binds Gate 5 + Gate 6.
 
 ### R2 — Per-layer projection cost (RESOLVED by §5 design choice)
-Scalar K_proj+V_proj+norm+RoPE on every accepted anchor token would be ~5-10 ms × 30 drafter layers × MAL≈3 anchors ≈ ~500 ms-1.5 s per cycle — would consume Gate 6's entire perf budget. §5 commits to the fused kernel from day one for exactly this reason. R2 is no longer "risk to monitor"; it's a design constraint that drives the InjectKV kernel work. The risk shifts to **R2′ — fused kernel correctness**, bound by Gate 3a.
+Scalar K_proj+V_proj+norm+RoPE on every accepted anchor token would be ~5-10 ms × 5 drafter layers × MAL≈3 anchors ≈ ~75-150 ms per cycle — would consume Gate 6's entire perf budget even at the smaller 5-layer count. §5 commits to the fused kernel from day one for exactly this reason. R2 is no longer "risk to monitor"; it's a design constraint that drives the InjectKV kernel work. The risk shifts to **R2′ — fused kernel correctness**, bound by Gate 3a.
 
 ### R3 — `--target-model-dir` converter coupling
 The drafter GGUF references the target's vocab + tokenizer at convert time. If the user later swaps the target's vocab (e.g., adding tool tokens), the drafter must be re-converted. This is an operational hazard but matches upstream's design — flag in the launch profile.
