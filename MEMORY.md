@@ -4414,3 +4414,66 @@ shipping.
 target build graph. Closure binds residual-stream snapshot at the
 recorded `target_layer_ids = [1, 16, 31, 46, 61]` against a vLLM
 PR #40898 reference on the same prompt.
+
+
+## DFlash T2 — extract-features hook (eval-callback path)
+
+**Date**: 2026-05-12.
+**Branch**: `production/2026-q2-next`.
+
+Naive approach failed: `ggml_dup(ctx0, cur)` + `ggml_set_output(extract)`
++ `ggml_build_forward_expand(gf, extract)` — the scheduler aliases DUP
+to its source buffer, leaving the dup tensor with `buffer == nullptr`
+post-compute, so `ggml_backend_tensor_get(extract, ...)` hits the
+`tensor buffer not set` assert.
+
+`ggml_cont` (which compiles to DUP) had the same outcome. Adding the
+forward-expand call put the dup in `gf->nodes` (we verified the
+correct shape `[5120, 22]` and name `dflash_extract_<il>`), but the
+scheduler still skipped buffer alloc for it. Conclusion: for residual
+snapshots from inside a build graph, an explicit `ggml_set_output`
+on a parallel-branch tensor is NOT a reliable way to get a host-readable
+buffer.
+
+The h_pre_norm precedent uses the same pattern but is never actually
+read via `tensor_get` in production — its data is captured via the
+host-side `draft_input_hidden_state` buffer, not from the tagged
+tensor itself. So h_pre_norm "works" by not being relied on for
+readback.
+
+**What works (and what's now used):** the scheduler eval-callback
+(`cparams.cb_eval`). The qwen35 build graph already names each layer's
+post-FFN residual `l_out-<il>` via the build-context `cb`, and that
+tensor is in `gf->nodes` (downstream consumes it). The eval-callback
+fires for every computed node with its data accessible. Match on the
+name, copy to a host buffer, store on the decoder. No graph surgery
+required.
+
+Implementation: `llama_set_dflash_extract_layers` installs an internal
+cb_eval (`llama_dflash_extract_cb_eval`) that matches `l_out-N` against
+the configured indices and `ggml_backend_tensor_get`s into
+`default_decoder.dflash_extract_buf[k]` (host `std::vector<float>`).
+`llama_get_dflash_extract_data` returns from that buffer.
+
+The callback does NOT stomp a user-supplied `cb_eval` — it only sets
+ours when extract is enabled, and only clears the slot if ours is the
+one currently installed.
+
+**Verified on Qwen 3.6 27B production GGUF, np=1 single-slot, 22-token
+prompt, all 5 source-layer indices `[1, 16, 31, 46, 61]`:**
+3 independent runs produced byte-identical (SHA-256 match) outputs
+across all 5 layers. Residual L2 norms scale with depth as expected
+(75.5 → 1422.8). Self-consistency criterion PASS.
+
+vLLM-side reference dump still in flight at time of write — the
+absolute go/no-go against vLLM (cosine sim + NMSE) decides on the
+data, not the assumption.
+
+**Files**:
+- ik_llama.cpp: `include/llama.h`, `src/llama-cparams.h`,
+  `src/llama-decoder-internal.h`, `src/llama.cpp`,
+  `src/graphs/build_qwen35.cpp`, `examples/dflash-extract/`.
+- yarn-agentic: `scripts/dflash-extract-vllm.py`,
+  `scripts/dflash-extract-compare.py`,
+  `data/dflash-extracts/fixtures/prompt-1.txt`,
+  `data/dflash-extracts/iklama/run{1,2,3}-layer{1,16,31,46,61}.npy`.
