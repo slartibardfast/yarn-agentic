@@ -59,6 +59,7 @@
 - [Phase 43: NCCL Capture Threadlocal](PHASE43.md)
 - [Phase 44: CUDA Graph Capture Investigation](PHASE44.md)
 - [Phase 45: Decompose llama_context](PHASE45.md)
+- [Phase 46: DFlash speculative decoding port](PHASE46.md)
 
 # Qwen3.5 MTP Tool Calling
 
