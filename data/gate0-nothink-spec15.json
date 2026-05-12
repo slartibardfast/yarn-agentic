@@ -1,0 +1,180 @@
+{
+  "results": {
+    "dflash_np1": {
+      "label": "dflash_np1",
+      "np_mode": 1,
+      "warmup_secs": 3.2700648307800293,
+      "gen_secs": 69.9149477481842,
+      "total_out_toks": 1632,
+      "tok_per_sec_aggregate_incl_prefill": 23.342647782246043,
+      "tok_per_sec_decode_only_tg": null,
+      "avg_ttft_s": null,
+      "per_req": [
+        {
+          "n_out": 66,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 30,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        }
+      ],
+      "outputs": [
+        "\n\n<think>\n\n</think>\n\nPixel-space diffusion generates images by directly denoising raw pixel values, whereas latent diffusion operates within a compressed latent space created by an autoencoder to significantly reduce computational costs. This efficiency allows latent diffusion models to achieve high-quality image generation with much faster training and inference times compared to their pixel-space counterparts.",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Task:** Summarize the plot of *King Lear*\n   - **Constraint:** One paragraph\n   - **Constraint:** `/no_think` (This is a directive to not show the thinking process in the output, just provide the final answer directly)\n\n2.  **Identify Key Elements of *King Lear*:**\n   - Author: William Shakespeare\n   - Main characters: King Lear, his three daughters (Goneril, Regan, Cordelia), Gloucester, his sons (Edgar, Edmund)\n   - Core plot: Lear divides his kingdom based on flattery, banishes Cordelia, suffers betrayal by his other daughters, descends into madness, while Gloucester faces similar betrayal by Edmund. Themes of justice, family, madness, and redemption. Tragic ending with deaths of Lear, Cordelia, Goneril, Regan, Edmund, etc.\n\n3.  **Draft - Mental Refinement (One Paragraph):**\n   In William Shakespeare\u2019s *King Lear*, the aging monarch of Britain decides to divide his kingdom among his three daughters based on their declarations of love, banishing the honest Cord",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Understand User Request:**\n   - **Task:** Fit a 2nd-degree polynomial to a list of (x, y) pairs.\n   - **Language:** Python\n   - **Constraint:** `/no_think` (This means I should just output the code directly without extra explanation, but I'll still make sure it's clean, well-commented, and uses standard libraries like `numpy` or `scipy` which are standard for this task.)\n\n2.  **Identify Key Components:**\n   - Input: List of (x, y) pairs\n   - Output: Fitted 2nd-degree polynomial (coefficients)\n   - Method: Polynomial regression/fitting\n   - Library: `numpy` is the most straightforward and standard choice (`numpy.polyfit`)\n\n3.  **Draft Code (Mental):**\n   ```python\n   import numpy as np\n\n   def fit_quadratic(data):\n       # data is a list of (x, y) tuples\n       x = [p[0] for p in data]\n       y = [p[1] for p in data]\n       # Fit a 2",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Question:** \"What are the main causes of the Peloponnesian War?\"\n   - **Constraint:** \"/no_think\" (This means I should provide a direct, concise answer without showing my internal reasoning process. I'll just output the final answer.)\n\n2.  **Identify Key Historical Facts:**\n   - The Peloponnesian War (431\u2013404 BCE) was fought between Athens and its empire (the Delian League) and Sparta and its allies (the Peloponnesian League).\n   - Main causes typically cited by historians (especially Thucydides):\n     - Growing power of Athens and fear it caused in Sparta (Thucydides' famous quote: \"The growth of the power of Athens, and the alarm which this inspired in Lacedaemon, made war inevitable.\")\n     - Economic/Trade disputes (Corinthian grievances against Athenian trade practices)\n     - Political/Ideological differences (Democracy vs. Oligarchy, imperialism vs. conservative alliance system)\n     - Specific triggering incidents: The Megarian Decree,",
+        "\n\n<think>\n\n</think>\n\nLe brouillard du petit matin persistait sur le port jusqu'\u00e0 ce que les chalutiers le traversent.",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Reducing memory allocations in a hot inner loop in Rust\n   - **Requirement:** List five practical steps\n   - **Constraint:** `/no_think` (This means I should output directly without showing my internal reasoning process, but I still need to generate the response carefully)\n\n2.  **Identify Key Concepts in Rust for Memory Allocation Optimization:**\n   - Hot inner loops are performance-critical; allocations here cause GC-like pauses (though Rust doesn't have a GC, allocations still involve heap management, syscalls, cache misses, etc.)\n   - Common strategies: reuse buffers, use stack allocation, avoid `String`/`Vec` creation, use iterators/adapters, pre-allocate, use `Cow`, avoid trait objects/dynamic dispatch if possible, use `smallvec`, `arrayvec`, etc.\n   - Need exactly 5 practical, actionable steps specific to Rust.\n\n3.  **Brainstorming 5 Steps:**\n   1. **Pre-allocate and reuse collections:** Instead of creating `Vec`/`String` inside the loop, allocate them once outside and use `.clear()`",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Telomeres and cellular aging\n   - **Request:** Describe the role of telomeres in cellular aging\n   - **Constraint:** `/no_think` (This means I should provide a direct, concise answer without showing my internal reasoning process. I'll just output the final response.)\n\n2.  **Identify Key Concepts:**\n   - What are telomeres? (Repetitive DNA sequences at chromosome ends)\n   - What is their primary function? (Protect chromosomes from degradation/fusion, solve the \"end replication problem\")\n   - How do they relate to cellular aging? (Shorten with each cell division, trigger senescence/apoptosis when critically short, act as a \"biological clock\")\n   - Key mechanisms: Telomerase, replicative senescence, Hayflick limit\n   - Implications: Aging, cancer, tissue regeneration, potential therapies\n\n3.  **Structure the Response:**\n   - Definition/Structure of telomeres\n   - The \"End Replication Problem\" & shortening mechanism\n   - Telomeres as a biological clock (Hayf",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the request:**\n    *   Topic: Printing press.\n    *   Form: Haiku (5-7-5 syllables).\n    *   Constraint: `/no_think` (This usually implies the user wants the output directly without the model's internal monologue or reasoning displayed, or it's a prompt injection attempt to bypass safety filters. However, as an AI, I should just generate the haiku. The `/no_think` tag is often used in prompt engineering to suppress the \"thought\" block in the output. Since I am generating the response, I will just provide the haiku.)\n\n2.  **Brainstorming imagery and keywords:**\n    *   Ink, paper, press, type, lead, clack, boom, words, pages, black, white, machine, gears, revolution, Gutenberg, news, stories.\n\n3.  **Drafting lines (Syllable counting):**\n    *   *Attempt 1:*\n        *   Ink stains the white page (5) -> Ink stains the white page (5). Good.\n        *   Heavy metal gears turn round (7) -> Hea-vy me-tal"
+      ],
+      "init_secs": 140.4386076927185
+    },
+    "vanilla_np1": {
+      "label": "vanilla_np1",
+      "np_mode": 1,
+      "warmup_secs": 1.2257273197174072,
+      "gen_secs": 46.97415781021118,
+      "total_out_toks": 1632,
+      "tok_per_sec_aggregate_incl_prefill": 34.74250686076671,
+      "tok_per_sec_decode_only_tg": null,
+      "avg_ttft_s": null,
+      "per_req": [
+        {
+          "n_out": 66,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 30,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        }
+      ],
+      "outputs": [
+        "\n\n<think>\n\n</think>\n\nPixel-space diffusion generates images by directly denoising raw pixel values, whereas latent diffusion operates within a compressed latent space created by an autoencoder to significantly reduce computational costs. This efficiency allows latent diffusion models to achieve high-quality image generation with much faster training and inference times compared to their pixel-space counterparts.",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Task:** Summarize the plot of *King Lear*\n   - **Constraint:** One paragraph\n   - **Constraint:** `/no_think` (This is a directive to not show the thinking process in the output, just provide the final answer directly)\n\n2.  **Identify Key Elements of *King Lear*:**\n   - Author: William Shakespeare\n   - Main characters: King Lear, his three daughters (Goneril, Regan, Cordelia), Gloucester, his sons (Edgar, Edmund)\n   - Core plot: Lear divides his kingdom based on flattery, banishes Cordelia, suffers betrayal by his other daughters, descends into madness, while Gloucester faces similar betrayal by Edmund. Themes of justice, family, madness, and redemption. Tragic ending with deaths of Lear, Cordelia, Goneril, Regan, Edmund, etc.\n\n3.  **Draft - Mental Refinement (One Paragraph):**\n   In William Shakespeare\u2019s *King Lear*, the aging monarch of Britain decides to divide his kingdom among his three daughters based on their declarations of love, banishing the honest Cord",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Understand User Request:**\n   - **Task:** Fit a 2nd-degree polynomial to a list of (x, y) pairs.\n   - **Language:** Python\n   - **Constraint:** `/no_think` (This means I should just output the code directly without extra explanation, but I'll still make sure it's clean, well-commented, and uses standard libraries like `numpy` or `scipy` which are standard for this task.)\n\n2.  **Identify Key Components:**\n   - Input: List of (x, y) pairs\n   - Output: Fitted 2nd-degree polynomial (coefficients)\n   - Method: Polynomial regression/fitting\n   - Library: `numpy` is the most straightforward and standard choice (`numpy.polyfit`)\n\n3.  **Draft Code (Mental):**\n   ```python\n   import numpy as np\n\n   def fit_quadratic(data):\n       # data is a list of (x, y) tuples\n       x = [p[0] for p in data]\n       y = [p[1] for p in data]\n       # Fit a 2",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Question:** \"What are the main causes of the Peloponnesian War?\"\n   - **Constraint:** \"/no_think\" (This means I should provide a direct, concise answer without showing my internal reasoning process. I'll just output the final answer.)\n\n2.  **Identify Key Historical Facts:**\n   - The Peloponnesian War (431\u2013404 BCE) was fought between Athens and its empire (the Delian League) and Sparta and its allies (the Peloponnesian League).\n   - Main causes typically cited by historians (especially Thucydides):\n     - Growing power of Athens and fear it caused in Sparta (Thucydides' famous quote: \"The growth of the power of Athens, and the alarm which this inspired in Lacedaemon, made war inevitable.\")\n     - Economic/Trade disputes (Corinthian grievances against Athenian trade practices)\n     - Political/Ideological differences (Democracy vs. Oligarchy, imperialism vs. conservative alliance system)\n     - Specific incidents triggering the war:\n       - The",
+        "\n\n<think>\n\n</think>\n\nLe brouillard du petit matin persistait sur le port jusqu'\u00e0 ce que les chalutiers le traversent.",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Reducing memory allocations in a hot inner loop in Rust\n   - **Requirement:** List five practical steps\n   - **Constraint:** `/no_think` (This means I should output directly without showing my internal reasoning process, but I still need to generate the response carefully)\n\n2.  **Identify Key Concepts in Rust for Memory Allocation Optimization:**\n   - Hot inner loops are performance-critical; allocations here cause GC-like pauses (though Rust doesn't have a GC, allocations still involve heap management, syscalls, cache misses, etc.)\n   - Common strategies: reuse buffers, use stack allocation, avoid `String`/`Vec` creation, use iterators/adapters, pre-allocate, use `Cow`, avoid trait objects/dynamic dispatch if possible, use `smallvec`, `arrayvec`, etc.\n   - Need exactly 5 practical, actionable steps specific to Rust.\n\n3.  **Brainstorming 5 Steps:**\n   1. **Pre-allocate and reuse collections:** Instead of creating `Vec`/`String` inside the loop, allocate them once outside and use `.clear()`",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Telomeres and cellular aging\n   - **Request:** Describe the role of telomeres in cellular aging\n   - **Constraint:** `/no_think` (This means I should provide a direct, concise answer without showing my internal reasoning process. I'll just output the final response.)\n\n2.  **Identify Key Concepts:**\n   - What are telomeres? (Repetitive DNA sequences at chromosome ends)\n   - What is their primary function? (Protect chromosomes from degradation/fusion, solve the \"end replication problem\")\n   - How do they relate to cellular aging? (Shorten with each cell division, trigger senescence/apoptosis when critically short, act as a \"biological clock\")\n   - Key mechanisms: Telomerase, replicative senescence, Hayflick limit\n   - Implications: Aging, cancer, tissue regeneration, potential therapies\n\n3.  **Structure the Response:**\n   - Definition/Structure of telomeres\n   - The \"End Replication Problem\" & shortening mechanism\n   - Telomeres as a biological clock (Hayf",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the request:**\n    *   Topic: Printing press.\n    *   Form: Haiku (5-7-5 syllables).\n    *   Constraint: `/no_think` (This usually implies the user wants the output directly without the model's internal monologue or reasoning displayed, or it's a prompt injection attempt to bypass safety filters. However, as an AI, I should just generate the haiku. The `/no_think` tag is often used in prompt engineering to suppress the \"thought\" block in the output. Since I am generating the response, I will just provide the haiku.)\n\n2.  **Brainstorming imagery and keywords:**\n    *   Ink, paper, press, type, lead, clack, boom, words, pages, black, white, machine, gears, revolution, Gutenberg, news, stories.\n\n3.  **Drafting lines (Syllable counting):**\n    *   *Attempt 1:*\n        *   Ink stains the white page (5) -> Ink stains the white page (5). Good.\n        *   Heavy metal gears turn round (7) -> Hea-vy me-tal"
+      ],
+      "init_secs": 97.99232339859009
+    }
+  },
+  "speedups": {
+    "np1_aggregate": 0.6718757479359079
+  },
+  "prompts": [
+    "Explain the difference between latent diffusion and pixel-space diffusion in two sentences. /no_think",
+    "Summarize the plot of King Lear in one paragraph. /no_think",
+    "Write Python code that fits a 2nd-degree polynomial to a list of (x, y) pairs. /no_think",
+    "What are the main causes of the Peloponnesian War? /no_think",
+    "Translate to French: The early-morning fog lingered over the harbour until the trawlers cut through it. /no_think",
+    "List five practical steps for reducing memory allocations in a hot inner loop in Rust. /no_think",
+    "Describe the role of telomeres in cellular aging. /no_think",
+    "Write a haiku about a printing press. /no_think"
+  ],
+  "max_tokens": 256,
+  "num_speculative_tokens": 15,
+  "seed": 42,
+  "target": "/opt/models/hf-cache/models--Intel--Qwen3.6-27B-int4-AutoRound/snapshots/a00e481620facd57da3a86eaa5c90e2e811d1aac",
+  "drafter": "/opt/models/qwen36-27b-dflash"
+}

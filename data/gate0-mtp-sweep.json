@@ -1,0 +1,434 @@
+{
+  "results": {
+    "dflash_np1": {
+      "label": "dflash_np1",
+      "np_mode": 1,
+      "warmup_secs": 2.6804559230804443,
+      "gen_secs": 39.80103778839111,
+      "total_out_toks": 1759,
+      "tok_per_sec_aggregate_incl_prefill": 44.19482751560445,
+      "tok_per_sec_decode_only_tg": null,
+      "avg_ttft_s": null,
+      "per_req": [
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 193,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 30,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        }
+      ],
+      "outputs": [
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Latent diffusion vs. pixel-space diffusion\n   - **Constraint:** Explain the difference in exactly two sentences.\n\n2.  **Identify Key Concepts:**\n   - *Pixel-space diffusion:* Operates directly on raw pixel values of images. High computational cost, slower training/inference, but can produce high-fidelity details.\n   - *Latent diffusion:* First compresses images into a lower-dimensional latent space using an autoencoder, then performs diffusion in that compressed space. Much faster and more computationally efficient, while maintaining good quality.\n\n3.  **Draft - Sentence 1 (Focus on pixel-space):**\n   Pixel-space diffusion operates directly on raw image pixels, requiring high computational resources to model fine details but ensuring direct control over every pixel value.\n\n4.  **Draft - Sentence 2 (Focus on latent diffusion & contrast):**\n   In contrast, latent diffusion first compresses images into a lower-dimensional latent representation using an autoencoder, enabling significantly faster training and inference while preserving essential visual information.\n\n5.  **Check Constraints:**\n   - Exactly two sentences? Yes.\n   - Explains the",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the Request:**\n    *   Topic: Plot of *King Lear*.\n    *   Constraint: One paragraph.\n\n2.  **Identify Key Plot Points of *King Lear*:**\n    *   *Beginning:* King Lear decides to divide his kingdom among his three daughters based on their flattery. Cordelia refuses to flatter him and is disinherited. Kent is banished for defending Cordelia.\n    *   *Middle:* Lear gives power to Goneril and Regan, who abuse him. He goes mad in the storm. Parallel plot: Gloucester is betrayed by his illegitimate son Edmund, who frames his legitimate son Edgar. Gloucester is blinded.\n    *   *Climax/Resolution:* Lear and Cordelia reunite but are captured. Goneril and Regan kill each other (or are killed). Edmund is defeated by Edgar. Cordelia is hanged. Lear dies of grief. Albany and Edgar take over.\n\n3.  **Drafting - Attempt 1 (Mental or rough text):**\n    King Lear, seeking to retire, divides his kingdom among his three daughters based on their declarations of love, banishing the honest",
+        "\n\n<think>\n\n</think>\n\n```python\nimport numpy as np\n\n\ndef fit_polynomial_2nd_degree(data: list[tuple[float, float]]) -> np.ndarray:\n    \"\"\"\n    Fit a 2nd-degree polynomial to a list of (x, y) pairs.\n    \n    Parameters:\n        data: A list of (x, y) tuples.\n        \n    Returns:\n        A numpy array of coefficients [a, b, c] for the polynomial a*x^2 + b*x + c.\n    \"\"\"\n    if not data:\n        raise ValueError(\"Data list is empty\")\n    \n    x_values = [point[0] for point in data]\n    y_values = [point[1] for point in data]\n    \n    # Fit a 2nd-degree polynomial\n    coefficients = np.polyfit(x_values, y_values, 2)\n    \n    return coefficients\n```",
+        "\n\n<think>\n\n</think>\n\nThe Peloponnesian War (431\u2013404 BCE) was a protracted and devastating conflict between the two dominant Greek city-states of the era: **Athens** and **Sparta**, along with their respective allies. The causes were complex, involving long-term structural tensions, immediate political triggers, and ideological differences.\n\nHistorians, particularly the ancient historian **Thucydides**, identify several main causes:\n\n### 1. The Fundamental Cause: Fear and Power Shift (Thucydides\u2019 Thesis)\nThe most famous explanation comes from Thucydides, who wrote in his *History of the Peloponnesian War*:\n> **\u201cThe growth of the power of Athens, and the alarm which this inspired in Lacedaemon [Sparta], made war inevitable.\u201d**\n\n- **Athens\u2019 Rise**: After defeating Persia in the Greco-Persian Wars (499\u2013449 BCE), Athens formed the **Delian League**, a naval alliance intended to protect Greek cities from further Persian attacks. Over time, Athens transformed this league into an empire, using its treasury to fund its own power, navy, and cultural projects (like the Parthenon",
+        "\n\n<think>\n\n</think>\n\nLe brouillard du petit matin persistait sur le port jusqu\u2019\u00e0 ce que les chalutiers le traversent.",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Understand User Request:**\n   - **Topic:** Reducing memory allocations in a hot inner loop\n   - **Language:** Rust\n   - **Requirement:** List five practical steps\n   - **Context:** Performance optimization, specifically targeting memory allocation overhead in tight loops\n\n2.  **Identify Key Concepts in Rust Related to Memory Allocation:**\n   - `Vec`, `String`, `Box`, `HashMap`, `HashSet`, etc. allocate on the heap\n   - Stack allocation vs. heap allocation\n   - Reusing buffers/containers\n   - Avoiding temporary allocations\n   - Using iterators vs. loops\n   - `Cow`, `SmallVec`, `ArrayVec`\n   - Pre-allocation (`with_capacity`)\n   - Avoiding `.clone()`, `.to_string()`, `.collect()` in loops\n   - Using references instead of owned types\n   - `#[inline]`, loop unrolling (less relevant to allocations but related to hot loops)\n   - Arena allocators, bump allocators\n   - `std::mem::replace`, `std::mem::take`\n   - Using `&str` instead of `String`, `&",
+        "\n\n<think>\n\n</think>\n\nTelomeres play a critical role in cellular aging by acting as protective caps on the ends of chromosomes, serving as a biological \"clock\" that limits the number of times a cell can divide.\n\nHere is a detailed breakdown of the role of telomeres in cellular aging:\n\n### 1. Structure and Function of Telomeres\n*   **Definition:** Telomeres are repetitive nucleotide sequences (TTAGGG in humans) located at the ends of linear chromosomes.\n*   **Protective Role:** They protect the coding DNA from degradation and prevent chromosomes from fusing with one another. Without telomeres, the ends of chromosomes would be recognized as double-strand breaks, triggering DNA repair mechanisms that could lead to genomic instability.\n\n### 2. The End-Replication Problem\n*   **DNA Replication Limitation:** During cell division, DNA polymerase (the enzyme that copies DNA) cannot fully replicate the very ends of linear chromosomes. This is known as the **end-replication problem**.\n*   **Shortening:** As a result, a small portion of the telomeric DNA is lost with each cell division. Over time, telomeres progressively shorten.\n\n### 3. Telomere",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the request:**\n    *   Topic: Printing press.\n    *   Form: Haiku (5-7-5 syllables).\n\n2.  **Brainstorming imagery and keywords:**\n    *   Ink, paper, press, type, lead, clack, boom, words, pages, black, white, machine, gears, revolution, Gutenberg, news, books.\n    *   Sounds: Clack, thud, whir, click.\n    *   Actions: Pressing, stamping, rolling, printing.\n\n3.  **Drafting lines (Syllable counting):**\n    *   *Attempt 1:*\n        *   Ink on paper flows (5) -> Ink on pa-per flows (5). Good.\n        *   Heavy metal presses down (7) -> Hea-vy me-tal pres-ses down (7). Good.\n        *   Words come to life now (5) -> Words come to life now (5). Good.\n        *   *Result:* Ink on paper flows / Heavy metal presses down / Words come to life now.\n        *   *Critique:* A bit generic"
+      ],
+      "init_secs": 151.41993975639343
+    },
+    "dflash_np4": {
+      "label": "dflash_np4",
+      "np_mode": 4,
+      "warmup_secs": 2.3408308029174805,
+      "gen_secs": 10.164241313934326,
+      "total_out_toks": 961,
+      "tok_per_sec_aggregate_incl_prefill": 94.54714526332126,
+      "tok_per_sec_decode_only_tg": null,
+      "avg_ttft_s": null,
+      "per_req": [
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 193,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        }
+      ],
+      "outputs": [
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Latent diffusion vs. pixel-space diffusion\n   - **Constraint:** Explain the difference in exactly two sentences.\n\n2.  **Identify Key Concepts:**\n   - *Pixel-space diffusion:* Operates directly on raw pixel values of images. High computational cost, slower training/inference, but can produce high-fidelity details.\n   - *Latent diffusion:* First compresses images into a lower-dimensional latent space using an autoencoder, then performs diffusion in that compressed space. Much faster and more computationally efficient, while maintaining good quality.\n\n3.  **Draft - Sentence 1 (Focus on pixel-space):**\n   Pixel-space diffusion operates directly on raw image pixels, requiring high computational resources to model fine details but ensuring direct control over every pixel value.\n\n4.  **Draft - Sentence 2 (Focus on latent diffusion & contrast):**\n   In contrast, latent diffusion first compresses images into a lower-dimensional latent representation using an autoencoder, enabling significantly faster training and inference while preserving essential visual information.\n\n5.  **Check Constraints:**\n   - Exactly two sentences? Yes.\n   - Explains the",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the Request:**\n    *   Topic: Plot of *King Lear*.\n    *   Constraint: One paragraph.\n\n2.  **Identify Key Plot Points of *King Lear*:**\n    *   *Beginning:* King Lear decides to divide his kingdom among his three daughters based on their flattery. Cordelia refuses to flatter him and is disinherited. Kent is banished for defending Cordelia.\n    *   *Middle:* Lear gives power to Goneril and Regan, who abuse him. He goes mad in the storm. Parallel plot: Gloucester is betrayed by his illegitimate son Edmund, who frames his legitimate son Edgar. Gloucester is blinded.\n    *   *Climax/Resolution:* Lear and Cordelia reunite but are captured. Goneril and Regan kill each other (or are killed). Edmund is defeated by Edgar. Cordelia is hanged. Lear dies of grief. Albany and Edgar take over.\n\n3.  **Drafting - Attempt 1 (Mental or rough text):**\n    King Lear, seeking to retire, divides his kingdom among his three daughters based on their declarations of love, banishing the honest",
+        "\n\n<think>\n\n</think>\n\n```python\nimport numpy as np\n\n\ndef fit_polynomial_2nd_degree(data: list[tuple[float, float]]) -> np.ndarray:\n    \"\"\"\n    Fit a 2nd-degree polynomial to a list of (x, y) pairs.\n    \n    Parameters:\n        data: A list of (x, y) tuples.\n        \n    Returns:\n        A numpy array of coefficients [a, b, c] for the polynomial a*x^2 + b*x + c.\n    \"\"\"\n    if not data:\n        raise ValueError(\"Data list is empty\")\n    \n    x_values = [point[0] for point in data]\n    y_values = [point[1] for point in data]\n    \n    # Fit a 2nd-degree polynomial\n    coefficients = np.polyfit(x_values, y_values, 2)\n    \n    return coefficients\n```",
+        "\n\n<think>\n\n</think>\n\nThe Peloponnesian War (431\u2013404 BCE) was a protracted and devastating conflict between the two dominant Greek city-states of the era: **Athens** and **Sparta**, along with their respective allies. The causes were complex, involving long-term structural tensions, immediate political triggers, and ideological differences.\n\nHistorians, particularly the ancient historian **Thucydides**, identify several main causes:\n\n### 1. The Fundamental Cause: Fear and Power Shift (Thucydides\u2019 Thesis)\nThe most famous explanation comes from Thucydides, who wrote in his *History of the Peloponnesian War*:\n> **\u201cThe growth of the power of Athens, and the alarm which this inspired in Lacedaemon [Sparta], made war inevitable.\u201d**\n\n- **Athens\u2019 Rise**: After defeating Persia in the Greco-Persian Wars (499\u2013449 BCE), Athens formed the **Delian League**, a naval alliance intended to protect Greek cities from further Persian attacks. Over time, Athens transformed this league into an empire, using its treasury to fund its own power, navy, and cultural projects (like the Parthenon"
+      ],
+      "init_secs": 151.41993975639343
+    },
+    "dflash_np8": {
+      "label": "dflash_np8",
+      "np_mode": 8,
+      "warmup_secs": 2.841693162918091,
+      "gen_secs": 14.367922067642212,
+      "total_out_toks": 1759,
+      "tok_per_sec_aggregate_incl_prefill": 122.42549700080976,
+      "tok_per_sec_decode_only_tg": null,
+      "avg_ttft_s": null,
+      "per_req": [
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 193,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 30,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        }
+      ],
+      "outputs": [
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Latent diffusion vs. pixel-space diffusion\n   - **Constraint:** Explain the difference in exactly two sentences.\n\n2.  **Identify Key Concepts:**\n   - *Pixel-space diffusion:* Operates directly on raw pixel values of images. High computational cost, slower training/inference, but can produce high-fidelity details.\n   - *Latent diffusion:* First compresses images into a lower-dimensional latent space using an autoencoder, then performs diffusion in that compressed space. Much faster and more computationally efficient, while maintaining good quality.\n\n3.  **Draft - Sentence 1 (Focus on pixel-space):**\n   Pixel-space diffusion operates directly on raw image pixels, requiring high computational resources to model fine details but ensuring direct control over every pixel value.\n\n4.  **Draft - Sentence 2 (Focus on latent diffusion & contrast):**\n   In contrast, latent diffusion first compresses images into a lower-dimensional latent representation using an autoencoder, enabling significantly faster training and inference while preserving essential visual information.\n\n5.  **Check Constraints:**\n   - Exactly two sentences? Yes.\n   - Explains the",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the Request:**\n    *   Topic: Plot of *King Lear*.\n    *   Constraint: One paragraph.\n\n2.  **Identify Key Plot Points of *King Lear*:**\n    *   *Beginning:* King Lear decides to divide his kingdom among his three daughters based on their flattery. Cordelia refuses to flatter him and is disinherited. Lear gives power to Goneril and Regan. Kent is banished for defending Cordelia.\n    *   *Middle:* Goneril and Regan turn on Lear, stripping him of his knights and dignity. Lear goes mad in the storm. Parallel plot: Gloucester is betrayed by his illegitimate son Edmund, who frames his legitimate son Edgar. Gloucester is blinded. Edgar disguises himself.\n    *   *Climax/Resolution:* Lear and Cordelia reunite. The French army arrives. Battles ensue. Goneril and Regan kill each other (or one kills the other, the other commits suicide). Edmund is defeated by Edgar. Cordelia is hanged on Edmund's orders. Lear dies of grief holding Cordelia's body. Albany and Edgar take over.\n\n3. ",
+        "\n\n<think>\n\n</think>\n\n```python\nimport numpy as np\n\n\ndef fit_polynomial_2nd_degree(data: list[tuple[float, float]]) -> np.ndarray:\n    \"\"\"\n    Fit a 2nd-degree polynomial to a list of (x, y) pairs.\n    \n    Parameters:\n        data: A list of (x, y) tuples.\n        \n    Returns:\n        A numpy array of coefficients [a, b, c] for the polynomial a*x^2 + b*x + c.\n    \"\"\"\n    if not data:\n        raise ValueError(\"Data list is empty\")\n    \n    x_values = [point[0] for point in data]\n    y_values = [point[1] for point in data]\n    \n    # Fit a 2nd-degree polynomial\n    coefficients = np.polyfit(x_values, y_values, 2)\n    \n    return coefficients\n```",
+        "\n\n<think>\n\n</think>\n\nThe Peloponnesian War (431\u2013404 BCE) was a protracted and devastating conflict between the two dominant Greek city-states of the era: **Athens** and **Sparta**, along with their respective allies. The causes were complex, involving long-term structural tensions, immediate political triggers, and ideological differences.\n\nHistorians, particularly the ancient historian **Thucydides**, identify several main causes:\n\n### 1. The Fundamental Cause: Fear and Power Shift (Thucydides\u2019 Thesis)\nThe most famous explanation comes from Thucydides, who wrote in his *History of the Peloponnesian War*:\n> **\u201cThe growth of the power of Athens, and the alarm which this inspired in Lacedaemon [Sparta], made war inevitable.\u201d**\n\n- **Athens\u2019 Rise**: After defeating Persia in the Greco-Persian Wars (499\u2013449 BCE), Athens formed the **Delian League**, a naval alliance intended to protect Greek cities from further Persian attacks. Over time, Athens transformed this league into an empire, using its treasury to fund its own power, navy, and cultural projects (like the Parthenon",
+        "\n\n<think>\n\n</think>\n\nLe brouillard du petit matin persistait sur le port jusqu\u2019\u00e0 ce que les chalutiers le traversent.",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Understand User Request:**\n   - **Topic:** Reducing memory allocations in a hot inner loop\n   - **Language:** Rust\n   - **Requirement:** List five practical steps\n   - **Context:** Performance optimization, specifically targeting memory allocation overhead in tight loops\n\n2.  **Identify Key Concepts in Rust Related to Memory Allocation:**\n   - `Vec`, `String`, `Box`, `HashMap`, `HashSet`, etc. allocate on the heap\n   - Stack allocation vs. heap allocation\n   - Reusing buffers/containers\n   - Avoiding temporary allocations\n   - Using iterators vs. loops\n   - `Cow`, `SmallVec`, `ArrayVec`\n   - Pre-allocation (`with_capacity`)\n   - Avoiding `.clone()`, `.to_string()`, `.collect()` in loops\n   - Using references instead of owned types\n   - `#[inline]`, loop unrolling (less relevant to allocations but related to hot loops)\n   - Arena allocators, bump allocators\n   - `std::mem::replace`, `std::mem::take`\n   - Using arrays instead of `Vec` when size is known\n",
+        "\n\n<think>\n\n</think>\n\nTelomeres play a critical role in cellular aging by acting as protective caps on the ends of chromosomes, serving as a biological \"clock\" that limits the number of times a cell can divide.\n\nHere is a detailed breakdown of the role of telomeres in cellular aging:\n\n### 1. Structure and Function of Telomeres\n*   **Definition:** Telomeres are repetitive nucleotide sequences (TTAGGG in humans) located at the ends of linear chromosomes.\n*   **Protective Role:** They protect the coding DNA from degradation and prevent chromosomes from fusing with one another. Without telomeres, the ends of chromosomes would be recognized as double-strand breaks, triggering DNA repair mechanisms that could lead to genomic instability.\n\n### 2. The End-Replication Problem\n*   **DNA Replication Limitation:** During cell division, DNA polymerase (the enzyme that copies DNA) cannot fully replicate the very ends of linear chromosomes. This is known as the **end-replication problem**.\n*   **Shortening:** As a result, a small portion of the telomeric DNA is lost with each cell division. Over time, telomeres progressively shorten.\n\n### 3. Telomere",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the request:**\n    *   Topic: Printing press.\n    *   Form: Haiku (5-7-5 syllables).\n\n2.  **Brainstorming imagery and keywords:**\n    *   Ink, paper, press, type, lead, clack, boom, words, pages, black, white, machine, gears, revolution, Gutenberg, news, books.\n    *   Sounds: Clack, thud, whir, click.\n    *   Actions: Pressing, stamping, rolling, printing.\n\n3.  **Drafting lines (Syllable counting):**\n    *   *Attempt 1:*\n        *   Ink on paper flows (5) -> Ink on pa-per flows (5). Good.\n        *   Heavy metal presses down (7) -> Hea-vy me-tal pres-ses down (7). Good.\n        *   Words come to life now (5) -> Words come to life now (5). Good.\n        *   *Result:* Ink on paper flows / Heavy metal presses down / Words come to life now.\n        *   *Critique:* A bit generic"
+      ],
+      "init_secs": 151.41993975639343
+    },
+    "vanilla_np1": {
+      "label": "vanilla_np1",
+      "np_mode": 1,
+      "warmup_secs": 1.1789658069610596,
+      "gen_secs": 60.84094977378845,
+      "total_out_toks": 1759,
+      "tok_per_sec_aggregate_incl_prefill": 28.911448728859487,
+      "tok_per_sec_decode_only_tg": null,
+      "avg_ttft_s": null,
+      "per_req": [
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 193,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 30,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        }
+      ],
+      "outputs": [
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Latent diffusion vs. pixel-space diffusion\n   - **Constraint:** Explain the difference in exactly two sentences.\n\n2.  **Identify Key Concepts:**\n   - *Pixel-space diffusion:* Operates directly on raw pixel values of images. High computational cost, slower training/inference, but can produce high-fidelity details.\n   - *Latent diffusion:* First compresses images into a lower-dimensional latent space using an autoencoder, then performs diffusion in that compressed space. Much faster and more computationally efficient, while maintaining good quality.\n\n3.  **Draft - Sentence 1 (Focus on pixel-space):**\n   Pixel-space diffusion operates directly on raw image pixels, requiring high computational resources to model fine details but ensuring direct control over every pixel value.\n\n4.  **Draft - Sentence 2 (Focus on latent diffusion & contrast):**\n   In contrast, latent diffusion first compresses images into a lower-dimensional latent representation using an autoencoder, enabling significantly faster training and inference while preserving essential visual information.\n\n5.  **Check Constraints:**\n   - Exactly two sentences? Yes.\n   - Explains the",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the Request:**\n    *   Topic: Plot of *King Lear*.\n    *   Constraint: One paragraph.\n\n2.  **Identify Key Plot Points of *King Lear*:**\n    *   *Beginning:* King Lear decides to divide his kingdom among his three daughters based on their flattery. Cordelia refuses to flatter him and is disinherited. Kent is banished for defending Cordelia.\n    *   *Middle:* Lear gives power to Goneril and Regan, who abuse him. He goes mad in the storm. Parallel plot: Gloucester is betrayed by his illegitimate son Edmund, who frames his legitimate son Edgar. Gloucester is blinded.\n    *   *Climax/Resolution:* Lear and Cordelia reunite but are captured. Goneril and Regan kill each other (or are killed). Edmund is defeated by Edgar. Cordelia is hanged. Lear dies of grief. Albany and Edgar take over.\n\n3.  **Drafting - Attempt 1 (Mental or rough text):**\n    King Lear, seeking to retire, divides his kingdom among his three daughters based on their declarations of love, banishing the honest",
+        "\n\n<think>\n\n</think>\n\n```python\nimport numpy as np\n\n\ndef fit_polynomial_2nd_degree(data: list[tuple[float, float]]) -> np.ndarray:\n    \"\"\"\n    Fit a 2nd-degree polynomial to a list of (x, y) pairs.\n    \n    Parameters:\n        data: A list of (x, y) tuples.\n        \n    Returns:\n        A numpy array of coefficients [a, b, c] for the polynomial a*x^2 + b*x + c.\n    \"\"\"\n    if not data:\n        raise ValueError(\"Data list is empty\")\n    \n    x_values = [point[0] for point in data]\n    y_values = [point[1] for point in data]\n    \n    # Fit a 2nd-degree polynomial\n    coefficients = np.polyfit(x_values, y_values, 2)\n    \n    return coefficients\n```",
+        "\n\n<think>\n\n</think>\n\nThe Peloponnesian War (431\u2013404 BCE) was a protracted and devastating conflict between the two dominant Greek city-states of the era: **Athens** and **Sparta**, along with their respective allies. The causes were complex, involving long-term structural tensions, immediate political triggers, and ideological differences.\n\nHistorians, particularly the ancient historian **Thucydides**, identify several main causes:\n\n### 1. The Fundamental Cause: Fear and Power Shift (Thucydides\u2019 Thesis)\nThe most famous explanation comes from Thucydides, who wrote in his *History of the Peloponnesian War*:\n> **\u201cThe growth of the power of Athens, and the alarm which this inspired in Lacedaemon [Sparta], made war inevitable.\u201d**\n\n- **Athens\u2019 Rise**: After defeating Persia in the Greco-Persian Wars (499\u2013449 BCE), Athens formed the **Delian League**, a naval alliance intended to protect Greek cities from further Persian attacks. Over time, Athens transformed this league into an empire, using its treasury to fund its own power, navy, and cultural projects (like the Parthenon",
+        "\n\n<think>\n\n</think>\n\nLe brouillard du petit matin persistait sur le port jusqu\u2019\u00e0 ce que les chalutiers le traversent.",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Understand User Request:**\n   - **Topic:** Reducing memory allocations in a hot inner loop\n   - **Language:** Rust\n   - **Output:** Five practical steps\n   - **Context:** Performance optimization, specifically targeting memory allocation overhead in tight loops\n\n2.  **Identify Key Concepts in Rust for Memory Allocation Optimization:**\n   - `Vec` vs arrays/slices\n   - `String` vs `&str`/`Cow`/pre-allocated buffers\n   - `HashMap`/`HashSet` vs arrays/linear search/pre-allocated maps\n   - Reusing buffers/allocations (e.g., `Vec::clear()`, `String::clear()`, `with_capacity`)\n   - Avoiding temporary allocations (e.g., `format!`, `to_string()`, `collect()`)\n   - Using stack-allocated types (`[T; N]`, `ArrayVec`, `SmallVec`)\n   - Using iterators efficiently (avoiding intermediate collections)\n   - Using `mem::replace` or `std::mem::take` to reuse allocations\n   - Using `BTreeMap`/`IndexMap` if order",
+        "\n\n<think>\n\n</think>\n\nTelomeres play a critical role in cellular aging by acting as protective caps on the ends of chromosomes, serving as a biological \"clock\" that limits the number of times a cell can divide.\n\nHere is a detailed breakdown of the role of telomeres in cellular aging:\n\n### 1. Structure and Function of Telomeres\n*   **Definition:** Telomeres are repetitive nucleotide sequences (TTAGGG in humans) located at the ends of linear chromosomes.\n*   **Protective Role:** They protect the coding DNA from degradation and prevent chromosomes from fusing with one another. Without telomeres, the ends of chromosomes would be recognized as double-strand breaks, triggering DNA repair mechanisms that could lead to genomic instability.\n\n### 2. The End-Replication Problem\n*   **DNA Replication Limitation:** During cell division, DNA polymerase (the enzyme that copies DNA) cannot fully replicate the very ends of linear chromosomes. This is known as the **end-replication problem**.\n*   **Shortening:** As a result, a small portion of the telomeric DNA is lost with each cell division. Over time, telomeres progressively shorten.\n\n### 3. Telomere",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the request:**\n    *   Topic: Printing press.\n    *   Form: Haiku (5-7-5 syllables).\n\n2.  **Brainstorming imagery and keywords:**\n    *   Ink, paper, press, type, lead, clack, boom, words, pages, black, white, machine, gears, revolution, Gutenberg, news, books.\n    *   Sounds: Clack, thud, whir, click.\n    *   Actions: Pressing, stamping, rolling, printing.\n\n3.  **Drafting lines (Syllable counting):**\n    *   *Attempt 1:*\n        *   Ink on paper flows (5) -> Ink on pa-per flows (5). Good.\n        *   Heavy metal presses down (7) -> Hea-vy me-tal pres-ses down (7). Good.\n        *   Words come to life now (5) -> Words come to life now (5). Good.\n        *   *Result:* Ink on paper flows / Heavy metal presses down / Words come to life now.\n        *   *Critique:* A bit generic"
+      ],
+      "init_secs": 96.80748271942139
+    },
+    "vanilla_np4": {
+      "label": "vanilla_np4",
+      "np_mode": 4,
+      "warmup_secs": 1.4244520664215088,
+      "gen_secs": 8.449623107910156,
+      "total_out_toks": 961,
+      "tok_per_sec_aggregate_incl_prefill": 113.7328834348073,
+      "tok_per_sec_decode_only_tg": null,
+      "avg_ttft_s": null,
+      "per_req": [
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 193,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        }
+      ],
+      "outputs": [
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Latent diffusion vs. pixel-space diffusion\n   - **Constraint:** Explain the difference in exactly two sentences.\n\n2.  **Identify Key Concepts:**\n   - *Pixel-space diffusion:* Operates directly on raw pixel values of images. High computational cost, slower training/inference, but can produce high-fidelity details.\n   - *Latent diffusion:* First compresses images into a lower-dimensional latent space using an autoencoder, then performs diffusion in that compressed space. Much faster and more computationally efficient, while maintaining good quality.\n\n3.  **Draft - Sentence 1 (Focus on pixel-space):**\n   Pixel-space diffusion operates directly on raw image pixels, requiring high computational resources to model fine details but ensuring direct control over every pixel value.\n\n4.  **Draft - Sentence 2 (Focus on latent diffusion & contrast):**\n   In contrast, latent diffusion first compresses images into a lower-dimensional latent representation using an autoencoder, enabling significantly faster training and inference while preserving essential visual information.\n\n5.  **Check Constraints:**\n   - Exactly two sentences? Yes.\n   - Explains the",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the Request:**\n    *   Topic: Plot of *King Lear*.\n    *   Constraint: One paragraph.\n\n2.  **Identify Key Plot Points of *King Lear*:**\n    *   *Beginning:* King Lear decides to divide his kingdom among his three daughters based on their flattery. Cordelia refuses to flatter him and is disinherited. Kent is banished for defending Cordelia.\n    *   *Middle:* Lear gives power to Goneril and Regan, who abuse him. He goes mad in the storm. Parallel plot: Gloucester is betrayed by his illegitimate son Edmund, who frames his legitimate son Edgar. Gloucester is blinded.\n    *   *Climax/Resolution:* Lear and Cordelia reunite but are captured. Goneril and Regan kill each other (or are killed). Edmund is defeated by Edgar. Cordelia is hanged. Lear dies of grief. Albany and Edgar take over.\n\n3.  **Drafting - Attempt 1 (Mental or rough text):**\n    King Lear, seeking to retire, divides his kingdom among his three daughters based on their declarations of love, banishing the honest",
+        "\n\n<think>\n\n</think>\n\n```python\nimport numpy as np\n\n\ndef fit_polynomial_2nd_degree(data: list[tuple[float, float]]) -> np.ndarray:\n    \"\"\"\n    Fit a 2nd-degree polynomial to a list of (x, y) pairs.\n    \n    Parameters:\n        data: A list of (x, y) tuples.\n        \n    Returns:\n        A numpy array of coefficients [a, b, c] for the polynomial a*x^2 + b*x + c.\n    \"\"\"\n    if not data:\n        raise ValueError(\"Data list is empty\")\n    \n    x_values = [point[0] for point in data]\n    y_values = [point[1] for point in data]\n    \n    # Fit a 2nd-degree polynomial\n    coefficients = np.polyfit(x_values, y_values, 2)\n    \n    return coefficients\n```",
+        "\n\n<think>\n\n</think>\n\nThe Peloponnesian War (431\u2013404 BCE) was a protracted and devastating conflict between the two dominant Greek city-states of the era: **Athens** and **Sparta**, along with their respective allies. The causes were complex, involving long-term structural tensions, immediate political triggers, and ideological differences.\n\nHistorians, particularly the ancient historian **Thucydides**, identify several main causes:\n\n### 1. The Fundamental Cause: Fear and Power Shift (Thucydides\u2019 Thesis)\nThe most famous explanation comes from Thucydides, who wrote in his *History of the Peloponnesian War*:\n> **\u201cThe growth of the power of Athens, and the alarm which this inspired in Lacedaemon [Sparta], made war inevitable.\u201d**\n\n- **Athens\u2019 Rise**: After defeating Persia in the Greco-Persian Wars (499\u2013449 BCE), Athens formed the **Delian League**, a naval alliance intended to protect Greek cities from further Persian attacks. Over time, Athens transformed this league into an empire, using its treasury to fund its own power, navy, and cultural projects (like the Parthenon"
+      ],
+      "init_secs": 96.80748271942139
+    },
+    "vanilla_np8": {
+      "label": "vanilla_np8",
+      "np_mode": 8,
+      "warmup_secs": 1.9657092094421387,
+      "gen_secs": 11.27949857711792,
+      "total_out_toks": 1759,
+      "tok_per_sec_aggregate_incl_prefill": 155.94664851222942,
+      "tok_per_sec_decode_only_tg": null,
+      "avg_ttft_s": null,
+      "per_req": [
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 193,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 30,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        },
+        {
+          "n_out": 256,
+          "ttft_s": null,
+          "decode_s": null,
+          "tpot_s": null,
+          "tg_tok_per_s": null
+        }
+      ],
+      "outputs": [
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Latent diffusion vs. pixel-space diffusion\n   - **Constraint:** Explain the difference in exactly two sentences.\n\n2.  **Identify Key Concepts:**\n   - *Pixel-space diffusion:* Operates directly on raw pixel values of images. High computational cost, slower training/inference, but can produce high-fidelity details.\n   - *Latent diffusion:* First compresses images into a lower-dimensional latent space using an autoencoder, then performs diffusion in that compressed space. Much faster and more computationally efficient, while maintaining good quality.\n\n3.  **Draft - Sentence 1 (Focus on pixel-space):**\n   Pixel-space diffusion operates directly on raw image pixels, requiring high computational resources to model fine details but ensuring direct control over every pixel value.\n\n4.  **Draft - Sentence 2 (Focus on latent diffusion & contrast):**\n   In contrast, latent diffusion first compresses images into a lower-dimensional latent representation using an autoencoder, enabling significantly faster training and inference while preserving essential visual information.\n\n5.  **Check Constraints:**\n   - Exactly two sentences? Yes.\n   - Explains the",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the Request:**\n    *   Topic: Plot of *King Lear*.\n    *   Constraint: One paragraph.\n\n2.  **Identify Key Plot Points of *King Lear*:**\n    *   *Beginning:* King Lear decides to divide his kingdom among his three daughters based on their flattery. Cordelia refuses to flatter him and is disinherited. Kent is banished for defending Cordelia.\n    *   *Middle:* Lear gives power to Goneril and Regan, who abuse him. He goes mad in the storm. Parallel plot: Gloucester is betrayed by his illegitimate son Edmund, who frames his legitimate son Edgar. Gloucester is blinded.\n    *   *Climax/Resolution:* Lear and Cordelia reunite but are captured. Goneril and Regan kill each other (or are killed). Edmund is defeated by Edgar. Cordelia is hanged. Lear dies of grief. Albany and Edgar take over.\n\n3.  **Drafting - Attempt 1 (Mental or rough text):**\n    King Lear, seeking to retire, divides his kingdom among his three daughters based on their declarations of love, banishing the honest",
+        "\n\n<think>\n\n</think>\n\n```python\nimport numpy as np\n\n\ndef fit_polynomial_2nd_degree(data: list[tuple[float, float]]) -> np.ndarray:\n    \"\"\"\n    Fit a 2nd-degree polynomial to a list of (x, y) pairs.\n    \n    Parameters:\n        data: A list of (x, y) tuples.\n        \n    Returns:\n        A numpy array of coefficients [a, b, c] for the polynomial a*x^2 + b*x + c.\n    \"\"\"\n    if not data:\n        raise ValueError(\"Data list is empty\")\n    \n    x_values = [point[0] for point in data]\n    y_values = [point[1] for point in data]\n    \n    # Fit a 2nd-degree polynomial\n    coefficients = np.polyfit(x_values, y_values, 2)\n    \n    return coefficients\n```",
+        "\n\n<think>\n\n</think>\n\nThe Peloponnesian War (431\u2013404 BCE) was a protracted and devastating conflict between the two dominant Greek city-states of the era: **Athens** and **Sparta**, along with their respective allies. The causes were complex, involving long-term structural tensions, immediate political triggers, and ideological differences.\n\nHistorians, particularly the ancient historian **Thucydides**, identify several main causes:\n\n### 1. The Fundamental Cause: Fear and Power Shift (Thucydides\u2019 Thesis)\nThe most famous explanation comes from Thucydides, who wrote in his *History of the Peloponnesian War*:\n> **\u201cThe growth of the power of Athens, and the alarm which this inspired in Lacedaemon [Sparta], made war inevitable.\u201d**\n\n- **Athens\u2019 Rise**: After defeating Persia in the Greco-Persian Wars (499\u2013449 BCE), Athens formed the **Delian League**, a naval alliance intended to protect Greek cities from further Persian attacks. Over time, Athens transformed this league into an empire, using its treasury to fund its own power, navy, and cultural projects (like the Parthenon",
+        "\n\n<think>\n\n</think>\n\nLe brouillard du petit matin persistait sur le port jusqu\u2019\u00e0 ce que les chalutiers le traversent.",
+        "\n\n<think>\nHere's a thinking process:\n\n1.  **Understand User Request:**\n   - **Topic:** Reducing memory allocations in a hot inner loop\n   - **Language:** Rust\n   - **Output:** Five practical steps\n   - **Context:** Performance optimization, specifically targeting memory allocation overhead in tight loops\n\n2.  **Identify Key Concepts in Rust Related to Memory Allocation:**\n   - `Box`, `Vec`, `String`, `HashMap`, `Arc`, `Rc` cause heap allocations\n   - Stack allocation vs. heap allocation\n   - Reusing buffers/containers\n   - Avoiding temporary objects\n   - Using iterators vs. loops\n   - `Cow` (Clone on Write)\n   - `SmallVec`, `ArrayVec`\n   - `mem::replace`, `std::mem::take`\n   - Pre-allocation (`with_capacity`)\n   - Avoiding `clone()` in loops\n   - Using references instead of owned types\n   - `#[inline]` (not directly allocation, but related to performance)\n   - `unsafe`/raw pointers (advanced, but maybe not \"practical\" for general advice)\n   - `std::collections::hash",
+        "\n\n<think>\n\n</think>\n\nTelomeres play a critical role in cellular aging by acting as protective caps on the ends of chromosomes, serving as a biological \"clock\" that limits the number of times a cell can divide.\n\nHere is a detailed breakdown of the role of telomeres in cellular aging:\n\n### 1. Structure and Function of Telomeres\n*   **Definition:** Telomeres are repetitive nucleotide sequences (TTAGGG in humans) located at the ends of linear chromosomes.\n*   **Protective Role:** They protect the coding DNA from degradation and prevent chromosomes from fusing with one another. Without telomeres, the ends of chromosomes would be recognized as double-strand breaks, triggering DNA repair mechanisms that could lead to genomic instability.\n\n### 2. The End-Replication Problem\n*   **DNA Replication Limitation:** During cell division, DNA polymerase (the enzyme that copies DNA) cannot fully replicate the very ends of linear chromosomes. This is known as the **end-replication problem**.\n*   **Shortening:** As a result, a small portion of the telomeric DNA is lost with each cell division. Over time, telomeres progressively shorten.\n\n### 3. Telomere",
+        "\n\n<think>\nThinking Process:\n\n1.  **Deconstruct the request:**\n    *   Topic: Printing press.\n    *   Form: Haiku (5-7-5 syllables).\n\n2.  **Brainstorming imagery and keywords:**\n    *   Ink, paper, press, type, lead, clack, boom, words, pages, black, white, machine, gears, revolution, Gutenberg, news, books.\n    *   Sounds: Clack, thud, whir, click.\n    *   Actions: Pressing, stamping, rolling, printing.\n\n3.  **Drafting lines (Syllable counting):**\n    *   *Attempt 1:*\n        *   Ink on paper flows (5) -> Ink on pa-per flows (5). Good.\n        *   Heavy metal presses down (7) -> Hea-vy me-tal pres-ses down (7). Good.\n        *   Words come to life now (5) -> Words come to life now (5). Good.\n        *   *Result:* Ink on paper flows / Heavy metal presses down / Words come to life now.\n        *   *Critique:* A bit generic"
+      ],
+      "init_secs": 96.80748271942139
+    }
+  },
+  "speedups": {
+    "np1_aggregate": 1.5286272206584048,
+    "np4_aggregate": 0.8313087860602472,
+    "np8_aggregate": 0.7850473105307492
+  },
+  "prompts": [
+    "Explain the difference between latent diffusion and pixel-space diffusion in two sentences.",
+    "Summarize the plot of King Lear in one paragraph.",
+    "Write Python code that fits a 2nd-degree polynomial to a list of (x, y) pairs.",
+    "What are the main causes of the Peloponnesian War?",
+    "Translate to French: The early-morning fog lingered over the harbour until the trawlers cut through it.",
+    "List five practical steps for reducing memory allocations in a hot inner loop in Rust.",
+    "Describe the role of telomeres in cellular aging.",
+    "Write a haiku about a printing press."
+  ],
+  "max_tokens": 256,
+  "num_speculative_tokens": 3,
+  "seed": 42,
+  "target": "/opt/models/hf-cache/models--Intel--Qwen3.6-27B-int4-AutoRound/snapshots/a00e481620facd57da3a86eaa5c90e2e811d1aac",
+  "drafter": "/opt/models/qwen36-27b-dflash"
+}
