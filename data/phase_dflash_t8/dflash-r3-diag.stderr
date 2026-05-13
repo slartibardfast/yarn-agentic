@@ -1,0 +1,213 @@
+ggml_cuda_init: GGML_CUDA_FORCE_MMQ:    no
+ggml_cuda_init: GGML_CUDA_FORCE_CUBLAS: no
+ggml_cuda_init: found 2 CUDA devices:
+  Device 0: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24022 MiB
+  Device 1: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24019 MiB
+[dflash] drafter loaded: 5 layers, hidden=5120, ffn=17408, vocab(target)=?, BS=16, swa=2048, mask=248070
+[dflash] bound: seq_len_cap=4096 mal_cap=4096 V=248320  source_layers=[1,16,31,46,61]
+common_speculative_state_dflash: DFlash sidecar drafter bound to ctx_tgt (block_size=16)
+[dflash-diag trim] slot 0: before=0 p_start=0 p_end=-1 after=0
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f16 nbytes=1054720 ne=[5120,103,1,1]
+[dflash-diag trim] slot 0: before=103 p_start=0 p_end=-1 after=0
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f16 nbytes=1054720 ne=[5120,103,1,1]
+[dflash-diag trim] slot 0: before=103 p_start=0 p_end=-1 after=0
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f16 nbytes=1054720 ne=[5120,103,1,1]
+[dflash] drafter loaded: 5 layers, hidden=5120, ffn=17408, vocab(target)=?, BS=16, swa=2048, mask=248070
+[dflash] bound: seq_len_cap=4096 mal_cap=4096 V=248320  source_layers=[1,16,31,46,61]
+common_speculative_state_dflash: DFlash sidecar drafter bound to ctx_tgt (block_size=16)
+[dflash-diag trim] slot 0: before=0 p_start=0 p_end=-1 after=0
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f16 nbytes=1054720 ne=[5120,103,1,1]
+[dflash-diag bench] cycle 0: P=103 id_last=271 emitted.size=1
+[dflash-diag stage] slot 0 layer 1: buf_rows=103 MAL=103
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=0, calling spec_ckpt_restore(P=103) + trim_extract(104, -1)
+[dflash-diag trim] slot 0: before=108 p_start=104 p_end=-1 after=104
+[dflash-diag bench] cycle 1: P=104 id_last=248068 emitted.size=2
+[dflash-diag stage] slot 0 layer 1: buf_rows=104 MAL=104
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=1, calling spec_ckpt_restore(P=104) + trim_extract(106, -1)
+[dflash-diag trim] slot 0: before=109 p_start=106 p_end=-1 after=106
+[dflash-diag bench] cycle 2: P=106 id_last=248069 emitted.size=4
+[dflash-diag stage] slot 0 layer 1: buf_rows=106 MAL=106
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=1, calling spec_ckpt_restore(P=106) + trim_extract(108, -1)
+[dflash-diag trim] slot 0: before=111 p_start=108 p_end=-1 after=108
+[dflash-diag bench] cycle 3: P=108 id_last=71093 emitted.size=6
+[dflash-diag stage] slot 0 layer 1: buf_rows=108 MAL=108
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=2, calling spec_ckpt_restore(P=108) + trim_extract(111, -1)
+[dflash-diag trim] slot 0: before=113 p_start=111 p_end=-1 after=111
+[dflash-diag bench] cycle 4: P=111 id_last=727 emitted.size=9
+[dflash-diag stage] slot 0 layer 1: buf_rows=111 MAL=111
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=3, calling spec_ckpt_restore(P=111) + trim_extract(115, -1)
+[dflash-diag trim] slot 0: before=116 p_start=115 p_end=-1 after=115
+[dflash-diag bench] cycle 5: P=115 id_last=25 emitted.size=13
+[dflash-diag stage] slot 0 layer 1: buf_rows=115 MAL=115
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=1, calling spec_ckpt_restore(P=115) + trim_extract(117, -1)
+[dflash-diag trim] slot 0: before=120 p_start=117 p_end=-1 after=117
+[dflash-diag bench] cycle 6: P=117 id_last=18078 emitted.size=15
+[dflash-diag stage] slot 0 layer 1: buf_rows=117 MAL=117
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=117) + trim_extract(122, -1)
+[dflash-diag trim] slot 0: before=122 p_start=122 p_end=-1 after=122
+[dflash-diag bench] cycle 7: P=122 id_last=5491 emitted.size=20
+[dflash-diag stage] slot 0 layer 1: buf_rows=122 MAL=122
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=122) + trim_extract(127, -1)
+[dflash-diag trim] slot 0: before=127 p_start=127 p_end=-1 after=127
+[dflash-diag bench] cycle 8: P=127 id_last=262 emitted.size=25
+[dflash-diag stage] slot 0 layer 1: buf_rows=127 MAL=127
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=127) + trim_extract(132, -1)
+[dflash-diag trim] slot 0: before=132 p_start=132 p_end=-1 after=132
+[dflash-diag bench] cycle 9: P=132 id_last=314 emitted.size=30
+[dflash-diag stage] slot 0 layer 1: buf_rows=132 MAL=132
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=132) + trim_extract(137, -1)
+[dflash-diag trim] slot 0: before=137 p_start=137 p_end=-1 after=137
+[dflash-diag bench] cycle 10: P=137 id_last=1608 emitted.size=35
+[dflash-diag stage] slot 0 layer 1: buf_rows=137 MAL=137
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=137) + trim_extract(142, -1)
+[dflash-diag trim] slot 0: before=142 p_start=142 p_end=-1 after=142
+[dflash-diag bench] cycle 11: P=142 id_last=13 emitted.size=40
+[dflash-diag stage] slot 0 layer 1: buf_rows=142 MAL=142
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=142) + trim_extract(147, -1)
+[dflash-diag trim] slot 0: before=147 p_start=147 p_end=-1 after=147
+[dflash-diag bench] cycle 12: P=147 id_last=25 emitted.size=45
+[dflash-diag stage] slot 0 layer 1: buf_rows=147 MAL=147
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=147) + trim_extract(152, -1)
+[dflash-diag trim] slot 0: before=152 p_start=152 p_end=-1 after=152
+[dflash-diag bench] cycle 13: P=152 id_last=357 emitted.size=50
+[dflash-diag stage] slot 0 layer 1: buf_rows=152 MAL=152
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=152) + trim_extract(157, -1)
+[dflash-diag trim] slot 0: before=157 p_start=157 p_end=-1 after=157
+[dflash-diag bench] cycle 14: P=157 id_last=381 emitted.size=55
+[dflash-diag stage] slot 0 layer 1: buf_rows=157 MAL=157
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=157) + trim_extract(162, -1)
+[dflash-diag trim] slot 0: before=162 p_start=162 p_end=-1 after=162
+[dflash-diag bench] cycle 15: P=162 id_last=262 emitted.size=60
+[dflash-diag stage] slot 0 layer 1: buf_rows=162 MAL=162
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=162) + trim_extract(167, -1)
+[dflash-diag trim] slot 0: before=167 p_start=167 p_end=-1 after=167
+[dflash-diag bench] cycle 16: P=167 id_last=357 emitted.size=65
+[dflash-diag stage] slot 0 layer 1: buf_rows=167 MAL=167
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=167) + trim_extract(172, -1)
+[dflash-diag trim] slot 0: before=172 p_start=172 p_end=-1 after=172
+[dflash-diag bench] cycle 17: P=172 id_last=10300 emitted.size=70
+[dflash-diag stage] slot 0 layer 1: buf_rows=172 MAL=172
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=2, calling spec_ckpt_restore(P=172) + trim_extract(175, -1)
+[dflash-diag trim] slot 0: before=177 p_start=175 p_end=-1 after=175
+[dflash-diag bench] cycle 18: P=175 id_last=198 emitted.size=73
+[dflash-diag stage] slot 0 layer 1: buf_rows=175 MAL=175
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=175) + trim_extract(180, -1)
+[dflash-diag trim] slot 0: before=180 p_start=180 p_end=-1 after=180
+[dflash-diag bench] cycle 19: P=180 id_last=653 emitted.size=78
+[dflash-diag stage] slot 0 layer 1: buf_rows=180 MAL=180
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=180) + trim_extract(185, -1)
+[dflash-diag trim] slot 0: before=185 p_start=185 p_end=-1 after=185
+[dflash-diag bench] cycle 20: P=185 id_last=279 emitted.size=83
+[dflash-diag stage] slot 0 layer 1: buf_rows=185 MAL=185
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=185) + trim_extract(190, -1)
+[dflash-diag trim] slot 0: before=190 p_start=190 p_end=-1 after=190
+[dflash-diag bench] cycle 21: P=190 id_last=466 emitted.size=88
+[dflash-diag stage] slot 0 layer 1: buf_rows=190 MAL=190
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=2, calling spec_ckpt_restore(P=190) + trim_extract(193, -1)
+[dflash-diag trim] slot 0: before=195 p_start=193 p_end=-1 after=193
+[dflash-diag bench] cycle 22: P=193 id_last=5255 emitted.size=91
+[dflash-diag stage] slot 0 layer 1: buf_rows=193 MAL=193
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=193) + trim_extract(198, -1)
+[dflash-diag trim] slot 0: before=198 p_start=198 p_end=-1 after=198
+[dflash-diag bench] cycle 23: P=198 id_last=10300 emitted.size=96
+[dflash-diag stage] slot 0 layer 1: buf_rows=198 MAL=198
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=198) + trim_extract(203, -1)
+[dflash-diag trim] slot 0: before=203 p_start=203 p_end=-1 after=203
+[dflash-diag bench] cycle 24: P=203 id_last=10620 emitted.size=101
+[dflash-diag stage] slot 0 layer 1: buf_rows=203 MAL=203
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=203) + trim_extract(208, -1)
+[dflash-diag trim] slot 0: before=208 p_start=208 p_end=-1 after=208
+[dflash-diag bench] cycle 25: P=208 id_last=25 emitted.size=106
+[dflash-diag stage] slot 0 layer 1: buf_rows=208 MAL=208
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=208) + trim_extract(213, -1)
+[dflash-diag trim] slot 0: before=213 p_start=213 p_end=-1 after=213
+[dflash-diag bench] cycle 26: P=213 id_last=6987 emitted.size=111
+[dflash-diag stage] slot 0 layer 1: buf_rows=213 MAL=213
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=213) + trim_extract(218, -1)
+[dflash-diag trim] slot 0: before=218 p_start=218 p_end=-1 after=218
+[dflash-diag bench] cycle 27: P=218 id_last=25212 emitted.size=116
+[dflash-diag stage] slot 0 layer 1: buf_rows=218 MAL=218
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=1, calling spec_ckpt_restore(P=218) + trim_extract(220, -1)
+[dflash-diag trim] slot 0: before=223 p_start=220 p_end=-1 after=220
+[dflash-diag bench] cycle 28: P=220 id_last=318 emitted.size=118
+[dflash-diag stage] slot 0 layer 1: buf_rows=220 MAL=220
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=1, calling spec_ckpt_restore(P=220) + trim_extract(222, -1)
+[dflash-diag trim] slot 0: before=225 p_start=222 p_end=-1 after=222
+[dflash-diag bench] cycle 29: P=222 id_last=958 emitted.size=120
+[dflash-diag stage] slot 0 layer 1: buf_rows=222 MAL=222
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=3, calling spec_ckpt_restore(P=222) + trim_extract(226, -1)
+[dflash-diag trim] slot 0: before=227 p_start=226 p_end=-1 after=226
+[dflash-diag bench] cycle 30: P=226 id_last=364 emitted.size=124
+[dflash-diag stage] slot 0 layer 1: buf_rows=226 MAL=226
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=2, calling spec_ckpt_restore(P=226) + trim_extract(229, -1)
+[dflash-diag trim] slot 0: before=231 p_start=229 p_end=-1 after=229
+[dflash-diag bench] cycle 31: P=229 id_last=4906 emitted.size=127
+[dflash-diag stage] slot 0 layer 1: buf_rows=229 MAL=229
+[dflash-diag bench]   draft.size=4
+[dflash-diag cb_eval] slot 0 layer 1: t->type=f32 nbytes=102400 ne=[5120,5,1,1]
+[dflash-diag bench]   accept n_acc=4, calling spec_ckpt_restore(P=229) + trim_extract(234, -1)
+[dflash-diag trim] slot 0: before=234 p_start=234 p_end=-1 after=234
+[dflash-diag trim] slot 0: before=234 p_start=0 p_end=-1 after=0
+/home/llm/yarn-agentic/ik_llama.cpp/ggml/src/ggml.c:5391: GGML_ASSERT(view_src == NULL || data_size == 0 || data_size + view_offs <= ggml_nbytes(view_src)) failed

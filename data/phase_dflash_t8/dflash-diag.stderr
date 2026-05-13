@@ -1,0 +1,88 @@
+ggml_cuda_init: GGML_CUDA_FORCE_MMQ:    no
+ggml_cuda_init: GGML_CUDA_FORCE_CUBLAS: no
+ggml_cuda_init: found 2 CUDA devices:
+  Device 0: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24022 MiB
+  Device 1: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24019 MiB
+[dflash] drafter loaded: 5 layers, hidden=5120, ffn=17408, vocab(target)=?, BS=16, swa=2048, mask=248070
+[dflash] bound: seq_len_cap=4096 mal_cap=4096 V=248320  source_layers=[1,16,31,46,61]
+common_speculative_state_dflash: DFlash sidecar drafter bound to ctx_tgt (block_size=16)
+[dflash-diag trim] slot 0: before=0 p_start=0 p_end=-1 after=0
+[dflash] drafter loaded: 5 layers, hidden=5120, ffn=17408, vocab(target)=?, BS=16, swa=2048, mask=248070
+[dflash] bound: seq_len_cap=4096 mal_cap=4096 V=248320  source_layers=[1,16,31,46,61]
+common_speculative_state_dflash: DFlash sidecar drafter bound to ctx_tgt (block_size=16)
+[dflash-diag trim] slot 0: before=0 p_start=0 p_end=-1 after=0
+[dflash-diag bench] cycle 0: P=103 id_last=271 emitted.size=1
+[dflash-diag stage] slot 0 layer 1: buf_rows=51 MAL=103
+[dflash] extract buffer too short for slot 0 (layer 1): have 51 rows, need 103
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 1: P=104 id_last=248068 emitted.size=2
+[dflash-diag stage] slot 0 layer 1: buf_rows=52 MAL=104
+[dflash] extract buffer too short for slot 0 (layer 1): have 52 rows, need 104
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 2: P=105 id_last=198 emitted.size=3
+[dflash-diag stage] slot 0 layer 1: buf_rows=53 MAL=105
+[dflash] extract buffer too short for slot 0 (layer 1): have 53 rows, need 105
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 3: P=106 id_last=8160 emitted.size=4
+[dflash-diag stage] slot 0 layer 1: buf_rows=54 MAL=106
+[dflash] extract buffer too short for slot 0 (layer 1): have 54 rows, need 106
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 4: P=107 id_last=579 emitted.size=5
+[dflash-diag stage] slot 0 layer 1: buf_rows=55 MAL=107
+[dflash] extract buffer too short for slot 0 (layer 1): have 55 rows, need 107
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 5: P=108 id_last=264 emitted.size=6
+[dflash-diag stage] slot 0 layer 1: buf_rows=56 MAL=108
+[dflash] extract buffer too short for slot 0 (layer 1): have 56 rows, need 108
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 6: P=109 id_last=7047 emitted.size=7
+[dflash-diag stage] slot 0 layer 1: buf_rows=57 MAL=109
+[dflash] extract buffer too short for slot 0 (layer 1): have 57 rows, need 109
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 7: P=110 id_last=1817 emitted.size=8
+[dflash-diag stage] slot 0 layer 1: buf_rows=58 MAL=110
+[dflash] extract buffer too short for slot 0 (layer 1): have 58 rows, need 110
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 8: P=111 id_last=25 emitted.size=9
+[dflash-diag stage] slot 0 layer 1: buf_rows=59 MAL=111
+[dflash] extract buffer too short for slot 0 (layer 1): have 59 rows, need 111
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 9: P=112 id_last=271 emitted.size=10
+[dflash-diag stage] slot 0 layer 1: buf_rows=60 MAL=112
+[dflash] extract buffer too short for slot 0 (layer 1): have 60 rows, need 112
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 10: P=113 id_last=16 emitted.size=11
+[dflash-diag stage] slot 0 layer 1: buf_rows=61 MAL=113
+[dflash] extract buffer too short for slot 0 (layer 1): have 61 rows, need 113
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 11: P=114 id_last=13 emitted.size=12
+[dflash-diag stage] slot 0 layer 1: buf_rows=62 MAL=114
+[dflash] extract buffer too short for slot 0 (layer 1): have 62 rows, need 114
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 12: P=115 id_last=220 emitted.size=13
+[dflash-diag stage] slot 0 layer 1: buf_rows=63 MAL=115
+[dflash] extract buffer too short for slot 0 (layer 1): have 63 rows, need 115
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 13: P=116 id_last=2972 emitted.size=14
+[dflash-diag stage] slot 0 layer 1: buf_rows=64 MAL=116
+[dflash] extract buffer too short for slot 0 (layer 1): have 64 rows, need 116
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash-diag bench] cycle 14: P=117 id_last=15771 emitted.size=15
+[dflash-diag stage] slot 0 layer 1: buf_rows=65 MAL=117
+[dflash] extract buffer too short for slot 0 (layer 1): have 65 rows, need 117
+[dflash-diag bench]   draft.size=0
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
