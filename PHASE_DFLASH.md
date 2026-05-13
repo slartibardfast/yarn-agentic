@@ -245,38 +245,76 @@ Checkbox semantics per CLAUDE.md §5.
    - np>1 server init returns clear error
 
 - [ ] **T6 — Gate 5: 27B np=1 determinism + late-stream coherence**
-  - `dflash_state_checkpoint`/`dflash_state_restore` (DeltaNet recurrent state ping-pong).
-  - `dflash_verify_attn` from scratch (sm_75 PTX `mma.sync.m16n8k8`, fixed-split-size).
-  - BF16→FP16 cast for target's AutoRound-preserved linear_attn at server init.
 
-  **Inherited from T5** (the "~" portion of T5 that the locked T5
-  scope guaranteed it could not address):
+  **Subtask layering** (locked 2026-05-13 per T6 Q&A; order:
+  determinism foundation first, then coherence on top):
 
-   - **Bonus-position re-decode**: after each cycle's verify decode,
-     the slot at the bonus position holds hiddens decoded from the
-     REJECTED drafted token, not the bonus token. T6 re-decodes that
-     position (single-token decode after `seq_rm`) so the next cycle's
-     `combine_features` sees correct hiddens at every position.
-   - **`cb_eval` extract hook trim-on-`seq_rm`**: today the hook is
-     append-only; if a partial-accept rollback removes positions from
-     the target's KV cache, stale rows remain in `dflash_extract_buf`.
-     Hook must trim its buffer to match `seq_rm`'s new
-     effective-seq-len. (Currently masked by T5 doing a coarse trim
-     in `stage_target_hiddens`, which is correct only when extract
-     index = target seq position; T6 needs explicit invalidation.)
-   - **Late-stream coherence end-to-end test**: re-run T5's closure
-     prompt (`Write a short python function for quicksort`, n=128,
-     temp=0, BS=4) and verify the output stays coherent past the
-     structurally-correct prefix — no "efficient and efficient..."
-     repetition tail.
+   - **T6.A — DeltaNet state save/restore** (foundation):
+     `dflash_state_checkpoint` / `dflash_state_restore` per
+     `kernel-design.md §6.4`. DeltaNet ping-pong scratch buffer
+     (~384 MiB at np=8 worst case; sized for the locked np=1 T6
+     run). Partial restore on rejected suffix.
 
-  **Closure**:
-   - 3-run byte-identical drafter+target outputs at np=1 on Qwen3.6-27B
-     production prompts.
-   - `dflash_verify_attn` at `ne[1]=5` byte-deterministic across 3 runs.
-   - State save/restore round-trip bit-identical.
-   - **NEW** — late-stream coherence: the T5 closure prompt produces
-     coherent output for the full n_predict=128 (no token-loop tail).
+   - **T6.B — Bonus re-decode** (built on T6.A):
+     `kernel-design.md §6.7`. Inside `llama_dflash_draft`, after
+     accept decision: restore DeltaNet to position-`P+k`, re-decode
+     bonus at position `P+k+1`. Hybrid model requires T6.A.
+
+   - **T6.C — `cb_eval` extract hook trim-on-`seq_rm`**:
+     `kernel-design.md §6.8`. Append-only fix already landed in T5;
+     T6.C adds the trim contract via `llama_dflash_trim_extract` C
+     API called alongside `seq_rm`.
+
+   - **T6.D — `dflash_verify_attn` from scratch** (determinism
+     kernel): sm_75 PTX `mma.sync.m16n8k8`, fixed-split-size per
+     `kernel-design.md §6.3`. Replaces target's regular attention
+     in the verify path with a deterministic, batch-invariant
+     equivalent at ne[1]=1+BS. BF16→FP16 cast for target's
+     AutoRound-preserved `linear_attn.in_proj_a/b` at server init.
+
+   - **T6.E — 3-run byte-identical determinism gate**:
+     `test-dflash-3run-byte-identical.cpp`. Drives the same
+     prompt 3 times, asserts byte-identical drafter+target
+     outputs. `dflash_verify_attn` at `ne[1]=5` byte-deterministic
+     across the 3 runs. State save/restore round-trip
+     bit-identical.
+
+   - **T6.F — Late-stream coherence gate** (inherited from T5):
+     `test-dflash-late-stream-coherence.cpp`. Re-run T5 closure
+     prompt at n=128, temp=0, BS=4. Closes when output stays
+     coherent throughout the full n_predict (no repetition tail).
+     Target-only baseline at temp=0, n=256 confirmed (data/
+     gate4-target-only-n256.runlog) that NO natural repetition
+     loop emerges in the model's output — the late-stream
+     repetition observed at T5 closure is a real DFlash artifact,
+     not model behavior. T6.F is a justified gate, not a red
+     herring.
+
+  **Spec hygiene done at T6.1**: 2 invariants migrated to
+  `bindings_external`
+  (`DraftKVRollbackOnRejection`, `InjectedKVEvictedOnAnchorAdvance`),
+  `EffectiveSeqLensSubtractsRejected` extended with T6 test binding.
+  Drift check 6/6 GREEN; 35 → 37 external entries.
+
+  **Spec edits done at T6.2**: `kernel-design.md §6.7` (bonus
+  re-decode mechanics) and `§6.8` (cb_eval extract hook contract +
+  trim-on-seq_rm) added.
+
+  **Closure (composite)**:
+   - 3-run byte-identical drafter+target outputs at np=1 on
+     Qwen3.6-27B production prompts (T6.E binding).
+   - State save/restore round-trip bit-identical (T6.A binding).
+   - `dflash_verify_attn` at `ne[1]=5` byte-deterministic across
+     3 runs (T6.D binding).
+   - T5 closure prompt produces coherent output for the full
+     n_predict=128, no repetition tail (T6.F binding).
+
+  **NOT in T6 scope** (T7 territory): byte-identical-to-target-only
+  output. The target-only vs DFlash divergence observed at the
+  T5 closure (different "Here's a thinking process..." vs
+  "Here is a short Python function..." paths from the very first
+  cycle) is from BS=1-vs-BS+1=5 batch-shape effects in target's
+  attention kernels — fixed by T7 np-invariance work, not T6.
 
 - [ ] **T7 — Gate 5b: drafter np-invariance binding**
   - `tests/test-dflash-determinism-np-invariance.cpp` — SHA-256 match across np ∈ {1, 2, 4, 8}.
