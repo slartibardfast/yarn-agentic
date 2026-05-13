@@ -1,0 +1,266 @@
+ggml_cuda_init: GGML_CUDA_FORCE_MMQ:    no
+ggml_cuda_init: GGML_CUDA_FORCE_CUBLAS: no
+ggml_cuda_init: found 2 CUDA devices:
+  Device 0: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24022 MiB
+  Device 1: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24019 MiB
+[dflash] drafter loaded: 5 layers, hidden=5120, ffn=17408, vocab(target)=?, BS=16, swa=2048, mask=248070
+[dflash] bound: seq_len_cap=4096 mal_cap=4096 V=248320  source_layers=[1,16,31,46,61]
+common_speculative_state_dflash: DFlash sidecar drafter bound to ctx_tgt (block_size=16)
+[dflash] drafter loaded: 5 layers, hidden=5120, ffn=17408, vocab(target)=?, BS=16, swa=2048, mask=248070
+[dflash] bound: seq_len_cap=4096 mal_cap=4096 V=248320  source_layers=[1,16,31,46,61]
+common_speculative_state_dflash: DFlash sidecar drafter bound to ctx_tgt (block_size=16)
+[dflash] extract buffer too short for slot 0 (layer 1): have 52 rows, need 103
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 53 rows, need 104
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 54 rows, need 105
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 55 rows, need 106
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 56 rows, need 107
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 57 rows, need 108
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 58 rows, need 109
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 59 rows, need 110
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 60 rows, need 111
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 61 rows, need 112
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 62 rows, need 113
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 63 rows, need 114
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 64 rows, need 115
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 65 rows, need 116
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 66 rows, need 117
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 67 rows, need 118
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 68 rows, need 119
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 69 rows, need 120
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 70 rows, need 121
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 71 rows, need 122
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 72 rows, need 123
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 73 rows, need 124
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 74 rows, need 125
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 75 rows, need 126
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 76 rows, need 127
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 77 rows, need 128
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 78 rows, need 129
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 79 rows, need 130
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 80 rows, need 131
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 81 rows, need 132
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 82 rows, need 133
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 83 rows, need 134
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 84 rows, need 135
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 85 rows, need 136
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 86 rows, need 137
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 87 rows, need 138
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 88 rows, need 139
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 89 rows, need 140
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 90 rows, need 141
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 91 rows, need 142
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 92 rows, need 143
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 93 rows, need 144
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 94 rows, need 145
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 95 rows, need 146
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 96 rows, need 147
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 97 rows, need 148
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 98 rows, need 149
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 99 rows, need 150
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 100 rows, need 151
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 101 rows, need 152
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 102 rows, need 153
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 103 rows, need 154
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 104 rows, need 155
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 105 rows, need 156
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 106 rows, need 157
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 107 rows, need 158
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 108 rows, need 159
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 109 rows, need 160
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 110 rows, need 161
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 111 rows, need 162
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 112 rows, need 163
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 113 rows, need 164
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 114 rows, need 165
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 115 rows, need 166
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 116 rows, need 167
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 117 rows, need 168
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 118 rows, need 169
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 119 rows, need 170
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 120 rows, need 171
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 121 rows, need 172
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 122 rows, need 173
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 123 rows, need 174
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 124 rows, need 175
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 125 rows, need 176
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 126 rows, need 177
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 127 rows, need 178
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 128 rows, need 179
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 129 rows, need 180
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 130 rows, need 181
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 131 rows, need 182
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 132 rows, need 183
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 133 rows, need 184
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 134 rows, need 185
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 135 rows, need 186
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 136 rows, need 187
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 137 rows, need 188
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 138 rows, need 189
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 139 rows, need 190
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 140 rows, need 191
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 141 rows, need 192
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 142 rows, need 193
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 143 rows, need 194
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 144 rows, need 195
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 145 rows, need 196
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 146 rows, need 197
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 147 rows, need 198
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 148 rows, need 199
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 149 rows, need 200
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 150 rows, need 201
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 151 rows, need 202
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 152 rows, need 203
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 153 rows, need 204
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 154 rows, need 205
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 155 rows, need 206
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 156 rows, need 207
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 157 rows, need 208
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 158 rows, need 209
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 159 rows, need 210
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 160 rows, need 211
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 161 rows, need 212
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 162 rows, need 213
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 163 rows, need 214
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 164 rows, need 215
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 165 rows, need 216
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 166 rows, need 217
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 167 rows, need 218
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 168 rows, need 219
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 169 rows, need 220
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 170 rows, need 221
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 171 rows, need 222
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 172 rows, need 223
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 173 rows, need 224
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 174 rows, need 225
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 175 rows, need 226
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 176 rows, need 227
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 177 rows, need 228
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+[dflash] extract buffer too short for slot 0 (layer 1): have 178 rows, need 229
+draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
+/home/llm/yarn-agentic/ik_llama.cpp/ggml/src/ggml.c:5391: GGML_ASSERT(view_src == NULL || data_size == 0 || data_size + view_offs <= ggml_nbytes(view_src)) failed
