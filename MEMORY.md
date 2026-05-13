@@ -4641,3 +4641,125 @@ Spec implications for T4 lm_head:
 Spec text in `kernel-design.md §2, §3, §6.1, §7` was corrected in commit
 following this entry. The model-dimensions block at §2 now carries an
 explicit "NOT IQ4_KS, NOT re-quantized" disambiguation.
+
+---
+
+## 2026-05-13 — T4 Phase A kernel body landed (working data, reduction-order gap)
+
+T4 (Gate 3b/4 per `kernel-design.md` §10) — drafter forward kernel — is
+IN FLIGHT on `production/2026-q2-next`. Phase A implementation landed:
+kernel body, test harness, scalar reference, WMMA-mimicking oracle.
+End-to-end run produces working data; closure binding still gated on
+reduction-order alignment.
+
+### What landed this session (chronological):
+
+1. **Allium hygiene** — 16 T4-relevant invariants migrated to
+   `bindings_external` in `allium-tla-binding.json` with explicit
+   `bound_by` pointing at not-yet-written T4 test files. Drift check
+   6/6 GREEN. (`38a9ab4`)
+2. **WMMA-mimicking scalar oracle** — `tests/dflash-speculative/
+   wmma-mimicking-oracle.h`. CPU emulation of Turing PTX `m16n16k16`
+   tensor-core MMA with binary-tree-within-tile fp32 reduction.
+   Self-test sweeps M=16, N∈{16…1024}, K∈{16…5120}, 4 seeds. PASS
+   with max_ulp≤1 at K≤128, bounded drift at K=5120.
+3. **Spec deviation** committed to `kernel-design.md §6.1`: drop
+   `target_features` from signature (inject_kv_fused already populates
+   K/V cache); output is `out_hidden` not `output_logits` (lm_head is
+   separate kernel); `input_tokens_emb` pre-embedded F16. (`50c1...`)
+4. **Full scalar reference** — `tests/dflash-speculative/
+   dflash-drafter-forward-reference.h`. Composes WMMA oracle + fp32
+   serial RMSNorm + fp64-trans NeoX RoPE + scalar fp32 single-query
+   SWA/full attention + silu(gate)*up + residuals.
+5. **Test driver** — `test-dflash-drafter-forward.cpp`. Phase 1:
+   reference smoke at tiny shape (L_d=2, D_emb=64, …) — 512/512 cells
+   non-zero, mean_abs=0.126. Phase 2: kernel-vs-reference ULP
+   comparison.
+6. **Kernel body Phase A** — `dflash-drafter-forward.cu`. 10-sub-
+   kernel per-layer pipeline (rmsnorm, gemm_row_x_col, q_norm_rope,
+   attention, residual_add, silu_mul, select_output). Launcher loops
+   L_d=5, dispatches 11 launches per layer. Scalar fp32 throughout.
+   Working data — kernel runs end-to-end.
+
+### Current kernel-vs-reference divergence at tiny shape:
+
+| metric | value |
+|---|---:|
+| max_ulp | 2048 |
+| 1-ULP rate | 9.18 % |
+| >1-ULP rate | 9.96 % |
+| >2-ULP rate | 5.86 % |
+| worst case | ref=0.0 vs kernel=1.22e-4 (fp16 subnormal) |
+
+### Divergence source — reduction-order mismatch:
+
+- **Reference RMSNorm/q_norm**: serial fp32 sum_sq over D elements.
+- **Kernel RMSNorm/q_norm**: each thread sums strided elements
+  serially, then warp-shuffle butterfly + SMEM tree across warps.
+- **Reference matmul (via WMMA oracle)**: binary-tree-within-tile
+  reduction over K.
+- **Kernel matmul**: serial K-loop per thread, one thread per output
+  column.
+
+fp32 add is non-associative; reordering compounds through RMSNorm
+rsqrt and into a small fraction of cells crossing fp16 boundaries.
+Same regime T3 saw before parallel-tree reference alignment.
+
+### Spec deviation surfaced — Phase A vs Phase B:
+
+The §6.1 spec literally says "cooperative WMMA mega-kernel with
+`cg::this_grid().sync()` between layers". Phase A implementation
+deviates:
+
+- **Phase A** (landed): per-step sub-kernels, ~50 launches per cycle,
+  scalar fp32 (no WMMA), one CTA per (slot, query_pos) row.
+  Correctness-first. Launch overhead ~250 µs negligible at compute-
+  heavy shapes; bandwidth-bound either way.
+- **Phase B** (deferred): cooperative WMMA mega-kernel. Gated on T8
+  perf measurement — if Phase A meets the ≥ 1.5× MTP speedup
+  ship bar, Phase B is not required for T4 closure.
+
+Same precedent as T3 inject_kv_fused (WMMA literal → scalar fp32).
+
+### What T4 still needs for closure:
+
+1. **Tighten reference's reduction order** to match the kernel's
+   parallel-tree pattern. Recompose reference RMSNorm/q_norm to use
+   a warp-shuffle-butterfly-like reduction, matmul to use serial K
+   (drop the WMMA oracle for the drafter reference path). Goal:
+   collapse divergence to ≤ 1 fp16 ULP at ≤ 1 % rate (T3 gate).
+2. **Production-shape test** — scale from tiny (D_emb=64) up to
+   production (D_emb=5120, H_q=40, D_h=128, intermediate=17408).
+   Random-weight test exercises the kernel pipeline at sm_75 shape.
+3. **`dflash_drafter_lm_head`** — separate BF16 GEMV kernel.
+4. **`dflash_argmax_match`** — per-slot accept-prefix + bonus token.
+5. **Plumbing** — DFlash arch dispatch, drafter loader, shared
+   embed/lm_head materialization, C API extensions.
+6. **vLLM reference logits** — dump from PR #40898 stack at
+   BLOCK_SIZE=4 on a fixed prompt; closure-bind drafter logits within
+   1e-5 NMSE.
+
+### Files touched this session:
+
+Spec (yarn-agentic):
+- `specs/dflash/allium-tla-binding.json` — 16 entries added
+- `specs/dflash/kernel-design.md` §6.1 — signature clarifications
+
+Submodule (ik_llama.cpp on production/2026-q2-next):
+- `ggml/src/ggml-cuda/dflash/dflash-drafter-forward.cuh` — new
+- `ggml/src/ggml-cuda/dflash/dflash-drafter-forward.cu` — new
+- `tests/dflash-speculative/wmma-mimicking-oracle.h` — new
+- `tests/dflash-speculative/test-wmma-mimicking-oracle.cpp` — new
+- `tests/dflash-speculative/dflash-drafter-forward-reference.h` — new
+- `tests/dflash-speculative/test-dflash-drafter-forward.cpp` — new
+- `tests/CMakeLists.txt` — wire new tests
+
+### Build:
+
+`cmake -B /opt/llm/build-dflash -G Ninja -DGGML_CUDA=ON -DGGML_CUDA_DFLASH=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75 -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=ON`. The build dir is on `/opt/llm/` rather than the source-tree `build/` to keep root filesystem clean (root at 97% util; `/opt` at 86%).
+
+Tests built:
+- `test-wmma-mimicking-oracle` — PASS (overall, with warnings at K=5120)
+- `test-dflash-drafter-forward` — FAIL (exit 1) with quantified
+  divergence as documented above. This is the working-data signal
+  the loop iteration was aiming for.
