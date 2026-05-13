@@ -7,6 +7,7 @@ Reads:
   - specs/dflash/allium-tla-binding.json   (helpers + divergences + externals)
   - specs/dflash/DFlashCycle.tla           (Phase 1 model)
   - specs/dflash/DFlashMultiSlot.tla       (Phase 2 model)
+  - specs/dflash/kernel-design.md          (§7 binding table)
   - ik_llama.cpp/tests/dflash-speculative/*.{cpp,h}   (property tests)
 
 Checks (each one fails the script with exit code 1 if violated):
@@ -19,9 +20,10 @@ Checks (each one fails the script with exit code 1 if violated):
        - a whitelisted helper in `tla_helpers`, OR
        - a `divergences[i].tla` target with a matching Allium source.
 
-  3. C++ CITATIONS: every `DFLASH_REQUIRE(_, "FooBar")` string and every
-     `Spec: ... invariant FooBar` comment in dflash-speculative/ tests
-     cites a real Allium invariant name (or a divergence target).
+  3. C++ CITATIONS: every `DFLASH_REQUIRE(_, "FooBar")` string,
+     `Spec: ... invariant FooBar` comment, and `// @witnesses: FooBar`
+     comment in dflash-speculative/ tests cites a real Allium invariant
+     name (or a divergence target).
 
   4. DIVERGENCE INTEGRITY: every entry in `divergences` has:
        - allium present in the Allium spec
@@ -32,6 +34,25 @@ Checks (each one fails the script with exit code 1 if violated):
        - allium present in the Allium spec
        - bound_by non-empty (e.g., "cpp:test-foo.cpp", "gate:Gate-3.5")
        - rationale non-empty.
+
+  5b. KERNEL-DESIGN §7: every backtick-quoted name in the §7 binding
+      table resolves to an Allium @invariant, contract, entity, or enum.
+
+@witnesses discipline rule (added 2026-05-13):
+
+  Every DFlash test file SHOULD declare the Allium invariants it
+  witnesses at the top of the file, one per line:
+
+    // @witnesses: CombineOrderFCThenHiddenNorm — test uses non-identity
+    //   hidden_norm so reversed FC/norm order produces wrong output
+    // @witnesses: ContextStatesAnchorLevel — output buffer allocated
+    //   [N_slots, MAL_anchors, 5120] without per-layer replication
+
+  Names must resolve against Allium @invariants / contracts / entities /
+  enums; unresolved names FAIL the check. The coverage report surfaces
+  how many invariants have at least one @witnesses citation. Invariants
+  with zero witnesses are not a failure (some are load-time facts or
+  bound by grep / code review), but the count makes the gap visible.
 
 Output:
   - If all checks pass: a one-line summary plus a coverage report.
@@ -191,13 +212,36 @@ def kernel_design_section7_names() -> set[str]:
 
 
 # ---------- C++ helpers ---------------------------------------------------
+#
+# Three citation patterns are recognized in C++ test files:
+#
+#   1. DFLASH_REQUIRE(cond, "InvariantName")    — runtime assertion macro;
+#      "InvariantName" must resolve to an Allium concept.
+#
+#   2. // invariant InvariantName               — paragraph-level reference
+#      // @invariant InvariantName                in test prose / comments.
+#
+#   3. // @witnesses: InvariantName             — discipline rule (added
+#      // @witnesses: InvariantName — rationale    2026-05-13): each DFlash
+#                                                  test file MUST declare
+#      the @invariants it witnesses at the top, one per line. Optional
+#      "— rationale" suffix explains why the test exercises that
+#      invariant. Multiple tests can witness the same invariant; an
+#      invariant with zero witnesses is reported (not failed) in the
+#      coverage report. Names resolve against Allium @invariants /
+#      contracts / entities / enums; unresolved names FAIL the check.
+#
+# Pattern (3) is the recommended primary citation form for new tests;
+# (1) and (2) remain valid for backward compatibility with existing
+# tests.
 
 CPP_DFLASH_REQUIRE_RE = re.compile(r'DFLASH_REQUIRE\s*\([^,]*,\s*"([A-Z][A-Za-z0-9_]*)"')
 CPP_SPEC_INV_RE = re.compile(r'\b(?:@?invariant)\s+([A-Z][A-Za-z0-9_]+)')
+CPP_WITNESSES_RE = re.compile(r'//\s*@witnesses:\s*([A-Z][A-Za-z0-9_]+)')
 
 
 def cpp_invariant_citations() -> dict[str, list[Path]]:
-    """Map invariant-name -> list of files that cite it."""
+    """Map invariant-name -> list of files that cite it (any pattern)."""
     out: dict[str, list[Path]] = {}
     if not CPP_TEST_DIR.exists():
         return out
@@ -206,6 +250,22 @@ def cpp_invariant_citations() -> dict[str, list[Path]]:
         for m in CPP_DFLASH_REQUIRE_RE.finditer(text):
             out.setdefault(m.group(1), []).append(p)
         for m in CPP_SPEC_INV_RE.finditer(text):
+            out.setdefault(m.group(1), []).append(p)
+        for m in CPP_WITNESSES_RE.finditer(text):
+            out.setdefault(m.group(1), []).append(p)
+    return out
+
+
+def cpp_witnesses_citations() -> dict[str, list[Path]]:
+    """Subset of cpp_invariant_citations restricted to @witnesses lines.
+    Used for the coverage report to surface which invariants have an
+    explicit witnessing test (vs only being mentioned in prose)."""
+    out: dict[str, list[Path]] = {}
+    if not CPP_TEST_DIR.exists():
+        return out
+    for p in list(CPP_TEST_DIR.glob("*.cpp")) + list(CPP_TEST_DIR.glob("*.h")):
+        text = p.read_text()
+        for m in CPP_WITNESSES_RE.finditer(text):
             out.setdefault(m.group(1), []).append(p)
     return out
 
@@ -367,12 +427,15 @@ def run_checks(report_only: bool = False) -> int:
     bound_via_diverge = sum(1 for n in allium_invs if n in diverge_allium)
     bound_external = sum(1 for n in allium_invs if n in external_allium)
     bound_in_cpp = sum(1 for n in allium_invs if n in citations)
-    info(f"  Allium invariants bound in TLA   : {bound_in_tla} / {len(allium_invs)}")
-    info(f"  Allium invariants via divergence : {bound_via_diverge}")
-    info(f"  Allium invariants external       : {bound_external}")
-    info(f"  Allium invariants cited in C++   : {bound_in_cpp}")
-    info(f"  TLA definitions total            : {len(tla_names)}")
-    info(f"  TLA helpers whitelisted          : {len(helpers)}")
+    witnesses = cpp_witnesses_citations()
+    bound_via_witnesses = sum(1 for n in allium_invs if n in witnesses)
+    info(f"  Allium invariants bound in TLA            : {bound_in_tla} / {len(allium_invs)}")
+    info(f"  Allium invariants via divergence          : {bound_via_diverge}")
+    info(f"  Allium invariants external                : {bound_external}")
+    info(f"  Allium invariants cited in C++ (any form) : {bound_in_cpp}")
+    info(f"  Allium invariants with @witnesses citation: {bound_via_witnesses} / {len(allium_invs)}")
+    info(f"  TLA definitions total                     : {len(tla_names)}")
+    info(f"  TLA helpers whitelisted                   : {len(helpers)}")
 
     if failures and not report_only:
         info("")
