@@ -5294,3 +5294,54 @@ size matches the allocated per-step buffer.
     avoid variance?" as a primary axis. Re-decoding committed tokens
     at a different shape than the original verify is a self-inflicted
     drift source on non-batch-invariant attention stacks.
+
+---
+
+## 2026-05-13 — Dream-flow pass (T6 closure lessons)
+
+Three new auto-memory entries written after T6 closure:
+
+  - `feedback_survey_prior_phase_before_new_mechanism` —
+    Generalised from the T6.A near-rebuild. Before speccing/building
+    any new mechanism in this codebase, grep PHASE history + existing
+    infrastructure for adjacent prior work. The pattern is not
+    limited to state save/restore; it applies to dispatchers, hooks,
+    kernel pipelines, KV manipulation, multi-GPU coordination,
+    batch-shape variance handling, deterministic computation, sampling
+    helpers, test/probe infrastructure, and C API extensions. The
+    codebase is a sedimentary record of PHASE deposits — looking
+    costs ~10-20 min; duplicating costs the full build + test +
+    remove + post-mortem cycle. `llama_spec_ckpt_*` itself was OUR
+    own PHASE41/45 MTP-IR work; we nearly rebuilt it for DFlash.
+
+  - `feedback_bisect_before_revert` — When a change causes a measured
+    regression, bisect to identify which component caused it BEFORE
+    reverting any of it. Hypothesis-only diagnosis leaves a wrong
+    record AND may revert correct work alongside the bug. From the
+    T6.B regression: I proposed "batch-shape variance" as cause and
+    reverted; user push ("get to the bottom of the issue") forced
+    bisect-1 which showed snapshot+restore itself was perturbing
+    state, refining the diagnosis.
+
+  - `project_dflash_t6_closed_via_spec_ckpt` — Terminal T6 project
+    entry. Both gates GREEN: coherence at 2.879 accept rate (+28%
+    vs T5); 3-run byte-identical SHA-256 determinism. T6.D
+    `dflash_verify_attn` from scratch was NOT NEEDED (~100k tokens
+    of CUDA PTX work avoided via `feedback_probe_before_implementing`).
+
+### Index regeneration
+
+`MEMORY.md` (private auto-memory index) regenerated. 66 → 69 entries
+after the three additions. Type-sorted, descriptions truncated at
+150 chars per dream-flow procedure. Index well under the 200-line
+truncation limit.
+
+### Cross-cutting reflection
+
+The T6 arc — original plan over-engineered for problems the existing
+infrastructure already solved — sharpens the
+"survey-before-build" rule into an explicit habit. Pair with
+`feedback_source_read_reference_before_instrumenting` (which already
+captured the cousin lesson for external references): together they
+form "read first, build second" in two directions — into prior
+PHASE work AND into reference implementations.
