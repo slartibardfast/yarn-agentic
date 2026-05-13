@@ -312,7 +312,7 @@ def _patch_serial_utils_allow_functions() -> None:
     """
     import types as _types
     import cloudpickle
-    import msgpack
+    from msgspec import msgpack
 
     from vllm.v1 import serial_utils
 
