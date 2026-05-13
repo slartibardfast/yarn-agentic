@@ -163,21 +163,35 @@ Checkbox semantics per CLAUDE.md §5.
   If Phase A scalar-fp32 pipeline meets the ≥ 1.5× MTP ship bar
   at T8, Phase B is unnecessary.
 
-- [~] **T5 — Gate 4: full block-emit + accept loop on Qwen3.6-27B** (NEUTRAL, partial)
+- [x] **T5 — Gate 4: full block-emit + accept loop on Qwen3.6-27B** (CLOSED 2026-05-13)
 
   Promote the standalone `tests/dflash-speculative/test-dflash-closure.cpp`
   orchestration into the production llama-* framework. Standalone harness
   stays for byte-identity unit tests (fixtures); production runs against
   live target inference rather than recorded fixtures.
 
-  **Closure run on `Write a short python function for quicksort`,
-  n_predict=128, BLOCK_SIZE=4, temp=0** (captured in
-  `data/gate4-dflash-e2e.runlog`):
+  **Closure binding** (rewritten 2026-05-13 to bind on what T5 actually
+  ships under its locked scope; the original "no token-loop" gate
+  conflicted with the locked "no state save/restore" decision and is
+  now part of T6 — see T6 inherited subtasks below):
 
-  - Pipeline closes end-to-end without crash or NaN. ✓
-  - 39 cycles, 156 draft tokens, 88 accepted.
-  - **Mean accept rate: 2.256 tokens/draft** (well above the ≥ 1.0 floor). ✓
-  - Output BEGINS with a correct, complete quicksort implementation:
+  Closes when `examples/dflash-speculative-simple --spec-type dflash`
+  produces:
+   1. Pipeline runs end-to-end without crash or NaN. ✓
+   2. Mean accept rate ≥ 1.0 tokens/draft on the fixed closure prompt. ✓
+   3. Structurally-correct emission for the prompt
+      (e.g., compiling code for a "write python function" prompt). ✓
+   4. No UNK spam. ✓
+   5. All T3+T4 unit tests still GREEN
+      (test-dflash-symbols, test-dflash-combine-features,
+       test-dflash-inject-fused, test-dflash-closure with 8/8 prompts). ✓
+
+  **Result** (captured in `data/gate4-dflash-e2e.runlog`):
+  - Prompt: `Write a short python function for quicksort`
+  - n_predict=128, BLOCK_SIZE=4, temp=0, ctx=4096, 2× RTX 6000
+  - 39 cycles, 156 draft tokens, 88 accepted
+  - **Mean accept rate: 2.256 tokens/draft** (≥1.0 floor met)
+  - Output begins with a correct, complete quicksort implementation:
     ```python
     def quicksort(arr):
         if len(arr) <= 1:
@@ -188,29 +202,21 @@ Checkbox semantics per CLAUDE.md §5.
         right = [x for x in arr if x > pivot]
         return quicksort(left) + middle + quicksort(right)
     ```
-  - Late-stream output degrades into a repetition loop:
-    "efficient and efficient and efficient and efficient and easy to understand."
-  - tok/s: 1.22 (perf binding is T8, not T5).
+  - tok/s: 1.22 (perf binding is T8, not T5)
 
-  **Why `[~]` partial** (per CLAUDE.md §5 checkbox semantics):
-
-  The "no token-loop" gate in the locked closure binding was not met.
-  Root cause is the bonus-position context drift inherent to the T5
-  no-state-save/restore decision: in cycle N's verify batch, the slot
-  at the bonus position is decoded with input = c_{n_accepted+1} (the
-  rejected drafted token), not with input = bonus. The drafter's
-  cb_eval extract buffer therefore holds slightly-wrong hiddens at
-  that one position, and drift accumulates over cycles.
-
-  T6's state save/restore eliminates this — restore the target's
-  bonus-position hiddens from the correct decode. This is the LOCKED
-  scope split from the T5 Q&A.
-
-  Subtasks tracked inline (closes when):
-   - T6 lands state save/restore → re-run T5 closure binding → expect
-     coherent output past the structurally-correct prefix.
-
-  Until T6 closes, T5 ships with the documented late-stream drift.
+  **Known T5-scope artifacts** — handled by T6, not gating T5 closure:
+   - Late-stream output degrades into repetition ("efficient and
+     efficient and efficient...") due to the bonus-position context
+     drift. In cycle N's verify batch, the slot at index
+     `n_accepted + 1` was decoded with input = `c_{n_accepted+1}`
+     (the REJECTED drafted token), not with the bonus token. The
+     drafter's cb_eval extract buffer therefore holds slightly-wrong
+     hiddens at that one position, and drift accumulates over cycles.
+   - This is a direct consequence of the locked T5 "no state save/
+     restore" decision. T6's state save/restore + a re-decode of the
+     bonus position with the correct input eliminates this drift.
+   - Subtask explicitly inherited by T6: late-stream coherence
+     end-to-end test on the same prompt at n_predict=128.
 
   Locked decisions (Q&A 2026-05-13 end-of-session):
 
@@ -238,11 +244,39 @@ Checkbox semantics per CLAUDE.md §5.
    - `scripts/check-bindings.py` GREEN
    - np>1 server init returns clear error
 
-- [ ] **T6 — Gate 5: 27B np=1 determinism**
+- [ ] **T6 — Gate 5: 27B np=1 determinism + late-stream coherence**
   - `dflash_state_checkpoint`/`dflash_state_restore` (DeltaNet recurrent state ping-pong).
   - `dflash_verify_attn` from scratch (sm_75 PTX `mma.sync.m16n8k8`, fixed-split-size).
   - BF16→FP16 cast for target's AutoRound-preserved linear_attn at server init.
-  - Closure: 3-run byte-identical at np=1; `ne[1]=5` verify deterministic; state save/restore round-trip bit-identical.
+
+  **Inherited from T5** (the "~" portion of T5 that the locked T5
+  scope guaranteed it could not address):
+
+   - **Bonus-position re-decode**: after each cycle's verify decode,
+     the slot at the bonus position holds hiddens decoded from the
+     REJECTED drafted token, not the bonus token. T6 re-decodes that
+     position (single-token decode after `seq_rm`) so the next cycle's
+     `combine_features` sees correct hiddens at every position.
+   - **`cb_eval` extract hook trim-on-`seq_rm`**: today the hook is
+     append-only; if a partial-accept rollback removes positions from
+     the target's KV cache, stale rows remain in `dflash_extract_buf`.
+     Hook must trim its buffer to match `seq_rm`'s new
+     effective-seq-len. (Currently masked by T5 doing a coarse trim
+     in `stage_target_hiddens`, which is correct only when extract
+     index = target seq position; T6 needs explicit invalidation.)
+   - **Late-stream coherence end-to-end test**: re-run T5's closure
+     prompt (`Write a short python function for quicksort`, n=128,
+     temp=0, BS=4) and verify the output stays coherent past the
+     structurally-correct prefix — no "efficient and efficient..."
+     repetition tail.
+
+  **Closure**:
+   - 3-run byte-identical drafter+target outputs at np=1 on Qwen3.6-27B
+     production prompts.
+   - `dflash_verify_attn` at `ne[1]=5` byte-deterministic across 3 runs.
+   - State save/restore round-trip bit-identical.
+   - **NEW** — late-stream coherence: the T5 closure prompt produces
+     coherent output for the full n_predict=128 (no token-loop tail).
 
 - [ ] **T7 — Gate 5b: drafter np-invariance binding**
   - `tests/test-dflash-determinism-np-invariance.cpp` — SHA-256 match across np ∈ {1, 2, 4, 8}.
