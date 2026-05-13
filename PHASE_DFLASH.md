@@ -296,12 +296,14 @@ Checkbox semantics per CLAUDE.md §5.
 
   **Restructured layering**:
 
-   - **T6.A — DeltaNet state save/restore foundation** ✓ CLOSED.
-     Per kernel-design.md §6.4. Lives in libllama; the C API
-     (`llama_dflash_state_snapshot/_restore`, ping-pong scratch)
-     is present and unit-tested. Dormant in the current example
-     (superseded by `llama_spec_ckpt_*` for production path).
-     Kept for potential superset/redesign per the T6 Q&A.
+   - **T6.A — DeltaNet state save/restore foundation** REMOVED
+     2026-05-13. Was briefly landed (parallel ping-pong scratch +
+     `llama_dflash_state_snapshot/_restore` C API) but proved
+     functionally redundant with `gpu_checkpoint.s_l_shadow`.
+     Removed at post-closure cleanup; reclaimed ~150 MiB GPU memory
+     per bind and eliminated maintenance burden of two parallel
+     state mechanisms. Resurrectable from git history if a
+     "superset" need surfaces.
 
    - **T6.α — Late-stream coherence via `llama_spec_ckpt_*`**:
      Wire the example to use `llama_spec_ckpt_init(AUTO, BS+1)`

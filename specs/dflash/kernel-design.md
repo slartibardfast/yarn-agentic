@@ -587,11 +587,16 @@ Tradeoff documented; pick KV_BLOCK_SIZE = 32 with double-buffer at Gate 3 if KV_
 
 ### 6.4 `dflash_state_checkpoint` / `dflash_state_restore`
 
-**Status (2026-05-13)**: deferred in favour of `llama_spec_ckpt_*`
-(see below). The originally-spec'd `dflash_state_checkpoint` /
-`_restore` kernels were not needed for the T6.α coherence path:
-ik_llama.cpp already has a PER_STEP-aware checkpoint mechanism
-that handles partial-accept restore at any `accepted_step`.
+**Status (2026-05-13)**: NOT IMPLEMENTED — and the parallel T6.A
+mechanism that was briefly landed has been REMOVED. The originally-
+spec'd `dflash_state_checkpoint` / `_restore` kernels (and the T6.A
+ping-pong scratch in `src/llama-dflash.cpp`) were not needed for the
+T6.α coherence path: ik_llama.cpp already has a PER_STEP-aware
+checkpoint mechanism (`llama_spec_ckpt_*`) that handles partial-accept
+restore at any `accepted_step`. T6.A's parallel scratch was
+removed at the post-T6-closure cleanup to reclaim ~150 MiB of GPU
+memory per bind and eliminate the maintenance burden of two parallel
+state mechanisms.
 
 **Canonical mechanism — `llama_spec_ckpt_*` (PER_STEP mode)**:
 
