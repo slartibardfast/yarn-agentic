@@ -338,6 +338,46 @@ contract ProjectAndFuse {
         -- When DenoiseSchedule = multi_step, the same InjectedKV is
         -- consumed by every denoising step of the same anchor. The
         -- projection runs once per anchor, not per denoising step.
+
+    @invariant CombineOrderFCThenHiddenNorm
+        -- The combine step that produces post-FC, post-hidden_norm
+        -- context_states applies operations in this order:
+        --   1. Channel-wise concat of the 5 source-layer hidden states.
+        --   2. Linear projection by `fc` (DFLASH_FC) — 5*5120 → 5120.
+        --   3. RMSNorm with `hidden_norm` weight (DFLASH_HIDDEN_NORM).
+        -- Reversing FC and hidden_norm changes the numerical result for
+        -- any non-trivial hidden_norm weight and is a correctness
+        -- violation. Provenance: vLLM precompute_and_store_context_kv
+        -- (qwen3_dflash.py:441-448) runs `rms_norm` on the output of
+        -- `combine_hidden_states` (qwen3_dflash.py:656), which is the
+        -- FC step. Allium-side, this fixes ordering when an
+        -- implementation considers fusing these two steps into one
+        -- kernel.
+
+    @invariant ContextStatesAnchorLevel
+        -- The combine step output (post-FC, post-hidden_norm
+        -- context_states) is per-anchor (and per-slot at np>1), NOT
+        -- per-drafter-layer. The 5 drafter layers' inject_kv steps
+        -- consume the SAME context_states[slot, anchor, :] when
+        -- producing their per-layer K/V projections. Implementations
+        -- that recompute combine per drafter layer waste 5x FC compute;
+        -- implementations that allocate context_states with a spurious
+        -- L_d dimension confuse the contract. The output shape is
+        -- [n_slots, mal_anchors, hidden_size].
+
+    @invariant InjectPerLayerLaunches
+        -- The per-drafter-layer K/V projection (K_proj + V_proj +
+        -- K_norm + RoPE + cache_write) is dispatched as one launch per
+        -- drafter layer, with each launch's grid covering (slots,
+        -- anchors) for that layer only. A single 3D launch with L_d
+        -- as the innermost or middle grid axis interleaves layers
+        -- across SMs and breaks L2 reuse of the per-layer K/V
+        -- projection weights (20 MiB/layer; TU102 L2 = 6 MiB), which
+        -- materially degrades inject bandwidth. The serialized
+        -- per-layer launch keeps the current layer's weights L2-resident
+        -- across all (slot, anchor) CTAs in that launch. Per-layer
+        -- launch overhead (~5 us each x 5 layers = 25 us) is < 0.1% of
+        -- a cycle.
 }
 
 -- Emits a block of candidate tokens in a single forward pass,
@@ -723,6 +763,47 @@ invariant PerDeploymentDeterminism {
     -- state, block_size, source_indices) produce byte-identical
     -- token streams. Across runs that differ in block_size or
     -- source_indices, outputs may differ.
+}
+
+-- Kernel-level determinism preconditions: the structural rules that
+-- DFlash CUDA kernels (combine_features, inject_kv_fused, drafter_forward,
+-- verify_attn, state_checkpoint, state_restore, argmax_match) must
+-- collectively satisfy so that DeterminismPerDeployment AND
+-- DeterminismUnderFixedInputs AND the Gate 5b np-invariance binding
+-- hold. Cross-cuts every kernel; corresponds to kernel-design.md §8.
+invariant KernelDeterminism {
+    -- (1) No floating-point atomic accumulation across blocks. In
+    --     particular: no `atomicAdd<float>` and no `atomicAdd<half>`
+    --     in any DFlash kernel's reduction path. (Integer atomics for
+    --     count-style work-stealing are admissible.)
+    -- (2) All matmul tile dimensions are compile-time constants. No
+    --     occupancy-tuned or shape-tuned heuristics that pick a
+    --     different tile based on runtime M / N / K.
+    -- (3) One CTA per output tile. No Split-K cross-block reductions
+    --     on the drafter forward, inject, or combine paths.
+    -- (4) Inner reductions use warp-shuffle; block-level reductions
+    --     use SMEM tree. No atomic-based reductions.
+    -- (5) Block-idx -> output-tile mapping is fixed at kernel design
+    --     time. SM arrival order MUST NOT affect output values.
+    -- (6) WMMA fragment shape is compile-time fixed: m16n16k16 for
+    --     drafter / combine / inject; mma.sync.m16n8k8 PTX for verify.
+    -- (7) Verify-attn uses fixed split-SIZE, not split-count.
+    --     KV_BLOCK_SIZE is a compile-time constant; each split's K
+    --     contents are determined by KV_BLOCK_SIZE alone.
+    --
+    -- Violating any of (1)-(7) breaks Gate 5b's np-invariance binding
+    -- (drafter logits bit-identical across np ∈ {1, 2, 4, 8}). At least
+    -- one of these rules has been violated in every prior batch-shape-
+    -- sensitivity bug on Turing CUDA (see project_vulkan_bi_mmv_root_cause
+    -- and project_mtp_multislot_determinism_investigation_failed memory
+    -- entries for prior incidents).
+    --
+    -- This invariant has no operational TLA+ body — it is a structural
+    -- precondition on the implementation, enforced by code review and
+    -- by the test-dflash-determinism-np-invariance and test-dflash-
+    -- determinism-ne5 byte-identity tests. Static grep-style checks
+    -- (e.g., "no `atomicAdd<float>` in ggml-cuda/dflash-*.cu") may
+    -- complement the test bindings.
 }
 
 -- The speculative cycle is atomic. Within a cycle, the order is:
