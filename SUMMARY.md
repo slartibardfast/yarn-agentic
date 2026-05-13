@@ -72,6 +72,10 @@
 - [Phase 7: SET_ROWS Correctness + Openclaw BigCodeBench Comparison](phases/qwen35-mtp/PHASE7.md)
 - [Phase 8: TURBO_KV_4B Flash Attention — Multi-Head Stride Bug](phases/qwen35-mtp/PHASE8.md)
 
+# DFlash
+
+- [Qwen3.6-27B DFlash Speculative Decoding (sm_75)](PHASE_DFLASH.md)
+
 # Performance
 
 - [Benchmark Expectations](BENCHMARK_EXPECTATIONS.md)
