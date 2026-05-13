@@ -81,7 +81,9 @@ head_dim:            256
 rms_norm_eps:        1.0e-06
 vocab_size:          248320
 max_position_embeddings: 262144
-weight_dtype:        int4 AutoRound (GGUF IQ4_KS at quantize time)
+weight_dtype:        AutoRound INT4 — production GGUF packages bits faithfully into Q4_0 + Q4_0_AR16 tensor types
+                     # (NOT IQ4_KS, NOT re-quantized; the GGUF is a lossless repackaging of the AutoRound source).
+                     # Exceptions: output.weight (lm_head) = BF16, token_embd.weight = F16, norms = F32.
 ```
 
 ### Cross-model implications
@@ -115,7 +117,7 @@ Per-cycle budget (target round time < 50 ms at np=1, scales with N at np>1):
 | Combine features (FC + hidden_norm, ~3 anchors) | 0.5 ms |
 | Drafter forward (persistent, 5 layers + lm_head) | 12 ms |
 | State checkpoint (async, overlaps verify) | 0 ms attributed |
-| Verify forward (target, INT4 IQ4_KS, 64 layers, ne[1]=5) | 22 ms |
+| Verify forward (target, AutoRound INT4 in Q4_0/Q4_0_AR16 GGUF, 64 layers, ne[1]=5) | 22 ms |
 | Argmax match | <0.5 ms |
 | State restore (only on partial accept) | 0–2 ms (amortized) |
 | InjectKV fused (5 layers × ~3 anchors) | 0.5 ms (revised from initial 3 ms — bandwidth-bound at ~200 µs, budget held at 0.5 ms for launch overhead margin) |
@@ -301,20 +303,34 @@ void launch_dflash_drafter_forward(
 ```
 for layer in 0..4:
     inject target_features[layer] into KV cache  (NOT done here — done by inject_kv_fused)
-    RMSNorm(input_hidden) → q,k,v in registers
-    apply_swa_attention(q,k,v) -- layer 0..3 sliding window=2048
-    apply_full_attention(q,k,v) -- layer 4
+    RMSNorm(input_hidden) → q,k,v projections (WMMA)
+    RoPE(q) and RoPE(k_new)
+    write k_new, v_new to KV cache (via inject_kv_fused already; drafter only reads K)
+    apply_swa_attention(q, K_cache_window, V_cache_window) -- layer 0..3 sliding window=2048
+    apply_full_attention (q, K_cache, V_cache) -- layer 4
     add residual
     RMSNorm
     MLP (silu(W_gate * x) * (W_up * x)) -> W_down
     add residual
     cg::this_grid().sync()   // ensures KV writes from this layer visible globally
-lm_head: hidden -> logits over V=248320
+// lm_head dispatched as SEPARATE kernel (see kernel boundary note below)
 ```
 
-**WMMA fragments**: `m16n16k16` fp16/fp16. Each warp holds at most 4 concurrent C-fragments (per [agent #2 register budget](https://forums.developer.nvidia.com/t/wmma-f16-load-always-loads-into-8-2xf16-registers/265385) — 8 regs × 4 fragments = 32 fp16 regs, leaving headroom for A/B staging + per-lane state).
+**Kernel boundary — lm_head**: The lm_head matmul (hidden=5120 → vocab=248320) is **NOT** part of the cooperative kernel. It lands as a separate launch (`dflash_drafter_lm_head`) after the cooperative kernel completes. Justification:
 
-**Register budget**: target ≤ 64 regs/thread for 50% occupancy. Will measure at Gate 3a.
+- Target's `output.weight` (= shared lm_head per `@SharedEmbedAndLMHead`) is stored as **BF16** in the production GGUF — not quantized. Drafter reads the same BF16 tensor.
+- Target's `token_embd.weight` (= shared anchor-token embedding) is stored as **F16**.
+- Other target weights are AutoRound INT4 packed into `Q4_0` and `Q4_0_AR16` (the AutoRound 16-step variant) GGUF tensor types — but lm_head specifically is BF16.
+
+The lm_head dispatch is therefore a BF16 GEMV against the target's `output.weight`, then per-position argmax — a clean separate kernel that doesn't need any quantized matmul inlining. Per-cycle launch overhead: ~5-10 µs (negligible against the 12 ms drafter budget). Separate-kernel boundary preserved.
+
+**SWA mask strategy**: K-loop iteration bounded by sliding window. For each query position `q_pos`, the attention K-loop iterates `[max(0, q_pos - swa_window + 1), q_pos]` only. No mask materialization in SMEM, no per-key branch divergence inside the K-loop. For 1+BLOCK_SIZE queries per CTA, that's 1+BLOCK_SIZE distinct K-loop bound pairs. Layer 4 (full attention) iterates `[0, q_pos]` instead.
+
+**WMMA fragments**: `m16n16k16` fp16/fp16 (spec literal — no scalar-fp32 deviation as was applied in T3 inject). The drafter forward is compute-heavier than inject (Q/K/V matmuls × 5 layers + MLP at hidden=5120/intermediate=17408 × 5 + ~5 attention sub-steps × per-layer K-cache reads at window=2048). Scalar fp32 would meaningfully impact the 12 ms drafter budget; WMMA is justified here despite the byte-identity-binding cost.
+
+**RoPE transcendentals**: Same as T3 — `pow`/`cos`/`sin` evaluated in fp64, cast to fp32 at use. Applies to both Q-side RoPE and K-side RoPE in the drafter attention. fp32 versions diverge ≤6 ULP between CUDA libdevice and CPU libm; fp64 path bridges to ≤1 fp64 ULP.
+
+**Register budget**: target ≤ 64 regs/thread for 2 blocks/SM occupancy on sm_75. Will measure at T4 build.
 
 **SMEM budget**:
 - Hidden state staging: 5120 × 2 = 10240 B = 10 KiB (one row at a time, per CTA)
@@ -328,11 +344,31 @@ lm_head: hidden -> logits over V=248320
 - Per-warp K-loop with deterministic reduction order.
 - Block-to-SM mapping is non-deterministic, but block_idx → output tile mapping is fixed.
 - `cg::this_grid().sync()` provides full memory visibility across CTAs.
+- RoPE transcendentals computed in fp64 → fp32 cast (kernel and scalar oracle both).
 
-**Allium bindings** (see §8):
-- `DraftBlockEmit`
-- `FeatureSourceFixedPerDeployment`
-- `ProbabilisticVerifyOutOfScope` (greedy argmax only — no probabilistic sampling)
+**Byte-identity binding for T4**:
+
+T4 uses WMMA, which means a serial-fp32 scalar reference (as T3 used) will NOT produce byte-identical results — WMMA fragment-internal reduction order is well-defined per PTX but does not match a serial K-iteration scalar reduction. The byte-identity binding for T4 is anchored on a **WMMA-mimicking scalar oracle**:
+
+- Oracle processes inputs in `m16n16k16` tiles matching the kernel's WMMA fragment dispatch.
+- Within each tile, the oracle emulates the per-lane fragment accumulation order documented in PTX (8 fp16 accum elements per lane, lane 0..31 holding specific (m, n) fragment positions per the Turing PTX spec).
+- Cross-tile accumulation order matches the kernel's outer K-tile loop.
+- fp16 accumulator paths in WMMA are emulated by the oracle as fp16 + fp16 accumulation.
+
+Implementation cost: ~200–300 LOC of oracle CPU code. Risk: oracle bugs that "match the kernel for the wrong reason." Mitigated by also checking against a separate serial-fp32 reference at a wider tolerance (cosine ≥ 0.9999, NMSE ≤ 1e-4) as a sanity gate — if both the WMMA-mimicking oracle AND the serial fp32 reference agree (within their respective tolerances) with the kernel, both checks pass simultaneously.
+
+**Template parameter**: `BLOCK_SIZE ∈ {4, 5, 6, 8}`. T4 implements all four variants. The drafter wrapper code chooses at dispatch time based on the drafter GGUF's `dflash.block_size` metadata.
+
+**Allium bindings** (see §7):
+- `DraftBlockEmit` (kernel IS the invariant)
+- `FeatureSourceFixedPerDeployment` (target_layer_ids inlined at compile time per the drafter GGUF metadata)
+- `ProbabilisticVerifyOutOfScope` (greedy argmax via separate argmax_match kernel)
+- `SingleForwardPerStep` (one drafter forward per cycle; mega-kernel structure ensures this)
+- `QuerySpanIsOnePlusN` (1+BLOCK_SIZE query positions, locked by template parameter)
+- `LayerTypeDependentMask` (4 SWA + 1 full attention; layer_types from drafter GGUF)
+- `AnchorEmbeddingFromTarget` (input includes anchor token embedding from shared embed)
+- `InjectionConsumedAtEveryLayer` (each layer reads K/V cache written by inject_kv_fused)
+- `SharedEmbedAndLMHead` (lm_head kernel reads target's BF16 `output.weight`; tok_embd reads target's F16 `token_embd.weight`)
 
 ---
 
@@ -700,7 +736,7 @@ Each Allium invariant from `dflash.allium` is bound to a specific kernel or test
 | `EffectiveSeqLensSubtractsRejected` | post-verify state advance | seq_pos += n_accepted + 1 (bonus), NOT BLOCK_SIZE |
 | `NumRejectedTokensFlowsBackToProposer` | post-verify rejection accounting | n_rejected = BLOCK_SIZE - n_accepted; passed to next drafter call |
 | `HybridTargetRecurrentStateTracking` | `dflash_state_checkpoint` / `dflash_state_restore` | Save before verify; conditionally restore on partial accept |
-| `SharedEmbedAndLMHead` | drafter loader | Embed and lm_head materialized from target's IQ4_KS at convert time |
+| `SharedEmbedAndLMHead` | drafter loader | Embed (F16) and lm_head (BF16) shared with target's `token_embd.weight` / `output.weight` at server init; drafter never owns these tensors |
 | `PerSlotVerifyDispatchAtMultiSlot` | verify call site | Verify kernel is one-block-per-output-row → slot-isolated by construction |
 | `NoCrossSlotRegionOverlap` | KV cache layout `[layer, slot, ...]` | Slot dimension in cache addressing → can't overlap |
 | `SyncBeforeStepAdvance` | stream sequence (§5) | Explicit `cudaEventRecord`/`Wait` between cycles |
