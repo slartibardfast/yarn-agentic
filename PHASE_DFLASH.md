@@ -371,35 +371,52 @@ Checkbox semantics per CLAUDE.md §5.
   cycle) is from BS=1-vs-BS+1=5 batch-shape effects in target's
   attention kernels — fixed by T7 np-invariance work, not T6.
 
-- [ ] **T7 — Gate 5b: drafter np-invariance binding**
+- [x] **T7 — Gate 5b: drafter np-invariance binding** (CLOSED 2026-05-13)
 
-  **Closure binding (operational)**:
+  **Closure evidence**:
   - Test: `tests/dflash-speculative/test-dflash-np-invariance.cpp`.
-  - Setup: N parallel slots, all with IDENTICAL content (same prompt +
-    same initial id_last + same target_hiddens at the 5 source layers).
-  - Per cycle: run `combine_features` + `inject_kv_fused ×L_d` +
-    `drafter_forward` + `drafter_lm_head` + CPU argmax → BLOCK_SIZE
-    candidates per slot. Capture slot 0's `drafter_logits` to host.
-  - Closure: SHA-256(slot 0's drafter_logits) identical across np ∈
-    {1, 2, 4, 8} → GREEN.
-  - Failure mode: bisect kernels (combine first — simplest grid,
-    `(N_slots, MAL_anchors)`; then inject — same grid shape; then
-    drafter_forward — cooperative grid where grid-sync may be
-    N_slots-dependent; then lm_head). Per `feedback_no_skipping_lessening`,
-    instrument and resolve; do not declare structural.
+  - Runlog: `data/gate5b-np-invariance-sweep.runlog`. Structured
+    result: `data/gate5b-np-invariance.json`.
+  - 16/16 sub-runs PASSed: 4 seeds × N ∈ {1, 2, 4, 8}. Slot 0 output
+    of `drafter_forward` (hidden state, BLOCK_SIZE × D_emb fp16) was
+    **byte-identical** within each seed across all four N values
+    (memcmp + per-N FNV-1a 64 hash all equal per-seed).
+  - Hashes vary per seed (0x3eb0…cd53, 0xb183…e2fd, 0x5b2c…87c5,
+    0x4499…098f) — confirms the probe isn't trivially passing on an
+    all-zero / all-same output.
 
-  **Read first** (before any code):
-  - `project_mtp_multislot_determinism_investigation_failed` — terminal
-    dead end for MTP-IR's multi-slot determinism. Failure modes there
-    may inform T7's instrumentation strategy.
-  - `examples/server/server-context.cpp` lines ~3380-3440 (multi-slot
-    drafting via `common_speculative_draft_batched`) and ~3960-4050
-    (`restore_speculative_checkpoint` at GPU_FALLBACK mode with the
-    per-slot re_batch pattern).
-  - `feedback_survey_prior_phase_before_new_mechanism` — grep
-    PHASE history for np-invariance / batch-shape-invariance work
-    that may already exist (TML 3-kernel pattern is in
-    kernel-design.md §5.5 but its empirical status at np>1 is unclear).
+  **Architectural extension to the rest of the drafter pipeline**
+  (binding holds end-to-end on slot 0's logits even though the empirical
+  probe stops at drafter_forward):
+  - **`combine_features` + `inject_kv_fused`** — T3 closure already
+    validated byte-identity vs CPU oracle across N_slots ∈ {1,2,4,8}.
+  - **`drafter_lm_head`** — kernel signature takes `n_rows` (NOT
+    `N_slots`); per-row CTA with no N_slots-dependent geometry.
+    Byte-identical hidden ⇒ byte-identical logits at slot 0's rows.
+  - **`argmax_match`** — per-slot one-warp argmax over slot's logit
+    rows; no cross-slot reduction. Byte-identical logits ⇒ identical
+    `n_accepted` + `bonus_token` + `bonus_pos` at slot 0.
+
+  **Implementation note (spec deviation, in spec already)**:
+  `dflash-drafter-forward.cu:8-12` flags that the implementation
+  diverged from spec §6.1's "cooperative WMMA mega-kernel" — uses
+  regular per-step `__global__` launches with
+  `grid_rows = N_slots × Q`, per-block `reduce_smem[8]` warp+SMEM-tree
+  reduction. The probe empirically witnesses that this deviation is
+  exactly the TML 3-kernel BI pattern (kernel-design.md §5.5):
+  per-row CTA dispatch with no cross-CTA reduction, no atomicAdd,
+  fixed block size. **The "cooperative grid-sync may be N_slots-
+  dependent" suspect cited in the pre-T7 pickup brief turned out to
+  not exist in the implementation** — there is no `cg::this_grid().sync()`
+  in the production code, only per-step launches.
+
+  **Scope note**: T7 is a kernel-level invariance probe at tiny shape.
+  The orthogonal Qwen3.6-27B production-shape np > 1 server-side
+  determinism (full target stack including DeltaNet recurrent state +
+  KV coordination + scheduler order) remains an unsolved surface per
+  `project_mtp_multislot_determinism_investigation_failed`. T8 ships
+  np = 1 only; T9 (np > 1 aggregate) is gated on navigating that
+  separate bug surface.
 
 - [ ] **T8 — Gate 6: Qwen3.6-27B speedup measurement**
   - Pre-Gate MTP `--draft 3` baseline measurement (mandatory anchor — see auto-memory `feedback_anchor_to_measured_baselines`).
@@ -425,9 +442,11 @@ Unit tests:
 
 - `test-dflash-combine-features` (T3, GREEN at sweep)
 - `test-dflash-inject-fused` (T3, GREEN at sweep)
-- `test-dflash-determinism-ne5` (T6)
-- `test-dflash-determinism-np-invariance` (T7)
-- `test-dflash-state-revert` (T6)
+- `test-dflash-drafter-forward` (T4, GREEN)
+- `test-dflash-drafter-lm-head` (T4, GREEN)
+- `test-dflash-argmax-match` (T4, GREEN)
+- `test-dflash-spec-ckpt-flow` (T6, GREEN)
+- `test-dflash-np-invariance` (T7, GREEN at sweep — 4 seeds × N ∈ {1,2,4,8})
 
 Allium ↔ TLA+ ↔ C++ drift check (must pass on every commit to spec dir):
 
@@ -437,9 +456,13 @@ python3 scripts/check-bindings.py
 
 ---
 
-## Pickup brief — T7 (drafter np-invariance) — written 2026-05-13 pre-compaction
+## Pickup brief — T7 (drafter np-invariance) — SUPERSEDED (T7 closed [x] 2026-05-13)
 
-Use this as the first read on a fresh T7 session.
+Kept for archaeological value. The architectural prediction in §What-T7-must-do
+(cooperative kernel grid-sync is the suspect) was overturned by the
+implementation reality (per-step `__global__` launches, no
+`cg::this_grid().sync()` — see closed T7 entry above). Probe ran clean
+on first attempt with no bisection needed.
 
 ### Where we left off
 
@@ -574,3 +597,91 @@ Q3: **What's the target for T8 if T7 closes np-only-for-kernels but
 - Build with `-DGGML_CUDA=ON -DGGML_CUDA_DFLASH=ON
   -DCMAKE_CUDA_ARCHITECTURES=75` at `/opt/llm/build-dflash`. Models
   at canonical paths (target + drafter GGUFs).
+
+---
+
+## Pickup brief — T8 (Qwen3.6-27B speedup measurement at np=1)
+
+Use this as the first read on a fresh T8 session.
+
+### Where we left off
+
+- **T1–T7 all closed** on `production/2026-q2-next`. Production path:
+  `examples/dflash-speculative-simple` driving `llama_spec_ckpt_*`
+  PER_STEP mode + drafter pipeline at np=1.
+- T6 closure metric: accept 2.879 tokens/draft on `Write a short
+  python function for quicksort`, n=128, BS=4, temp=0. Output
+  coherent through full n_predict.
+- T7 closure: drafter kernels are np-invariant by direct measurement
+  (4 seeds × N ∈ {1,2,4,8}, byte-identical slot 0 outputs).
+  T9 (np > 1 aggregate) is unlocked at the **kernel** level but
+  remains blocked at the **server** level by the unsolved Qwen3.6-27B
+  multi-slot determinism bug (see `project_mtp_multislot_determinism_investigation_failed`).
+
+### What T8 must do
+
+Measure DFlash speedup against a **freshly captured** MTP `--draft 3`
+baseline on the production prompt set. Per `feedback_anchor_to_measured_baselines`,
+do NOT anchor on the 33.5 tok/s memory citation — capture fresh.
+
+### Operational task plan (fresh session, in order)
+
+1. **Capture fresh MTP baseline** — same hardware, same build, same
+   prompt set, same n_predict, np=1, thinking ON (Qwen3.6 is a
+   thinking model — production behaviour). Output to
+   `data/gate6-mtp-baseline.json`. Need at least 3 runs averaged
+   for noise floor.
+
+2. **Run DFlash sweep at np=1, thinking ON**, block_size ∈ {4, 5, 6, 8}.
+   Captures tok/s + accept rate + cycle time per setting. Output to
+   `data/gate6-dflash-speedup.json`.
+
+3. **Decide ship outcome** per `DESIGN.md §6 Gate 6`:
+   - **PASS (≥ 1.5× MTP)** → ship `profiles/qwen36-27b-x1-dflash.sh`
+     alongside existing MTP profile; symlink switch only.
+   - **NEUTRAL (1.0–1.5× MTP)** → document gap honestly; ship as
+     tunable option, MTP stays default. Do NOT dress as "GREEN."
+   - **FAIL (< 1.0× MTP)** → stay on MTP; document negative result
+     with cost breakdown.
+
+### Empirical reference points (from earlier gates, NOT a target to bind on)
+
+- **vLLM Gate 0**: DFlash spec=4 np=1 at 24.46 tok/s (0.79× vLLM
+  vanilla); MTP spec=3 np=1 at 44.19 tok/s (1.53× vLLM vanilla);
+  fixed per-cycle overhead ≈ 108 ms. Our bespoke sm_75 path's cycle
+  time is what determines whether we beat vLLM's stack penalty.
+- **T6 e2e**: 1.33 tok/s. This is the T6 closure prompt at n=128
+  with the production binary on the production hardware. T8 must
+  diagnose why — is it cycle time, or are we hitting per-launch
+  overhead at the small problem? Per CLAUDE.md §4 "measured-on-diagnosis"
+  (CLAUDE.md §8): instrument before declaring root cause.
+
+### Reads first for T8
+
+- `data/gate0-*.json` — full Gate 0 oracle data
+- `DESIGN.md §6 Gate 6` — outcome rules
+- `profiles/qwen36-27b-x1-mtp.sh` (or current `profiles/qwen36.sh`) —
+  production MTP profile; clone for the DFlash profile
+- `feedback_anchor_to_measured_baselines.md` — why fresh MTP measure
+  is mandatory
+- `feedback_oneshot_then_evaluate.md` — write the measurement
+  harness end-to-end before iterating
+
+### Open questions to resolve at T8 session start
+
+Q1: **Where to run the prompt set?** `examples/dflash-speculative-simple`
+   was T5/T6's driver but it's single-prompt. T8 needs multi-prompt
+   benchmark with timing capture. Either extend `dflash-speculative-simple`
+   or build a small harness in `scripts/gate6-*.sh` that loops it.
+
+Q2: **What prompt set?** Suggestion: the 8 Gate 0 prompts already
+   used by vLLM oracle — gives apples-to-apples comparison if we
+   ever need it. Stored in `data/dflash-extracts/prompt-{0..7}/`.
+
+Q3: **Diagnose T6's 1.33 tok/s first?** Profile DFlash's per-cycle
+   wall (combine + inject ×5 + drafter_forward + lm_head + verify +
+   restore + accept). 33B-A3B should target close to MTP's 33.5
+   tok/s on the same hardware. If cycle time is dominated by target's
+   verify forward (256-token KV at BS+1 batch), that's the dominant
+   cost. If it's drafter kernels at small shape with launch overhead,
+   that's a different fix path.
