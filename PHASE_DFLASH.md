@@ -164,9 +164,37 @@ Checkbox semantics per CLAUDE.md §5.
   at T8, Phase B is unnecessary.
 
 - [ ] **T5 — Gate 4: full block-emit + accept loop on Qwen3.6-27B**
-  - `common_speculative_dflash_*` wiring.
-  - `examples/speculative-simple/` --dflash flag.
-  - Closure: within 10 % of the Gate 0 vLLM oracle (24.46 tok/s spec=4 np=1 on Qwen3.6-27B INT4).
+
+  Promote the standalone `tests/dflash-speculative/test-dflash-closure.cpp`
+  orchestration into the production llama-* framework. Standalone harness
+  stays for byte-identity unit tests (fixtures); production runs against
+  live target inference rather than recorded fixtures.
+
+  Locked decisions (Q&A 2026-05-13 end-of-session):
+
+  1. **State save/restore scope** — T5 does NOT include DeltaNet
+     state save/restore. Each cycle starts from whatever state target
+     inference left behind. Full ping-pong + determinism binding is T6.
+  2. **Loader shape** — new module `src/llama-dflash.{h,cpp}` for DFlash-
+     specific orchestration; arch dispatch + tensor loading in
+     `src/llama-model.cpp` following the existing Qwen 3.5/3.6 pattern.
+     Standalone `dflash-drafter-loader.h` stays for unit-test fixtures.
+  3. **C API granularity** — hybrid. High-level `llama_set_dflash(ctx,
+     drafter)` plus exposed escape hatches (`llama_dflash_extract_features`,
+     `llama_dflash_inject_kv`, `llama_dflash_draft_block`,
+     `llama_dflash_argmax_match`) for tests and debugging.
+  4. **Closure binding** — `examples/speculative --dflash` produces
+     non-garbage output (no UNK spam, no token-loop) AND mean accept
+     rate ≥ 1.0 over 128 emitted tokens on a fixed prompt. Speedup is
+     informational at T5 (captured to `data/gate4-dflash-e2e.json`);
+     the ≥ 1.5× speedup binding is T8 (Gate 6).
+
+  Subtasks (T5.1 … T5.11) — closes only when:
+   - examples/speculative -m TARGET -md DRAFTER --dflash --draft 4 -n 128
+     produces coherent output with mean accept rate ≥ 1.0
+   - All T3+T4 unit tests still GREEN
+   - `scripts/check-bindings.py` GREEN
+   - np>1 server init returns clear error
 
 - [ ] **T6 — Gate 5: 27B np=1 determinism**
   - `dflash_state_checkpoint`/`dflash_state_restore` (DeltaNet recurrent state ping-pong).
