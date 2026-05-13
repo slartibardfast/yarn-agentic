@@ -59,14 +59,19 @@ def main():
 
     from vllm import LLM, SamplingParams
 
+    # vLLM v1 routes the model to a worker process when TP>1 (or always in
+    # 0.20+). We use collective_rpc to install forward hooks IN the worker
+    # process and capture residuals via shared np arrays returned over RPC.
+    # TP=1 single-process executor keeps the model in our process, where
+    # standard forward hooks work directly.
     t0 = time.time()
     llm = LLM(
         model=args.model,
-        tensor_parallel_size=2,
+        tensor_parallel_size=1,
         dtype="auto",
         quantization="gptq_marlin",
-        gpu_memory_utilization=0.80,
-        cpu_offload_gb=0,
+        gpu_memory_utilization=0.92,
+        cpu_offload_gb=16,
         enforce_eager=True,
         max_num_batched_tokens=4096,
         disable_custom_all_reduce=True,
@@ -76,106 +81,145 @@ def main():
     )
     print(f"init: {time.time()-t0:.1f}s", flush=True)
 
-    # Access the inner PyTorch model. vLLM v1 keeps it on the driver worker.
+    # Access the inner PyTorch model. With TP=1 v1 still uses a worker
+    # subprocess via MP; reach into it via collective_rpc.
     engine = llm.llm_engine
-    # vLLM v1 path uses model_executor.driver_worker.model_runner.model
-    try:
-        inner = engine.model_executor.driver_worker.model_runner.model
-    except AttributeError:
-        # v1 alt path
-        inner = engine.engine_core.model_executor.driver_worker.model_runner.model
 
-    # Qwen3.6-27B is Qwen3_5ForConditionalGeneration (multimodal-capable).
-    # Decoder layers live at .model.language_model.layers per the HF arch.
-    # Walk to find the layers list.
-    layers_module = None
-    for attr_path in (
-        "model.language_model.layers",
-        "language_model.layers",
-        "model.layers",
-        "layers",
-    ):
-        cur = inner
-        ok = True
-        for part in attr_path.split("."):
-            if hasattr(cur, part):
-                cur = getattr(cur, part)
-            else:
-                ok = False
-                break
-        if ok and isinstance(cur, torch.nn.ModuleList):
-            layers_module = cur
-            print(f"found decoder layers at .{attr_path} (n_layers={len(cur)})", flush=True)
-            break
-    if layers_module is None:
-        print("could not find decoder layers ModuleList", file=sys.stderr)
-        sys.exit(1)
+    # We install hooks via collective_rpc on the worker and capture the
+    # residuals as a list-of-arrays returned from RPC.
+    layer_ids = layers
+    n_tokens_cap_val = args.n_tokens_cap
+    prompt_in = prompt
 
-    # Capture buffers — one dict slot per configured layer.
-    captures: dict[int, np.ndarray] = {}
+    def worker_extract(self):
+        """Runs inside the vLLM worker process. self = WorkerWrapper."""
+        import torch
+        import numpy as np
+        model = self.model_runner.model
 
-    def make_hook(layer_id: int, is_post: bool):
-        def hook(module, args_, output):
-            # The "residual" tensor that flows out of a Qwen decoder layer in
-            # vLLM is normally `output[0]` for tuple-returning forwards or
-            # the tensor itself for tensor-returning forwards. vLLM's Qwen3
-            # layer forward returns (hidden_states, residual) for fused
-            # residual-norm; in that case hidden_states is post-attn+FFN.
-            t = output[0] if isinstance(output, tuple) else output
-            if t is None:
-                return
-            if not isinstance(t, torch.Tensor):
-                return
-            # Last token's residual? No — we want all positions.
-            arr = t.detach().to(torch.float32).cpu().numpy()
-            captures[layer_id] = arr
-        return hook
+        # Walk named_modules() for the longest ModuleList whose entries
+        # carry decoder-layer-shaped attributes (mlp + attn or analogous).
+        # Largest ModuleList in the model is the decoder layer stack.
+        best = None
+        best_path = None
+        for nm, mod in model.named_modules():
+            if not isinstance(mod, torch.nn.ModuleList):
+                continue
+            if len(mod) == 0:
+                continue
+            sample = mod[0]
+            attr_set = set(name for name, _ in sample.named_children())
+            looks_like_decoder = (
+                ("mlp" in attr_set or "feed_forward" in attr_set) and
+                ("self_attn" in attr_set or "attention" in attr_set or
+                 "linear_attn" in attr_set or "attn" in attr_set)
+            )
+            if not looks_like_decoder:
+                continue
+            if best is None or len(mod) > len(best):
+                best = mod
+                best_path = nm
+        if best is None:
+            # Fallback: just take the longest ModuleList.
+            for nm, mod in model.named_modules():
+                if isinstance(mod, torch.nn.ModuleList) and \
+                   (best is None or len(mod) > len(best)):
+                    best = mod
+                    best_path = nm
+        layers_module = best
+        if layers_module is None:
+            mlist_names = [(nm, len(mod), [c for c, _ in mod[0].named_children()][:6] if len(mod) else [])
+                           for nm, mod in model.named_modules()
+                           if isinstance(mod, torch.nn.ModuleList)]
+            return {"error": "could not find decoder layers ModuleList",
+                    "type": type(model).__name__,
+                    "module_lists": mlist_names}
+        print(f"[worker] found decoder layers at {best_path!r}  n={len(layers_module)}",
+              flush=True)
 
-    handles = []
-    for il in layers:
-        if il < 0 or il >= len(layers_module):
-            print(f"layer {il} out of range [0,{len(layers_module)-1}]", file=sys.stderr)
-            sys.exit(2)
-        h = layers_module[il].register_forward_hook(make_hook(il, True))
-        handles.append(h)
+        captures = {}
 
-    # Run a single forward via vLLM.generate with max_tokens=1 so we only
-    # do prefill (no autoregressive generation). The hook fires on the
-    # prefill pass at all token positions.
+        def make_hook(layer_id):
+            def hook(module, args_, output):
+                # vLLM Qwen3_5DecoderLayer.forward returns (hidden_states,
+                # residual) — a fused-residual representation where the next
+                # layer's input_layernorm folds them via hidden_states +=
+                # residual. The full residual stream at exit of layer il
+                # (which is what ik_llama's l_out-<il> captures, post-FFN-
+                # and-residual-add) is the SUM of the two outputs.
+                if isinstance(output, tuple) and len(output) == 2 and \
+                   isinstance(output[0], torch.Tensor) and \
+                   isinstance(output[1], torch.Tensor):
+                    t = (output[0] + output[1])
+                else:
+                    t = output[0] if isinstance(output, tuple) else output
+                if not isinstance(t, torch.Tensor):
+                    return
+                arr = t.detach().to(torch.float32).cpu().numpy()
+                captures[layer_id] = arr
+            return hook
+
+        handles = []
+        for il in layer_ids:
+            if il < 0 or il >= len(layers_module):
+                continue
+            handles.append(layers_module[il].register_forward_hook(make_hook(il)))
+
+        # Drive a forward by running the worker's execute_model on a
+        # synthetic batch isn't trivial — easier path is to return the
+        # hook handles' captures after llm.generate runs. But generate runs
+        # asynchronously across workers. Workaround: store hooks on the
+        # worker and return the captures dict on a SECOND RPC call.
+        self._dflash_captures = captures
+        self._dflash_hook_handles = handles
+        return {"installed": True, "n_layers": len(layers_module),
+                "layer_ids_hooked": [il for il in layer_ids if il < len(layers_module)]}
+
+    rpc_result = llm.collective_rpc(worker_extract)
+    print(f"rpc install: {rpc_result}", flush=True)
+
+    # Run a single-pass forward via generate.
     sp = SamplingParams(temperature=0.0, max_tokens=1)
-    outs = llm.generate([prompt], sp)
+    outs = llm.generate([prompt_in], sp)
     print(f"generated; prompt token count = {len(outs[0].prompt_token_ids)}", flush=True)
 
-    for h in handles:
-        h.remove()
+    def worker_collect(self):
+        """Pull captured residuals back from the worker as a serialisable dict."""
+        import numpy as np
+        out = {}
+        for il, arr in getattr(self, "_dflash_captures", {}).items():
+            out[il] = arr  # numpy array, picklable
+        # Remove hooks.
+        for h in getattr(self, "_dflash_hook_handles", []):
+            h.remove()
+        return out
+
+    collect_results = llm.collective_rpc(worker_collect)
+    # collective_rpc returns a list (one entry per worker). For TP=1 it's
+    # length 1; for TP>1 we'd take the first (residuals identical post-AR).
+    captures = collect_results[0] if collect_results else {}
 
     if not captures:
         print("no captures — hooks did not fire", file=sys.stderr)
         sys.exit(1)
 
     n_prompt_tokens = len(outs[0].prompt_token_ids)
-    if args.n_tokens_cap > 0:
-        n_prompt_tokens = min(n_prompt_tokens, args.n_tokens_cap)
+    if n_tokens_cap_val > 0:
+        n_prompt_tokens = min(n_prompt_tokens, n_tokens_cap_val)
 
-    for il in layers:
+    for il in layer_ids:
         if il not in captures:
             print(f"layer {il}: hook fired no data", file=sys.stderr)
             continue
         arr = captures[il]
-        # vLLM may flatten over batch in v1 — reshape to [n_tokens, n_embd]
-        # if it came in 2-D as [n_tokens, n_embd] (it should). If 3-D
-        # [bsz, n_tokens, n_embd], slice batch 0.
         if arr.ndim == 3:
             arr = arr[0]
-        # cap to first n_prompt_tokens for parity with ik_llama side.
         if arr.shape[0] > n_prompt_tokens:
             arr = arr[:n_prompt_tokens]
         out_path = os.path.join(args.out_dir, f"vllm-layer{il}.npy")
         np.save(out_path, arr.astype(np.float32))
         print(f"wrote {out_path}  shape={arr.shape}", flush=True)
 
-    # Also dump the prompt token IDs so the compare harness can verify
-    # tokenisation parity with ik_llama.
     np.save(os.path.join(args.out_dir, "vllm-prompt-tokens.npy"),
             np.array(outs[0].prompt_token_ids, dtype=np.int64))
     print("done", flush=True)
