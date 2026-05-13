@@ -1,0 +1,24 @@
+{
+  "gate": "T6.β — 3-run byte-identical determinism probe",
+  "date": "2026-05-13",
+  "branch": "production/2026-q2-next",
+  "config": {
+    "target": "/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf",
+    "drafter": "/opt/models/qwen36-27b-dflash/qwen36-27b-dflash-f16.gguf",
+    "spec_type": "dflash",
+    "block_size": 4,
+    "n_predict": 64,
+    "temp": 0,
+    "n_ctx": 4096,
+    "ngl": 99,
+    "gpus": "CUDA0,CUDA1 (2× Quadro RTX 6000 sm_75)",
+    "prompt": "Write a short python function for quicksort",
+    "ckpt_mode": "LLAMA_SPEC_CKPT_PER_STEP (mode=1)"
+  },
+  "result": "GREEN",
+  "sha256_run_1": "6c207f9b3d7dc98e128a820490fedcb84f30778d068de167c1db23b2df8a67f3",
+  "sha256_run_2": "6c207f9b3d7dc98e128a820490fedcb84f30778d068de167c1db23b2df8a67f3",
+  "sha256_run_3": "6c207f9b3d7dc98e128a820490fedcb84f30778d068de167c1db23b2df8a67f3",
+  "all_identical": true,
+  "implication": "Target's existing CUDA attention is already deterministic at fixed batch shape. T6.D (dflash_verify_attn from scratch + BF16 cast) is NOT needed for the T6 determinism gate."
+}

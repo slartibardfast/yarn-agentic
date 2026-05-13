@@ -244,8 +244,40 @@ Checkbox semantics per CLAUDE.md §5.
    - `scripts/check-bindings.py` GREEN
    - np>1 server init returns clear error
 
-- [ ] **T6 — Gate 5: 27B np=1 determinism + late-stream coherence**
+- [x] **T6 — Gate 5: 27B np=1 determinism + late-stream coherence** (CLOSED 2026-05-13)
   **(restructured 2026-05-13 — probe-before-implementing path)**
+
+  **Closure evidence** (both gates GREEN on the same configuration):
+
+  **T6.α — Late-stream coherence** (data/gate5-T6alpha-coherence.runlog):
+   - Prompt: `Write a short python function for quicksort`, n=128, BS=4, temp=0
+   - **Mean accept rate: 2.879** tokens/draft (T5 baseline: 2.256, +28%)
+   - 33 cycles, 132 draft tokens, 95 accepted (72% accept-per-draft)
+   - 1.33 tok/s (T5: 1.21)
+   - **Output coherent through full n_predict** — matches target-only's
+     thinking-process structure (`1. Understand User Request`,
+     `2. Identify Key Requirements`, ...). No repetition tail.
+
+  **T6.β — 3-run byte-identical determinism** (data/gate5-T6beta-determinism.json):
+   - All 3 runs at temp=0, np=1 produced byte-identical token sequences
+   - SHA-256 (all 3): `6c207f9b3d7dc98e128a820490fedcb84f30778d068de167c1db23b2df8a67f3`
+   - **T6.D (`dflash_verify_attn` from scratch) NOT NEEDED**: target's
+     existing CUDA attention is already deterministic at fixed batch
+     shape. ~80–150k tokens of CUDA PTX kernel work avoided per
+     `feedback_probe_before_implementing`.
+
+  **Key design choices**:
+   - Use `llama_spec_ckpt_*` with PER_STEP mode for DeltaNet state
+     restore + matching seq_rm (existing infrastructure).
+   - **No separate bonus single-token decode**: bonus from cycle N
+     becomes id_last for cycle N+1's verify batch (batch[0] of the
+     next BS+1 verify). Consistent BS+1 batch shape across all cycles
+     eliminates the batch-shape K, V variance that broke the
+     originally-planned T6.B commit re-decode.
+   - `llama_spec_ckpt_discard` NOT called between cycles
+     (it resets `selected_spec_mode = NONE`, breaking subsequent saves).
+     `save_per_step_ssm` stays on; every multi-token decode is BS+1
+     which matches the allocated per-step buffer.
 
   Mid-T6 discovery: ik_llama.cpp already has `llama_spec_ckpt_*`
   with PER_STEP mode that handles DeltaNet state restore at any
