@@ -4465,9 +4465,28 @@ prompt, all 5 source-layer indices `[1, 16, 31, 46, 61]`:**
 across all 5 layers. Residual L2 norms scale with depth as expected
 (75.5 → 1422.8). Self-consistency criterion PASS.
 
-vLLM-side reference dump still in flight at time of write — the
-absolute go/no-go against vLLM (cosine sim + NMSE) decides on the
-data, not the assumption.
+vLLM-side reference dump confirms hook placement: cosine sim
+≥0.99988 mean across all 5 source-layer indices, NMSE max 2.3e-04
+between ik_llama (Q-mix quantization) and vLLM (INT4 AutoRound)
+on a 22-token forward. Per-token worst-case cosine 0.99944 at
+deepest layer (61). Cross-quantization comparison, so absolute byte
+parity is unreachable; geometry is preserved to 4-5 significant
+figures. Both candidate criteria (self-consistency + cosine 0.999;
+strict NMSE 1e-3) PASS by 3-4 orders of magnitude.
+
+Two non-obvious findings for future-me:
+
+1. vLLM's Qwen3_5DecoderLayer.forward returns the FUSED-residual
+   tuple `(hidden_states, residual)` where the next layer folds the
+   pair via `hidden_states += residual` inside input_layernorm. The
+   canonical residual stream at exit of layer il (matching ik_llama's
+   `l_out-<il>`) is `hidden_states + residual`. Capturing only
+   `output[0]` would compare a different quantity.
+2. The decoder layers live at `language_model.model.layers` inside
+   `Qwen3_5ForConditionalGeneration` (multimodal-capable wrapper).
+   Direct attribute-walking missed it; `named_modules()` + a
+   decoder-shape heuristic (look for mlp + attn children) found it
+   robustly.
 
 **Files**:
 - ik_llama.cpp: `include/llama.h`, `src/llama-cparams.h`,
