@@ -686,28 +686,105 @@ Any T8 result that ships MUST be produced by:
 
 CLI additions:
 - `--spec {none,mtp,dflash,draft,ngram-simple,ngram-mod,...}` (default `none`)
-- `--draft N` / `-nd N` (draft depth for MTP; block_size for DFlash; ignored for none) (default 3)
+- `--draft N` / `-nd N` (draft depth; sets `params.speculative.n_max`. For MTP this is the chain length, for DFlash this is BLOCK_SIZE.) (default 3 for MTP, 4 for DFlash)
 - `--spec-model PATH` (for spec methods that need a separate drafter GGUF: dflash, draft, eagle3; ignored otherwise)
 
-Data plumbing:
+Data plumbing — `cmd_params` + `cmd_params_instance`:
 - Add `common_speculative_type spec_type` + `int n_draft` +
-  `std::string spec_model` fields to `cmd_params` (parsed from CLI)
-  and `cmd_params_instance` (one per test).
-- In `cmd_params_instance::to_llama_cparams()` etc., translate
-  `spec_type == MTP` → set `cparams.mtp = true` AND
-  `params_speculative.type = MTP` (mirror the linkage in
-  common/speculative.cpp:1177).
-- In `struct test`'s tg run path, if `spec_type != NONE`:
-  - Instantiate `common_speculative * spec = common_speculative_init(params_speculative, ctx, 0)`.
-  - Drive a draft+verify+accept loop (pattern from
-    `dflash-speculative-simple.cpp:130-261`):
-    - `common_speculative_draft(spec, ...)` → `llama_tokens draft`
-    - `llama_decode(verify_batch)` → captures target logits
-    - argmax-based accept-prefix → `n_accepted` + `bonus`
-    - `common_speculative_accept(spec, n_accepted)`
-  - Tear down via `common_speculative_free`.
-- Capture `n_accept`, `n_drafts`, `n_draft_tokens` alongside t/s
-  for reporting.
+  `std::string spec_model` fields.
+- Parse from CLI; default values per above.
+
+**MTP init recipe** (traced from `server-context.cpp:294-331`,
+mirrored exactly so the bench measures the same path production uses):
+
+```cpp
+// After llama_model_load_from_file + llama_init_from_model:
+if (spec_type == COMMON_SPECULATIVE_TYPE_MTP) {
+    // 1. Gate on NextN layers: model must have MTP heads
+    if (llama_model_n_nextn_layer(model) <= 0) {
+        // Skip this row with informative message — model doesn't support MTP
+        return SKIP;
+    }
+    // 2. Set legacy + new fields
+    params.has_mtp = true;
+    params.speculative.type = COMMON_SPECULATIVE_TYPE_MTP;
+    params.speculative.n_max = n_draft;
+    params.pooling_type = LLAMA_POOLING_TYPE_NONE;
+
+    // 3. Build drafter cparams
+    params.speculative.cparams_dft = common_context_params_to_llama(params);
+    params.speculative.cparams_dft.mtp         = true;
+    params.speculative.cparams_dft.mtp_op_type = MTP_OP_WARMUP;
+    params.speculative.cparams_dft.embeddings  = true;
+
+    // 4. Flip decoder to emit embeddings (MTP needs them)
+    llama_decoder_set_embeddings(decoder, true);
+
+    // 5. Verify batch capacity = n_max + 1
+    batch_spec = llama_batch_init(n_max + 1, 0, 1);
+}
+
+// DFlash init recipe (no NextN gate, no decoder embedding flip — uses
+// cb_eval extract hook plumbed by llama_set_dflash):
+if (spec_type == COMMON_SPECULATIVE_TYPE_DFLASH) {
+    params.speculative.type = COMMON_SPECULATIVE_TYPE_DFLASH;
+    params.speculative.n_max = n_draft;             // = BLOCK_SIZE
+    params.speculative.model.path = spec_model;     // drafter GGUF path
+    batch_spec = llama_batch_init(n_max + 1, 0, 1);
+}
+
+// Common path:
+if (spec_type != COMMON_SPECULATIVE_TYPE_NONE) {
+    if (!common_speculative_is_compat(ctx)) {
+        return SKIP;  // log reason
+    }
+    spec = common_speculative_init(params.speculative, ctx, /*seq_id=*/0);
+    if (!spec) return SKIP;
+}
+```
+
+TG decode loop with spec on (pattern from
+`dflash-speculative-simple.cpp:137-258`, common to all spec methods):
+
+```cpp
+while (n_emitted < n_gen) {
+    // 1. Get draft from spec impl (transparent across MTP/DFlash/etc.)
+    const llama_tokens draft = common_speculative_draft(spec, ...);
+
+    // 2. Build verify batch: [id_last, draft[0], ..., draft[BS-1]]
+    //    Decode the batch in one llama_decode call (BS+1 tokens).
+    llama_decode(ctx, batch_spec);
+
+    // 3. Argmax accept-prefix
+    //    For k in 0..BS: target_tok_at[k] = argmax(logits at row k)
+    //    n_accepted = longest prefix where target_tok_at[k] == draft[k]
+    //    bonus = target_tok_at[n_accepted]
+
+    // 4. Accept
+    common_speculative_accept(spec, n_accepted);
+
+    // 5. Commit accepted + bonus to emitted; id_last = bonus
+    n_emitted += n_accepted + 1;
+}
+```
+
+Notes on cross-method semantics:
+- `common_speculative_draft` is polymorphic — the loop body is
+  identical across spec methods. MTP draws from inline MTP heads;
+  DFlash drives the kernel pipeline; ngram pulls from a cache.
+  None of this varies in the bench loop.
+- The verify batch shape is `BS+1` for all methods. For MTP, BS is
+  the chain length (typically 3). For DFlash, BS is BLOCK_SIZE
+  (typically 4).
+- `--spec none` falls through to standard one-token tg per
+  llama-bench's existing path; no spec dispatch.
+
+Capture per test:
+- `n_emitted`, `n_drafts` (= number of cycles), `n_draft_tokens`
+  (= BS × n_drafts), `n_accepted_total`
+- `mean_accept = n_accepted_total / n_drafts` (tokens accepted per cycle)
+- `accept_rate = n_accepted_total / n_draft_tokens` (fraction)
+- `tg_t_s = n_emitted / wall_time`
 
 Report additions (across all 4 printers):
 - New columns: `spec`, `n_draft`, `accept_rate`, `mean_accept`.
@@ -833,13 +910,16 @@ without quality is not a ship.
 
 ### Open questions to resolve at T8 session start
 
-Q1: **Should `llama-bench --spec mtp` set both
-   `params.has_mtp = true` AND `params_speculative.type = MTP`?**
-   The two flags are linked in common/speculative.cpp:1177 but
-   it's worth double-checking the production llama-server path
-   to mirror exactly. Suggested: trace
-   `llama-server` init → see how its MTP path turns on, replicate
-   in llama-bench.
+Q1: **MTP plumbing — RESOLVED 2026-05-13 via trace of
+   `server-context.cpp:294-331`**: production sets 8 fields, NOT
+   just two. See the "MTP init recipe" block above in Phase 1.1
+   for the explicit sequence. Key non-obvious requirements:
+   model gating (`llama_model_n_nextn_layer > 0`), pooling
+   override (`NONE`), drafter cparams construction with
+   `mtp/mtp_op_type/embeddings`, decoder embedding flip
+   (`llama_decoder_set_embeddings(decoder, true)`), and verify
+   batch size = `n_max + 1`. Anything less and the bench measures
+   a path production doesn't use.
 
 Q2: **Diagnostic threshold for Phase 2 verdict (B) fixable vs
    structural**: suggested if DFlash per-cycle wall ≥ 2× MTP
