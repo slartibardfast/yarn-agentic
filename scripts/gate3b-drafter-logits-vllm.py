@@ -85,16 +85,18 @@ def main():
     # TP=2 workers run in subprocesses that get their own copy of the
     # class object and do NOT see the patch, triggering an fp16/fp32
     # dtype mismatch at the drafter's fc projection. T2's dflash-extract
-    # script used TP=1 and worked. We mirror that here. At TP=1 the
-    # 27B INT4 target fits in 1× 24 GiB GPU at ~14 GiB; drafter adds
-    # ~3.3 GiB; cpu_offload_gb absorbs the rest.
+    # script used TP=1 and worked. We mirror that here.
+    #
+    # Memory at TP=1 INT4 AutoRound: target ~14 GiB + drafter ~3.3 GiB
+    # = ~17 GiB on one 24 GiB GPU. Plenty of headroom for activations
+    # and KV cache; cpu_offload_gb=0 (no host RAM round-trips needed).
     llm = LLM(
         model=args.target,
         tensor_parallel_size=1,
         dtype="auto",
         quantization="gptq_marlin",
-        gpu_memory_utilization=0.92,
-        cpu_offload_gb=16,
+        gpu_memory_utilization=0.85,
+        cpu_offload_gb=0,
         enforce_eager=True,  # turn off CUDA graphs so the hook fires on every call
         max_num_batched_tokens=4096,
         disable_custom_all_reduce=True,
