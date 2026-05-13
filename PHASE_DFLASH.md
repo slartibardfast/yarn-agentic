@@ -945,69 +945,85 @@ Closure asserted by:
    informative message on missing prerequisites (e.g., dflash
    without `--spec-model`).
 
-**Phase 1 closure status (2026-05-13)**: PARTIAL — `[~]`
+**Phase 1 closure status (2026-05-13 — DFlash root-caused + fixed)**: `[x]` for criteria 1, 2, 4, 5, 6; `[~]` on criteria 3 (PP variance) and 7 (smoke test).
 
-Two of three spec methods pass; the third hits a libllama bug.
-
-Captured results at `data/phase_dflash_t8/closure-spec-*.json`:
+All three spec methods now pass end-to-end. Captured at
+`data/phase_dflash_t8/v2-spec-*.json`:
 
 | Spec method | pp512 t/s | tg128 t/s ± stddev | accept_rate | mean_accept | ppl_out |
 |---|---:|---:|---:|---:|---:|
-| `--spec none`         | 1689.40 | 29.32 ± 2.31 | — | — | 1.0314 |
-| `--spec mtp --draft 3` | 1524.67 | 37.74 ± 0.06 | 52.7% | 1.58 | 2.5272 |
-| `--spec dflash --draft 4` | 1337.85 | 17.47 ± 0.82 | 0.0% | 0.00 | — |
+| `--spec none`         | 1682.91 | 29.39 ± 2.32 | — | — | 1.0314 |
+| `--spec mtp --draft 3` | 1519.14 | 37.56 ± 0.05 | 52.7% | 1.58 | 2.5272 |
+| `--spec dflash --draft 4` | 1317.07 | 1.35 ± 0.001 | 77.3% | 3.09 | 1.0726 |
+
+**DFlash root cause** (two libllama / bench bugs, both fixed in
+this round; see `ik_llama.cpp` HEAD commit before the submodule bump):
+
+1. `src/llama.cpp llama_dflash_extract_cb_eval` treated the captured
+   `l_out-<il>` tensor as F32 regardless of `t->type`. But the
+   build graph emits the residual stream as **F16 for multi-token
+   ubatches** (prefill, verify) and **F32 for single-token decodes**.
+   With `nbytes / sizeof(float)` row-counting, F16 prefill rows
+   landed at HALF the expected stride; `dflash_extract_buf` ended
+   up with 51 rows after a 103-token prefill (53 rows of garbage
+   tail), and every subsequent DFlash draft cycle saw buf < anchor
+   by a constant 52 and returned rc=-5. Fix: branch on `t->type`,
+   convert F16 → F32 via `ggml_fp16_to_fp32_row` before append.
+
+2. `examples/llama-bench/llama-bench.cpp` left `spec_ckpt`'s
+   `save_per_step_ssm` flag ON between reps and before the PPL
+   second pass. The flag stays on across cycles by design (verify
+   BS+1=5 tokens routes into the 5-sized per_step buffer). When
+   the NEXT decode is a prompt prefill (103 tokens) or PPL
+   re-decode (prompt+gen ~230 tokens), the prefill-shape data
+   misroutes into the 5-sized buffer → trips
+   `ggml.c:5391`'s tensor view assertion. Fix: call
+   `llama_spec_ckpt_discard(ctx)` before any post-spec-loop
+   long-batch decode, then re-init with
+   `llama_spec_ckpt_init` to re-arm per_step for the next spec
+   batch.
+
+Both fixes shipped with env-gated `DFLASH_DIAG=1` runtime tracing
+in `llama_dflash_extract_cb_eval`, `stage_target_hiddens`, and
+`llama_dflash_trim_extract` (zero overhead when unset; preserved
+for future debugging of the same bug class).
 
 Closure checks against the seven asserted criteria:
 
 1. ✓ Builds clean at `/opt/llm/build-dflash`.
 2. ✓ All three spec commands produce rows in JSON output.
-3. ⚠ pp t/s spread: 1689 / 1525 / 1338 — 10–21% variance across spec
-   methods. The MTP target's extra `cparams.mtp = true` build path
-   (with NextN layers) and DFlash's `cb_eval` hook add real prefill
-   overhead. The ±5% sanity gate was naïvely strict; widen to ±25%
-   for cross-spec PP comparison going forward.
-4. ✓ tg t/s columns differ as measured; no nan, no spec-method crash
-   in `--spec none` or `--spec mtp`. DFlash row produced but every
-   draft cycle fails (rc=-5) — see issue below.
+3. ⚠ pp t/s spread: 1683 / 1519 / 1317 — none → mtp -9.7%, none →
+   dflash -21.7%. Outside the ±5% gate as originally written.
+   The 9.7% MTP gap is from `mparams.mtp = true` loading NextN
+   layers (extra weight memory + parse cost). The 21.7% DFlash
+   gap is from cb_eval install + F16 → F32 conversion fanout
+   across 5 source layers during prefill. Both are real prefill
+   overhead, not measurement noise. **Plan amendment** (separate
+   commit): widen the gate to ±25% with the structural overhead
+   recorded inline, OR run PP-only invocations per spec method to
+   isolate. Open subtask, blocks `[x]`.
+4. ✓ tg t/s columns differ as measured; no nan, no crash in any
+   of the three spec methods.
 5. ✓ `--spec none` ppl_of_output = 1.0314 (in [1, 1000]); the model
    re-evaluates its own greedy output with very high confidence.
-6. ✓ Production parity: `--spec mtp --draft 3` tg128 = 37.74 t/s vs
-   the 33.23 t/s server memory baseline → **+13.6%, within the ±20%
+6. ✓ Production parity: `--spec mtp --draft 3` tg128 = 37.56 t/s vs
+   the 33.23 t/s server memory baseline → **+13.0%, within the ±20%
    sanity band**. Bench MTP wiring is therefore validated against
    production. The gap is consistent with bench's tighter context
    (4096 vs 262144) and the absence of `--jinja` chat-template
    overhead.
 7. ⏳ `tests/test-llama-bench-spec-init.cpp` smoke test not yet
-   landed. Deferred — the three-command JSON output above provides
-   the same coverage informally.
+   landed. Open subtask, blocks `[x]`. ~50 LOC: instantiate three
+   inits (none, mtp, dflash) against the production target.
 
-**DFlash row failure mode (libllama bug, not bench infra)**:
+**DFlash row failure mode (RESOLVED 2026-05-13)**:
 
-The cb_eval extract buffer falls 52 rows behind anchor_pos at some
-point during gen and never recovers. Every subsequent
-`llama_dflash_draft` returns rc=-5 ("extract buffer too short").
-`llama_dflash_trim_extract(P + n_acc + 1, -1)` is called per-cycle
-matching the `dflash-speculative-simple` pattern and a per-rep
-`trim_extract(0, -1)` clears stale state between reps. Neither
-fixes the drift. Observation pattern:
-
-```
-[dflash] extract buffer too short for slot 0 (layer 1): have 109 rows, need 161
-draft: llama_dflash_draft failed: rc=-5 (giving up this cycle)
-[dflash] extract buffer too short for slot 0 (layer 1): have 110 rows, need 162
-...
-```
-
-`have` and `need` both grow by 1/cycle; the 52-row offset is
-constant. That points to a single early event where `need` jumped
-ahead of `have`, not an ongoing leak. Suspect: the spec_ckpt save +
-verify decode + restore + trim sequence has an off-by-one or
-double-trim that drops cb_eval rows. Pending investigation in
-`src/llama-dflash.cpp` or `tests/dflash-speculative/`.
-
-Until DFlash row passes, Phase 1 stays `[~]` and Phase 2's
-DFlash-cost diagnosis (T6 1.33 t/s) is blocked on this bug — Phase
-2 needs DFlash to run end-to-end to measure where time is going.
+The 52-row constant offset was diagnostic: prompt tokenized to 103,
+buf had 51 rows after prefill (51 ≈ 103/2). Root cause was F16 vs
+F32 mishandling in cb_eval — `nbytes / sizeof(float)` row-counting
+gave half the count when t->type was F16. Fix landed; see "DFlash
+root cause" above. Phase 2 (DFlash 1.33 t/s diagnosis) is now
+unblocked.
 
 Phase 1's MTP-side wiring did require diagnostic depth not in the
 original plan:
