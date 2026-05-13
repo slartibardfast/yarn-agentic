@@ -95,15 +95,24 @@ def main():
         tensor_parallel_size=1,
         dtype="auto",
         quantization="gptq_marlin",
-        gpu_memory_utilization=0.85,
-        cpu_offload_gb=0,
+        gpu_memory_utilization=0.92,
+        # Target's unquantized BF16 DeltaNet linear_attn weights (Lock #20:
+        # AutoRound-preserved precision) plus the drafter push the total
+        # past 24 GiB on one Quadro RTX 6000. cpu_offload_gb=4 frees the
+        # last few GiB. Only matters for THIS one-shot reference run;
+        # the offload round-trips slow individual forwards a bit, but
+        # we only need one forward to capture the logits dump.
+        cpu_offload_gb=4,
         enforce_eager=True,  # turn off CUDA graphs so the hook fires on every call
-        max_num_batched_tokens=4096,
+        max_num_batched_tokens=1024,
         disable_custom_all_reduce=True,
-        max_num_seqs=4,
+        max_num_seqs=1,
         disable_log_stats=False,
         seed=42,
-        max_model_len=4096,
+        # Single short prompt + 1 generated token — keep KV cache tiny.
+        # max_model_len=4096 OOMed the 64-layer target KV alloc on one
+        # 24 GiB GPU at TP=1 INT4. 512 is plenty for our forward.
+        max_model_len=512,
         speculative_config={
             "method": "dflash",
             "model": args.drafter,
