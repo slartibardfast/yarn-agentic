@@ -662,15 +662,14 @@ Each Allium invariant from `dflash.allium` is bound to a specific kernel or test
 | `FeatureSourceFixedPerDeployment` | drafter loader + persistent kernel internals | target_layer_ids read from GGUF metadata at load; persistent kernel inlines them |
 | `FuseProjectionFcWeight` | `dflash_combine_features` | DFLASH_FC weight loaded as one tensor [5120, 25600]; kernel applies it before any K/V proj |
 | `FeatureWidthMatchesTarget` | `dflash_combine_features` | Input source_hiddens dim D_d=5120 matches target hidden_size |
-| `InjectKV` | `dflash_inject_kv_fused` | The kernel IS the invariant |
 | `PerLayerArity` | `dflash_inject_kv_fused` host launcher | Host loops L_d=5 times, one launch per drafter layer |
 | `HeadShapeMatchesDraft` | `dflash_inject_kv_fused` | Kernel reads per-layer k_weight/v_weight/k_norm_weight at drafter's head shape (8×128) |
 | `KAsymmetricallyNormedVNot` | `dflash_inject_kv_fused` | K_norm + RoPE applied to K only; V projected then written without norm/rotation |
 | `InjectedAnchorAlignment` | `dflash_inject_kv_fused` | anchor_positions[slot, anchor] sets cache write position |
 | `InjectionConsumedAtEveryLayer` | `dflash_drafter_forward` | Each of 5 layers consumes context_states (from `dflash_combine_features`) at its inject point |
 | `TargetVerifyBlock` | `dflash_verify_attn` + existing target verify graph | Verify shape ne[1]=BLOCK_SIZE+1; one block per output row |
-| `VerifyOutputArbitratedByTarget` | `dflash_argmax_match` | Target argmax wins on every mismatch |
-| `AcceptPrefixDecision` | `dflash_argmax_match` | Longest accepted prefix bounded by first mismatch |
+| `LongestPrefixMatchUnderArgmax` | `dflash_argmax_match` | Target argmax wins on every mismatch; longest accepted prefix bounded by first |
+| `AcceptPrefixDecision` | `dflash_argmax_match` | Contract-level: implements the longest-prefix accept decision |
 | `BonusPosIsAnchorPlusNAcceptedPlusOne` | `dflash_argmax_match` (bonus_token output) | Bonus at position n_accepted, sampled from target |
 | `QuerySpanIsOnePlusN` | verify call site | `ne[1] = 1 + num_spec_tokens` enforced by build_dflash_verify_batch() |
 | `EffectiveSeqLensSubtractsRejected` | post-verify state advance | seq_pos += n_accepted + 1 (bonus), NOT BLOCK_SIZE |
