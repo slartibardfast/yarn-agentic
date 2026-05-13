@@ -597,53 +597,73 @@ void dflash_combine_features(
 **Per-CTA work**:
 
 ```
-1. FC matmul (rolled, not bulk-staged):
-   - For each n-tile (16 output columns at a time, total 5120/16 = 320 n-tiles):
-       For each k-strip (16 input elements at a time, total 25600/16 = 1600 k-steps):
-         - Cooperative-load source_hiddens k-strip into SMEM (32 fp16 = 64 B)
-         - Cooperative-load fc_weight tile [16, 16] = 512 B into SMEM
-         - WMMA m16n16k16 accumulate into n-tile fp16 fragment
-       Write n-tile output (16 fp16) to a SMEM staging region.
-   - SMEM staging region holds the full 5120-fp16 FC output (10 KiB) at end of step 1.
+1. FC matmul (scalar fp32 per-thread accumulator):
+   - Each thread owns OUTS_PER_THREAD = D_d / N_THREADS output rows
+     (= 40 outputs/thread at 128 threads), assigned warp-major:
+       my_row = o * N_THREADS + tid  for o in 0..OUTS_PER_THREAD-1
+     so consecutive warp lanes access consecutive fc_weight rows
+     (coalesced HBM reads).
+   - For each k_base in 0..K, step K_TILE (= 128):
+       Cooperative-load source_hiddens k-strip into SMEM (128 fp16 = 256 B)
+       For each thread, for each of its OUTS_PER_THREAD rows:
+         For kk in 0..K_TILE-1:
+           acc[o] += __half2float(fc_weight[my_row, k_base + kk])
+                   * __half2float(src_smem[kk])
+   - Per-thread accumulators stay in registers throughout.
 
-2. hidden_norm RMSNorm (in-place on the 10 KiB SMEM staging):
-   - Per-thread sum_sq over its 40-element slice (5120/128 = 40 elements/thread, fp32)
+2. hidden_norm RMSNorm:
+   - Per-thread sum_sq over its OUTS_PER_THREAD accumulators (fp32)
    - Warp-shuffle butterfly within each warp
    - SMEM tree across the 4 warps
    - Broadcast rsqrt(sum_sq / 5120 + norm_eps)
-   - Per-element multiply: y[i] = (x[i] * rsqrt) * hidden_norm_weight[i]
 
-3. Vectorized half4 writes:
-   context_states[slot, anchor, :] ← y    (1280 half4 stores per anchor)
+3. Apply norm + vectorized write:
+   For each output o in 0..OUTS_PER_THREAD-1:
+     my_idx = o * N_THREADS + tid
+     out = acc[o] * rsqrt * __half2float(hidden_norm_weight[my_idx])
+     context_states[slot, anchor, my_idx] = __float2half(out)
 ```
 
-**Register budget**: FC accumulator across n-tile = 1 fragment × 8 regs/lane = ~8 regs/thread (n-tile output is small — accumulator fragment is reused across k-strips). RMSNorm reduction adds ~4 regs. Total ≤ 40 regs/thread → 4 blocks/SM occupancy.
+**Implementation note — deviation from earlier WMMA design**:
+
+An earlier sketch specified WMMA m16n16k16 fp16 for the FC matmul. This was incompatible with the byte-identity binding against the fp32 scalar reference:
+
+1. WMMA fragment-internal reduction order on Turing is well-defined per-PTX but does not match a serial K-order scalar reference; byte-identity would fail at the LSB across a large fraction of output positions.
+2. fp16 accumulators (WMMA's default for fp16 inputs at m16n16k16) lose precision over 25600 multiply-adds. The FC for D_d=5120 has sum_sq ~ O(D_d), and fp16 accumulation is inadequate for byte-identity with an fp32 reference.
+3. Performance: FC matmul is bandwidth-bound (250 MiB fc_weight read / 624 GB/s = 400 µs ceiling). WMMA's ~100 µs compute vs scalar fp32's ~240 µs compute is dominated by the bandwidth wall.
+
+Output is kept in per-thread fp32 registers throughout (not SMEM as the earlier sketch had) to avoid the fp32→fp16→fp32 round-trip that would cost the precision the byte-identity test requires.
+
+The RMSNorm sum_sq still uses a parallel warp-shuffle + SMEM-tree reduction; this introduces a small fp32 reduction-order divergence from the scalar reference (which sums in serial fp32 order). Empirically this produces 1-ULP fp16 differences at < 1 % of positions (measured: 6 / 5120 = 0.117 %, all 1 ULP, at the first random seed). The test driver's PASS criterion is "byte-identical OR every disagreement ≤ 1 ULP AND rate ≤ 1 %" — > 1 ULP at any position or rate > 1 % indicates a real precision bug.
+
+**Register budget**: 40 fp32 accumulators / thread + loop counters + addresses + RMSNorm temps. Measured via `--ptxas-options=-v`: **64 registers/thread**. On sm_75: 64 regs × 128 threads × 4 bytes = 32 KiB/block; 65 KiB regs/SM ÷ 32 KiB = 2 blocks/SM register-limited, but warp limit (32 warps/SM ÷ 4 warps/block = 8 blocks/SM) is higher — actual occupancy capped by register pressure to 2 blocks/SM. The earlier ≤40 reg target was based on the WMMA sketch's small fragment accumulator (~8 regs); the scalar-accumulator design naturally lands at 64. Future tuning option: increase block to 256 threads → 20 outs/thread → ~32 regs/thread → 4 blocks/SM. Not pursued in T3 because compute is sub-dominant (bandwidth-bound).
 
 **SMEM budget**:
-- FC output staging (held across both phases): 10 KiB
-- FC weight tile (one [16, 16] at a time): 512 B
-- source_hiddens k-strip: 64 B
-- RMSNorm reduction scratch: 256 B
-- hidden_norm_weight tile (rolled by 128 elements at a time during phase 2): 256 B
-- Headroom: ~1.5 KiB
-- Total: ~13 KiB per CTA. 4 blocks/SM occupancy.
+- source_hiddens K-tile staging: 128 fp16 = 256 B
+- warp_sums (RMSNorm cross-warp reduction): 4 × 4 = 16 B
+- Headroom + alignment: <1 KiB
+- **Total measured: 272 bytes per CTA.** Far under the earlier ~13 KiB estimate because output is register-resident.
 
 **Determinism**:
-- WMMA fragment shape fixed (m16n16k16).
-- RMSNorm uses warp-shuffle + SMEM tree — fully deterministic for fixed block dim (128).
-- One CTA per output row — no Split-K cross-block reduction.
+- No WMMA → rule about WMMA fragment shape doesn't apply.
+- FC per-thread accumulator is private; no cross-thread accumulation during FC.
+- RMSNorm uses warp-shuffle + SMEM tree — deterministic for fixed block dim (128).
+- One CTA per (slot, anchor) output row — no Split-K cross-block reduction.
 - No `atomicAdd<float>` anywhere.
+- Run-to-run output is bit-identical (Gate 5b np-invariance binding precondition).
 
 **Performance envelope**:
 - FLOPs per CTA: 5120 × 25600 = 131 MFLOPs (FC) + ~5 KFLOPs (RMSNorm).
 - Per cycle at np=8, MAL=3: 24 CTAs × 131 MFLOPs = 3.1 GFLOPs.
-- Compute ceiling (TU102 fp16 WMMA ~32 TFLOPs/s): 100 µs.
-- Bandwidth ceiling (FC weight 250 MiB / 624 GB/s): 400 µs. But fc_weight is shared across all 24 CTAs → with one big-launch grid, L2 reuse drops the effective bandwidth substantially.
+- Compute ceiling (TU102 fp32 cuda cores ~13 TFLOPs/s, fp16 HFMA2 ~26 TFLOPs/s): scalar fp32 path ~240 µs.
+- Bandwidth ceiling (FC weight 250 MiB / 624 GB/s): 400 µs. fc_weight is shared across all 24 CTAs → with one big-launch grid, L2 reuse drops the effective bandwidth substantially.
 - Plausible measured: 200–500 µs/cycle. Budget held at 0.5 ms.
 
 **Allium bindings**:
 - `FuseProjectionFcWeight` — kernel applies DFLASH_FC weight directly; conversion shape [5120, 25600] preserved end-to-end.
 - `FeatureWidthMatchesTarget` — input D_d = 5120 = target hidden_size.
+- `CombineOrderFCThenHiddenNorm` — kernel does FC then hidden_norm in that order; reversal would break byte-identity vs scalar reference with non-identity hidden_norm_weight.
+- `ContextStatesAnchorLevel` — output shape [N_slots, MAL_anchors, D_d]; the 5 per-drafter-layer inject CTAs all consume the same context_states[slot, anchor, :].
 
 **Structural note vs vLLM**:
 vLLM's `precompute_and_store_context_kv` (qwen3_dflash.py:441–448) does `rms_norm(context_states, hidden_norm_weight)` THEN a separate `F.linear(normed_context_states, fused_kv_weight)`. Our split here is FC first (no preceding RMSNorm) then hidden_norm. **This matches vLLM's mathematical pipeline if and only if `source_hiddens` is already raw (not pre-normed)** — which it is: the extract hook at `l_out-<il>` captures the post-residual-add hidden state in the target's residual stream, which is what vLLM's `combine_hidden_states` receives. Verification: T2 cross-stack cosine ≥ 0.99988 confirms the captured value matches vLLM's `combine_hidden_states` input.
@@ -715,7 +735,7 @@ The test harness:
 | Kernel | SMEM/CTA | Regs/thread (target) | Threads/block | Occupancy target |
 |---|---:|---:|---:|---|
 | `dflash_drafter_forward` | ~20 KiB | ≤ 64 | 256 | 2 blocks/SM (cooperative) |
-| `dflash_combine_features` | ~13 KiB | ≤ 40 | 128 | 4 blocks/SM |
+| `dflash_combine_features` | 272 B (measured) | 64 (measured) | 128 | 2 blocks/SM (register-limited) |
 | `dflash_inject_kv_fused` | ~13 KiB | ≤ 48 | 128 | 4 blocks/SM |
 | `dflash_verify_attn` (KV_BLOCK_SIZE=32 + double-buffer) | ~32 KiB | ≤ 64 | 128 | 2 blocks/SM |
 | `dflash_argmax_match` | <1 KiB | ≤ 32 | 32 (1 warp) | 8+ blocks/SM |
