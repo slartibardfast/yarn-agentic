@@ -855,13 +855,21 @@ Data plumbing:
   full sequence). Don't double-count it in `tg_t_s` — measure
   tg_t_s on the generation pass only.
 
-**Phase 1.3 — Source helper extraction**:
+**Phase 1.3 — Source helper extraction** (DONE 2026-05-13):
 
-Factor the NLL/PPL kernel out of `perplexity.cpp` into a small
-`common/perplexity.h` + `.cpp` so both llama-perplexity (existing
+Factored the NLL/PPL kernel out of `perplexity.cpp` into
+`common/perplexity.{h,cpp}` so both llama-perplexity (existing
 caller) and llama-bench (new caller) can use it. Minimum-diff
-refactor — extract the function, leave perplexity.cpp's call site
-unchanged otherwise.
+refactor — moved `results_log_softmax` struct +
+`log_softmax(int, const float *, int)` overload +
+`process_logits(int, ..., float * logit_history, float * prob_history)`
+overload. The uint16-quant `log_softmax` overload and the
+ostream/log_probs `process_logits` overload remain in
+perplexity.cpp (example-only). llama-perplexity build clean;
+behaviour preserved exactly.
+
+Commit: `ik_llama.cpp 9f1f9ee` (or thereabouts — submodule
+pointer bumped in yarn-agentic).
 
 **Phase 1 closure binding**:
 
