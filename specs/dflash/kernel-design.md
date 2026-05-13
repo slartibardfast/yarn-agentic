@@ -99,26 +99,28 @@ One DFlash speculative cycle at np=N, block_size=B (operating point B=4), MAL = 
 
 | Phase | Kernel | Work | Stream |
 |---|---|---|---|
+| 0 | `dflash_combine_features` | Anchor-level: concat 5 source-layer hiddens → FC (5*5120 → 5120) → hidden_norm. Produces context_states consumed by `dflash_inject_kv_fused`. M anchors × N slots CTAs. | A (compute) |
 | 1 | `dflash_drafter_forward` (persistent) | Drafter generates B candidate tokens for each slot. 5 layers × (B+1) positions × N slots. **1 cooperative launch.** | A (compute) |
 | 2a | `dflash_state_checkpoint` | DeltaNet state from target's 48 linear_attention layers → ping-pong scratch. N × 48 × 512 KB. Async. | B (copy) |
 | 2b | `dflash_verify_forward` (existing target graph) + `dflash_verify_attn` (new for the attention sub-step) | Target forward over (1+B) positions × N slots. **The expensive step.** | A |
 | 3 | `dflash_argmax_match` | Per slot: compare target's argmax to drafter's drafts, find first mismatch. | A |
 | 4 | `dflash_state_restore` (conditional) | If `n_accepted < B`, restore DeltaNet state from ping-pong scratch up to accept boundary. Async. | B |
-| 5 | `dflash_inject_kv_fused` | For each accepted anchor token: fused K_proj + V_proj + RMSNorm + RoPE + cache_write per drafter layer. 5 layers × M anchors × N slots CTAs. | A |
+| 5 | `dflash_inject_kv_fused` | Per drafter layer, per accepted anchor token: K_proj + V_proj + per-layer K_norm + RoPE(K only) + cache_write. Host-side loops L_d=5 launches; per launch grid = (N slots, M anchors). | A |
 | 6 | Advance cursor (host) | Update accept/anchor counts. | host |
 
 Per-cycle budget (target round time < 50 ms at np=1, scales with N at np>1):
 
 | Phase | Budget at np=1 |
 |---|---:|
+| Combine features (FC + hidden_norm, ~3 anchors) | 0.5 ms |
 | Drafter forward (persistent, 5 layers + lm_head) | 12 ms |
 | State checkpoint (async, overlaps verify) | 0 ms attributed |
 | Verify forward (target, INT4 IQ4_KS, 64 layers, ne[1]=5) | 22 ms |
 | Argmax match | <0.5 ms |
 | State restore (only on partial accept) | 0–2 ms (amortized) |
-| InjectKV fused (5 layers × ~3 anchors) | 3 ms |
+| InjectKV fused (5 layers × ~3 anchors) | 0.5 ms (revised from initial 3 ms — bandwidth-bound at ~200 µs, budget held at 0.5 ms for launch overhead margin) |
 | Inter-kernel sync + scheduling | 3–5 ms |
-| Total | **~42 ms** |
+| Total | **~40 ms** |
 
 Per token at MAL = 3: 42/3 = 14 ms/token → 71 tok/s at np=1.
 
@@ -141,7 +143,9 @@ Stride pattern: writes from InjectKV land at contiguous `(H_kv × D) = 1024 fp16
 
 ### Hidden state staging (SMEM)
 
-Per `InjectKV` CTA: one 5120-fp16 row (`10240 bytes`) staged into SMEM. WMMA reads it 16 elements at a time across 32 lanes. SMEM budget: 10240 bytes — well under TU102's 64 KiB SMEM/SM.
+Per `InjectKV` CTA: one 5120-fp16 `context_states` row (`10240 bytes`) staged into SMEM. WMMA reads it 16 elements at a time across 32 lanes. SMEM budget: 10240 bytes — well under TU102's 64 KiB SMEM/SM.
+
+Per `dflash_combine_features` CTA: the FC input is the 5-layer source_hiddens slice (`5 * 5120 * 2B = 50 KiB`), but it is NOT staged in full at once — the FC matmul rolls source_hiddens through SMEM in K-tile-sized strips (~512 bytes per K-step). Peak SMEM holds the FC output staging (10 KiB) + one K-tile.
 
 Swizzle pattern for `ldmatrix.sync` access on the K-major operand: CUTLASS XOR swizzle `smem_addr = base + (row * stride) ^ ((row & 0x7) << 3)`. Conflict-free for fp16 K=16 swizzled in 8-row blocks.
 
@@ -172,16 +176,25 @@ In persistent mega-kernel: stream weights from L2 → registers per layer; SMEM 
 
 Allocated at server init via `cudaMalloc`. Lifetimes bound to slot lifetime — freed at slot destruction.
 
-### Drafter→Inject feature buffer
+### Source-hidden feature buffer (extract → combine input)
 
-`half target_features[5][N][D_d]` — extracted hidden state at each `target_layer_id`:
+`half source_hiddens[N_slots][MAL_anchors][L_src=5][D_d=5120]` — extracted hidden state at each `target_layer_id`, populated by the extract hook in the target forward graph:
 
-- 5 source layers (one per drafter layer)
-- N slots, D_d = 5120 hidden dim
-- Per slot: `5 × 5120 × 2 = 51200 bytes ≈ 50 KiB`
-- Per np=8: 400 KiB
+- 5 source layers per anchor (one per drafter layer)
+- N slots, MAL anchors per cycle, D_d = 5120 hidden dim
+- Per slot per anchor: `5 × 5120 × 2 = 50 KiB`
+- Per np=8, MAL=3: 1.2 MiB
 
-Lifetime: lives for one DFlash cycle. Allocated as part of the persistent drafter kernel's SMEM ring? No — too large; lives in HBM. Persistent kernel reads from this buffer at each layer's inject step.
+Lifetime: lives for one DFlash cycle. Lives in HBM (too large for SMEM staging in full). Consumed only by `dflash_combine_features`.
+
+### Context-states buffer (combine output → inject input)
+
+`half context_states[N_slots][MAL_anchors][D_d=5120]` — post-FC, post-hidden_norm anchor representations produced by `dflash_combine_features` and consumed by `dflash_inject_kv_fused` (per drafter layer). `dflash_drafter_forward` does not read this buffer directly — it consumes the injected K/V cache that `dflash_inject_kv_fused` writes, satisfying `@InjectionConsumedAtEveryLayer` via the cache read path at each drafter-layer attention sub-step.
+
+- Per slot per anchor: `5120 × 2 = 10 KiB`
+- Per np=8, MAL=3: 240 KiB
+
+Lifetime: one DFlash cycle. Lives in HBM; inject's per-CTA slice is staged into SMEM at kernel entry.
 
 ### RoPE sin/cos table
 
@@ -203,7 +216,8 @@ Two streams, explicit event barriers:
 Events per cycle:
 
 ```
-evt_features_ready    : target features extracted from target_layer_ids
+evt_features_ready    : source_hiddens populated from target_layer_ids (extract hook)
+evt_context_ready     : context_states produced by dflash_combine_features
 evt_drafter_done      : drafter forward complete
 evt_state_saved       : DeltaNet state checkpointed (stream B)
 evt_verify_done       : target verify forward + accept complete
@@ -215,6 +229,10 @@ Sequence per cycle (one slot shown for clarity; all slots run in lockstep):
 
 ```
 [Stream A]  cudaStreamWaitEvent(A, evt_features_ready)
+[Stream A]  dflash_combine_features<<<(MAL,N_slots), A>>>
+            → cudaEventRecord(evt_context_ready, A)
+
+[Stream A]  cudaStreamWaitEvent(A, evt_context_ready)
 [Stream A]  dflash_drafter_forward<<<persistent, A>>>
             → cudaEventRecord(evt_drafter_done, A)
 
@@ -233,7 +251,8 @@ Sequence per cycle (one slot shown for clarity; all slots run in lockstep):
             → cudaEventRecord(evt_state_restored, B)
 
 [Stream A]  cudaStreamWaitEvent(A, evt_state_restored)
-[Stream A]  dflash_inject_kv_fused<<<(L_d, MAL, N), A>>>
+[Stream A]  for il in 0..L_d-1:
+                dflash_inject_kv_fused<<<(N_slots, MAL), A>>>  // per drafter layer
             → cudaEventRecord(evt_inject_done, A)
 
 [next cycle]  cudaStreamWaitEvent(A, evt_inject_done)
@@ -321,68 +340,101 @@ lm_head: hidden -> logits over V=248320
 
 **File**: `ggml-cuda/dflash-inject-kv.cu`
 
+**Purpose**: Per (drafter layer, anchor, slot), project the anchor's `context_states` into the drafter layer's K and V cache, applying per-layer `k_norm` and RoPE to K (V is untouched), and writing to cache. Input `context_states` comes from `dflash_combine_features` upstream (post-FC, post-hidden_norm); this kernel does NOT compute FC or hidden_norm.
+
 **Signature**:
 
 ```cpp
 __global__ __launch_bounds__(128, 4)
 void dflash_inject_kv_fused(
-    const half * __restrict__ hidden_states,      // [L_d, N_slots, MAL_anchors, D_d=5120]
-    const half * __restrict__ k_weight,           // [D_kv=1024, D_d=5120]   per layer
-    const half * __restrict__ v_weight,           // [D_kv=1024, D_d=5120]   per layer
-    const half * __restrict__ norm_weight,        // [D=128]                 per layer
+    const half * __restrict__ context_states,    // [N_slots, MAL_anchors, D_d=5120]
+                                                  //   produced by dflash_combine_features
+    const half * __restrict__ k_weight,           // [D_kv=1024, D_d=5120]  for THIS drafter layer
+    const half * __restrict__ v_weight,           // [D_kv=1024, D_d=5120]  for THIS drafter layer
+    const half * __restrict__ k_norm_weight,      // [D=128]                for THIS drafter layer (ATTN_K_NORM)
     const float rope_base,                        // 10000000.0
     const float norm_eps,                         // 1.0e-06
-    half * __restrict__ k_cache,                  // [L_d, N_slots, SeqLen, H_kv=8, D=128]
-    half * __restrict__ v_cache,                  // ditto
-    const int * __restrict__ anchor_positions,    // [L_d, N_slots, MAL_anchors] — seq_pos for each anchor
+    half * __restrict__ k_cache_layer,            // [N_slots, SeqLen, H_kv=8, D=128] for this layer
+    half * __restrict__ v_cache_layer,            // ditto
+    const int * __restrict__ anchor_positions,    // [N_slots, MAL_anchors] — seq_pos for each anchor
     int N_anchors_per_slot,
     int N_slots
 );
 ```
 
-**Grid / block geometry**: per Lock #5, 1 CTA per `(layer, anchor, slot)` tuple:
-- `dim3 grid(L_d=5, MAL_anchors, N_slots);`
-- `dim3 block(128, 1, 1);` — 4 warps. One warp handles one KV head (8 KV heads, but 4 warps → each warp does 2 KV heads sequentially OR 4 warps with 2 KV heads per warp; pick at impl time).
+Host-side launcher loops `il = 0..L_d-1` and launches once per drafter layer, advancing `k_weight`, `v_weight`, `k_norm_weight`, `k_cache_layer`, `v_cache_layer` pointers by their layer strides. Per-launch grid covers only (slot, anchor) for the current layer. This makes weight L2 reuse across (anchor, slot) explicit and serializes layer launches behind their own events (cheap on TU102 — 5 × ~5 µs launch overhead = 25 µs total, < 0.1% of cycle).
+
+**Grid / block geometry**:
+- `dim3 grid(N_slots, MAL_anchors);` per launch — 1 CTA per (slot, anchor) tuple for THIS layer.
+- `dim3 block(128, 1, 1);` — 4 warps. Each warp handles 2 KV heads sequentially (8 KV heads ÷ 4 warps).
 
 **Per-CTA work**:
 
 ```
-1. Load hidden_state[layer, slot, anchor, :] into SMEM (10 KiB, one cooperative load by all 128 threads)
-2. RMSNorm reduction (per CTA):
-   - Each thread computes sum_sq over its hidden slice in fp32
-   - Warp-shuffle butterfly across the warp
-   - SMEM tree across the 4 warps
-   - Broadcast rsqrt(sum_sq/D_d + eps) via SMEM
-   - Multiply in registers: x_normed = hidden * rsqrt
-3. K_proj GEMM: (D_kv, D_d) × (D_d, 1) → (D_kv, 1) per anchor
-   - WMMA m16n16k16, fp16 accum
-   - K_proj weight tiled in SMEM (cycle 16-wide strips)
-4. V_proj GEMM (same pattern)
-5. Apply RoPE to K only (V unchanged):
-   - For each rotation pair (i, i+D/2): k_rot = k * cos - k_paired * sin
-   - sincos read from SMEM table indexed by anchor_position
-6. Vectorized half4 writes to k_cache[layer, slot, pos, :, :] and v_cache[...]
+1. Load context_states[slot, anchor, :] = [5120] into SMEM (10 KiB).
+   Cooperative load by all 128 threads.
+2. K_proj GEMM: (D_kv=1024) × (D_d=5120) → (D_kv=1024) per anchor.
+   - WMMA m16n16k16, fp16 accumulator.
+   - k_weight tile (n-strip × k-strip) rolled through 2 KiB SMEM staging.
+   - m-axis effective = 1 (single context_states row); m=16 fragment dim has 15/16 lanes idle.
+     Compute-overprovisioned; bandwidth on weight reads dominates.
+   - Output K[H_kv=8, D=128] held in registers across the n-strips.
+3. V_proj GEMM: same pattern, same SMEM staging slot reused (sequential to K_proj — fragment regs reused).
+   - Output V[H_kv=8, D=128] held in registers.
+4. K_norm (per drafter layer, per KV head — RMSNorm over the 128-dim head):
+   For each KV head h in 0..H_kv-1:
+     - Per-thread sum_sq over the head's 128 elements (fp32 accumulator).
+     - Warp-shuffle butterfly within the warp owning this head (no SMEM tree needed —
+       all 128 elements live in 32 lanes × 4 fp16 each within one warp).
+     - Broadcast rsqrt(sum_sq / 128 + eps) within warp.
+     - Multiply: k_normed[h, i] = (k[h, i] * rsqrt) * k_norm_weight[i].
+   V is NOT normed.
+5. RoPE on K only (NeoX-style interleaved pairs at base = rope_base):
+   - For each rotation pair (i, i + D/2) within each KV head:
+       k_rot[h, i]       =   k[h, i] * cos - k[h, i+D/2] * sin
+       k_rot[h, i+D/2]   =   k[h, i] * sin + k[h, i+D/2] * cos
+   - sincos read from SMEM table indexed by anchor_positions[slot, anchor].
+   - V unchanged.
+6. Vectorized half4 writes:
+   k_cache_layer[slot, pos, :, :] ← K_rot   (16 half4 stores per anchor)
+   v_cache_layer[slot, pos, :, :] ← V       (16 half4 stores per anchor)
 ```
 
-**Register budget**: K_proj fp16 accumulator = 4 fragments × 8 regs/lane = 32 regs/thread. V_proj reuses fragment space (sequential ops). RoPE adds ~8 regs. Total ≤ 48 regs/thread → 4 blocks/SM occupancy.
+**Grid ordering rationale (L2 reuse)**: All CTAs in a given launch share the same `k_weight`/`v_weight`/`k_norm_weight` (20 MiB per layer). TU102 L2 = 6 MiB — weights don't fit entirely, but with `grid(N_slots, MAL_anchors)` and the host loop over layers placing all CTAs for layer `il` together in time, L2 retains the current layer's weight tiles across co-located CTAs at the same SM. Launch-per-layer is preferred over a single 3D launch with L_d as inner dim, which would interleave layers and trash L2.
+
+**Register budget**:
+- K_proj fp16 accumulator across n=128 columns: 8 fragments × 8 regs/lane = ~32 regs/thread (peak).
+- V_proj reuses the same register slots (sequential to K_proj, post K_norm + RoPE).
+- K_norm + RoPE adds ~12 regs (rsqrt, sincos, scratch).
+- Total target: ≤ 48 regs/thread → 4 blocks/SM occupancy.
 
 **SMEM budget**:
-- Hidden state staging: 10 KiB
-- K_proj weight tile (rolled across K): 2 KiB at a time
-- V_proj weight tile: 2 KiB
-- RMSNorm reduction scratch: 256 B
-- RoPE sincos for the anchor's position: 256 B
-- Total: ~15 KiB per CTA
+- context_states staging: 10 KiB
+- k_weight / v_weight tile (rolled across K, one in flight at a time): 2 KiB
+- k_norm_weight staging: 256 B (one-time at CTA entry)
+- RoPE sincos for the anchor's position (one position per CTA): 256 B
+- Headroom for warp-shuffle scratch: 256 B
+- Total: ~13 KiB per CTA. 4 blocks/SM occupancy fits within 64 KiB/SM.
 
-**Determinism**:
-- WMMA fragment shape fixed (m16n16k16).
-- RMSNorm uses warp-shuffle + SMEM tree — fully deterministic for fixed block dim (128).
-- No cross-block reduction.
+**Determinism (Gate 5b binding)**:
+- WMMA fragment shape fixed (m16n16k16), no occupancy-tuned heuristic.
+- K_norm reduction is warp-shuffle within one warp's lanes (warp owns one head's 128 elements) — no cross-warp / cross-block accumulation.
+- No `atomicAdd<float>` anywhere.
+- One CTA per (layer, slot, anchor) output tile — no Split-K cross-block reduction.
+
+**Performance envelope (sanity-bound, not closure binding)**:
+- FLOPs per CTA: K_proj + V_proj = 2 × 5120 × 1024 ≈ 10 MFLOPs; K_norm + RoPE ≈ 16 KFLOPs.
+- Per cycle at np=8, MAL=3, L_d=5: 5 launches × 24 CTAs × ~10 MFLOPs = 1.2 GFLOPs total.
+- Compute ceiling (TU102 fp16 WMMA ~32 TFLOPs/s): 37 µs.
+- Bandwidth ceiling (100 MiB weight reads / 624 GB/s): 160 µs.
+- Plausible measured: 200–500 µs/cycle. Budget held at 0.5 ms.
 
 **Allium bindings**:
-- `InjectKV`
-- `InjectionConsumedAtEveryLayer`
-- `SharedEmbedAndLMHead` (lm_head sharing happens in drafter forward, not here)
+- `InjectKV` — the kernel IS this invariant for the per-layer K/V cache write.
+- `PerLayerArity` — host launcher loops L_d=5 times.
+- `HeadShapeMatchesDraft` — kernel reads k_weight, v_weight, k_norm_weight at the drafter's declared head shape (8 heads × 128 dim).
+- `KAsymmetricallyNormedVNot` — K_norm + RoPE applied to K only; V projected and written, never normed or rotated.
+- `InjectedAnchorAlignment` — `anchor_positions[slot, anchor]` gives the seq_pos in cache for placement.
 
 ---
 
@@ -511,6 +563,95 @@ void dflash_argmax_match(
 
 ---
 
+### 6.6 `dflash_combine_features` — anchor-level FC + hidden_norm
+
+**File**: `ggml-cuda/dflash-combine-features.cu`
+
+**Purpose**: Produce `context_states` consumed by `dflash_inject_kv_fused` (5 per-layer launches per anchor). The drafter forward never reads `context_states` directly — it consumes the injected K/V cache that inject writes, which satisfies `@InjectionConsumedAtEveryLayer` via the per-layer attention's cache read. Implements the upstream of vLLM's `precompute_and_store_context_kv` pipeline:
+
+1. Channel-wise concat of 5 source-layer hiddens — `[5, 5120] → [25600]` per anchor (implicit: source_hiddens already laid out with `L_src` as the inner axis).
+2. FC matmul — `[5120, 25600] · [25600] = [5120]` per anchor (DFLASH_FC weight).
+3. hidden_norm RMSNorm with `[5120]` weight (DFLASH_HIDDEN_NORM).
+
+This is **anchor-level** work (runs once per anchor per cycle), not per-drafter-layer. The 5 per-drafter-layer inject CTAs all consume the same `context_states[slot, anchor, :]`.
+
+**Signature**:
+
+```cpp
+__global__ __launch_bounds__(128, 4)
+void dflash_combine_features(
+    const half * __restrict__ source_hiddens,     // [N_slots, MAL_anchors, L_src=5, D_d=5120]
+                                                   //   from extract hook at target_layer_ids
+    const half * __restrict__ fc_weight,          // [D_d=5120, L_src * D_d=25600] (DFLASH_FC)
+    const half * __restrict__ hidden_norm_weight, // [D_d=5120] (DFLASH_HIDDEN_NORM)
+    const float norm_eps,                         // 1.0e-06
+    half * __restrict__ context_states,           // [N_slots, MAL_anchors, D_d=5120]  (output)
+    int N_slots, int MAL_anchors
+);
+```
+
+**Grid / block geometry**: 1 CTA per (slot, anchor):
+- `dim3 grid(MAL_anchors, N_slots);`
+- `dim3 block(128, 1, 1);` — 4 warps.
+
+**Per-CTA work**:
+
+```
+1. FC matmul (rolled, not bulk-staged):
+   - For each n-tile (16 output columns at a time, total 5120/16 = 320 n-tiles):
+       For each k-strip (16 input elements at a time, total 25600/16 = 1600 k-steps):
+         - Cooperative-load source_hiddens k-strip into SMEM (32 fp16 = 64 B)
+         - Cooperative-load fc_weight tile [16, 16] = 512 B into SMEM
+         - WMMA m16n16k16 accumulate into n-tile fp16 fragment
+       Write n-tile output (16 fp16) to a SMEM staging region.
+   - SMEM staging region holds the full 5120-fp16 FC output (10 KiB) at end of step 1.
+
+2. hidden_norm RMSNorm (in-place on the 10 KiB SMEM staging):
+   - Per-thread sum_sq over its 40-element slice (5120/128 = 40 elements/thread, fp32)
+   - Warp-shuffle butterfly within each warp
+   - SMEM tree across the 4 warps
+   - Broadcast rsqrt(sum_sq / 5120 + norm_eps)
+   - Per-element multiply: y[i] = (x[i] * rsqrt) * hidden_norm_weight[i]
+
+3. Vectorized half4 writes:
+   context_states[slot, anchor, :] ← y    (1280 half4 stores per anchor)
+```
+
+**Register budget**: FC accumulator across n-tile = 1 fragment × 8 regs/lane = ~8 regs/thread (n-tile output is small — accumulator fragment is reused across k-strips). RMSNorm reduction adds ~4 regs. Total ≤ 40 regs/thread → 4 blocks/SM occupancy.
+
+**SMEM budget**:
+- FC output staging (held across both phases): 10 KiB
+- FC weight tile (one [16, 16] at a time): 512 B
+- source_hiddens k-strip: 64 B
+- RMSNorm reduction scratch: 256 B
+- hidden_norm_weight tile (rolled by 128 elements at a time during phase 2): 256 B
+- Headroom: ~1.5 KiB
+- Total: ~13 KiB per CTA. 4 blocks/SM occupancy.
+
+**Determinism**:
+- WMMA fragment shape fixed (m16n16k16).
+- RMSNorm uses warp-shuffle + SMEM tree — fully deterministic for fixed block dim (128).
+- One CTA per output row — no Split-K cross-block reduction.
+- No `atomicAdd<float>` anywhere.
+
+**Performance envelope**:
+- FLOPs per CTA: 5120 × 25600 = 131 MFLOPs (FC) + ~5 KFLOPs (RMSNorm).
+- Per cycle at np=8, MAL=3: 24 CTAs × 131 MFLOPs = 3.1 GFLOPs.
+- Compute ceiling (TU102 fp16 WMMA ~32 TFLOPs/s): 100 µs.
+- Bandwidth ceiling (FC weight 250 MiB / 624 GB/s): 400 µs. But fc_weight is shared across all 24 CTAs → with one big-launch grid, L2 reuse drops the effective bandwidth substantially.
+- Plausible measured: 200–500 µs/cycle. Budget held at 0.5 ms.
+
+**Allium bindings**:
+- `FuseProjectionFcWeight` — kernel applies DFLASH_FC weight directly; conversion shape [5120, 25600] preserved end-to-end.
+- `FeatureWidthMatchesTarget` — input D_d = 5120 = target hidden_size.
+
+**Structural note vs vLLM**:
+vLLM's `precompute_and_store_context_kv` (qwen3_dflash.py:441–448) does `rms_norm(context_states, hidden_norm_weight)` THEN a separate `F.linear(normed_context_states, fused_kv_weight)`. Our split here is FC first (no preceding RMSNorm) then hidden_norm. **This matches vLLM's mathematical pipeline if and only if `source_hiddens` is already raw (not pre-normed)** — which it is: the extract hook at `l_out-<il>` captures the post-residual-add hidden state in the target's residual stream, which is what vLLM's `combine_hidden_states` receives. Verification: T2 cross-stack cosine ≥ 0.99988 confirms the captured value matches vLLM's `combine_hidden_states` input.
+
+Cross-check: vLLM's `combine_hidden_states` (qwen3_dflash.py:656) does FC FIRST, then hands the result to `precompute_and_store_context_kv` which does hidden_norm. Same order as our kernel; our kernel just fuses the two into one launch.
+
+---
+
 ## 7. Allium-invariant ↔ kernel binding table
 
 Each Allium invariant from `dflash.allium` is bound to a specific kernel or test:
@@ -519,8 +660,14 @@ Each Allium invariant from `dflash.allium` is bound to a specific kernel or test
 |---|---|---|
 | `DraftBlockEmit` | `dflash_drafter_forward` | Output logits at all BLOCK_SIZE positions; greedy argmax at host post-kernel |
 | `FeatureSourceFixedPerDeployment` | drafter loader + persistent kernel internals | target_layer_ids read from GGUF metadata at load; persistent kernel inlines them |
+| `FuseProjectionFcWeight` | `dflash_combine_features` | DFLASH_FC weight loaded as one tensor [5120, 25600]; kernel applies it before any K/V proj |
+| `FeatureWidthMatchesTarget` | `dflash_combine_features` | Input source_hiddens dim D_d=5120 matches target hidden_size |
 | `InjectKV` | `dflash_inject_kv_fused` | The kernel IS the invariant |
-| `InjectionConsumedAtEveryLayer` | `dflash_drafter_forward` | Each of 5 layers consumes its corresponding inject buffer slot |
+| `PerLayerArity` | `dflash_inject_kv_fused` host launcher | Host loops L_d=5 times, one launch per drafter layer |
+| `HeadShapeMatchesDraft` | `dflash_inject_kv_fused` | Kernel reads per-layer k_weight/v_weight/k_norm_weight at drafter's head shape (8×128) |
+| `KAsymmetricallyNormedVNot` | `dflash_inject_kv_fused` | K_norm + RoPE applied to K only; V projected then written without norm/rotation |
+| `InjectedAnchorAlignment` | `dflash_inject_kv_fused` | anchor_positions[slot, anchor] sets cache write position |
+| `InjectionConsumedAtEveryLayer` | `dflash_drafter_forward` | Each of 5 layers consumes context_states (from `dflash_combine_features`) at its inject point |
 | `TargetVerifyBlock` | `dflash_verify_attn` + existing target verify graph | Verify shape ne[1]=BLOCK_SIZE+1; one block per output row |
 | `VerifyOutputArbitratedByTarget` | `dflash_argmax_match` | Target argmax wins on every mismatch |
 | `AcceptPrefixDecision` | `dflash_argmax_match` | Longest accepted prefix bounded by first mismatch |
@@ -556,7 +703,8 @@ The bit-identical Gate 5b binding requires:
 7. **FA split-SIZE not split-count** — `KV_BLOCK_SIZE` is a compile-time constant.
 
 The test harness:
-- `tests/test-dflash-inject-fused.cpp` — fused vs scalar bit-identical
+- `tests/test-dflash-combine-features.cpp` — combine output bit-identical to scalar reference (FC + hidden_norm) across dim sweep
+- `tests/test-dflash-inject-fused.cpp` — fused vs scalar bit-identical for all 5 drafter layers (K_proj+V_proj+K_norm+RoPE+write)
 - `tests/test-dflash-determinism-np-invariance.cpp` — drafter logits bit-identical across np ∈ {1, 2, 4, 8}
 - `tests/test-dflash-determinism-ne5.cpp` — verify-attn output bit-identical across 3 runs at fixed config
 - `tests/test-dflash-state-revert.cpp` — DeltaNet save/restore round-trip is bit-identical
@@ -568,7 +716,8 @@ The test harness:
 | Kernel | SMEM/CTA | Regs/thread (target) | Threads/block | Occupancy target |
 |---|---:|---:|---:|---|
 | `dflash_drafter_forward` | ~20 KiB | ≤ 64 | 256 | 2 blocks/SM (cooperative) |
-| `dflash_inject_kv_fused` | ~15 KiB | ≤ 48 | 128 | 4 blocks/SM |
+| `dflash_combine_features` | ~13 KiB | ≤ 40 | 128 | 4 blocks/SM |
+| `dflash_inject_kv_fused` | ~13 KiB | ≤ 48 | 128 | 4 blocks/SM |
 | `dflash_verify_attn` (KV_BLOCK_SIZE=32 + double-buffer) | ~32 KiB | ≤ 64 | 128 | 2 blocks/SM |
 | `dflash_argmax_match` | <1 KiB | ≤ 32 | 32 (1 warp) | 8+ blocks/SM |
 
@@ -584,7 +733,7 @@ Maps to `DESIGN.md` §6 gate sequence:
 |---|---|---|
 | 1 | `convert_hf_to_gguf.py::DFlashModel` | Gate 1 (converter binding) |
 | 2 | `dflash_extract_features` hook into Qwen3 build graph | Gate 2 (extract hook) |
-| 3 | `dflash_inject_kv_fused` kernel + scalar reference + unit test | Gate 3a |
+| 3 | `dflash_combine_features` kernel + `dflash_inject_kv_fused` kernel + scalar references + unit tests | Gate 3a |
 | 4 | `dflash_drafter_forward` persistent kernel + `dflash_argmax_match` + plumbing | Gate 3b, Gate 4 |
 | 5 | `dflash_verify_attn` kernel + ne=5 determinism test | Gate 5 |
 | 6 | `tests/test-dflash-determinism-np-invariance.cpp` | Gate 5b |
