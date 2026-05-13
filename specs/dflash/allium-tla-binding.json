@@ -184,6 +184,51 @@
       "allium": "FeatureSourceFixedPerDeployment",
       "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-drafter-forward.cpp + review:src/llama-context.cpp llama_set_dflash",
       "rationale": "target_layer_ids are read once from drafter GGUF metadata at llama_set_dflash() time and stored as a compile-time-derivable constant array per the DFlash context. Test verifies that runtime mutation of the stored target_layer_ids produces no effect on drafter forward output for the current context (the kernel's loop bound is locked at init). Mid-session changes hard-blocked at the C API boundary."
+    },
+    {
+      "allium": "VerifyBatchShape",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
+      "rationale": "Production verify decode call uses ne[1] = 1 + BLOCK_SIZE. Test drives one DFlash cycle through llama_set_dflash + the cycle orchestration C API; intercepts the target verify ubatch and asserts ubatch.n_tokens == 1 + drafter.block_size. The +1 row is the anchor (extra post-block row carrying the unconditional bonus argmax)."
+    },
+    {
+      "allium": "SingleContiguousRun",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
+      "rationale": "Verify decode is dispatched as a single contiguous run of 1+BS positions, not split across multiple decodes. Test asserts the production loop issues exactly one llama_decode for the verify step per cycle (instrumented via a decode-counter hook on the target context)."
+    },
+    {
+      "allium": "TargetKVNotAdvancedDuringVerify",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
+      "rationale": "Target's KV cache n_past is observed before verify, after verify-decode, and after the accept-prefix decision. Between verify-decode and accept the cache must remain at the pre-verify n_past — the decode populates KV at positions [n_past, n_past+BS] but the seq's effective n_past is only advanced by the accept step (TargetKVAdvancesByAcceptedPlusBonus). Test asserts cache state across the three observation points."
+    },
+    {
+      "allium": "EffectiveSeqLensSubtractsRejected",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
+      "rationale": "On partial accept (n_accepted < BLOCK_SIZE), the target seq_len reverts to anchor_pos + n_accepted + 1 (accepted prefix + bonus row), discarding the speculatively-decoded rejected tail. Test forces a partial-accept by planting controlled drafter argmax that mismatches target at row k < BS, then asserts target seq_len = anchor_pos + k + 1."
+    },
+    {
+      "allium": "NumRejectedTokensFlowsBackToProposer",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
+      "rationale": "After verify + accept, the n_rejected count (= BLOCK_SIZE - n_accepted) is observable in the DFlash state struct and is used by the next cycle's drafter forward setup (e.g., adjusting anchor or surfacing accept-rate stats). Test asserts the value is correctly populated each cycle and consumed at the start of the next cycle."
+    },
+    {
+      "allium": "TargetKVAdvancesByAcceptedPlusBonus",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
+      "rationale": "Per-cycle target seq_len advances by exactly n_accepted + 1 (the +1 is the bonus row). Test runs N cycles with controlled accept patterns (1, 2, 3, 4 accepted across cycles) and asserts cumulative seq_len growth = sum(n_accepted_per_cycle + 1)."
+    },
+    {
+      "allium": "DraftKVAdvancesPaired",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
+      "rationale": "Drafter KV cache state advances in lockstep with target. After each cycle's accept decision, the drafter's anchor_pos for the next cycle = target's new seq_len - 1 (the bonus token position). Test asserts drafter's anchor_pos matches target's effective seq_len across N cycles."
+    },
+    {
+      "allium": "NewAnchorIsBonus",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
+      "rationale": "Next cycle's drafter input anchor = current cycle's bonus token. Test captures the bonus token emitted at cycle K and asserts it appears as the anchor input embedding lookup at cycle K+1. Critical for cycle linkage — used to fail in pre-T4 versions where last_prompt_token was incorrectly used as anchor."
+    },
+    {
+      "allium": "AtomicityPerCycle",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
+      "rationale": "A DFlash cycle is all-or-nothing: combine_features + inject_kv (×5) + drafter_forward + drafter_lm_head + verify_decode + argmax_match + accept all complete before any externally-observable state mutates (target seq_len, emitted tokens). Test asserts no observable target/drafter state mutation occurs mid-cycle by polling state at sub-step boundaries via a deferred-mutation invariant check. If any kernel fails (e.g., a NaN cascade), the cycle aborts cleanly without partially advancing state."
     }
   ]
 }
