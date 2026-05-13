@@ -630,13 +630,21 @@ as plan witnesses.
   with 4 printers (csv/json/markdown/sql). Currently zero
   spec/mtp/draft mentions in the source. `cmd_params_instance`
   (line 957) is where a `common_speculative_type spec_type` field
-  needs to be added.
+  needs to be added. **Zero references to `decoder` either** —
+  llama-bench works directly on `llama_context`, not the server's
+  `llama_decoder` wrapper abstraction.
+- **`include/llama.h:1083`**: `llama_set_embeddings(llama_context *,
+  bool)` is the context-level embedding flip. Server uses the
+  decoder-level wrapper; llama-bench uses this directly.
 - **`examples/perplexity/perplexity.cpp:159 (process_logits)`** —
-  computes NLL token-by-token from a `[positions × vocab]` logits
-  array and a `[positions]` token-id array. `PPL = exp(mean(nll))`.
-  Directly reusable for "target-PPL on generated output" by
-  re-feeding [prompt + generated_tokens] into the target and
-  capturing logits at each generated position.
+  computes NLL token-by-token. Signature:
+  `process_logits(int n_vocab, const float * logits, const int *
+  tokens, int n_token, std::vector<std::thread> & workers, double &
+  nll, double & nll2, float * logit_history, float * prob_history)`.
+  Computes `nll` (sum of -log P(token_i | logits_i)) and `nll2`
+  (squared, for stderr). `PPL = exp(nll / n_token)`. **This is the
+  overload to extract** (NOT the variant at line 194 which writes
+  log_probs to an ostream).
 - **`common/common.cpp:1583-1588`**: `-mtp` flag sets
   `params.has_mtp = true`, which propagates to `mparams.mtp` and
   `cparams.mtp`. This enables the inline MTP layers in the target
@@ -644,11 +652,25 @@ as plan witnesses.
   but `common/speculative.cpp:1177` links them
   (`has_mtp = (params.type == COMMON_SPECULATIVE_TYPE_MTP)`).
 - **`/home/llm/profiles/qwen36-27b-x1-mtp.sh`**: production MTP
-  profile via `llama-server -mtp --draft 3`, TP=2, q4_0 KV with
-  hadamard, ctx 262144. **Comment cites 2026-05-09 baseline**:
+  profile via `llama-server -mtp --draft 3`. Full flag set:
+  `--device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1
+   -ngl 999 -fa on --ctx-size 262144 --parallel 1 --threads 16
+   --batch-size 2048 --ubatch-size 2048 --cache-type-k q4_0
+   --cache-type-v q4_0 --k-cache-hadamard --v-cache-hadamard
+   --cache-ram 16384 --ctx-checkpoints 16 --no-context-shift
+   --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00`.
+  `LLAMA_MTP_INLINE_KV=1` env. **Comment cites 2026-05-09 baseline**:
   draft=3 → 33.23 t/s (3-run median, n=128, T=0). Per
   `feedback_anchor_to_measured_baselines`, **do NOT bind on this
-  number — measure fresh**.
+  number — measure fresh**. (Server uses temp=0.6 in production
+  serving; T8 measurement runs at temp=0 for determinism — this is
+  a measurement vs production-serving difference, not a defect.)
+- **Production target characteristics** (per
+  `MEMORY.md` 2026-05-13 inspection of
+  `qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf`):
+  `token_embd.weight` F16, `output.weight` BF16, `output_norm.weight`
+  F32, linear weights Q4_0 + Q4_0_AR16 (AutoRound 16-step variant),
+  RMSNorm weights F32. Lossless GGUF repackaging of AutoRound source.
 - **`examples/speculative` is NOT the right comparison**: uses
   two-model architecture (separate target + drafter binaries),
   NOT the inline MTP that production uses.
@@ -688,10 +710,12 @@ CLI additions:
 - `--spec {none,mtp,dflash,draft,ngram-simple,ngram-mod,...}` (default `none`)
 - `--draft N` / `-nd N` (draft depth; sets `params.speculative.n_max`. For MTP this is the chain length, for DFlash this is BLOCK_SIZE.) (default 3 for MTP, 4 for DFlash)
 - `--spec-model PATH` (for spec methods that need a separate drafter GGUF: dflash, draft, eagle3; ignored otherwise)
+- `--prompt-file PATH` (real prompt text; if set, ignores synthetic `-p` length. May be specified multiple times for multi-prompt sweep — each row becomes its own measurement.) (default: synthetic `-p` semantics)
 
 Data plumbing — `cmd_params` + `cmd_params_instance`:
 - Add `common_speculative_type spec_type` + `int n_draft` +
-  `std::string spec_model` fields.
+  `std::string spec_model` + `std::vector<std::string> prompt_files`
+  fields.
 - Parse from CLI; default values per above.
 
 **MTP init recipe** (traced from `server-context.cpp:294-331`,
@@ -717,8 +741,11 @@ if (spec_type == COMMON_SPECULATIVE_TYPE_MTP) {
     params.speculative.cparams_dft.mtp_op_type = MTP_OP_WARMUP;
     params.speculative.cparams_dft.embeddings  = true;
 
-    // 4. Flip decoder to emit embeddings (MTP needs them)
-    llama_decoder_set_embeddings(decoder, true);
+    // 4. Flip context to emit embeddings (MTP needs them).
+    // NOTE: server uses llama_decoder_set_embeddings on its decoder
+    // wrapper; llama-bench works directly on llama_context, so we
+    // call the context-level API at llama.h:1083.
+    llama_set_embeddings(ctx, true);
 
     // 5. Verify batch capacity = n_max + 1
     batch_spec = llama_batch_init(n_max + 1, 0, 1);
@@ -796,14 +823,37 @@ CLI addition:
 - `--ppl-of-output` (boolean flag; off by default).
 - When set, after each tg measurement runs N_gen tokens of
   generation, run a SECOND pass through the target on
-  [prompt + generated_tokens], capture logits at each generation
-  position, run `process_logits()` (factored out from
-  `examples/perplexity/perplexity.cpp:159` into a shared helper in
-  `common/`), compute target-PPL on the generated sequence.
+  [prompt + generated_tokens]. The second pass is needed because:
+  - During non-spec tg, the target's logits at the generation
+    positions ARE the ground truth (one decode per emitted token).
+  - During spec tg, the target sees a verify batch `[id_last, draft]`
+    each cycle. For ACCEPTED draft positions, the target logits at
+    those rows are the ground truth (same as non-spec, just batched).
+    For REJECTED positions, those tokens never make it to output, so
+    they don't enter PPL.
+  - **In principle**, we could capture logits during generation and
+    avoid the second pass for spec methods. BUT we need a SECOND
+    pass for fair comparison: re-decoding [prompt + accepted_tokens]
+    in fresh batch shape `[1, ..., 1]` (one token per row, no spec)
+    eliminates batch-shape variance from the PPL measurement. That
+    way differences in PPL reflect *cumulative drift across the
+    decode trajectory*, not just per-call batch-shape noise.
+- Re-decode strategy: feed `[prompt_tokens, generated_tokens]` in
+  one llama_decode call, capture per-position logits, run
+  `process_logits()` (extracted from
+  `examples/perplexity/perplexity.cpp:159` — the simpler overload
+  that takes nll/nll2 by reference, NOT the line 194 overload that
+  writes to an ostream).
+- For `--spec none`: still do the second pass for symmetry — adds
+  cost but produces the same PPL since vanilla tg is already
+  one-token-per-decode.
 
 Data plumbing:
 - Add `target_ppl_of_output` field to `struct test`.
 - Print as additional report column when `--ppl-of-output` is on.
+- The second pass is itself a real cost (extra forward over the
+  full sequence). Don't double-count it in `tg_t_s` — measure
+  tg_t_s on the generation pass only.
 
 **Phase 1.3 — Source helper extraction**:
 
@@ -815,28 +865,83 @@ unchanged otherwise.
 
 **Phase 1 closure binding**:
 
+Build target: `/opt/llm/build-dflash` with `-DGGML_CUDA=ON
+-DGGML_CUDA_DFLASH=ON -DCMAKE_CUDA_ARCHITECTURES=75
+-DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF`. (Same flags as T1–T7
+production builds.)
+
 The extended `llama-bench` binary, given:
 ```sh
-llama-bench -m <target.gguf> --spec none -p 512 -n 128 -r 3
-llama-bench -m <target.gguf> --spec mtp --draft 3 -p 512 -n 128 -r 3
-llama-bench -m <target.gguf> --spec dflash --spec-model <drafter.gguf> --draft 4 -p 512 -n 128 -r 3
+TARGET=/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf
+DRAFTER=/opt/models/qwen36-27b-dflash/qwen36-27b-dflash-f16.gguf
+PROMPT=data/dflash-extracts/prompt-0/prompt.txt
+
+/opt/llm/build-dflash/bin/llama-bench -m $TARGET \
+  --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 -ngl 999 \
+  -fa 1 --ctx-size 4096 \
+  --cache-type-k q4_0 --cache-type-v q4_0 \
+  --spec none --prompt-file $PROMPT -n 128 -r 3 --ppl-of-output
+
+/opt/llm/build-dflash/bin/llama-bench -m $TARGET \
+  --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 -ngl 999 \
+  -fa 1 --ctx-size 4096 \
+  --cache-type-k q4_0 --cache-type-v q4_0 \
+  --spec mtp --draft 3 --prompt-file $PROMPT -n 128 -r 3 --ppl-of-output
+
+/opt/llm/build-dflash/bin/llama-bench -m $TARGET \
+  --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 -ngl 999 \
+  -fa 1 --ctx-size 4096 \
+  --cache-type-k q4_0 --cache-type-v q4_0 \
+  --spec dflash --spec-model $DRAFTER --draft 4 --prompt-file $PROMPT \
+  -n 128 -r 3 --ppl-of-output
 ```
-produces three rows of a single markdown/JSON table with identical
-columns (model, params, spec, n_draft, pp t/s, tg t/s, mean_accept,
-target_ppl_of_output), measured through the same dispatch and timing
-window. Closure asserted by:
-1. Build clean with `-DGGML_CUDA=ON -DGGML_CUDA_DFLASH=ON -DCMAKE_CUDA_ARCHITECTURES=75`.
-2. Each of the three rows produced; pp t/s columns within
-   ~5% across spec methods (sanity); tg t/s columns differ as
-   measured.
-3. `--spec none` row's target_ppl_of_output is finite and
-   reasonable for the target on its own output.
+
+(Phase 1 closure uses ctx 4096 not production 262144 — the latter
+is for long-context serving; closure binding is on dispatch
+correctness, not at-scale measurement.)
+
+Closure asserted by:
+
+1. **Builds clean** at `/opt/llm/build-dflash`. (Build artifacts
+   already present from T1–T7; incremental build only.)
+
+2. **All three commands produce a row** in the configured output
+   format (csv/json/markdown/sql, swept).
+
+3. **pp t/s columns within ±5% across spec methods** (sanity
+   gate — initial prefill should not vary by spec method since
+   spec init happens AFTER prefill).
+
+4. **tg t/s columns differ as measured**, with no spec-specific
+   crashes / OOM / nan in any printer column.
+
+5. **`--spec none` row's `target_ppl_of_output`** is finite and
+   in the plausible range [1, 1000] for the target on its own
+   coherent output.
+
+6. **Production parity check** (this is the load-bearing apples-
+   to-apples gate): `--spec mtp --draft 3` row's `tg_t_s` must
+   be within ±20% of the production memory baseline of 33.23 t/s
+   (the prior-art measurement cited in
+   `/home/llm/profiles/qwen36-27b-x1-mtp.sh`). If outside that
+   band, EITHER the bench is measuring a different path than
+   production OR production has drifted; investigate before
+   proceeding to Phase 2. ±20% is a noise floor for cross-tool
+   comparison (bench vs server, different prompt, possibly
+   different ctx); inside the band confirms the wiring trace is
+   correct.
+
+7. **A tiny smoke test** (`tests/test-llama-bench-spec-init.cpp`)
+   asserts: spec init for {none, mtp, dflash} succeeds against
+   the production target (and drafter for dflash); fails with
+   informative message on missing prerequisites (e.g., dflash
+   without `--spec-model`).
 
 ### Phase 2 — Diagnose T6's 1.33 t/s through the new infra
 
 Once Phase 1 lands, run the extended `llama-bench --spec dflash` on
-the production target at T6's prompt config (single prompt, n=128).
-Two outcomes possible:
+the production target at T6's prompt config (the quicksort prompt,
+n=128, BS=4). Two outcomes:
 
 - **(A) Extended bench shows DFlash tg t/s ≫ 1.33** — T6's
   1.33 number was a measurement artifact in
@@ -847,49 +952,150 @@ Two outcomes possible:
   real per-cycle cost. THEN add per-cycle instrumentation to
   `dflash-speculative-simple` to attribute it, capture to
   `data/gate6-phase2-cycle-breakdown.json`, decide structural vs
-  fixable per the diagnostic threshold (Q2 below).
+  fixable per the locked threshold below.
+
+**Diagnostic instrumentation strategy** (when verdict is (B)):
+- Compile-time flag `#ifdef DFLASH_CYCLE_TIMING` around
+  `cudaEventRecord` boundaries — keeps production path
+  zero-overhead, instrumented build is opt-in.
+- Boundaries: `(combine_features, inject_kv ×L_d, drafter_forward,
+  drafter_lm_head, argmax_match, verify llama_decode, spec_ckpt_save,
+  spec_ckpt_restore, sampling/accept, host pulls)`.
+- Cross-check via `nsys profile -o gate6-phase2-1cycle ...` for
+  a single cycle. Compare to instrumented numbers; if they
+  diverge by >20%, distrust the instrumentation and use nsys.
+
+**Structural-vs-fixable threshold (Q2 RESOLVED 2026-05-13)**:
+- **Structural** = (DFlash per-cycle wall ≥ 2× MTP per-cycle wall)
+  AND (> 50% of DFlash cycle cost is in non-prompt-eval kernel
+  work — i.e., NOT explained by one-time setup, prompt processing,
+  or host-side overhead).
+- **Fixable** = anything else. Examples that are fixable:
+  - Dominant cost is one-time setup → exclude from steady-state
+  - Dominant cost is sampling/host pulls → optimize via batching
+  - Dominant cost is verify forward (target stack) → already
+    shared with MTP at the same shape; not DFlash-specific
+- Lock to the structural verdict ONLY if both clauses are clearly
+  met. Edge cases (ratio 1.8×, attribution 45%) → fixable; spend
+  the budget to instrument deeper, don't bail to FAIL.
 
 Capture Phase 2 result to `data/gate6-phase2-diagnose.json` with
-verdict (A) or (B) and reasoning. If (B) structural: T8 closes
-FAIL or NEUTRAL here; do NOT proceed to Phase 3 producing a
-pretend-PASS.
+verdict (A/B-fixable/B-structural), the per-cycle breakdown JSON
+(if (B)), the nsys-rep cross-check (if (B)), and the reasoning.
+If structural: T8 closes FAIL or NEUTRAL here; do NOT proceed to
+Phase 3 producing a pretend-PASS.
 
 ### Phase 3 — Ship-gate measurement (only if Phase 2 verdict is A or B-fixable)
 
-Single `llama-bench` invocation, all three spec methods, multiple
-prompts, with `--ppl-of-output` on:
+**Prompt source**: real prompts from `data/dflash-extracts/prompt-{0..7}/`
+(8 prompts already in the repo, used by Gate 0 vLLM oracle). These
+are coherent natural-language prompts, NOT synthetic random tokens
+— PPL-of-output is only meaningful on real prompts.
+
+**Configuration matrix**:
+- 3 spec methods × 8 prompts × 3 runs × n_gen=128 × temp=0
+- All at production-matched flags: `-fa 1 --ctx-size 4096
+  --cache-type-k q4_0 --cache-type-v q4_0 -ngl 999
+  --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1`
+- (ctx 4096 not 262144 — the 8 prompts are ≤ 1k tokens; T8 isn't
+  a long-context test.)
+
+**Execution** — single invocation per (spec, prompt) cell using
+the multi-prompt sweep:
 
 ```sh
-llama-bench -m <target.gguf> \
-  --spec none,mtp,dflash \
-  --draft 3 \
-  --spec-model <drafter.gguf>:dflash \
-  -p 512 -n 128 -r 3 \
-  --ppl-of-output \
-  -o json > data/gate6-ship-measurement.json
+for SPEC in none mtp dflash; do
+  /opt/llm/build-dflash/bin/llama-bench -m $TARGET \
+    --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 -ngl 999 \
+    -fa 1 --ctx-size 4096 --cache-type-k q4_0 --cache-type-v q4_0 \
+    --spec $SPEC ${SPEC_MODEL_FLAG} ${DRAFT_FLAG} \
+    --prompt-file data/dflash-extracts/prompt-0/prompt.txt \
+    --prompt-file data/dflash-extracts/prompt-1/prompt.txt \
+    --prompt-file data/dflash-extracts/prompt-2/prompt.txt \
+    --prompt-file data/dflash-extracts/prompt-3/prompt.txt \
+    --prompt-file data/dflash-extracts/prompt-4/prompt.txt \
+    --prompt-file data/dflash-extracts/prompt-5/prompt.txt \
+    --prompt-file data/dflash-extracts/prompt-6/prompt.txt \
+    --prompt-file data/dflash-extracts/prompt-7/prompt.txt \
+    -n 128 -r 3 --ppl-of-output \
+    -o json
+done > data/gate6-ship-measurement.json
 ```
 
-(Exact CLI shape may differ; lock during Phase 1 implementation.)
+(Three invocations for three spec methods; collated into the
+single JSON file. Each invocation produces 8 rows — one per
+prompt. Total 24 rows.)
 
-Expected output columns: `spec, n_draft, pp_t_s, tg_t_s,
-mean_accept, target_ppl_of_output, n_gen, n_prompt, build_info`.
+**GPU lock**: per `reference_gpu_sharing_protocol` auto-memory,
+acquire COORD.md GPU lock for the duration of the bench run.
+Per `feedback_no_overlapping_benchmarks`: never overlap with any
+other inference / benchmark process.
+
+**Output columns** in JSON:
+`model, params, ctx, spec, n_draft, n_prompt_tokens, n_gen,
+pp_t_s, pp_t_s_stderr, tg_t_s, tg_t_s_stderr, mean_accept,
+accept_rate, target_ppl_of_output, target_ppl_of_output_n64,
+build_info, prompt_id`.
+
+**Aggregation rules (Q3 RESOLVED 2026-05-13)**:
+- Per `(spec, prompt)`: median of r runs for tg_t_s and
+  target_ppl_of_output (median is robust to outliers).
+- Across prompts within a spec: GEOMETRIC MEAN of tg_t_s for the
+  headline number. Geometric mean is the right aggregation across
+  prompts of different difficulty/length (additive bias of
+  arithmetic mean over-weights long prompts).
+- Speedup ratio per prompt: `tg_t_s_dflash / tg_t_s_mtp`. Headline
+  speedup: geometric mean of per-prompt ratios.
+- Quality ratio per prompt: `target_ppl_of_output_dflash /
+  target_ppl_of_output_mtp`. Per-prompt; lower is better.
+
+Capture both per-prompt and aggregated views; future
+investigators need both.
 
 ### Phase 4 — Ship outcome decision
 
-Per `DESIGN.md §6 Gate 6`, decided from the Phase 3 JSON:
+Per `DESIGN.md §6 Gate 6`, decided from the Phase 3 JSON. All
+thresholds RELATIVE (not absolute) for both tg_t_s and PPL.
 
-- **PASS** (DFlash tg ≥ 1.5× MTP tg) AND (DFlash target_ppl_of_output
-  within 5% of MTP target_ppl_of_output) → ship
-  `profiles/qwen36-27b-x1-dflash.sh`.
-- **NEUTRAL** (DFlash tg 1.0–1.5× MTP) OR (DFlash PPL > 5% worse
-  than MTP) → document gap honestly; ship as tunable option;
-  MTP stays default. Do NOT dress as "GREEN".
-- **FAIL** (DFlash tg < 1.0× MTP) OR (DFlash PPL substantially
-  worse) → document negative result with full cost breakdown.
+**Speedup** (DFlash vs MTP, both at temp=0, np=1):
+- `headline_speedup` = geometric_mean over prompts of
+  `(tg_t_s_dflash / tg_t_s_mtp)`
+- `worst_prompt_speedup` = min over prompts of
+  `(tg_t_s_dflash / tg_t_s_mtp)`
 
-The PPL quality bound is asymmetric: if DFlash is faster but
-substantially worse-quality, that's NEUTRAL, not PASS. Speedup
-without quality is not a ship.
+**Quality** (DFlash PPL vs MTP PPL, on the same prompt's generated
+output):
+- `worst_prompt_ppl_ratio` = max over prompts of
+  `(ppl_dflash / ppl_mtp)`
+- Lower ratio = closer to MTP quality = better.
+
+**Outcome rules**:
+
+- **PASS**: `headline_speedup ≥ 1.5` AND
+  `worst_prompt_speedup ≥ 1.0` (no prompt regresses) AND
+  `worst_prompt_ppl_ratio ≤ 1.05` (no prompt's PPL is >5% worse
+  than MTP) → ship `profiles/qwen36-27b-x1-dflash.sh`.
+
+- **NEUTRAL**: (`1.0 ≤ headline_speedup < 1.5`) OR
+  (`worst_prompt_speedup < 1.0`) OR
+  (`worst_prompt_ppl_ratio ∈ (1.05, 1.20)`) →
+  document gap honestly; ship as tunable option (CLI flag, not
+  symlink switch); MTP stays default. Do NOT dress as "GREEN".
+
+- **FAIL**: `headline_speedup < 1.0` OR
+  `worst_prompt_ppl_ratio > 1.20` → document negative result
+  with full cost breakdown. Stay on MTP.
+
+**Asymmetric quality bound**: speedup faster + quality
+substantially worse is NEUTRAL or FAIL, not PASS. Speedup
+without quality is not a ship. The "no prompt regresses" rule
+prevents shipping based on a geometric-mean win that hides
+specific prompts where DFlash is slower than MTP.
+
+**If results are ambiguous** (e.g., `headline_speedup = 1.6` but
+`worst_prompt_ppl_ratio = 1.08`): NEUTRAL outcome with the
+specific failing prompt(s) documented. Do NOT relax the threshold
+to force a PASS.
 
 ### Critical files (T8)
 
@@ -908,35 +1114,100 @@ without quality is not a ship.
 - `data/gate6-ship-measurement.json` (Phase 3 measurement)
 - (if Phase 4 PASS) `profiles/qwen36-27b-x1-dflash.sh`
 
+### Token budget per phase
+
+| Phase | Estimate | Notes |
+|---|---|---|
+| Phase 1.1 (spec extension) | 25–40k | ~500 LOC across cmd_params + cmd_params_instance + test::run + 4 printers + prompt-file plumbing |
+| Phase 1.2 (PPL-of-output) | 10–15k | Re-decode + per-position logit capture + helper call |
+| Phase 1.3 (process_logits extract) | 5k | Mechanical refactor; perplexity.cpp call site unchanged |
+| Phase 1 smoke test + closure run | 5–10k | test-llama-bench-spec-init.cpp + 3-row sanity + parity check |
+| Phase 2 (diagnose, conditional) | 10–20k | Optional per-cycle instrumentation + nsys cross-check; only fires if Phase 1 reveals slow DFlash |
+| Phase 3 (ship-gate measurement) | 5–10k | 3 × 8 × 3 cells; mostly wall-clock + JSON post-process |
+| Phase 4 (decision + profile + commit) | 5k | Outcome verdict + profile clone or document |
+| **Total if all phases fire** | **~65–105k** | In line with prior T-series gates (T6 was ~55k closure path) |
+
+### Risk surface
+
+- **R1** — **Bench-MTP measures a different path than production
+  `llama-server -mtp --draft 3`**. Could happen if Phase 1.1's
+  MTP recipe misses a server-only init step. *Mitigation*:
+  Phase 1 closure parity check binds bench-MTP tg_t_s to within
+  ±20% of the production memory baseline.
+
+- **R2** — **PPL-of-output noise dominates if prompts are
+  synthetic or too short**. *Mitigation*: real prompts from
+  `data/dflash-extracts/prompt-{0..7}/` via `--prompt-file`,
+  and n_gen=128 ≫ noise floor.
+
+- **R3** — **DFlash dispatch requires `GGML_CUDA_DFLASH=ON` and
+  sm_75 build**. On non-DFlash builds the bench should skip
+  `--spec dflash` with informative message, not crash.
+  *Mitigation*: build-time guard + runtime check.
+
+- **R4** — **Phase 2 per-cycle instrumentation Heisenberg
+  effect**. `cudaEventRecord` boundaries add per-cycle latency.
+  *Mitigation*: compile-time `#ifdef DFLASH_CYCLE_TIMING`;
+  production build is zero-overhead; instrumented build is
+  opt-in and we compare instrumented-vs-uninstrumented totals to
+  bound the perturbation.
+
+- **R5** — **Per-prompt variance large enough to obscure
+  speedup**. DFlash might win on some prompts and lose on
+  others. *Mitigation*: aggregation rules explicit (geometric
+  mean for headline + worst-prompt no-regression rule); ambiguous
+  results → NEUTRAL, not forced PASS.
+
+- **R6** — **Production target may not load through llama-bench
+  at ctx 262144** (memory layout, KV alloc, etc.). *Mitigation*:
+  Phase 1 closure binding uses ctx 4096 (smaller, definitely
+  loadable); Phase 3 also at ctx 4096 since prompts ≤ 1k tokens.
+  Long-context shipping outside T8 scope.
+
+- **R7** — **Phase 1's parity check fires off at ±25% from the
+  33.23 t/s baseline**, suggesting a wiring miss. *Mitigation*:
+  do NOT proceed past Phase 1 — investigate the gap. Common
+  causes: missed cparams_dft field, missed embeddings flip,
+  different ctx/KV quant between bench and production. Trace
+  again from `server-context.cpp` and fix.
+
+- **R8** — **DFlash drafter GGUF assumes `GGML_CUDA_DFLASH=ON`
+  build sees the sm_75 kernel symbols**. The dflash kernels are
+  in `ggml-cuda/dflash/` and link only when the flag is on.
+  *Mitigation*: build target includes the flag; bench links
+  correctly if it depends on the same llama/ggml libraries.
+
 ### Open questions to resolve at T8 session start
 
-Q1: **MTP plumbing — RESOLVED 2026-05-13 via trace of
-   `server-context.cpp:294-331`**: production sets 8 fields, NOT
-   just two. See the "MTP init recipe" block above in Phase 1.1
-   for the explicit sequence. Key non-obvious requirements:
-   model gating (`llama_model_n_nextn_layer > 0`), pooling
-   override (`NONE`), drafter cparams construction with
-   `mtp/mtp_op_type/embeddings`, decoder embedding flip
-   (`llama_decoder_set_embeddings(decoder, true)`), and verify
-   batch size = `n_max + 1`. Anything less and the bench measures
-   a path production doesn't use.
+Q1: **MTP plumbing — RESOLVED 2026-05-13** via trace of
+   `server-context.cpp:294-331`. See Phase 0 + Phase 1.1 MTP init
+   recipe block.
 
-Q2: **Diagnostic threshold for Phase 2 verdict (B) fixable vs
-   structural**: suggested if DFlash per-cycle wall ≥ 2× MTP
-   per-cycle wall AND the dominant cost is NOT prompt-eval or
-   one-time setup, treat as structural. Lock during Phase 2
-   implementation.
+Q2: **Diagnostic threshold for Phase 2 — RESOLVED 2026-05-13**.
+   Structural = (DFlash per-cycle ≥ 2× MTP per-cycle) AND
+   (>50% non-prompt-eval kernel work). Lock above.
 
-Q3: **PPL-of-output sequence length**: probably want PPL on the
-   first 64-128 generated tokens, not all 128, to avoid noise
-   from late-stream divergence. Suggested: capture
-   target_ppl_of_output_n64 + target_ppl_of_output_n128 and
-   surface both.
+Q3: **Phase 3 aggregation — RESOLVED 2026-05-13**. Per-prompt
+   median across r runs; geometric mean across prompts for
+   headline; worst-prompt no-regression rule. Lock above.
 
-Q4: **MTP --draft sweep**: spec_type=mtp with n_draft=1,2,3 at
-   Phase 3 to confirm production's draft=3 choice still holds
-   on this build. Cheap addition since we're already iterating
-   spec methods.
+Q4: **PPL-of-output sequence length**: capture both
+   `target_ppl_of_output_n64` (first 64 gen tokens) and
+   `target_ppl_of_output_n128` (full 128 gen tokens). Surface
+   both; the n64 number is for early-stream quality, n128 for
+   full-trajectory.
+
+Q5: **MTP `--draft 1/2/3` sweep at Phase 3**: include it. Cheap
+   addition. Confirms production's draft=3 still optimal on
+   this build.
+
+Q6: **Phase 1 helper extraction scope**: factor only `process_logits`
+   (line 159 overload), NOT the ostream/log_probs variant.
+   `perplexity.cpp` call sites stay unchanged otherwise.
+
+Q7: **`llama_set_embeddings` vs decoder-level**: bench uses
+   `llama_set_embeddings(ctx, true)` directly per Phase 0
+   finding; server's decoder wrapper not needed.
 
 ### Discipline reminders for T8
 
@@ -946,12 +1217,39 @@ Q4: **MTP --draft sweep**: spec_type=mtp with n_draft=1,2,3 at
   CLIs is NOT acceptable as a ship-gate measurement.
 - Per `feedback_surface_tradeoff_decisions`: spec extension
   surface area runs ~500 LOC; any deviation from this scope
-  (skipping --ppl-of-output, dropping a printer's spec columns)
-  surfaces first, locks in plan, then implements.
+  (skipping --ppl-of-output, dropping a printer's spec columns,
+  inlining process_logits instead of extracting it) surfaces
+  first, locks in plan, then implements.
 - Per `feedback_oneshot_then_evaluate`: build the extension as
-  one coherent commit; run the three-row closure binding; then
-  evaluate. Don't intermediate-evaluate the extension itself.
-- Per `feedback_no_skipping_lessening`: Phase 2 verdict (B)
+  one coherent commit; run the three-row closure binding +
+  parity check; then evaluate. Don't intermediate-evaluate
+  the extension itself.
+- Per `feedback_no_skipping_lessening`: Phase 2 verdict
   structural is a legitimate outcome — document it honestly. Do
-  NOT proceed to Phase 3 producing a measurement that buries the
-  structural finding.
+  NOT proceed to Phase 3 producing a measurement that buries
+  the structural finding.
+- Per `feedback_test_first_discipline`: write
+  `test-llama-bench-spec-init.cpp` smoke test BEFORE the dispatch
+  code. Assert init succeeds for each spec method against the
+  production target.
+- Per `feedback_no_overlapping_benchmarks` + `reference_gpu_sharing_protocol`:
+  Phase 3 measurement acquires COORD.md GPU lock; no overlap
+  with any inference / benchmark process. Phase 1 closure
+  (small, fast) can share since it's smoke-test scale.
+- Per `feedback_anchor_to_measured_baselines`: production
+  33.23 t/s memory citation is the SANITY ANCHOR for the
+  parity check (R1), NOT the binding for ship comparison.
+  Phase 3 measures everything fresh on the same build/hardware.
+- **MEMORY.md entry** on Phase 1 closure (substantive infra
+  landing) + on Phase 4 outcome (ship decision).
+- **Auto-memory entry** on Phase 1 closure ONLY if it produces
+  a generalizable lesson (e.g., another "spec said X, code
+  did Y" finding). Otherwise the project_dflash_t7 entry pattern
+  covers the closure adequately.
+- **Allium drift**: bench is not spec; T8 extension does NOT
+  affect `specs/dflash/dflash.allium` or `allium-tla-binding.json`
+  bindings. `scripts/check-bindings.py` non-applicable. (One-line
+  note in the closure commit.)
+- **Composite verification gate** (top of file `## Verification`)
+  to be amended at Phase 1 close to list `test-llama-bench-spec-init`
+  + the closure data artifact.
