@@ -393,7 +393,12 @@ Host-side launcher loops `il = 0..L_d-1` and launches once per drafter layer, ad
    - For each rotation pair (i, i + D/2) within each KV head:
        k_rot[h, i]       =   k[h, i] * cos - k[h, i+D/2] * sin
        k_rot[h, i+D/2]   =   k[h, i] * sin + k[h, i+D/2] * cos
-   - sincos read from SMEM table indexed by anchor_positions[slot, anchor].
+   - sin/cos computed in fp64 from `pow(rope_base, -2i/D)` then cast to fp32 at use.
+     fp32 `powf` and `cosf`/`sinf` in CUDA libdevice diverge from CPU libm by up to
+     6 fp32 ULP and 2 fp32 ULP respectively, which propagates through the K*c - K_partner*s
+     combination to push fp16 outputs past the ≤ 2 ULP byte-identity gate at
+     larger anchor positions. fp64 evaluation followed by fp32 cast targets ≤ 1 fp64
+     ULP on both sides, which the fp32 rounding boundary typically absorbs.
    - V unchanged.
 6. Vectorized half4 writes:
    k_cache_layer[slot, pos, :, :] ← K_rot   (16 half4 stores per anchor)
@@ -417,10 +422,10 @@ Host-side launcher loops `il = 0..L_d-1` and launches once per drafter layer, ad
 - Total: ~13 KiB per CTA. 4 blocks/SM occupancy fits within 64 KiB/SM.
 
 **Determinism (Gate 5b binding)**:
-- WMMA fragment shape fixed (m16n16k16), no occupancy-tuned heuristic.
-- K_norm reduction is warp-shuffle within one warp's lanes (warp owns one head's 128 elements) — no cross-warp / cross-block accumulation.
+- K_norm reduction is warp-shuffle + SMEM tree (head h's 128 positions distributed across all 128 threads of the CTA) — deterministic for fixed block dim (128), no atomic accumulation.
 - No `atomicAdd<float>` anywhere.
 - One CTA per (layer, slot, anchor) output tile — no Split-K cross-block reduction.
+- RoPE transcendentals (`pow`/`cos`/`sin`) evaluated in fp64 to keep the kernel byte-aligned with the fp32 scalar reference; cast to fp32 at use.
 
 **Performance envelope (sanity-bound, not closure binding)**:
 - FLOPs per CTA: K_proj + V_proj = 2 × 5120 × 1024 ≈ 10 MFLOPs; K_norm + RoPE ≈ 16 KFLOPs.
@@ -736,7 +741,7 @@ The test harness:
 |---|---:|---:|---:|---|
 | `dflash_drafter_forward` | ~20 KiB | ≤ 64 | 256 | 2 blocks/SM (cooperative) |
 | `dflash_combine_features` | 272 B (measured) | 64 (measured) | 128 | 2 blocks/SM (register-limited) |
-| `dflash_inject_kv_fused` | ~13 KiB | ≤ 48 | 128 | 4 blocks/SM |
+| `dflash_inject_kv_fused` | 4368 B (measured) | 74 (measured) | 128 | 2 blocks/SM (register-limited) |
 | `dflash_verify_attn` (KV_BLOCK_SIZE=32 + double-buffer) | ~32 KiB | ≤ 64 | 128 | 2 blocks/SM |
 | `dflash_argmax_match` | <1 KiB | ≤ 32 | 32 (1 warp) | 8+ blocks/SM |
 
