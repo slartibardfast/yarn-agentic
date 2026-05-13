@@ -54,5 +54,56 @@
 
   "divergences": [],
 
-  "bindings_external": []
+  "bindings_external": [
+    {
+      "allium": "FuseProjectionFcWeight",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-combine-features.cpp",
+      "rationale": "The combine_features unit test loads DFLASH_FC weight from the drafter GGUF, runs both fused kernel and scalar reference, and byte-compares context_states output. Reversing FC and hidden_norm or omitting fc produces visibly different output (cosine << 1.0 vs 1.0 byte-identity)."
+    },
+    {
+      "allium": "FeatureWidthMatchesTarget",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-combine-features.cpp",
+      "rationale": "Test parameter assertion: source_hiddens.shape[-1] == 5120 == drafter.hidden_size. Kernel signature enforces D_d=5120 at compile time; runtime shape check at test setup."
+    },
+    {
+      "allium": "CombineOrderFCThenHiddenNorm",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-combine-features.cpp",
+      "rationale": "Test uses a non-identity hidden_norm_weight (random fp16) so that reversing FC and hidden_norm order produces output that fails byte-identity vs the scalar reference. Float arithmetic property; not TLA+-modelable."
+    },
+    {
+      "allium": "ContextStatesAnchorLevel",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-combine-features.cpp",
+      "rationale": "Test allocates context_states at shape [N_slots, MAL_anchors, 5120] without per-layer replication. Inject test's 5 launches all read the same buffer at the same (slot, anchor) coordinate."
+    },
+    {
+      "allium": "PerLayerArity",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-inject-fused.cpp",
+      "rationale": "Test host-side launcher runs exactly L_d=5 inject kernel launches, one per drafter layer, each reading that layer's k_weight/v_weight/k_norm_weight slice. Loop count asserted; per-layer cache writes verified."
+    },
+    {
+      "allium": "HeadShapeMatchesDraft",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-inject-fused.cpp",
+      "rationale": "Test loads real per-layer k_weight [1024, 5120] (= 8 heads × 128 dim per head), v_weight same, k_norm_weight [128] from the drafter GGUF. Scalar reference uses the same shapes; fused kernel must match byte-identically."
+    },
+    {
+      "allium": "KAsymmetricallyNormedVNot",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-inject-fused.cpp",
+      "rationale": "Scalar oracle applies k_norm + RoPE to K only; V is projected and written without normalization or rotation. Fused kernel must agree byte-identically, so any symmetry violation (e.g., normalizing V) breaks the test. Float arithmetic + structural; not TLA+-modelable."
+    },
+    {
+      "allium": "InjectedAnchorAlignment",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-inject-fused.cpp",
+      "rationale": "Test passes anchor_positions[slot, anchor] explicitly; verifies fused kernel writes to k_cache_layer[slot, anchor_pos, :, :] and v_cache_layer[slot, anchor_pos, :, :], not at any other position."
+    },
+    {
+      "allium": "InjectPerLayerLaunches",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-inject-fused.cpp + review:host launcher structure",
+      "rationale": "Host launcher is a for-loop over L_d=5 with grid (N_slots, MAL_anchors) per launch. Test exercises this exact structure (no batched 3D launch alternative). Additional perf check at Gate 6 measures L2 hit rate to detect a future regression to inner-loop layer dispatch."
+    },
+    {
+      "allium": "KernelDeterminism",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-determinism-np-invariance.cpp + cpp:test-dflash-combine-features.cpp + cpp:test-dflash-inject-fused.cpp + grep:scripts/check-dflash-kernel-determinism.sh",
+      "rationale": "Structural precondition. Multi-layer binding: (a) byte-identical fused-vs-scalar sweeps at T3 catch local determinism violations; (b) np-invariance test at T7 catches batch-shape sensitivity; (c) static grep gate at build time forbids atomicAdd<float>, Split-K patterns, and non-compile-time tile dims in ggml-cuda/dflash-*.cu. No TLA+ operational form exists for this kind of structural rule on float kernels."
+    }
+  ]
 }

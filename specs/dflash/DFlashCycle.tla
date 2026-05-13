@@ -183,7 +183,7 @@ MultimodalTurnsRoutedAroundDrafter     == TRUE
 SourceLayerCountMatchesDrafterTraining == TRUE
 TargetLayerIdsPlusOneAtRuntime         == TRUE
 NoTreeDraftingNoChainRollout           == TRUE
-KernelDeterminism                      == TRUE  \* structural precondition; bound by C++ tests + grep checks
+\* KernelDeterminism moved to bindings_external (test-side binding)
 
 ----------------------------------------------------------------------------
 (* In-contract @invariants — those without an operational form in this
@@ -191,16 +191,16 @@ KernelDeterminism                      == TRUE  \* structural precondition; boun
 
 SourceLayersWithinTarget         == TRUE
 UniformSampleSpacing             == TRUE
-FeatureWidthMatchesTarget        == TRUE
 DeterminismPerDeployment         == TRUE
-FuseProjectionFcWeight           == TRUE
-CombineOrderFCThenHiddenNorm     == TRUE  \* implementation ordering; bound by C++ test against vLLM oracle
-ContextStatesAnchorLevel         == TRUE  \* output-shape contract; bound by combine_features unit test
-InjectPerLayerLaunches           == TRUE  \* dispatch shape; bound by code review + perf measurement
-PerLayerArity                    == TRUE
-HeadShapeMatchesDraft            == TRUE
-KAsymmetricallyNormedVNot        == TRUE
-InjectedAnchorAlignment          == TRUE
+\* FuseProjectionFcWeight       moved to bindings_external (test-side binding)
+\* FeatureWidthMatchesTarget    moved to bindings_external (test-side binding)
+\* CombineOrderFCThenHiddenNorm moved to bindings_external (test-side binding)
+\* ContextStatesAnchorLevel     moved to bindings_external (test-side binding)
+\* PerLayerArity                moved to bindings_external (test-side binding)
+\* HeadShapeMatchesDraft        moved to bindings_external (test-side binding)
+\* KAsymmetricallyNormedVNot    moved to bindings_external (test-side binding)
+\* InjectedAnchorAlignment      moved to bindings_external (test-side binding)
+\* InjectPerLayerLaunches       moved to bindings_external (test-side binding)
 ReuseAcrossDenoiseSteps          == TRUE
 SingleForwardPerStep             == TRUE
 QuerySpanIsOnePlusN              == TRUE
