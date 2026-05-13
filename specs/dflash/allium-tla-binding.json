@@ -202,8 +202,8 @@
     },
     {
       "allium": "EffectiveSeqLensSubtractsRejected",
-      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
-      "rationale": "On partial accept (n_accepted < BLOCK_SIZE), the target seq_len reverts to anchor_pos + n_accepted + 1 (accepted prefix + bonus row), discarding the speculatively-decoded rejected tail. Test forces a partial-accept by planting controlled drafter argmax that mismatches target at row k < BS, then asserts target seq_len = anchor_pos + k + 1."
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp + cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-state-save-restore.cpp",
+      "rationale": "T5: on partial accept (n_accepted < BS), target's seq_len reverts to anchor_pos + n_accepted + 1 (accepted prefix + bonus row). T6 extends the witness to drafter-side state: same partial accept, asserts the drafter's extract buffer length AND the DeltaNet recurrent state position counter both equal anchor_pos + n_accepted + 1 — the FULL effective seq_len rollback, not just target KV."
     },
     {
       "allium": "NumRejectedTokensFlowsBackToProposer",
@@ -229,6 +229,16 @@
       "allium": "AtomicityPerCycle",
       "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-cycle-orchestration.cpp",
       "rationale": "A DFlash cycle is all-or-nothing: combine_features + inject_kv (×5) + drafter_forward + drafter_lm_head + verify_decode + argmax_match + accept all complete before any externally-observable state mutates (target seq_len, emitted tokens). Test asserts no observable target/drafter state mutation occurs mid-cycle by polling state at sub-step boundaries via a deferred-mutation invariant check. If any kernel fails (e.g., a NaN cascade), the cycle aborts cleanly without partially advancing state."
+    },
+    {
+      "allium": "DraftKVRollbackOnRejection",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-state-save-restore.cpp",
+      "rationale": "On partial accept, the drafter-side state (including DeltaNet recurrent state at hybrid linear_attn layers AND the cb_eval extract buffer rows for positions beyond anchor_pos) must roll back to match target's effective seq_len. Test: drive two cycles, force a partial accept at cycle 1, snapshot drafter state pre-rollback and post-rollback, assert post-rollback state == target's expected state at the new anchor_pos. T6 wires `dflash_state_checkpoint`/`_restore` for the DeltaNet half and a hook trim API for the extract buffer half."
+    },
+    {
+      "allium": "InjectedKVEvictedOnAnchorAdvance",
+      "bound_by": "cpp:ik_llama.cpp/tests/dflash-speculative/test-dflash-state-save-restore.cpp",
+      "rationale": "When the cycle's anchor advances to a new position (bonus or accepted run), drafter cache entries from the prior cycle's inject pass at the OLD anchor positions must be evicted (overwritten) — not left as stale residue. Test: drive cycle N with anchor at P, accept zero (drafter cache populated at P..P+BS); drive cycle N+1 with anchor at bonus_pos; assert drafter cache at positions [P, bonus_pos) reflect the NEW cycle's inject pass, not the old one. T6 enforces this through the ping-pong scratch + the explicit re-inject every cycle."
     }
   ]
 }
