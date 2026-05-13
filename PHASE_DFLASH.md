@@ -45,11 +45,64 @@ Checkbox semantics per CLAUDE.md §5.
   - `kernel-design.md §7` binding-table drift check (5b) added; two pre-existing drift bugs (`InjectKV`, `VerifyOutputArbitratedByTarget`) fixed.
   - All 6 drift checks (forward, reverse, C++ citations, divergence, §7 table, external) green.
 
-- [ ] **T4 — Gate 3b/4: drafter forward + argmax + plumbing**
-  - Persistent `dflash_drafter_forward` kernel (cooperative launch, 5 layers + lm_head).
-  - `dflash_argmax_match` kernel (per-slot accept-prefix + bonus token).
-  - DFlash arch dispatch + drafter weight loading + shared embed/lm_head materialization.
-  - Closure: drafter logits within 1e-5 NMSE vs vLLM reference; ≤ 64 regs/thread.
+- [ ] **T4 — Gate 3b/4: drafter forward + argmax + plumbing** (IN FLIGHT)
+
+  Allium hygiene done (test-first contract for kernel + plumbing):
+  - 16 T4 invariants migrated to `bindings_external` in
+    `allium-tla-binding.json` (pointed at not-yet-written test files).
+    Drift check 6/6 GREEN.
+  - Spec edits committed to `kernel-design.md §6.1`: signature
+    clarifications (drop `target_features`, output is `out_hidden`
+    not `output_logits`, `input_tokens_emb` pre-embedded F16).
+
+  Test oracle infrastructure done:
+  - `tests/dflash-speculative/wmma-mimicking-oracle.h` — CPU emulation
+    of WMMA m16n16k16 Turing tensor-core MMA with binary-tree-within-
+    tile fp32 reduction. Plus serial-fp32 sanity-check pair.
+  - `tests/dflash-speculative/test-wmma-mimicking-oracle.cpp` — oracle
+    self-test, sweeps M={16}, N={16,64,128,1024}, K={16…5120}, 4 seeds;
+    confirms determinism + sub-ULP agreement vs serial fp32 at K≤128
+    and bounded-rate drift at K=5120. PASS at /opt/llm/build-dflash.
+  - `tests/dflash-speculative/dflash-drafter-forward-reference.h` — full
+    scalar drafter reference composing WMMA oracle + serial fp32 RMSNorm
+    + fp64-transcendental RoPE + scalar fp32 single-query SWA/full
+    attention + silu + gate*up + residual at attention + MLP boundaries.
+    Tiny-shape smoke test (L_d=2, D_emb=64, …) confirms 512/512 cells
+    non-zero with mean_abs=0.126.
+  - `tests/dflash-speculative/test-dflash-drafter-forward.cpp` — test
+    driver. Phase 1 (always runs): reference smoke. Phase 2 (stub-
+    mode): kernel-vs-reference at production shape. Currently STUB_
+    KERNEL=true → exits 77 (CTest SKIP) until kernel body lands.
+
+  Skeleton kernel done:
+  - `ggml/src/ggml-cuda/dflash/dflash-drafter-forward.{cuh,cu}` —
+    launcher signature locked per `kernel-design.md §6.1`. Stub body
+    zeros the output buffer.
+
+  Still to do for T4 closure:
+  - Kernel body (the big work): per-layer pipeline implementation. Two
+    valid implementation strategies under evaluation:
+      A. Per-layer separate launches (simpler, ~50 launches, ~250 µs
+         overhead) — correctness-first.
+      B. Cooperative mega-kernel with `cg::this_grid().sync()` (spec
+         literal, perf-tuned).
+    Phased approach: start with A, validate byte-identity vs reference,
+    then refactor to B if T8 perf gate demands it. Either approach
+    requires SMEM chunking for intermediate=17408 MLP buffers (too big
+    for one CTA's SMEM at full size on sm_75 = 64 KiB).
+  - `dflash_drafter_lm_head` separate kernel — BF16 GEMV against target's
+    `output.weight` [5120, 248320].
+  - `dflash_argmax_match` kernel — per-slot accept-prefix + bonus.
+  - DFlash arch dispatch + drafter loader plumbing.
+  - vLLM reference logits dump for closure binding.
+
+  Closure binding (per `kernel-design.md §10`):
+  - Kernel-vs-reference byte-identity sweep across {N_slots×BLOCK_SIZE×
+    seed} configurations at production shape, ≤ 1 fp16 ULP at ≤ 1% rate.
+  - Drafter logits within 1e-5 NMSE vs vLLM PR #40898 reference at
+    BLOCK_SIZE=4 on a fixed prompt.
+  - Measured persistent kernel register count ≤ 64 regs/thread on
+    sm_75 via `--ptxas-options=-v`.
 
 - [ ] **T5 — Gate 4: full block-emit + accept loop on Qwen3.6-27B**
   - `common_speculative_dflash_*` wiring.
