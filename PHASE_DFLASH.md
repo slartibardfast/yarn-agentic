@@ -163,12 +163,54 @@ Checkbox semantics per CLAUDE.md §5.
   If Phase A scalar-fp32 pipeline meets the ≥ 1.5× MTP ship bar
   at T8, Phase B is unnecessary.
 
-- [ ] **T5 — Gate 4: full block-emit + accept loop on Qwen3.6-27B**
+- [~] **T5 — Gate 4: full block-emit + accept loop on Qwen3.6-27B** (NEUTRAL, partial)
 
   Promote the standalone `tests/dflash-speculative/test-dflash-closure.cpp`
   orchestration into the production llama-* framework. Standalone harness
   stays for byte-identity unit tests (fixtures); production runs against
   live target inference rather than recorded fixtures.
+
+  **Closure run on `Write a short python function for quicksort`,
+  n_predict=128, BLOCK_SIZE=4, temp=0** (captured in
+  `data/gate4-dflash-e2e.runlog`):
+
+  - Pipeline closes end-to-end without crash or NaN. ✓
+  - 39 cycles, 156 draft tokens, 88 accepted.
+  - **Mean accept rate: 2.256 tokens/draft** (well above the ≥ 1.0 floor). ✓
+  - Output BEGINS with a correct, complete quicksort implementation:
+    ```python
+    def quicksort(arr):
+        if len(arr) <= 1:
+            return arr
+        pivot = arr[len(arr) // 2]
+        left = [x for x in arr if x < pivot]
+        middle = [x for x in arr if x == pivot]
+        right = [x for x in arr if x > pivot]
+        return quicksort(left) + middle + quicksort(right)
+    ```
+  - Late-stream output degrades into a repetition loop:
+    "efficient and efficient and efficient and efficient and easy to understand."
+  - tok/s: 1.22 (perf binding is T8, not T5).
+
+  **Why `[~]` partial** (per CLAUDE.md §5 checkbox semantics):
+
+  The "no token-loop" gate in the locked closure binding was not met.
+  Root cause is the bonus-position context drift inherent to the T5
+  no-state-save/restore decision: in cycle N's verify batch, the slot
+  at the bonus position is decoded with input = c_{n_accepted+1} (the
+  rejected drafted token), not with input = bonus. The drafter's
+  cb_eval extract buffer therefore holds slightly-wrong hiddens at
+  that one position, and drift accumulates over cycles.
+
+  T6's state save/restore eliminates this — restore the target's
+  bonus-position hiddens from the correct decode. This is the LOCKED
+  scope split from the T5 Q&A.
+
+  Subtasks tracked inline (closes when):
+   - T6 lands state save/restore → re-run T5 closure binding → expect
+     coherent output past the structurally-correct prefix.
+
+  Until T6 closes, T5 ships with the documented late-stream drift.
 
   Locked decisions (Q&A 2026-05-13 end-of-session):
 
