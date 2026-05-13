@@ -5175,3 +5175,122 @@ closes it.
   - `kernel-design.md`: T4 metric revised (committed d93b9cb); T5
     operating BS=4 documented inline in src/llama-dflash.cpp.
   - `PHASE_DFLASH.md`: T5 `[~]` partial; T6/T7/T8 still `[ ]`.
+
+---
+
+## 2026-05-13 — T6 CLOSED [x] on `production/2026-q2-next` (probe-before-implementing path)
+
+DFlash workstream T6 (Gate 5: 27B np=1 determinism + late-stream
+coherence) closes GREEN on both gates after a mid-phase restructure.
+
+### Mid-T6 design discovery
+
+Original T6 plan (T6.A foundation → T6.B bonus re-decode → T6.D
+verify_attn from scratch → T6.E byte-identical determinism → T6.F
+coherence) was empirically wrong about what's required:
+
+  - T6.A's parallel ping-pong DeltaNet snapshot is FUNCTIONALLY
+    REDUNDANT with `gpu_checkpoint.s_l_shadow` (already in libllama
+    for MTP-IR). Per-step granularity comes from PER_STEP mode's
+    `ckpt.per_step_ssm[il]` + `ckpt.per_step_qkv[il]` populated
+    automatically during a verify decode when `kv.save_per_step_ssm`
+    is true.
+
+  - T6.B's "commit re-decode of [id_last, accepted..., bonus]"
+    EMPIRICALLY REGRESSED coherence (1.667 / 1.286 vs T5's 2.256)
+    because the re-decode batch shape `n_accepted+2 ≤ 6` differs
+    from the verify shape `BS+1=5`. ik_llama.cpp's CUDA attention
+    is NOT batch-invariant at fixed seq positions → K, V differ
+    slightly between the two decodes → drift accumulates.
+
+  - T6.D `dflash_verify_attn` from scratch was originally scoped for
+    DETERMINISM, not coherence. After fixing the design, 3 identical
+    runs produce byte-identical SHA-256 hashes WITHOUT a new kernel.
+    Target's standard CUDA attention is deterministic at fixed batch
+    shape.
+
+### The redesigned T6 cycle
+
+```
+1. llama_spec_ckpt_save(ctx, 0)             # shadow + save_per_step_ssm=true
+2. llama_decode(verify_batch)               # BS+1 tokens; per-step intermediates
+                                              auto-captured to per_step_ssm[il] /
+                                              per_step_qkv[il]
+3. sample target argmax per batch position; compute n_accepted
+4. llama_spec_ckpt_restore(ctx, 0, P, n_accepted)
+                                            # ggml_backend_cuda_per_step_restore_layers
+                                              stitches s_l[il] to "after id_last +
+                                              n_accepted drafts" + seq_rm to
+                                              P+n_accepted+1
+5. llama_dflash_trim_extract(ctx, P+n_accepted+1, -1)
+                                            # cb_eval extract buffer follows seq_rm
+6. emit accepted drafts + bonus = sampled_at[n_accepted]
+   set id_last = bonus  (NO separate single-token bonus decode)
+```
+
+**Key design**: bonus becomes batch[0] of the NEXT cycle's verify
+batch. Every multi-token decode in the loop is exactly BS+1 = 5
+tokens. Consistent batch shape across all cycles eliminates the
+batch-shape K, V variance that doomed T6.B's commit re-decode.
+
+`llama_spec_ckpt_discard` is NOT called between cycles — it resets
+`selected_spec_mode` to NONE and breaks the next save.
+`save_per_step_ssm` stays on throughout the loop; the BS+1 batch
+size matches the allocated per-step buffer.
+
+### Closure evidence
+
+**T6.α late-stream coherence** (data/gate5-T6alpha-coherence.runlog):
+
+  - Prompt: `Write a short python function for quicksort`, n=128,
+    BS=4, temp=0.
+  - Mean accept rate: 2.879 tokens/draft (T5 baseline: 2.256, +28%).
+  - 33 cycles, 132 draft tokens, 95 accepted (72% accept-per-draft).
+  - 1.33 tok/s (T5: 1.21).
+  - Output coherent through the entire n_predict=128 window. Matches
+    target-only's thinking-process structure exactly
+    (`1. Understand User Request`, `2. Identify Key Requirements`,
+    bullet points, etc.). No "efficient and efficient" repetition
+    tail, no "* * * *" loop.
+
+**T6.β 3-run byte-identical determinism** (data/gate5-T6beta-determinism.json):
+
+  - 3 runs of `llama-dflash-speculative-simple` at temp=0, np=1 on
+    the same prompt.
+  - SHA-256 (all 3 runs): `6c207f9b3d7dc98e128a820490fedcb84f30778d068de167c1db23b2df8a67f3`.
+  - All identical: empirical determinism gate closes.
+
+### What this means for the workstream
+
+  - T6.D (`dflash_verify_attn` from scratch + BF16 cast): NOT
+    NEEDED. Avoided ~80–150k tokens of CUDA PTX kernel work per
+    `feedback_probe_before_implementing` — we measured first,
+    found the existing attention already determines our gate.
+
+  - T6.A's library code (`llama_dflash_state_snapshot/_restore`,
+    ping-pong scratch) remains in libllama, dormant in the
+    production example. Kept per the user's call: may be a superset
+    of functionality we need later (e.g., multi-checkpoint scenarios)
+    or relevant in a third redesign for np>1 multi-slot work.
+
+  - Next gates: T7 (np-invariance binding at np ∈ {1, 2, 4, 8}),
+    T8 (Qwen3.6-27B speedup measurement vs MTP baseline).
+
+### Cross-cutting lessons (private auto-memory candidates)
+
+  - `feedback_probe_before_implementing` paid off: empirical
+    measurement before building a custom CUDA kernel saved the
+    work AND would have shipped a kernel with no measurable
+    benefit had we built it eagerly.
+
+  - The original T6 plan's locked decisions ("determinism first,
+    then coherence") survived as ORDERING but turned out to be
+    nearly free once the right primitive (`llama_spec_ckpt_*`) was
+    identified. The deep-dive on mental model — re-reading the
+    existing infrastructure end-to-end before writing new code —
+    was the load-bearing move.
+
+  - Drift diagnoses must include "what's the right batch shape to
+    avoid variance?" as a primary axis. Re-decoding committed tokens
+    at a different shape than the original verify is a self-inflicted
+    drift source on non-batch-invariant attention stacks.
