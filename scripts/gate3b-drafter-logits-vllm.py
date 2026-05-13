@@ -53,6 +53,13 @@ def main():
     os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR",  "/opt/models/cache/torch-inductor")
     os.environ.setdefault("FLASHINFER_WORKSPACE_BASE","/opt/models/cache/flashinfer")
     os.environ.setdefault("VLLM_LOGGING_LEVEL",       "WARNING")
+    # The runtime-installed cloudpickle patch (vllm_sm75_patches) only
+    # applies in the LLM init process. At TP>1, the engine-core
+    # subprocess decoder doesn't see the patch and raises
+    # "Extension type code 2 is not supported". Allow cloudpickle
+    # globally for the duration of this script — we trust the function
+    # payload we ship (it's our own RPC function).
+    os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import vllm_sm75_patches
@@ -73,13 +80,21 @@ def main():
 
     print(f"\n=== init vLLM (DFlash, BS={args.block_size}) ===", flush=True)
     t0 = time.time()
+    # TP=1 — the vllm_sm75_patches.combine_hidden_states monkey-patch
+    # replaces a class method on the LLM-init process's class object.
+    # TP=2 workers run in subprocesses that get their own copy of the
+    # class object and do NOT see the patch, triggering an fp16/fp32
+    # dtype mismatch at the drafter's fc projection. T2's dflash-extract
+    # script used TP=1 and worked. We mirror that here. At TP=1 the
+    # 27B INT4 target fits in 1× 24 GiB GPU at ~14 GiB; drafter adds
+    # ~3.3 GiB; cpu_offload_gb absorbs the rest.
     llm = LLM(
         model=args.target,
-        tensor_parallel_size=2,
+        tensor_parallel_size=1,
         dtype="auto",
         quantization="gptq_marlin",
-        gpu_memory_utilization=0.80,
-        cpu_offload_gb=0,
+        gpu_memory_utilization=0.92,
+        cpu_offload_gb=16,
         enforce_eager=True,  # turn off CUDA graphs so the hook fires on every call
         max_num_batched_tokens=4096,
         disable_custom_all_reduce=True,
