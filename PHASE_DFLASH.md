@@ -79,22 +79,47 @@ Checkbox semantics per CLAUDE.md §5.
     launcher signature locked per `kernel-design.md §6.1`. Stub body
     zeros the output buffer.
 
+  Kernel body Phase A landed:
+  - `dflash-drafter-forward.cu` — 10-sub-kernel per-layer pipeline
+    (rmsnorm, gemm_row_x_col, q_norm_rope, attention, residual_add,
+    silu_mul, select_output). Launcher loops L_d=5 layers.
+  - Scalar fp32 throughout. WMMA → scalar fp32 deviation surfaced in
+    §6.1 (same precedent as T3 inject_kv_fused).
+  - Working data: kernel runs end-to-end at tiny shape (L_d=2, D_emb=64,
+    …), produces non-zero output, comparable to reference.
+
+  Current kernel vs reference divergence (tiny shape, random fp16
+  weights, deterministic seed):
+  - max_ulp=2048
+  - >1-ULP rate=9.96 %
+  - >2-ULP rate=5.86 %
+  - Worst case: ref=0.0 vs kernel=1.22e-4 (fp16 subnormal)
+
+  Divergence source = reduction-order between reference and kernel:
+  - Reference RMSNorm/q_norm:   serial fp32 sum_sq
+  - Kernel:                     warp-shuffle butterfly + SMEM tree
+  - Reference matmul (via WMMA oracle): binary-tree-within-tile
+  - Kernel matmul:              serial K-loop per output element
+
+  Both deterministic; gap is structural fp32 reordering. Same regime
+  T3 saw before its reduction-order alignment landed. Next iteration:
+  tighten reference reductions to match kernel's parallel patterns,
+  collapse to ≤ 1 fp16 ULP at ≤ 1% rate (T3 acceptance gate).
+
   Still to do for T4 closure:
-  - Kernel body (the big work): per-layer pipeline implementation. Two
-    valid implementation strategies under evaluation:
-      A. Per-layer separate launches (simpler, ~50 launches, ~250 µs
-         overhead) — correctness-first.
-      B. Cooperative mega-kernel with `cg::this_grid().sync()` (spec
-         literal, perf-tuned).
-    Phased approach: start with A, validate byte-identity vs reference,
-    then refactor to B if T8 perf gate demands it. Either approach
-    requires SMEM chunking for intermediate=17408 MLP buffers (too big
-    for one CTA's SMEM at full size on sm_75 = 64 KiB).
+  - Tighten reference's reduction order to match kernel (RMSNorm/q_norm
+    parallel-tree, matmul serial-K, softmax max/sum parallel-tree).
+  - Scale test up to production shape (D_emb=5120, …). Random-weight
+    test at production scale validates the kernel's full pipeline at
+    sm_75.
   - `dflash_drafter_lm_head` separate kernel — BF16 GEMV against target's
     `output.weight` [5120, 248320].
   - `dflash_argmax_match` kernel — per-slot accept-prefix + bonus.
   - DFlash arch dispatch + drafter loader plumbing.
-  - vLLM reference logits dump for closure binding.
+  - vLLM reference logits dump for closure binding (drafter logits
+    within 1e-5 NMSE).
+  - Phase B optimization: cooperative WMMA mega-kernel — gated on T8
+    perf outcome. Not part of T4 closure if Phase A meets perf.
 
   Closure binding (per `kernel-design.md §10`):
   - Kernel-vs-reference byte-identity sweep across {N_slots×BLOCK_SIZE×
