@@ -183,6 +183,7 @@ MultimodalTurnsRoutedAroundDrafter     == TRUE
 SourceLayerCountMatchesDrafterTraining == TRUE
 TargetLayerIdsPlusOneAtRuntime         == TRUE
 NoTreeDraftingNoChainRollout           == TRUE
+KernelDeterminism                      == TRUE  \* structural precondition; bound by C++ tests + grep checks
 
 ----------------------------------------------------------------------------
 (* In-contract @invariants — those without an operational form in this
@@ -193,6 +194,9 @@ UniformSampleSpacing             == TRUE
 FeatureWidthMatchesTarget        == TRUE
 DeterminismPerDeployment         == TRUE
 FuseProjectionFcWeight           == TRUE
+CombineOrderFCThenHiddenNorm     == TRUE  \* implementation ordering; bound by C++ test against vLLM oracle
+ContextStatesAnchorLevel         == TRUE  \* output-shape contract; bound by combine_features unit test
+InjectPerLayerLaunches           == TRUE  \* dispatch shape; bound by code review + perf measurement
 PerLayerArity                    == TRUE
 HeadShapeMatchesDraft            == TRUE
 KAsymmetricallyNormedVNot        == TRUE
