@@ -99,6 +99,7 @@ def main():
     # The hook stashes the FIRST call's output into the worker's state, then
     # detaches subsequent calls. We retrieve the stashed tensor via a second
     # collective_rpc after generate completes.
+    target_layer_ids = [1, 16, 31, 46, 61]
     def worker_install_hook(self):
         import torch
         # Find the drafter on this worker. Walk the speculative_worker /
@@ -167,6 +168,54 @@ def main():
 
         import types
         drafter.compute_logits = types.MethodType(patched_compute_logits, drafter)
+
+        # Also install hooks on the TARGET model to capture per-source-
+        # layer hidden states. These feed our kernel pipeline via
+        # combine_features (T3) and are the input to which the drafter
+        # logits comparison binds. Mirror the dflash-extract-vllm.py
+        # hook strategy: walk decoder layers, register forward hooks
+        # that sum (hidden_states, residual) and capture as fp32 cpu np.
+        target_model = self.model_runner.model
+        best = None
+        best_path = None
+        for nm, mod in target_model.named_modules():
+            if not isinstance(mod, torch.nn.ModuleList):
+                continue
+            if len(mod) == 0:
+                continue
+            sample = mod[0]
+            attr_set = set(name for name, _ in sample.named_children())
+            looks_like_decoder = (
+                ("mlp" in attr_set or "feed_forward" in attr_set) and
+                ("self_attn" in attr_set or "attention" in attr_set or
+                 "linear_attn" in attr_set or "attn" in attr_set)
+            )
+            if not looks_like_decoder:
+                continue
+            if best is None or len(mod) > len(best):
+                best = mod
+                best_path = nm
+        self._dflash_target_captures = {}
+        self._dflash_target_hook_handles = []
+        if best is not None:
+            print(f"[worker] target layers at {best_path!r}  n={len(best)}", flush=True)
+            target_captures = self._dflash_target_captures
+            def make_target_hook(layer_id):
+                def hook(module, args_, output):
+                    if isinstance(output, tuple) and len(output) == 2 and \
+                       isinstance(output[0], torch.Tensor) and \
+                       isinstance(output[1], torch.Tensor):
+                        t = (output[0] + output[1])
+                    else:
+                        t = output[0] if isinstance(output, tuple) else output
+                    if isinstance(t, torch.Tensor):
+                        arr = t.detach().to(torch.float32).cpu().numpy()
+                        target_captures[layer_id] = arr
+                return hook
+            for il in target_layer_ids:
+                if 0 <= il < len(best):
+                    self._dflash_target_hook_handles.append(
+                        best[il].register_forward_hook(make_target_hook(il)))
         self._dflash_drafter_ref = drafter
         return {
             "installed": True,
@@ -191,9 +240,15 @@ def main():
 
     def worker_collect(self):
         caps = getattr(self, "_dflash_logit_captures", [])
-        # Return as serialisable dict (numpy arrays via cloudpickle in our
-        # patched serial_utils).
+        target_caps = getattr(self, "_dflash_target_captures", {})
+        # Free hook handles to stop further captures.
+        for h in getattr(self, "_dflash_target_hook_handles", []):
+            try:
+                h.remove()
+            except Exception:
+                pass
         return {"captures": caps,
+                "target_captures": dict(target_caps),
                 "drafter_class": type(getattr(self, "_dflash_drafter_ref", None)).__name__}
 
     rpc_collect = llm.collective_rpc(worker_collect)
@@ -223,6 +278,18 @@ def main():
     np.save(out_dir / "drafter-prompt-tokens.npy",
             np.array(outs[0].prompt_token_ids, dtype=np.int64))
 
+    # Save target captures (per-source-layer hidden states) too.
+    target_caps = rpc_collect[0].get("target_captures", {})
+    n_target_layers_captured = 0
+    for il, arr in target_caps.items():
+        # Squeeze a leading batch dim if present.
+        if arr.ndim == 3 and arr.shape[0] == 1:
+            arr = arr[0]
+        tpath = out_dir / f"target-layer{il}-bs{args.block_size}-vllm.npy"
+        np.save(tpath, arr.astype(np.float32))
+        print(f"  wrote {tpath}  shape={arr.shape}", flush=True)
+        n_target_layers_captured += 1
+
     meta = {
         "block_size": args.block_size,
         "n_query_positions": int(logits.shape[0]),
@@ -236,6 +303,7 @@ def main():
         "hidden_dtype": str(hidden.dtype),
         "hidden_shape": list(hidden.shape),
         "vllm_drafter_class": rpc_collect[0].get("drafter_class"),
+        "target_layers_captured": n_target_layers_captured,
     }
     meta_path = out_dir / f"drafter-meta-bs{args.block_size}.json"
     meta_path.write_text(json.dumps(meta, indent=2))
