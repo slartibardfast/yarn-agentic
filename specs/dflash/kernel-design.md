@@ -271,19 +271,18 @@ Ping-pong: alternate `state_scratch[0]` and `state_scratch[1]` across cycles. St
 
 **File**: `ggml-cuda/dflash-drafter-forward.cu`
 
-**Signature**:
+**Signature** (revised at T4 implementation per the two clarifications below):
 
 ```cpp
 template<int BLOCK_SIZE>                   // {4, 5, 6, 8}
 __global__ __launch_bounds__(256, 2)
 void dflash_drafter_forward(
-    const half * __restrict__ input_tokens,       // [N_slots, 1+BLOCK_SIZE]
-    const half * __restrict__ target_features,    // [L_d=5, N_slots, D_d=5120]
+    const half * __restrict__ input_tokens_emb,   // [N_slots, 1+BLOCK_SIZE, D_emb=5120]
+    const half * __restrict__ k_cache,            // [L_d=5, N_slots, SeqLen, 8, 128]
+    const half * __restrict__ v_cache,            // [L_d=5, N_slots, SeqLen, 8, 128]
+    const int * __restrict__ slot_positions,      // [N_slots] — anchor_pos
     const drafter_weights_t weights,              // packed pointer-of-pointers (5 layers)
-    half * __restrict__ k_cache,                  // [L_d=5, N_slots, SeqLen, 8, 128]
-    half * __restrict__ v_cache,                  // [L_d=5, N_slots, SeqLen, 8, 128]
-    const int * __restrict__ slot_positions,      // [N_slots] — KV seq_pos for each slot
-    half * __restrict__ output_logits,            // [N_slots, BLOCK_SIZE, V=248320]
+    half * __restrict__ out_hidden,               // [N_slots, BLOCK_SIZE, D_emb=5120]
     int N_slots
 );
 
@@ -292,6 +291,34 @@ void launch_dflash_drafter_forward(
     /* args */
 );
 ```
+
+**Two clarifications from T4 implementation (vs original draft):**
+
+1. **`target_features` parameter is REMOVED.** The original signature passed
+   `target_features` to `dflash_drafter_forward`, but the cooperative kernel
+   does NOT compute K/V projections — those are computed and written to the
+   cache by `dflash_inject_kv_fused` upstream (per
+   `@KAsymmetricallyNormedVNot`). The drafter forward only READS `k_cache`
+   and `v_cache`; it does not need to see the un-projected features. Per the
+   pseudocode block already in this spec (line annotated "NOT done here —
+   done by inject_kv_fused"), this matches what the kernel actually does.
+   Removing `target_features` from the signature matches reality.
+
+2. **Output is `out_hidden`, not `output_logits`.** Per the "Kernel boundary —
+   lm_head" paragraph below, lm_head is a separate kernel
+   (`dflash_drafter_lm_head`). The cooperative kernel's output is the
+   per-position hidden state at the BLOCK_SIZE mask-token positions
+   (anchor's hidden state is discarded — it would feed the bonus-token
+   slot which is not part of the drafter's output). Shape is
+   `[N_slots, BLOCK_SIZE, D_emb=5120]`. The separate `dflash_drafter_lm_head`
+   kernel consumes this hidden state and produces logits.
+
+3. **`input_tokens_emb` is pre-embedded.** Embedding lookup from target's
+   `token_embd.weight` (F16, per `@AnchorEmbeddingFromTarget` +
+   `@SharedEmbedAndLMHead`) happens at the caller in `apply_inject_kv` or
+   in a small embedding-gather kernel BEFORE the cooperative drafter
+   forward — it is not a step of the cooperative kernel itself. This
+   simplifies the cooperative grid (no embed-lookup divergence at layer 0).
 
 **Cooperative launch**: `cudaLaunchCooperativeKernel`. Grid sized to fit `max_active_blocks_per_SM × 72 SMs` per the cooperative-launch constraint.
 
