@@ -372,8 +372,34 @@ Checkbox semantics per CLAUDE.md §5.
   attention kernels — fixed by T7 np-invariance work, not T6.
 
 - [ ] **T7 — Gate 5b: drafter np-invariance binding**
-  - `tests/test-dflash-determinism-np-invariance.cpp` — SHA-256 match across np ∈ {1, 2, 4, 8}.
-  - Closure: bit-identical drafter logits across np values. If fail, instrument per-kernel; do not bail.
+
+  **Closure binding (operational)**:
+  - Test: `tests/dflash-speculative/test-dflash-np-invariance.cpp`.
+  - Setup: N parallel slots, all with IDENTICAL content (same prompt +
+    same initial id_last + same target_hiddens at the 5 source layers).
+  - Per cycle: run `combine_features` + `inject_kv_fused ×L_d` +
+    `drafter_forward` + `drafter_lm_head` + CPU argmax → BLOCK_SIZE
+    candidates per slot. Capture slot 0's `drafter_logits` to host.
+  - Closure: SHA-256(slot 0's drafter_logits) identical across np ∈
+    {1, 2, 4, 8} → GREEN.
+  - Failure mode: bisect kernels (combine first — simplest grid,
+    `(N_slots, MAL_anchors)`; then inject — same grid shape; then
+    drafter_forward — cooperative grid where grid-sync may be
+    N_slots-dependent; then lm_head). Per `feedback_no_skipping_lessening`,
+    instrument and resolve; do not declare structural.
+
+  **Read first** (before any code):
+  - `project_mtp_multislot_determinism_investigation_failed` — terminal
+    dead end for MTP-IR's multi-slot determinism. Failure modes there
+    may inform T7's instrumentation strategy.
+  - `examples/server/server-context.cpp` lines ~3380-3440 (multi-slot
+    drafting via `common_speculative_draft_batched`) and ~3960-4050
+    (`restore_speculative_checkpoint` at GPU_FALLBACK mode with the
+    per-slot re_batch pattern).
+  - `feedback_survey_prior_phase_before_new_mechanism` — grep
+    PHASE history for np-invariance / batch-shape-invariance work
+    that may already exist (TML 3-kernel pattern is in
+    kernel-design.md §5.5 but its empirical status at np>1 is unclear).
 
 - [ ] **T8 — Gate 6: Qwen3.6-27B speedup measurement**
   - Pre-Gate MTP `--draft 3` baseline measurement (mandatory anchor — see auto-memory `feedback_anchor_to_measured_baselines`).
@@ -408,3 +434,143 @@ Allium ↔ TLA+ ↔ C++ drift check (must pass on every commit to spec dir):
 ```sh
 python3 scripts/check-bindings.py
 ```
+
+---
+
+## Pickup brief — T7 (drafter np-invariance) — written 2026-05-13 pre-compaction
+
+Use this as the first read on a fresh T7 session.
+
+### Where we left off
+
+- **T1–T6 closed** on `production/2026-q2-next`. Production path
+  uses `examples/dflash-speculative-simple` driving
+  `llama_spec_ckpt_*` PER_STEP mode at np=1.
+- T6 closure metrics: accept 2.879 tokens/draft (+28% vs T5's 2.256),
+  3-run byte-identical SHA-256. T6.D `dflash_verify_attn` from
+  scratch was AVOIDED via the empirical determinism probe.
+- T6.A library code (parallel ping-pong DeltaNet snapshot) was
+  REMOVED at post-T6 cleanup as redundant with
+  `gpu_checkpoint.s_l_shadow`. Resurrectable from git history.
+- Server hard-gates `n_parallel == 1` when `speculative.type == DFLASH`
+  (T5.8, `examples/server/server-context.cpp::init()`). T7 must
+  lift or bypass this.
+
+### What T7 must do
+
+Establish empirical np-invariance of the **drafter kernels**:
+running the same content through N parallel slots produces
+byte-identical drafter logits at slot 0 regardless of N. This
+is a KERNEL-LEVEL invariance check, not a full-cycle coherence
+check — it probes whether our T3/T4 kernels honor the TML
+3-kernel batch-invariance pattern (kernel-design.md §5.5)
+empirically.
+
+### Design assumptions from T6 that DO NOT TRANSFER to np>1
+
+1. **`LLAMA_SPEC_CKPT_PER_STEP` is force-fallback'd to GPU_FALLBACK
+   when `n_seq_max > 1`** (src/llama.cpp:8107). Our T6.α design
+   leveraged PER_STEP's free per-step restore; at np>1 the server
+   pattern is "shadow + per-slot re_batch decode of accepted tokens".
+   The re_batch has shape `n_accepted+1` per slot, DIFFERENT from
+   the multi-slot verify's interleaved shape — this is the
+   batch-shape-variance pattern that broke T6.B. MTP-IR ships it
+   at multi-slot; whether DFlash can tolerate it is empirical.
+
+2. **The "bonus = batch[0] of next cycle's verify" trick is np=1-only**.
+   At np>1 the verify batch interleaves all slots' tokens, so bonus
+   from slot A doesn't land at a fixed position in slot A's next
+   verify. T7 doesn't need to handle this (it's a kernel-invariance
+   probe, not a full-cycle test) but if T8 wants np>1 end-to-end,
+   this is an open design question.
+
+3. **Per-step buffers sized for `BS+1` per cycle** at T6 binding.
+   At np>1 with multi-slot verify, batch size is `N_slots × (BS+1)`.
+   The per-step buffer may need re-sizing — except PER_STEP isn't
+   used at np>1 anyway.
+
+### Operational task plan for T7 (fresh session, in order)
+
+1. **Read `project_mtp_multislot_determinism_investigation_failed.md`**
+   in auto-memory. Failure modes there may inform T7's instrumentation
+   strategy. The TL;DR: production-shape kernels are already
+   deterministic in unit tests; the multi-slot bug is somewhere
+   else. T7 may hit the same wall — be ready.
+
+2. **Survey for prior np-invariance / batch-shape-invariance work**
+   per `feedback_survey_prior_phase_before_new_mechanism`. The TML
+   3-kernel pattern in kernel-design.md §5.5 is the design contract;
+   grep for empirical tests of it.
+
+3. **Build the multi-slot probe harness**:
+   - Mirror `tests/dflash-speculative/test-dflash-closure.cpp`'s
+     standalone pattern, but parameterise N_slots.
+   - Run kernels DIRECTLY (no llama_decode of target) to keep the
+     probe focused on drafter kernel invariance.
+   - Inputs at each slot: same target_hiddens (from vLLM dumps or
+     freshly captured), same anchor_token_id, same anchor_pos.
+   - Outputs: per-slot drafter_logits to host.
+
+4. **Run the probe at np ∈ {1, 2, 4, 8}**:
+   - SHA-256 slot 0's drafter_logits at cycle K=1.
+   - Compare across np values.
+   - GREEN: all match.
+
+5. **If FAIL** — bisect kernels in order:
+   a. `combine_features`: simplest grid `(N_slots, MAL_anchors)`.
+      Each CTA writes to disjoint output rows; should be trivially
+      invariant. If it fails: check grid-dispatch fp32 reduction.
+   b. `inject_kv_fused`: grid `(N_slots, MAL_anchors)` per layer.
+      Same shape as combine; same invariance argument.
+   c. `dflash_drafter_forward`: cooperative grid sized by N_slots.
+      Suspect #1 — `cg::this_grid().sync()` behaviour may depend
+      on grid size; per-layer fp32 reductions may have N_slots-
+      dependent dispatch.
+   d. `dflash_drafter_lm_head`: one CTA per `(slot, position)` row;
+      should be invariant.
+
+6. **Document closure** in `data/gate5b-np-invariance.json` and
+   append MEMORY.md entry.
+
+### Cross-references
+
+- `project_dflash_t6_closed_via_spec_ckpt.md` — terminal T6 entry;
+  what the production path does today.
+- `project_mtp_multislot_determinism_investigation_failed.md` —
+  THE most important reference for T7's risks.
+- `feedback_no_skipping_lessening.md` — don't bail at multi-slot.
+- `feedback_probe_before_implementing.md` — measure first.
+- `feedback_survey_prior_phase_before_new_mechanism.md` — grep
+  before building.
+- `feedback_bisect_before_revert.md` — if the np-invariance probe
+  regresses something, bisect first.
+
+### Open questions to resolve at T7 session start
+
+Q1: **Probe via standalone kernel harness or via server multi-slot?**
+   Recommended: standalone harness — cleaner per-slot logit capture,
+   less infrastructure to lift.
+
+Q2: **Does the cooperative kernel `dflash_drafter_forward` actually
+   preserve grid-size invariance?** Open empirical question.
+   The TML 3-kernel pattern requires per-row CTA + no cross-CTA
+   reductions, but `cg::this_grid().sync()` semantics inside the
+   kernel may add a grid-size-dependent barrier with subtle
+   side effects.
+
+Q3: **What's the target for T8 if T7 closes np-only-for-kernels but
+   end-to-end coherence at np>1 fails (different problem)?**
+   T8 is np=1 speedup measurement; T9 is np>1 aggregate.
+   The np=1 ship is unblocked regardless of T7; np>1 ship is gated
+   on T7 GREEN + acceptable T9 numbers.
+
+### What's already committed and safe
+
+- T6 closure evidence in `data/gate5-T6{alpha,beta}-*` — don't
+  re-run unless investigating a T6 regression.
+- T1–T6 unit tests all GREEN (test-dflash-{symbols, closure,
+  combine-features, inject-fused, argmax-match, drafter-forward,
+  drafter-lm-head, drafter-load, spec-ckpt-flow}).
+- Build with `-DGGML_CUDA=ON -DGGML_CUDA_DFLASH=ON
+  -DCMAKE_CUDA_ARCHITECTURES=75` at `/opt/llm/build-dflash`. Models
+  at canonical paths (target + drafter GGUFs).
