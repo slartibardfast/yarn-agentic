@@ -4602,3 +4602,42 @@ Submodule pointer was bumped on the parent repo after each ik_llama.cpp commit. 
 - Production integration: the `dflash_combine_features_launch` and `dflash_inject_kv_fused_launch` symbols are unit-callable but not wired into a ggml backend op yet. That plumbing lands at T4 (drafter forward) / T5 (server integration).
 
 ### Next: T4 — Gate 3b/4: drafter forward + argmax + plumbing.
+
+---
+
+## 2026-05-13 — Production Qwen3.6-27B target quantization (factual correction)
+
+Earlier spec text in `kernel-design.md` referred to the production target's
+weights as "IQ4_KS-quantized" multiple times. This was **wrong**. Direct
+inspection of the production GGUF
+`/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf`
+via the GGUF reader shows:
+
+```
+token_embd.weight   F16   [5120, 248320]   shared with drafter
+output.weight       BF16  [5120, 248320]   shared with drafter (lm_head)
+output_norm.weight  F32   [5120]
+linear weights      Q4_0 + Q4_0_AR16       (the AutoRound 16-step variant)
+norms               F32
+```
+
+The production GGUF is a **lossless repackaging** of the AutoRound source
+INT4 weights. The bits are AutoRound INT4 packed into `Q4_0` and `Q4_0_AR16`
+GGUF tensor types — NOT re-quantized to IQ4_KS, NOT re-quantized at all.
+
+This was already implicit in the auto-memory `project_production_2026q2_landing`
+entry ("the production Q-mix GGUF is a faithful GGUF repackaging of the same
+AutoRound INT4 weights vLLM loads"), but it was easy to mis-translate in spec
+text — "INT4 AutoRound" → "IQ4_KS" is a wrong shortcut because IQ4_KS is a
+specific ggml quantization scheme distinct from AutoRound INT4. They share
+the 4-bit weight density but not the bit format.
+
+Spec implications for T4 lm_head:
+- lm_head dispatch is a **BF16 GEMV** against the F16/BF16 shared tensors,
+  NOT a quantized matmul dispatch.
+- Drafter loader needs to handle Q4_0 + Q4_0_AR16 + F16 + BF16 + F32 tensor
+  types from the drafter GGUF and the shared target tensors.
+
+Spec text in `kernel-design.md §2, §3, §6.1, §7` was corrected in commit
+following this entry. The model-dimensions block at §2 now carries an
+explicit "NOT IQ4_KS, NOT re-quantized" disambiguation.
