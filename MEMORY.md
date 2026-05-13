@@ -4510,3 +4510,30 @@ GREEN with the corrected interpretation.
   `scripts/dflash-extract-compare.py`,
   `data/dflash-extracts/fixtures/prompt-1.txt`,
   `data/dflash-extracts/iklama/run{1,2,3}-layer{1,16,31,46,61}.npy`.
+
+
+## Auto-memory dream-flow pass (2026-05-13)
+
+User-triggered consolidation of the private auto-memory at
+`~/.claude/projects/-home-llm-yarn-agentic/memory/`. Public
+yarn-agentic MEMORY.md was NOT rewritten (append-only per CLAUDE.md
+§6); this entry just records what happened.
+
+Reduction: 64 → 62 entries. Index regenerated from frontmatter.
+
+Consolidated cluster:
+- `project_tree_fanout_hybrid_recurrent_blocker.md` (Phase 40 DeltaNet
+  incompatibility) +
+- `project_phase41_42_workstream.md` (approved-but-never-started
+  Phase 41+42 plan)
+
+Folded into:
+- `project_tree_k_speculative_abandoned.md` — single archival entry
+  recording the lineage, the durable hybrid-recurrent + parallel-
+  seq_id-branching incompatibility, preserved branch artifacts, and
+  pointers to what remains authoritative (DFlash workstream,
+  continuous-batching-vs-per-slot correction, 2026q2 production
+  landing).
+
+All other entries left intact. T2 closure entries (added earlier
+today) were the freshest content and stayed in place.
