@@ -758,6 +758,106 @@ Cross-check: vLLM's `combine_hidden_states` (qwen3_dflash.py:656) does FC FIRST,
 
 ---
 
+### 6.7 Bonus-position re-decode (T6 mechanism)
+
+**Status**: introduced at T6 to close the T5 inherited late-stream-coherence gap.
+
+**Problem**: per cycle, target's verify decode batch is
+`[id_last @ P, c1 @ P+1, ..., cBS @ P+BS]`. After accept (n_accepted = k < BS):
+- Positions [P, P+k] are committed (id_last + accepted draft tokens).
+- Position P+k+1 = bonus token; its KV entry in target was decoded with input
+  `c_{k+1}` (the REJECTED drafted token), NOT with `bonus`.
+- For the next cycle's `combine_features`, the cb_eval extract buffer row
+  at index `P+k+1` reflects `c_{k+1}`'s hidden, not `bonus`'s hidden.
+
+**Mechanism**: after each cycle's accept decision (when `n_accepted < BS`),
+re-decode the bonus token at position `P+k+1` as a single-token target
+decode. This:
+- Overwrites the wrong KV entry at `P+k+1` with the correct one (input = bonus).
+- Triggers the cb_eval hook, which appends one row to the extract buffer
+  — overwriting the wrong row from the verify batch (after the
+  T6.8 trim-on-seq_rm — see §6.8).
+- Mutates the DeltaNet recurrent state by one step, advancing from
+  the position-`P+k` checkpoint (restored via §6.4) through `bonus` to
+  the correct position-`P+k+1` state.
+
+**When `n_accepted == BS` (full accept)**: bonus row is the post-block row
+at batch index BS, decoded with input `cBS`. If `cBS == bonus_token`
+(equivalent to "drafter predicted the bonus correctly too"), no re-decode
+needed. Otherwise re-decode the bonus at position `P+BS+1` similarly.
+
+**Placement**: inside `llama_dflash_draft` (C API self-contained per locked T6
+Q&A). The function does the target verify decode internally OR the caller
+drives the verify decode; either way, after the accept decision is computed
+the C API issues the bonus re-decode and re-reads the extract buffer. This
+keeps the cycle atomic from the caller's perspective.
+
+**Test hook**: `llama_dflash_get_cycle_stats(ctx, &n_cycles, &n_decoded, &n_re_decodes)`
+lets tests assert exactly one bonus re-decode per cycle.
+
+**Allium bindings**:
+- `AtomicityPerCycle` (the cycle is all-or-nothing, including bonus re-decode)
+- `DraftKVRollbackOnRejection` (the wrong KV / hidden row at the bonus
+  position is corrected via re-decode)
+- `EffectiveSeqLensSubtractsRejected` (post-cycle seq state matches
+  anchor_pos + n_accepted + 1, including the corrected bonus position)
+
+**Hybrid model concern**: the re-decode advances DeltaNet recurrent state.
+For the state to be CORRECT, the recurrent state must be at the
+position-`P+k` checkpoint when the re-decode runs. This is the
+`dflash_state_restore` step in §6.4 — the layered foundation that makes
+this re-decode work on Qwen 3.6 27B.
+
+---
+
+### 6.8 cb_eval extract hook contract (T6)
+
+**Status**: T2 introduced the cb_eval hook for extracting target's residual
+stream at the 5 source-layer indices. T5 discovered that the hook's
+overwrite-per-ubatch semantics broke multi-ubatch prefill, fixed by
+switching to append-per-ubatch. T6 closes the remaining contract: the
+hook's buffer must stay in sync with target's effective seq_len.
+
+**Append-per-ubatch (T5 fix, already landed)**:
+The hook appends `n_tokens × D_emb` floats per fire. Buffer length after a
+sequence of decodes = total positions decoded (regardless of how the
+decoder split into ubatches).
+
+**Trim-on-`seq_rm` (T6 new)**:
+When target's KV cache rolls back via `llama_kv_cache_seq_rm(ctx, seq_id,
+p_start, p_end)`, the extract buffer for each registered source layer
+must trim correspondingly:
+- If `p_end == -1` (open-ended remove): truncate buffer to the first
+  `p_start * D_emb` floats.
+- If `p_end > p_start` (range remove): remove the slice
+  `[p_start * D_emb, p_end * D_emb)` from the buffer.
+
+Implementation: extend `llama_kv_cache_seq_rm` (or its internal entry)
+to invoke a per-source-layer trim callback when DFlash is bound.
+Alternatively: expose a separate `llama_dflash_trim_extract(ctx, p_start, p_end)`
+public API and have the example call it alongside `seq_rm`. The
+latter avoids cross-cutting changes to the KV cache code path; the
+former is more semantically robust.
+
+**Decision (locked)**: expose `llama_dflash_trim_extract(ctx, p_start, p_end)`
+and call it alongside `seq_rm` from `llama_dflash_draft`'s internal accept
+path. Keeps the KV cache code path untouched and keeps the contract
+self-contained in the DFlash module.
+
+**Test hook**: `test-dflash-extract-trim-on-seq-rm.cpp` (T6.C):
+- Drive 3 cycles with planted partial accepts.
+- After each cycle, snapshot the extract buffer length.
+- Assert length == anchor_pos at the end of cycle N+1 for each cycle N.
+- Assert no stale rows past anchor_pos after seq_rm.
+
+**Allium bindings**:
+- `EffectiveSeqLensSubtractsRejected` (extract buffer length tracks
+  target's effective seq_len)
+- `DraftKVRollbackOnRejection` (drafter-side state — including the
+  extract buffer — rolls back with target's KV)
+
+---
+
 ## 7. Allium-invariant ↔ kernel binding table
 
 Each Allium invariant from `dflash.allium` is bound to a specific kernel or test:
