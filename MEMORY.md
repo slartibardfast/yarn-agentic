@@ -5345,3 +5345,55 @@ infrastructure already solved — sharpens the
 captured the cousin lesson for external references): together they
 form "read first, build second" in two directions — into prior
 PHASE work AND into reference implementations.
+
+---
+
+## T7 (Gate 5b) CLOSED — drafter np-invariance binding GREEN (2026-05-13)
+
+**Closure path**: probe-before-implementing again — built a focused
+kernel-level np-invariance probe (`tests/dflash-speculative/test-dflash-np-invariance.cpp`),
+ran at tiny shape with 4 seeds × N ∈ {1, 2, 4, 8}. All 16 sub-runs produced
+**byte-identical slot 0 output** within each seed across all N values.
+Hashes vary per seed (0x3eb0…cd53, 0xb183…e2fd, 0x5b2c…87c5, 0x4499…098f)
+which confirms the probe isn't trivially passing on degenerate output.
+
+**Architectural finding (overturning pre-T7 suspicion)**: the pre-T7
+pickup brief flagged `dflash_drafter_forward` cooperative kernel as
+"suspect #1" because the spec called for `cg::this_grid().sync()`
+with grid-size-dependent barrier semantics. Reading
+`dflash-drafter-forward.cu:8-12` revealed an explicit spec deviation
+noted in source: **the implementation uses regular per-step `__global__`
+launches with `grid_rows = N_slots × Q` and per-block `reduce_smem[8]`
+warp+SMEM-tree reduction**. There is no `cg::this_grid().sync()` in
+the production code. The deviation is exactly the TML 3-kernel BI
+pattern (kernel-design.md §5.5): per-row CTA dispatch, no cross-CTA
+reduction. **The "cooperative grid-sync suspect" turned out to not
+exist in the implementation** — probe ran clean on the first attempt,
+no bisection needed.
+
+**Architectural extension to the rest of the drafter pipeline**:
+- `combine_features` + `inject_kv_fused`: T3 closure already
+  validated byte-identity vs CPU oracle at N ∈ {1,2,4,8}.
+- `drafter_lm_head`: kernel signature takes `n_rows` (NOT `N_slots`);
+  per-row CTA — byte-identical hidden ⇒ byte-identical logits at
+  slot 0's rows.
+- `argmax_match`: per-slot one-warp argmax; no cross-slot reduction.
+  Byte-identical logits ⇒ identical `n_accepted`, `bonus_token`,
+  `bonus_pos` at slot 0.
+
+The binding extends through the full drafter pipeline to slot 0's
+end-to-end output by construction; the empirical probe stops at
+`drafter_forward` because the rest is architecturally invariant.
+
+**Scope note**: T7 is a kernel-level invariance probe. The unsolved
+Qwen3.6-27B production-shape np > 1 server-side determinism bug
+(see `project_mtp_multislot_determinism_investigation_failed.md`)
+remains outside T7's scope. T8 (np=1 speedup) is unblocked; T9
+(np > 1 aggregate) needs that separate bug surface to be navigated.
+
+**Artifacts**:
+- Test: `ik_llama.cpp/tests/dflash-speculative/test-dflash-np-invariance.cpp`
+- Runlog: `data/gate5b-np-invariance-sweep.runlog`
+- Structured result: `data/gate5b-np-invariance.json`
+- Tracker: T7 marked `[x]` in `PHASE_DFLASH.md` with closure evidence
+- T8 pickup brief written at end of `PHASE_DFLASH.md`
