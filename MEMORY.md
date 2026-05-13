@@ -4763,3 +4763,115 @@ Tests built:
 - `test-dflash-drafter-forward` — FAIL (exit 1) with quantified
   divergence as documented above. This is the working-data signal
   the loop iteration was aiming for.
+
+---
+
+## 2026-05-13 — T4 closure plumbing: vLLM dump captured + drafter K/V proj added (NaN remains)
+
+Pushed forward on T4 closure binding (drafter logits within 1e-5
+NMSE vs vLLM PR #40898 at BLOCK_SIZE=4). Major progress; one
+diagnostic blocker remains.
+
+### What landed
+
+**vLLM hook script** (`scripts/gate3b-drafter-logits-vllm.py`):
+- Hooks `DFlashQwen3ForCausalLM.compute_logits` in vLLM worker via
+  `collective_rpc`. Captures BOTH drafter pre-argmax logits AND
+  per-target-source-layer hidden states in one run.
+- Final config that works on sm_75: TP=1, INT4 AutoRound (gptq_marlin),
+  GMU=0.92, cpu_offload_gb=4, max_model_len=512, max_num_seqs=1,
+  enforce_eager=True, VLLM_ALLOW_INSECURE_SERIALIZATION=1.
+- Wall clock ~3 min total. Successful dump:
+    drafter-logits-bs4-vllm.npy           (4, 248320) fp32
+    drafter-hidden-bs4-vllm.npy           (4, 5120)   fp32
+    target-layer{1,16,31,46,61}-bs4-vllm.npy  (15, 5120) each
+    drafter-prompt-tokens.npy             [15] int64
+    drafter-meta-bs4.json
+- All vLLM-dumped values finite, well-conditioned magnitudes.
+
+**Inline venv patches** (user-authorized direct edits in
+`/opt/models/venv-vllm/lib/python3.13/site-packages/vllm/...`):
+The vLLM v1 EngineCore subprocess re-imports vLLM fresh — the
+runtime monkey-patches in `vllm_sm75_patches.py` don't propagate
+to it. Three patches landed inline in the venv source files:
+  1. `qwen3_dflash.py:combine_hidden_states` — fp16 cast of
+     `hidden_states` to `fc.weight.dtype` before matmul. Without it:
+     RuntimeError: expected mat1 and mat2 to have the same dtype,
+                   but got: float != c10::Half
+  2. `flex_attention.py:1116-1117` — `.view()` → `.reshape()` on
+     non-contiguous K/V cache. Without it:
+     RuntimeError: view size is not compatible with input tensor's
+                   size and stride
+  3. `flex_attention.py:get_kernel_options` (use_direct_build path)
+     — round BLOCK_M / BLOCK_N to largest POW2 divisor of the
+     logical block size (`n & -n`). Without it:
+     - Wrong direction (next pow2 up) → BLOCK_N=1024 vs block=816
+       gave "Q and KV block size must be divisible by BLOCK_M/N"
+     - Right direction (largest pow2 divisor) → BLOCK_N=16, works
+     Without the patch: Triton "arange's range must be a power of 2"
+
+Spec note: these are the same fixes documented in
+`scripts/vllm_sm75_patches.py`. Inline-applying them in the venv
+makes the patches survive subprocess imports.
+
+**Closure test infrastructure** (`tests/dflash-speculative/`):
+  - `dflash-target-shared-loader.h` — loads target's token_embd
+    (F16), output.weight (BF16), output_norm (F32) via
+    gguf_init_from_file.
+  - `npy-reader.h` — minimal NPY v1.0/v2.0 reader for vLLM dumps.
+  - `dflash-drafter-loader.h` — loads all 58 drafter tensors from
+    production GGUF; metadata correctly parsed (5 layers, H_q=32,
+    H_kv=8, D_h=128, etc.)
+  - `test-dflash-drafter-load.cpp` — smoke test of the loader
+    (PASS at production GGUF).
+  - `test-dflash-end-to-end.cpp` — PHASE 1 pipeline run with real
+    drafter weights + synthetic inputs (PASS: no CUDA error,
+    NaN expected from OOD random inputs).
+  - `test-dflash-closure.cpp` — THE closure binding test. Loads
+    vLLM dumps, runs full pipeline (combine → inject ×5 → drafter
+    forward → lm_head), compares vs vLLM drafter logits.
+
+**Architectural correction to drafter forward kernel**:
+Initial implementation assumed inject_kv_fused populated ALL needed
+cache positions and the drafter forward skipped K/V projection.
+Wrong — vLLM's layout is:
+  - Inject writes K/V at ALL prompt context positions (15 here)
+    using fused-K/V GEMM applied to combine-features output.
+  - Drafter forward writes K/V at the (1+BLOCK_SIZE) query positions
+    using its OWN attn_q/attn_k/attn_v projections.
+Added 3 sub-kernels to dflash-drafter-forward.cu:
+  - k_norm_rope_kernel (mirror of q_norm_rope with H_kv heads)
+  - Plus existing gemm_row_x_col reused for K, V projections
+  - cache_write_kv_kernel writes K, V to cache at query positions
+
+Launcher signature extended with per-layer attn_k_w, attn_k_norm_w,
+attn_v_w pointer arrays. Test sites updated accordingly.
+
+### Current closure state
+
+Pipeline runs end-to-end with real weights + real vLLM target
+hiddens at production shape. But output is **all NaN (993280 cells)**.
+Diagnostic per-layer instrumentation needed next iteration to find
+where NaN enters.
+
+Hypotheses to test next session (in priority order):
+  1. Q/K/V projection magnitudes after gemm — could overflow on
+     real fp16 inputs through 5120-element dot products. Check
+     after layer 0's qkv proj.
+  2. RMSNorm sum_sq → could be zero at some row → rsqrt(0)=inf →
+     NaN downstream.
+  3. Attention softmax stability — score range over 20 K positions
+     could saturate fp32 exp.
+  4. Layer 4 full-attention K-loop range — currently treats full
+     same as SWA (causal up to qpos). Should be bidirectional
+     within the block — k_hi = anchor_pos+BLOCK_SIZE-1 (max query
+     position). Fix needed even if not the NaN cause.
+
+### What's still to do for T4 closure
+
+  - Instrument intermediate cell magnitudes per layer to isolate NaN.
+  - Fix layer-4 bidirectional attention range.
+  - Once finite logits land: compare NMSE vs vLLM dump, tune until
+    ≤ 1e-5.
+  - Register count verification with `--ptxas-options=-v`.
+  - PHASE_DFLASH.md T4 → [x] with binding evidence; MEMORY append.
