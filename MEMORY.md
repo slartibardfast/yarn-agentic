@@ -4993,3 +4993,53 @@ These mirror `scripts/vllm_sm75_patches.py` but landed inline in
 the venv because vLLM v1's EngineCore subprocess re-imports vLLM
 fresh and doesn't see the runtime monkey-patches.
 
+
+---
+
+## 2026-05-13 — Dream-flow pass on private auto-memory
+
+User-requested dream-flow pass at the close of T4 (DFlash kernel layer
+closed). Threshold check: 63 → 66 entries (under the 80-entry trigger);
+this pass was user-requested rather than threshold-driven.
+
+### Phase 1 — project-lineage consolidation
+Nothing to do. Major prior workstreams (MTP-IR, TURBO/HARP, tree-K)
+were already consolidated in earlier dream-flow passes; no orphan
+step-snapshots in the dir.
+
+### Phase 2 — redundant-feedback merges
+Nothing to do. The feedback corpus was scanned for overlapping
+principles. Adjacent rules (e.g. `feedback_check_authoritative_model_source`,
+`feedback_anchor_to_measured_baselines`, `feedback_probe_before_implementing`)
+are facets-of-different-principles, not facets-of-one. Each meets the
+"would deleting lose information" bar; all kept separate.
+
+### Phase 3 — new entries from T4 lessons
+Three new entries added to the private auto-memory:
+- `feedback_source_read_reference_before_instrumenting.md` — read the
+  reference stack top-to-bottom as the FIRST diagnostic step, not
+  per-step instrumentation. T4 example: 15-min vLLM read found 4
+  bugs that would have taken hours of per-step diagnostics.
+- `feedback_validate_gguf_dtype_at_load.md` — GGUF dtype-vs-pointer
+  type confusion silently produces garbage. T3 missed this because
+  T3 tests generate fp16 in-test, never load from GGUF.
+- `reference_vllm_v1_subprocess_patches.md` — vLLM v1 EngineCore is a
+  separate subprocess; runtime monkey-patches don't propagate. The 3
+  inline venv source patches needed for sm_75 DFlash. Plus the
+  working TP=1 INT4 config.
+
+### Phase 4 — terminal-state DFlash project entry
+- `project_dflash_t1_t4_kernel_layer_closed.md` — captures the T1–T4
+  scope close, the closure metric revision (1e-5 NMSE → argmax-
+  equivalent), the 4 critical kernel fixes, what's pending for T5+.
+
+### Index regeneration
+`MEMORY.md` (private) regenerated via the user-approved script from
+`feedback_dream_flow_procedure.md`. Final count: 66 entries, 66-line
+index — well under the 200-line truncation limit. Self-consistency
+verified: all index pointers resolve to existing files.
+
+### This public note
+Per the dream-flow procedure, the public MEMORY.md is append-only.
+This entry records reduction stats + which entries were added; no
+existing entries rewritten or deleted.
