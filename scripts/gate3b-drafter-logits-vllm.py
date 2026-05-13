@@ -304,6 +304,21 @@ def main():
     np.save(out_dir / "drafter-prompt-tokens.npy",
             np.array(outs[0].prompt_token_ids, dtype=np.int64))
 
+    # Save the bonus token id — the token the target sampled at position
+    # n_prompt, which is what the drafter sees at its anchor (query[0]).
+    # vLLM's copy_and_expand_dflash_inputs_kernel writes
+    #   input_ids[req*Q + 0] = next_token_ids[req] (the bonus)
+    #   input_ids[req*Q + i] = mask_token_id for i in 1..BLOCK_SIZE
+    # so our closure test needs this bonus to match vLLM's drafter input.
+    gen_token_ids = list(outs[0].outputs[0].token_ids)
+    if gen_token_ids:
+        bonus_token_id = int(gen_token_ids[0])
+        np.save(out_dir / "drafter-bonus-token.npy",
+                np.array([bonus_token_id], dtype=np.int64))
+        print(f"  bonus token id (= drafter anchor) = {bonus_token_id}", flush=True)
+    else:
+        print(f"  WARN: no generated tokens captured", flush=True)
+
     # Save target captures (per-source-layer hidden states) too.
     target_caps = rpc_collect[0].get("target_captures", {})
     n_target_layers_captured = 0
