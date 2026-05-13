@@ -41,6 +41,11 @@ def main():
     p.add_argument("--prompt", default=
         "Explain the difference between latent diffusion and pixel-space "
         "diffusion in two sentences.")
+    p.add_argument("--prompts-file", default=None,
+                   help="Optional: file with one prompt per line. If set, "
+                        "iterates all prompts in one vLLM session and dumps "
+                        "per-prompt subdirs prompt-0/ prompt-1/ etc. into "
+                        "out_dir. Overrides --prompt.")
     p.add_argument("--block-size", type=int, default=4,
                    help="DFlash block_size = number of speculative tokens")
     p.add_argument("--out-dir", default="/home/llm/yarn-agentic/data/dflash-extracts")
@@ -256,96 +261,106 @@ def main():
         print(f"  ERROR installing hook: {rpc_install[0]['error']}", file=sys.stderr)
         return 1
 
-    # Drive a single forward — generate 1 token. The DFlash proposer will
-    # run the drafter ONCE (block_size=4 → 5 query positions per slot).
-    sp = SamplingParams(temperature=0.0, max_tokens=1, seed=42)
-    t1 = time.time()
-    outs = llm.generate([args.prompt], sp)
-    print(f"  generate: {time.time()-t1:.2f}s; "
-          f"n_prompt_tokens={len(outs[0].prompt_token_ids)}", flush=True)
+    # rpc to RESET captures between prompts (clears the FIRST-call
+    # gate on compute_logits and clears the per-layer target captures).
+    def worker_reset(self):
+        self._dflash_logit_captures = []
+        self._dflash_target_captures.clear()
+        return {"reset": True}
 
-    def worker_collect(self):
-        caps = getattr(self, "_dflash_logit_captures", [])
-        target_caps = getattr(self, "_dflash_target_captures", {})
-        # Free hook handles to stop further captures.
-        for h in getattr(self, "_dflash_target_hook_handles", []):
-            try:
-                h.remove()
-            except Exception:
-                pass
-        return {"captures": caps,
-                "target_captures": dict(target_caps),
-                "drafter_class": type(getattr(self, "_dflash_drafter_ref", None)).__name__}
+    # rpc to COLLECT current captures (does NOT remove hooks — keeps
+    # them live for the next prompt).
+    def worker_collect_iter(self):
+        return {
+            "captures": list(getattr(self, "_dflash_logit_captures", [])),
+            "target_captures": dict(getattr(self, "_dflash_target_captures", {})),
+        }
 
-    rpc_collect = llm.collective_rpc(worker_collect)
-    if not rpc_collect or not rpc_collect[0].get("captures"):
-        print("  ERROR: no captures collected from worker", file=sys.stderr)
-        return 1
-
-    cap = rpc_collect[0]["captures"][0]
-    if "error" in cap:
-        print(f"  ERROR in capture: {cap['error']}", file=sys.stderr)
-        return 1
-
-    logits = cap["logits"]
-    hidden = cap["hidden"]
-    print(f"  captured drafter logits: shape={logits.shape}  dtype={logits.dtype}", flush=True)
-    print(f"  captured drafter hidden: shape={hidden.shape}  dtype={hidden.dtype}", flush=True)
-    print(f"  drafter class: {rpc_collect[0].get('drafter_class')}", flush=True)
-
-    # Save the captured tensors to .npy + meta.json.
-    logits_path = out_dir / f"drafter-logits-bs{args.block_size}-vllm.npy"
-    hidden_path = out_dir / f"drafter-hidden-bs{args.block_size}-vllm.npy"
-    np.save(logits_path, logits)
-    np.save(hidden_path, hidden)
-    print(f"  wrote {logits_path}", flush=True)
-    print(f"  wrote {hidden_path}", flush=True)
-
-    np.save(out_dir / "drafter-prompt-tokens.npy",
-            np.array(outs[0].prompt_token_ids, dtype=np.int64))
-
-    # Save the bonus token id — the token the target sampled at position
-    # n_prompt, which is what the drafter sees at its anchor (query[0]).
-    # vLLM's copy_and_expand_dflash_inputs_kernel writes
-    #   input_ids[req*Q + 0] = next_token_ids[req] (the bonus)
-    #   input_ids[req*Q + i] = mask_token_id for i in 1..BLOCK_SIZE
-    # so our closure test needs this bonus to match vLLM's drafter input.
-    gen_token_ids = list(outs[0].outputs[0].token_ids)
-    if gen_token_ids:
-        bonus_token_id = int(gen_token_ids[0])
-        np.save(out_dir / "drafter-bonus-token.npy",
-                np.array([bonus_token_id], dtype=np.int64))
-        print(f"  bonus token id (= drafter anchor) = {bonus_token_id}", flush=True)
+    # Build the prompt list. --prompts-file overrides --prompt.
+    if args.prompts_file:
+        with open(args.prompts_file) as f:
+            prompts = [line.strip() for line in f if line.strip()]
+        print(f"  loaded {len(prompts)} prompts from {args.prompts_file}", flush=True)
     else:
-        print(f"  WARN: no generated tokens captured", flush=True)
+        prompts = [args.prompt]
 
-    # Save target captures (per-source-layer hidden states) too.
-    target_caps = rpc_collect[0].get("target_captures", {})
-    n_target_layers_captured = 0
-    for il, arr in target_caps.items():
-        # Squeeze a leading batch dim if present.
-        if arr.ndim == 3 and arr.shape[0] == 1:
-            arr = arr[0]
-        tpath = out_dir / f"target-layer{il}-bs{args.block_size}-vllm.npy"
-        np.save(tpath, arr.astype(np.float32))
-        print(f"  wrote {tpath}  shape={arr.shape}", flush=True)
-        n_target_layers_captured += 1
+    sp = SamplingParams(temperature=0.0, max_tokens=1, seed=42)
+    per_prompt_meta = []
 
+    for prompt_idx, prompt in enumerate(prompts):
+        # Reset captures so the per-prompt compute_logits + target hooks
+        # fire fresh for this prompt.
+        llm.collective_rpc(worker_reset)
+
+        t1 = time.time()
+        outs = llm.generate([prompt], sp)
+        print(f"  [p{prompt_idx}] generate: {time.time()-t1:.2f}s; "
+              f"n_prompt_tokens={len(outs[0].prompt_token_ids)}", flush=True)
+
+        rpc_collect = llm.collective_rpc(worker_collect_iter)
+        if not rpc_collect or not rpc_collect[0].get("captures"):
+            print(f"  [p{prompt_idx}] ERROR: no captures collected", file=sys.stderr)
+            return 1
+        cap = rpc_collect[0]["captures"][0]
+        if "error" in cap:
+            print(f"  [p{prompt_idx}] ERROR in capture: {cap['error']}", file=sys.stderr)
+            return 1
+
+        logits = cap["logits"]
+        hidden = cap["hidden"]
+        target_caps = rpc_collect[0].get("target_captures", {})
+
+        # Per-prompt subdir if multi-prompt mode, else flat (backward compat).
+        prompt_dir = out_dir / f"prompt-{prompt_idx}" if len(prompts) > 1 else out_dir
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+
+        np.save(prompt_dir / f"drafter-logits-bs{args.block_size}-vllm.npy", logits)
+        np.save(prompt_dir / f"drafter-hidden-bs{args.block_size}-vllm.npy", hidden)
+        np.save(prompt_dir / "drafter-prompt-tokens.npy",
+                np.array(outs[0].prompt_token_ids, dtype=np.int64))
+
+        gen_token_ids = list(outs[0].outputs[0].token_ids)
+        if gen_token_ids:
+            bonus_token_id = int(gen_token_ids[0])
+            np.save(prompt_dir / "drafter-bonus-token.npy",
+                    np.array([bonus_token_id], dtype=np.int64))
+            print(f"  [p{prompt_idx}] bonus token = {bonus_token_id}", flush=True)
+        else:
+            bonus_token_id = None
+
+        n_target_layers_captured = 0
+        for il, arr in target_caps.items():
+            if arr.ndim == 3 and arr.shape[0] == 1:
+                arr = arr[0]
+            np.save(prompt_dir / f"target-layer{il}-bs{args.block_size}-vllm.npy",
+                    arr.astype(np.float32))
+            n_target_layers_captured += 1
+
+        per_prompt_meta.append({
+            "prompt_idx": prompt_idx,
+            "prompt": prompt,
+            "n_prompt_tokens": len(outs[0].prompt_token_ids),
+            "bonus_token_id": bonus_token_id,
+            "n_target_layers_captured": n_target_layers_captured,
+            "logits_shape": list(logits.shape),
+            "hidden_shape": list(hidden.shape),
+        })
+        print(f"  [p{prompt_idx}] wrote dump to {prompt_dir}", flush=True)
+
+    # Per-prompt meta JSON at top level
     meta = {
         "block_size": args.block_size,
-        "n_query_positions": int(logits.shape[0]),
-        "draft_vocab_size": int(logits.shape[1]) if logits.ndim >= 2 else None,
-        "target_vocab_size": rpc_install[0].get("vocab_size") if isinstance(rpc_install, list) else None,
+        "n_prompts": len(prompts),
         "drafter_path": args.drafter,
         "target_path": args.target,
-        "prompt": args.prompt,
-        "n_prompt_tokens": len(outs[0].prompt_token_ids),
-        "logits_dtype": str(logits.dtype),
-        "hidden_dtype": str(hidden.dtype),
-        "hidden_shape": list(hidden.shape),
-        "vllm_drafter_class": rpc_collect[0].get("drafter_class"),
-        "target_layers_captured": n_target_layers_captured,
+        "vllm_drafter_class": rpc_install[0].get("drafter_class") if rpc_install else None,
+        "per_prompt": per_prompt_meta,
     }
+    # For backward compat when single-prompt: also save fields the
+    # closure test reads at out_dir/* (already done above).
+    if len(prompts) == 1:
+        # Single-prompt mode — files were written directly to out_dir.
+        pass
     meta_path = out_dir / f"drafter-meta-bs{args.block_size}.json"
     meta_path.write_text(json.dumps(meta, indent=2))
     print(f"  wrote {meta_path}", flush=True)

@@ -1,0 +1,8 @@
+Explain the difference between latent diffusion and pixel-space diffusion in two sentences.
+Summarize the plot of King Lear in one paragraph.
+Write Python code that fits a 2nd-degree polynomial to a list of (x, y) pairs.
+What are the main causes of the Peloponnesian War?
+Translate to French: The early-morning fog lingered over the harbour until the trawlers cut through it.
+List five practical steps for reducing memory allocations in a hot inner loop in Rust.
+Describe the role of telomeres in cellular aging.
+Write a haiku about a printing press.
