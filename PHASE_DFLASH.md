@@ -600,194 +600,278 @@ Q3: **What's the target for T8 if T7 closes np-only-for-kernels but
 
 ---
 
-## T8 plan — Qwen3.6-27B speedup measurement at np=1 (written 2026-05-13 post-T7)
+## T8 plan — Qwen3.6-27B speedup + quality measurement (REDRAFTED 2026-05-13)
 
-**Authoring lesson (T6 + T7 evidence)**: the highest-value move
-before designing/measuring is to **source-read the existing
-implementation, not the spec or memory citations**. Both T6 and T7
-were nearly mis-scoped on the spec's claim of what should exist;
-reading the .cu / .cpp / .sh files first overturned the design
-suspect each time. This plan is written from the source-read first.
+**Methodology principle**: three different harnesses with three
+different timing semantics is not a defensible methodology for a
+ship-gate measurement. Apples-to-apples comparison requires a single
+idiomatic tool driving all spec methods through the same dispatch.
+Per `feedback_no_workarounds`: build proper infrastructure, not a
+wrapper script that papers over the gap.
+
+**Authoring lesson (T6 + T7 evidence)**: source-read the existing
+implementation before designing — both T6 and T7 nearly built
+duplicate mechanisms that the codebase already had. This plan was
+authored after reading the actual code; findings are cited inline
+as plan witnesses.
 
 ### Phase 0 — Source-read (DONE 2026-05-13; findings below)
 
-Read and witnessed in this plan:
+- **`common/common.h:140-153`**: `enum common_speculative_type`
+  already includes `COMMON_SPECULATIVE_TYPE_NONE`,
+  `_MTP`, `_DFLASH`, `_DRAFT`, `_EAGLE3`, and several ngram variants.
+  **The framework is already spec-method-aware**.
+- **`common/speculative.cpp:1159 (common_speculative_init)`** is the
+  unified dispatcher. Both MTP and DFlash route through it; the
+  `params.type` field selects the implementation. `dflash-speculative-simple.cpp:82`
+  proves the dispatch works end-to-end for DFlash.
+- **`examples/llama-bench/llama-bench.cpp`** (2287 LOC) — clean
+  structure: `cmd_params → cmd_params_instance → test → printer`
+  with 4 printers (csv/json/markdown/sql). Currently zero
+  spec/mtp/draft mentions in the source. `cmd_params_instance`
+  (line 957) is where a `common_speculative_type spec_type` field
+  needs to be added.
+- **`examples/perplexity/perplexity.cpp:159 (process_logits)`** —
+  computes NLL token-by-token from a `[positions × vocab]` logits
+  array and a `[positions]` token-id array. `PPL = exp(mean(nll))`.
+  Directly reusable for "target-PPL on generated output" by
+  re-feeding [prompt + generated_tokens] into the target and
+  capturing logits at each generated position.
+- **`common/common.cpp:1583-1588`**: `-mtp` flag sets
+  `params.has_mtp = true`, which propagates to `mparams.mtp` and
+  `cparams.mtp`. This enables the inline MTP layers in the target
+  model — separate field from `common_params_speculative.type`,
+  but `common/speculative.cpp:1177` links them
+  (`has_mtp = (params.type == COMMON_SPECULATIVE_TYPE_MTP)`).
+- **`/home/llm/profiles/qwen36-27b-x1-mtp.sh`**: production MTP
+  profile via `llama-server -mtp --draft 3`, TP=2, q4_0 KV with
+  hadamard, ctx 262144. **Comment cites 2026-05-09 baseline**:
+  draft=3 → 33.23 t/s (3-run median, n=128, T=0). Per
+  `feedback_anchor_to_measured_baselines`, **do NOT bind on this
+  number — measure fresh**.
+- **`examples/speculative` is NOT the right comparison**: uses
+  two-model architecture (separate target + drafter binaries),
+  NOT the inline MTP that production uses.
+- **No prior PHASE work extended llama-bench for spec.** `git log`
+  shows `1cb7e1bf "spec : add self speculative decoding..."` added
+  framework features (`common_speculative_is_compat`) but did not
+  touch llama-bench. We're building net-new spec-aware bench
+  infrastructure.
 
-- **`/home/llm/profiles/qwen36-27b-x1-mtp.sh`** — production MTP
-  profile. Runs `llama-server -mtp --draft 3` on
-  `qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf` with TP=2
-  (`--tensor-split 1,1`), `-fa on`, `--cache-type-{k,v} q4_0`,
-  `--k-cache-hadamard --v-cache-hadamard`, `--ctx-size 262144`,
-  `--parallel 1` (np=1 — multi-slot bug surface is unsolved).
-  **Comment cites empirical 2026-05-09 baseline**: draft=1 31.88,
-  draft=2 31.50, draft=3 **33.23** t/s (3-run median, n_predict=128,
-  T=0). Per `feedback_anchor_to_measured_baselines`, do NOT bind on
-  this number — measure fresh on the same build.
-- **`llama-cli`** supports `-mtp` AND `--draft N` directly. This is
-  the apples-to-apples MTP baseline tool — no HTTP overhead, same
-  binary, single-prompt CLI with built-in t/s timing.
-- **`examples/dflash-speculative-simple/dflash-speculative-simple.cpp`** —
-  the T6 driver. Has ONLY two wall-clock timing points: `t0 = now_us()`
-  at line 130 (after prompt eval) and `t1 = now_us()` at line 261
-  (after generation). Reports tok/s + mean accept rate. **No per-cycle
-  timing** — diagnostic phase needs to add it (or use external profiler).
-- **`examples/llama-bench`** — does NOT support `-mtp` / `--draft` /
-  speculative modes. General pp/tg tool only. **NOT usable for T8**.
-- **`examples/speculative`** — uses two-model draft architecture
-  (separate target + drafter binaries), NOT inline MTP. Not the
-  comparison we want.
-- **T6 closure**: `data/gate5-T6alpha-coherence.runlog` — 1.33 tok/s
-  on the quicksort prompt, n=128, BS=4. Same hardware as production
-  MTP at 33.23 t/s. **The gap is ~25× regression, not a speedup.**
+### Apples-to-apples requirements (locked)
 
-### Phase 1 — Diagnose the 25× gap BEFORE measuring speedup
+Any T8 result that ships MUST be produced by:
 
-T6's 1.33 tok/s vs MTP's 33.23 t/s on the same hardware/target is a
-~25× regression. For T8 to be a meaningful "speedup measurement", we
-need to know first whether the regression is fundamental (cycle
-arithmetic) or fixable (prompt eval excluded, no warmup, launch
-overhead, etc.). Per CLAUDE.md §8 "measured-on-diagnosis": instrument
-before declaring root cause.
+1. **A single binary** driving all spec methods (no shell wrappers
+   parsing tok/s from three different CLI outputs).
+2. **Identical measurement semantics** for tg t/s across spec
+   methods: same warmup, same prompt-eval-excluded timing window,
+   same prompt set, same n_gen, same temp=0.
+3. **PPL on generated output** (under target) as the quality bound,
+   NOT PPL on a held-out corpus (which is trivially equal across
+   spec methods because target is shared). Spec methods may diverge
+   numerically (batch-shape variance at verify, different
+   accept-pattern dynamics); PPL-of-output catches that drift.
+4. **pp t/s** for context, captured by the same tool. (pp is
+   largely insensitive to spec method — initial prefill is the
+   same — but capture it for completeness and for cases where
+   prompt-eval batching could differ.)
+5. **Idiomatic** — the tool used IS the canonical `llama-bench`,
+   not a bespoke `gate6-bench`. Future spec work uses the same
+   infra; future llama.cpp users benefit.
 
-**Phase 1 closure binding**: a per-cycle timing breakdown of
-`dflash-speculative-simple` running the T6 prompt, attributing wall
-time to:
-  - prompt_eval (1× at start)
-  - per-cycle: combine_features (1×) + inject_kv_fused (5×) +
-    drafter_forward (1×) + drafter_lm_head (1×) + verify
-    `llama_decode` (1×) + spec_ckpt save+restore (1× each)
-  - sampling overhead
-  - device→host pulls (drafter_logits to CPU, etc.)
+### Phase 1 — Extend `llama-bench` to be spec-aware + PPL-of-output
 
-Output: `data/gate6-phase1-cycle-breakdown.json` with absolute and
-relative cost per component, plus a one-line diagnosis verdict.
+**Phase 1.1 — Spec-method-aware tg measurement**:
 
-**Phase 1 tasks** (in order):
+CLI additions:
+- `--spec {none,mtp,dflash,draft,ngram-simple,ngram-mod,...}` (default `none`)
+- `--draft N` / `-nd N` (draft depth for MTP; block_size for DFlash; ignored for none) (default 3)
+- `--spec-model PATH` (for spec methods that need a separate drafter GGUF: dflash, draft, eagle3; ignored otherwise)
 
-1. **Add per-cycle timing instrumentation to
-   `examples/dflash-speculative-simple/dflash-speculative-simple.cpp`**
-   — straightforward addition of `now_us()` boundaries around the
-   numbered cycle stages. Behind an `#ifdef DFLASH_CYCLE_TIMING` or
-   CLI flag so production path is untouched. ~80 LOC.
-2. **Build at `/opt/llm/build-dflash`** with the instrumentation
-   compiled in.
-3. **Run T6's exact closure config** to reproduce the 1.33 t/s
-   number and capture per-cycle breakdown. Capture to
-   `data/gate6-phase1-cycle-breakdown.runlog` (raw) + post-process
-   to JSON.
-4. **Cross-check against nsys** — single-cycle nsys-rep to
-   `data/gate6-phase1-nsys-1cycle.nsys-rep` for kernel-level
-   evidence the instrumentation matches reality.
-5. **Diagnosis verdict** — write the one-liner in the JSON:
-   - "verify-decode dominates" (target stack overhead — fixable
-     by reducing verify cost or batching)
-   - "drafter pipeline dominates" (kernel-level — possible bespoke
-     kernel work)
-   - "launch overhead dominates" (lots of small kernels — kernel
-     fusion path)
-   - "single-cycle wall time is X ms, MTP cycle is Y ms — DFlash
-     cycle has structural overhead of Z ms per token" (the honest
-     accounting; this is the most likely outcome)
+Data plumbing:
+- Add `common_speculative_type spec_type` + `int n_draft` +
+  `std::string spec_model` fields to `cmd_params` (parsed from CLI)
+  and `cmd_params_instance` (one per test).
+- In `cmd_params_instance::to_llama_cparams()` etc., translate
+  `spec_type == MTP` → set `cparams.mtp = true` AND
+  `params_speculative.type = MTP` (mirror the linkage in
+  common/speculative.cpp:1177).
+- In `struct test`'s tg run path, if `spec_type != NONE`:
+  - Instantiate `common_speculative * spec = common_speculative_init(params_speculative, ctx, 0)`.
+  - Drive a draft+verify+accept loop (pattern from
+    `dflash-speculative-simple.cpp:130-261`):
+    - `common_speculative_draft(spec, ...)` → `llama_tokens draft`
+    - `llama_decode(verify_batch)` → captures target logits
+    - argmax-based accept-prefix → `n_accepted` + `bonus`
+    - `common_speculative_accept(spec, n_accepted)`
+  - Tear down via `common_speculative_free`.
+- Capture `n_accept`, `n_drafts`, `n_draft_tokens` alongside t/s
+  for reporting.
 
-### Phase 1 decision gate
+Report additions (across all 4 printers):
+- New columns: `spec`, `n_draft`, `accept_rate`, `mean_accept`.
+- `spec=none` shows blank/`-` for the spec-specific columns.
 
-Read the diagnostic verdict. Two outcomes:
+**Phase 1.2 — PPL-of-output mode**:
 
-- **(A) DFlash cycle time is approachable to MTP cycle time** (within
-  2× say): Phase 2 measurement makes sense — proceed.
-- **(B) DFlash has fundamental structural overhead** (per-cycle
-  wall ≥ 2× MTP cycle): Phase 2 cannot produce a PASS outcome.
-  Document Phase 1 verdict as the T8 result; T8 outcome is FAIL or
-  NEUTRAL; stay on MTP. **Per `feedback_no_skipping_lessening`**:
-  this is NOT a structural-bail dressed up — it's an empirical
-  finding documented honestly. Per `feedback_never_bail`: this
-  closes T8 cleanly; T9 stays gated; future work would be to
-  re-architect (post-T9 investigation, not within this PHASE).
+CLI addition:
+- `--ppl-of-output` (boolean flag; off by default).
+- When set, after each tg measurement runs N_gen tokens of
+  generation, run a SECOND pass through the target on
+  [prompt + generated_tokens], capture logits at each generation
+  position, run `process_logits()` (factored out from
+  `examples/perplexity/perplexity.cpp:159` into a shared helper in
+  `common/`), compute target-PPL on the generated sequence.
 
-### Phase 2 (only if Phase 1 returns A) — measure speedup
+Data plumbing:
+- Add `target_ppl_of_output` field to `struct test`.
+- Print as additional report column when `--ppl-of-output` is on.
 
-If Phase 1 verdict is A, capture:
+**Phase 1.3 — Source helper extraction**:
 
-1. **Fresh MTP baseline** via `llama-cli -mtp --draft 3`:
-   - Same target GGUF, same hardware, same build
-   - Same prompt as T6 (quicksort) + 2 additional prompts from the
-     Gate 0 set (`data/dflash-extracts/prompt-{0,1}/`) for noise
-     resistance
-   - 3 runs per config × 3 prompts × n_predict=128 × temp=0
-   - Output: `data/gate6-mtp-baseline.json` with per-run + median
-     t/s + accept rate
-2. **DFlash sweep** via `examples/dflash-speculative-simple`:
-   - block_size ∈ {4, 5, 6, 8}
-   - Same 3 prompts × 3 runs × n_predict=128
-   - Output: `data/gate6-dflash-speedup.json` with per-run + median
-     t/s + accept rate per block_size
+Factor the NLL/PPL kernel out of `perplexity.cpp` into a small
+`common/perplexity.h` + `.cpp` so both llama-perplexity (existing
+caller) and llama-bench (new caller) can use it. Minimum-diff
+refactor — extract the function, leave perplexity.cpp's call site
+unchanged otherwise.
 
-### Phase 3 (after Phase 2) — ship outcome
+**Phase 1 closure binding**:
 
-Per `DESIGN.md §6 Gate 6`:
+The extended `llama-bench` binary, given:
+```sh
+llama-bench -m <target.gguf> --spec none -p 512 -n 128 -r 3
+llama-bench -m <target.gguf> --spec mtp --draft 3 -p 512 -n 128 -r 3
+llama-bench -m <target.gguf> --spec dflash --spec-model <drafter.gguf> --draft 4 -p 512 -n 128 -r 3
+```
+produces three rows of a single markdown/JSON table with identical
+columns (model, params, spec, n_draft, pp t/s, tg t/s, mean_accept,
+target_ppl_of_output), measured through the same dispatch and timing
+window. Closure asserted by:
+1. Build clean with `-DGGML_CUDA=ON -DGGML_CUDA_DFLASH=ON -DCMAKE_CUDA_ARCHITECTURES=75`.
+2. Each of the three rows produced; pp t/s columns within
+   ~5% across spec methods (sanity); tg t/s columns differ as
+   measured.
+3. `--spec none` row's target_ppl_of_output is finite and
+   reasonable for the target on its own output.
 
-- **PASS (≥ 1.5× MTP)** → ship `profiles/qwen36-27b-x1-dflash.sh`;
-  symlink switch only; MTP profile stays available
-- **NEUTRAL (1.0–1.5× MTP)** → document gap honestly; ship as
-  tunable option; MTP stays default. Do NOT dress as "GREEN"
-- **FAIL (< 1.0× MTP)** → stay on MTP; document negative with
-  cost breakdown
+### Phase 2 — Diagnose T6's 1.33 t/s through the new infra
+
+Once Phase 1 lands, run the extended `llama-bench --spec dflash` on
+the production target at T6's prompt config (single prompt, n=128).
+Two outcomes possible:
+
+- **(A) Extended bench shows DFlash tg t/s ≫ 1.33** — T6's
+  1.33 number was a measurement artifact in
+  `dflash-speculative-simple` (likely including prompt-eval, no
+  warmup, or single-run noise). The infra-level number IS the
+  honest measurement. Proceed to Phase 3.
+- **(B) Extended bench confirms DFlash tg t/s ≪ MTP** — there's a
+  real per-cycle cost. THEN add per-cycle instrumentation to
+  `dflash-speculative-simple` to attribute it, capture to
+  `data/gate6-phase2-cycle-breakdown.json`, decide structural vs
+  fixable per the diagnostic threshold (Q2 below).
+
+Capture Phase 2 result to `data/gate6-phase2-diagnose.json` with
+verdict (A) or (B) and reasoning. If (B) structural: T8 closes
+FAIL or NEUTRAL here; do NOT proceed to Phase 3 producing a
+pretend-PASS.
+
+### Phase 3 — Ship-gate measurement (only if Phase 2 verdict is A or B-fixable)
+
+Single `llama-bench` invocation, all three spec methods, multiple
+prompts, with `--ppl-of-output` on:
+
+```sh
+llama-bench -m <target.gguf> \
+  --spec none,mtp,dflash \
+  --draft 3 \
+  --spec-model <drafter.gguf>:dflash \
+  -p 512 -n 128 -r 3 \
+  --ppl-of-output \
+  -o json > data/gate6-ship-measurement.json
+```
+
+(Exact CLI shape may differ; lock during Phase 1 implementation.)
+
+Expected output columns: `spec, n_draft, pp_t_s, tg_t_s,
+mean_accept, target_ppl_of_output, n_gen, n_prompt, build_info`.
+
+### Phase 4 — Ship outcome decision
+
+Per `DESIGN.md §6 Gate 6`, decided from the Phase 3 JSON:
+
+- **PASS** (DFlash tg ≥ 1.5× MTP tg) AND (DFlash target_ppl_of_output
+  within 5% of MTP target_ppl_of_output) → ship
+  `profiles/qwen36-27b-x1-dflash.sh`.
+- **NEUTRAL** (DFlash tg 1.0–1.5× MTP) OR (DFlash PPL > 5% worse
+  than MTP) → document gap honestly; ship as tunable option;
+  MTP stays default. Do NOT dress as "GREEN".
+- **FAIL** (DFlash tg < 1.0× MTP) OR (DFlash PPL substantially
+  worse) → document negative result with full cost breakdown.
+
+The PPL quality bound is asymmetric: if DFlash is faster but
+substantially worse-quality, that's NEUTRAL, not PASS. Speedup
+without quality is not a ship.
 
 ### Critical files (T8)
 
-**Modified**:
-- `ik_llama.cpp/examples/dflash-speculative-simple/dflash-speculative-simple.cpp` —
-  per-cycle timing instrumentation (Phase 1)
+**Modified** (ik_llama.cpp/):
+- `examples/llama-bench/llama-bench.cpp` — spec-aware extension
+  (~500 LOC) + PPL-of-output mode
+- `examples/perplexity/perplexity.cpp` — refactor `process_logits`
+  into shared helper (minimum-diff)
+- `common/CMakeLists.txt` (or wherever) — wire new
+  `common/perplexity.{h,cpp}` helper
 
 **New**:
-- `data/gate6-phase1-cycle-breakdown.runlog` + `.json` (Phase 1)
-- `data/gate6-phase1-nsys-1cycle.nsys-rep` (Phase 1)
-- `data/gate6-mtp-baseline.json` (Phase 2)
-- `data/gate6-dflash-speedup.json` (Phase 2)
-- (if Phase 3 PASS) `profiles/qwen36-27b-x1-dflash.sh` clone of MTP
-  profile with DFlash wiring
-
-**Read-only references**:
-- `/home/llm/profiles/qwen36-27b-x1-mtp.sh` — production MTP profile
-- `data/gate0-*.json` — vLLM oracle data
-- `data/gate5-T6alpha-coherence.runlog` — T6 closure prompt context
-- `feedback_anchor_to_measured_baselines.md` — fresh-measurement rule
-- `feedback_oneshot_then_evaluate.md` — bundle Phase 1 + Phase 2
-  instrumentation up-front, run as a coherent measurement
-- `feedback_no_skipping_lessening.md` — Phase 1's diagnostic
-  verdict must be honest; if (B), document fully not dress as A
+- `ik_llama.cpp/common/perplexity.{h,cpp}` — shared NLL/PPL kernel
+- `data/gate6-phase1-bench-three-rows.json` (Phase 1 closure)
+- `data/gate6-phase2-diagnose.json` (Phase 2 verdict)
+- `data/gate6-ship-measurement.json` (Phase 3 measurement)
+- (if Phase 4 PASS) `profiles/qwen36-27b-x1-dflash.sh`
 
 ### Open questions to resolve at T8 session start
 
-Q1: **Should Phase 1's cycle-timing instrumentation use `cudaEventRecord`
-   or `clock_gettime` boundaries?** `cudaEventRecord` is more accurate
-   for GPU kernel latency; `clock_gettime` captures host-side stream
-   submission overhead. Both are needed for a complete picture but
-   `clock_gettime` is the simpler default.
+Q1: **Should `llama-bench --spec mtp` set both
+   `params.has_mtp = true` AND `params_speculative.type = MTP`?**
+   The two flags are linked in common/speculative.cpp:1177 but
+   it's worth double-checking the production llama-server path
+   to mirror exactly. Suggested: trace
+   `llama-server` init → see how its MTP path turns on, replicate
+   in llama-bench.
 
-Q2: **What's the "DFlash cycle is structurally too expensive"
-   threshold for Phase 1 gate?** Suggested: if DFlash cycle wall ≥ 30 ms
-   AND MTP cycle wall < 15 ms (i.e., gap > 2×), exit at Phase 1.
+Q2: **Diagnostic threshold for Phase 2 verdict (B) fixable vs
+   structural**: suggested if DFlash per-cycle wall ≥ 2× MTP
+   per-cycle wall AND the dominant cost is NOT prompt-eval or
+   one-time setup, treat as structural. Lock during Phase 2
+   implementation.
 
-Q3: **Does the production GGUF actually load through
-   `dflash-speculative-simple` cleanly at `--ctx-size 262144`?**
-   T6 ran at default ctx (likely much smaller). Phase 2 must use
-   production ctx or the comparison isn't apples-to-apples.
+Q3: **PPL-of-output sequence length**: probably want PPL on the
+   first 64-128 generated tokens, not all 128, to avoid noise
+   from late-stream divergence. Suggested: capture
+   target_ppl_of_output_n64 + target_ppl_of_output_n128 and
+   surface both.
 
-Q4: **MTP `--draft 1/2/3` sweep too?** Phase 2's MTP baseline is at
-   draft=3 per production. If DFlash beats draft=3 it ships; if
-   it ties draft=3 but beats draft=1, that's interesting context
-   but not the ship gate. Suggested: just measure at draft=3.
+Q4: **MTP --draft sweep**: spec_type=mtp with n_draft=1,2,3 at
+   Phase 3 to confirm production's draft=3 choice still holds
+   on this build. Cheap addition since we're already iterating
+   spec methods.
 
 ### Discipline reminders for T8
 
 - Each plan-file change commits separately + pushed (CLAUDE.md §5).
-- The Phase 1 diagnostic verdict goes into Phase 1's JSON, NOT just
-  the conversation — future sessions need to read it.
-- Per `feedback_surface_tradeoff_decisions`: any deviation from this
-  plan (e.g., changing the diagnostic threshold mid-flight) surfaces
-  first, locks in plan, then implements.
-- Per `feedback_oneshot_then_evaluate`: write the Phase 1
-  instrumentation + Phase 2 measurement scripts as one coherent
-  bundle. Don't intermediate-evaluate; let the measurements run,
-  then evaluate against the calculated MTP-cycle ceiling.
+- Per `feedback_no_workarounds`: extending llama-bench is the
+  proper path. A `scripts/gate6-bench.py` wrapper around three
+  CLIs is NOT acceptable as a ship-gate measurement.
+- Per `feedback_surface_tradeoff_decisions`: spec extension
+  surface area runs ~500 LOC; any deviation from this scope
+  (skipping --ppl-of-output, dropping a printer's spec columns)
+  surfaces first, locks in plan, then implements.
+- Per `feedback_oneshot_then_evaluate`: build the extension as
+  one coherent commit; run the three-row closure binding; then
+  evaluate. Don't intermediate-evaluate the extension itself.
+- Per `feedback_no_skipping_lessening`: Phase 2 verdict (B)
+  structural is a legitimate outcome — document it honestly. Do
+  NOT proceed to Phase 3 producing a measurement that buries the
+  structural finding.
