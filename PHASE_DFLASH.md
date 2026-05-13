@@ -600,88 +600,194 @@ Q3: **What's the target for T8 if T7 closes np-only-for-kernels but
 
 ---
 
-## Pickup brief — T8 (Qwen3.6-27B speedup measurement at np=1)
+## T8 plan — Qwen3.6-27B speedup measurement at np=1 (written 2026-05-13 post-T7)
 
-Use this as the first read on a fresh T8 session.
+**Authoring lesson (T6 + T7 evidence)**: the highest-value move
+before designing/measuring is to **source-read the existing
+implementation, not the spec or memory citations**. Both T6 and T7
+were nearly mis-scoped on the spec's claim of what should exist;
+reading the .cu / .cpp / .sh files first overturned the design
+suspect each time. This plan is written from the source-read first.
 
-### Where we left off
+### Phase 0 — Source-read (DONE 2026-05-13; findings below)
 
-- **T1–T7 all closed** on `production/2026-q2-next`. Production path:
-  `examples/dflash-speculative-simple` driving `llama_spec_ckpt_*`
-  PER_STEP mode + drafter pipeline at np=1.
-- T6 closure metric: accept 2.879 tokens/draft on `Write a short
-  python function for quicksort`, n=128, BS=4, temp=0. Output
-  coherent through full n_predict.
-- T7 closure: drafter kernels are np-invariant by direct measurement
-  (4 seeds × N ∈ {1,2,4,8}, byte-identical slot 0 outputs).
-  T9 (np > 1 aggregate) is unlocked at the **kernel** level but
-  remains blocked at the **server** level by the unsolved Qwen3.6-27B
-  multi-slot determinism bug (see `project_mtp_multislot_determinism_investigation_failed`).
+Read and witnessed in this plan:
 
-### What T8 must do
+- **`/home/llm/profiles/qwen36-27b-x1-mtp.sh`** — production MTP
+  profile. Runs `llama-server -mtp --draft 3` on
+  `qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf` with TP=2
+  (`--tensor-split 1,1`), `-fa on`, `--cache-type-{k,v} q4_0`,
+  `--k-cache-hadamard --v-cache-hadamard`, `--ctx-size 262144`,
+  `--parallel 1` (np=1 — multi-slot bug surface is unsolved).
+  **Comment cites empirical 2026-05-09 baseline**: draft=1 31.88,
+  draft=2 31.50, draft=3 **33.23** t/s (3-run median, n_predict=128,
+  T=0). Per `feedback_anchor_to_measured_baselines`, do NOT bind on
+  this number — measure fresh on the same build.
+- **`llama-cli`** supports `-mtp` AND `--draft N` directly. This is
+  the apples-to-apples MTP baseline tool — no HTTP overhead, same
+  binary, single-prompt CLI with built-in t/s timing.
+- **`examples/dflash-speculative-simple/dflash-speculative-simple.cpp`** —
+  the T6 driver. Has ONLY two wall-clock timing points: `t0 = now_us()`
+  at line 130 (after prompt eval) and `t1 = now_us()` at line 261
+  (after generation). Reports tok/s + mean accept rate. **No per-cycle
+  timing** — diagnostic phase needs to add it (or use external profiler).
+- **`examples/llama-bench`** — does NOT support `-mtp` / `--draft` /
+  speculative modes. General pp/tg tool only. **NOT usable for T8**.
+- **`examples/speculative`** — uses two-model draft architecture
+  (separate target + drafter binaries), NOT inline MTP. Not the
+  comparison we want.
+- **T6 closure**: `data/gate5-T6alpha-coherence.runlog` — 1.33 tok/s
+  on the quicksort prompt, n=128, BS=4. Same hardware as production
+  MTP at 33.23 t/s. **The gap is ~25× regression, not a speedup.**
 
-Measure DFlash speedup against a **freshly captured** MTP `--draft 3`
-baseline on the production prompt set. Per `feedback_anchor_to_measured_baselines`,
-do NOT anchor on the 33.5 tok/s memory citation — capture fresh.
+### Phase 1 — Diagnose the 25× gap BEFORE measuring speedup
 
-### Operational task plan (fresh session, in order)
+T6's 1.33 tok/s vs MTP's 33.23 t/s on the same hardware/target is a
+~25× regression. For T8 to be a meaningful "speedup measurement", we
+need to know first whether the regression is fundamental (cycle
+arithmetic) or fixable (prompt eval excluded, no warmup, launch
+overhead, etc.). Per CLAUDE.md §8 "measured-on-diagnosis": instrument
+before declaring root cause.
 
-1. **Capture fresh MTP baseline** — same hardware, same build, same
-   prompt set, same n_predict, np=1, thinking ON (Qwen3.6 is a
-   thinking model — production behaviour). Output to
-   `data/gate6-mtp-baseline.json`. Need at least 3 runs averaged
-   for noise floor.
+**Phase 1 closure binding**: a per-cycle timing breakdown of
+`dflash-speculative-simple` running the T6 prompt, attributing wall
+time to:
+  - prompt_eval (1× at start)
+  - per-cycle: combine_features (1×) + inject_kv_fused (5×) +
+    drafter_forward (1×) + drafter_lm_head (1×) + verify
+    `llama_decode` (1×) + spec_ckpt save+restore (1× each)
+  - sampling overhead
+  - device→host pulls (drafter_logits to CPU, etc.)
 
-2. **Run DFlash sweep at np=1, thinking ON**, block_size ∈ {4, 5, 6, 8}.
-   Captures tok/s + accept rate + cycle time per setting. Output to
-   `data/gate6-dflash-speedup.json`.
+Output: `data/gate6-phase1-cycle-breakdown.json` with absolute and
+relative cost per component, plus a one-line diagnosis verdict.
 
-3. **Decide ship outcome** per `DESIGN.md §6 Gate 6`:
-   - **PASS (≥ 1.5× MTP)** → ship `profiles/qwen36-27b-x1-dflash.sh`
-     alongside existing MTP profile; symlink switch only.
-   - **NEUTRAL (1.0–1.5× MTP)** → document gap honestly; ship as
-     tunable option, MTP stays default. Do NOT dress as "GREEN."
-   - **FAIL (< 1.0× MTP)** → stay on MTP; document negative result
-     with cost breakdown.
+**Phase 1 tasks** (in order):
 
-### Empirical reference points (from earlier gates, NOT a target to bind on)
+1. **Add per-cycle timing instrumentation to
+   `examples/dflash-speculative-simple/dflash-speculative-simple.cpp`**
+   — straightforward addition of `now_us()` boundaries around the
+   numbered cycle stages. Behind an `#ifdef DFLASH_CYCLE_TIMING` or
+   CLI flag so production path is untouched. ~80 LOC.
+2. **Build at `/opt/llm/build-dflash`** with the instrumentation
+   compiled in.
+3. **Run T6's exact closure config** to reproduce the 1.33 t/s
+   number and capture per-cycle breakdown. Capture to
+   `data/gate6-phase1-cycle-breakdown.runlog` (raw) + post-process
+   to JSON.
+4. **Cross-check against nsys** — single-cycle nsys-rep to
+   `data/gate6-phase1-nsys-1cycle.nsys-rep` for kernel-level
+   evidence the instrumentation matches reality.
+5. **Diagnosis verdict** — write the one-liner in the JSON:
+   - "verify-decode dominates" (target stack overhead — fixable
+     by reducing verify cost or batching)
+   - "drafter pipeline dominates" (kernel-level — possible bespoke
+     kernel work)
+   - "launch overhead dominates" (lots of small kernels — kernel
+     fusion path)
+   - "single-cycle wall time is X ms, MTP cycle is Y ms — DFlash
+     cycle has structural overhead of Z ms per token" (the honest
+     accounting; this is the most likely outcome)
 
-- **vLLM Gate 0**: DFlash spec=4 np=1 at 24.46 tok/s (0.79× vLLM
-  vanilla); MTP spec=3 np=1 at 44.19 tok/s (1.53× vLLM vanilla);
-  fixed per-cycle overhead ≈ 108 ms. Our bespoke sm_75 path's cycle
-  time is what determines whether we beat vLLM's stack penalty.
-- **T6 e2e**: 1.33 tok/s. This is the T6 closure prompt at n=128
-  with the production binary on the production hardware. T8 must
-  diagnose why — is it cycle time, or are we hitting per-launch
-  overhead at the small problem? Per CLAUDE.md §4 "measured-on-diagnosis"
-  (CLAUDE.md §8): instrument before declaring root cause.
+### Phase 1 decision gate
 
-### Reads first for T8
+Read the diagnostic verdict. Two outcomes:
 
-- `data/gate0-*.json` — full Gate 0 oracle data
-- `DESIGN.md §6 Gate 6` — outcome rules
-- `profiles/qwen36-27b-x1-mtp.sh` (or current `profiles/qwen36.sh`) —
-  production MTP profile; clone for the DFlash profile
-- `feedback_anchor_to_measured_baselines.md` — why fresh MTP measure
-  is mandatory
-- `feedback_oneshot_then_evaluate.md` — write the measurement
-  harness end-to-end before iterating
+- **(A) DFlash cycle time is approachable to MTP cycle time** (within
+  2× say): Phase 2 measurement makes sense — proceed.
+- **(B) DFlash has fundamental structural overhead** (per-cycle
+  wall ≥ 2× MTP cycle): Phase 2 cannot produce a PASS outcome.
+  Document Phase 1 verdict as the T8 result; T8 outcome is FAIL or
+  NEUTRAL; stay on MTP. **Per `feedback_no_skipping_lessening`**:
+  this is NOT a structural-bail dressed up — it's an empirical
+  finding documented honestly. Per `feedback_never_bail`: this
+  closes T8 cleanly; T9 stays gated; future work would be to
+  re-architect (post-T9 investigation, not within this PHASE).
+
+### Phase 2 (only if Phase 1 returns A) — measure speedup
+
+If Phase 1 verdict is A, capture:
+
+1. **Fresh MTP baseline** via `llama-cli -mtp --draft 3`:
+   - Same target GGUF, same hardware, same build
+   - Same prompt as T6 (quicksort) + 2 additional prompts from the
+     Gate 0 set (`data/dflash-extracts/prompt-{0,1}/`) for noise
+     resistance
+   - 3 runs per config × 3 prompts × n_predict=128 × temp=0
+   - Output: `data/gate6-mtp-baseline.json` with per-run + median
+     t/s + accept rate
+2. **DFlash sweep** via `examples/dflash-speculative-simple`:
+   - block_size ∈ {4, 5, 6, 8}
+   - Same 3 prompts × 3 runs × n_predict=128
+   - Output: `data/gate6-dflash-speedup.json` with per-run + median
+     t/s + accept rate per block_size
+
+### Phase 3 (after Phase 2) — ship outcome
+
+Per `DESIGN.md §6 Gate 6`:
+
+- **PASS (≥ 1.5× MTP)** → ship `profiles/qwen36-27b-x1-dflash.sh`;
+  symlink switch only; MTP profile stays available
+- **NEUTRAL (1.0–1.5× MTP)** → document gap honestly; ship as
+  tunable option; MTP stays default. Do NOT dress as "GREEN"
+- **FAIL (< 1.0× MTP)** → stay on MTP; document negative with
+  cost breakdown
+
+### Critical files (T8)
+
+**Modified**:
+- `ik_llama.cpp/examples/dflash-speculative-simple/dflash-speculative-simple.cpp` —
+  per-cycle timing instrumentation (Phase 1)
+
+**New**:
+- `data/gate6-phase1-cycle-breakdown.runlog` + `.json` (Phase 1)
+- `data/gate6-phase1-nsys-1cycle.nsys-rep` (Phase 1)
+- `data/gate6-mtp-baseline.json` (Phase 2)
+- `data/gate6-dflash-speedup.json` (Phase 2)
+- (if Phase 3 PASS) `profiles/qwen36-27b-x1-dflash.sh` clone of MTP
+  profile with DFlash wiring
+
+**Read-only references**:
+- `/home/llm/profiles/qwen36-27b-x1-mtp.sh` — production MTP profile
+- `data/gate0-*.json` — vLLM oracle data
+- `data/gate5-T6alpha-coherence.runlog` — T6 closure prompt context
+- `feedback_anchor_to_measured_baselines.md` — fresh-measurement rule
+- `feedback_oneshot_then_evaluate.md` — bundle Phase 1 + Phase 2
+  instrumentation up-front, run as a coherent measurement
+- `feedback_no_skipping_lessening.md` — Phase 1's diagnostic
+  verdict must be honest; if (B), document fully not dress as A
 
 ### Open questions to resolve at T8 session start
 
-Q1: **Where to run the prompt set?** `examples/dflash-speculative-simple`
-   was T5/T6's driver but it's single-prompt. T8 needs multi-prompt
-   benchmark with timing capture. Either extend `dflash-speculative-simple`
-   or build a small harness in `scripts/gate6-*.sh` that loops it.
+Q1: **Should Phase 1's cycle-timing instrumentation use `cudaEventRecord`
+   or `clock_gettime` boundaries?** `cudaEventRecord` is more accurate
+   for GPU kernel latency; `clock_gettime` captures host-side stream
+   submission overhead. Both are needed for a complete picture but
+   `clock_gettime` is the simpler default.
 
-Q2: **What prompt set?** Suggestion: the 8 Gate 0 prompts already
-   used by vLLM oracle — gives apples-to-apples comparison if we
-   ever need it. Stored in `data/dflash-extracts/prompt-{0..7}/`.
+Q2: **What's the "DFlash cycle is structurally too expensive"
+   threshold for Phase 1 gate?** Suggested: if DFlash cycle wall ≥ 30 ms
+   AND MTP cycle wall < 15 ms (i.e., gap > 2×), exit at Phase 1.
 
-Q3: **Diagnose T6's 1.33 tok/s first?** Profile DFlash's per-cycle
-   wall (combine + inject ×5 + drafter_forward + lm_head + verify +
-   restore + accept). 33B-A3B should target close to MTP's 33.5
-   tok/s on the same hardware. If cycle time is dominated by target's
-   verify forward (256-token KV at BS+1 batch), that's the dominant
-   cost. If it's drafter kernels at small shape with launch overhead,
-   that's a different fix path.
+Q3: **Does the production GGUF actually load through
+   `dflash-speculative-simple` cleanly at `--ctx-size 262144`?**
+   T6 ran at default ctx (likely much smaller). Phase 2 must use
+   production ctx or the comparison isn't apples-to-apples.
+
+Q4: **MTP `--draft 1/2/3` sweep too?** Phase 2's MTP baseline is at
+   draft=3 per production. If DFlash beats draft=3 it ships; if
+   it ties draft=3 but beats draft=1, that's interesting context
+   but not the ship gate. Suggested: just measure at draft=3.
+
+### Discipline reminders for T8
+
+- Each plan-file change commits separately + pushed (CLAUDE.md §5).
+- The Phase 1 diagnostic verdict goes into Phase 1's JSON, NOT just
+  the conversation — future sessions need to read it.
+- Per `feedback_surface_tradeoff_decisions`: any deviation from this
+  plan (e.g., changing the diagnostic threshold mid-flight) surfaces
+  first, locks in plan, then implements.
+- Per `feedback_oneshot_then_evaluate`: write the Phase 1
+  instrumentation + Phase 2 measurement scripts as one coherent
+  bundle. Don't intermediate-evaluate; let the measurements run,
+  then evaluate against the calculated MTP-cycle ceiling.
