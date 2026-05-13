@@ -245,50 +245,71 @@ Checkbox semantics per CLAUDE.md §5.
    - np>1 server init returns clear error
 
 - [ ] **T6 — Gate 5: 27B np=1 determinism + late-stream coherence**
+  **(restructured 2026-05-13 — probe-before-implementing path)**
 
-  **Subtask layering** (locked 2026-05-13 per T6 Q&A; order:
-  determinism foundation first, then coherence on top):
+  Mid-T6 discovery: ik_llama.cpp already has `llama_spec_ckpt_*`
+  with PER_STEP mode that handles DeltaNet state restore at any
+  accepted_step + matching seq_rm. The original T6.A parallel
+  ping-pong is functionally redundant with `gpu_checkpoint`'s
+  shadow tier. The original T6.B "commit re-decode" approach
+  empirically regressed coherence due to batch-shape variance in
+  target's attention kernels — PER_STEP + single-token bonus
+  decode avoids that entirely. The original T6.D `dflash_verify_attn`
+  from-scratch effort (~80-150k tokens of sm_75 PTX work) may be
+  unnecessary if target's existing attention is already
+  deterministic at fixed batch shape.
 
-   - **T6.A — DeltaNet state save/restore** (foundation):
-     `dflash_state_checkpoint` / `dflash_state_restore` per
-     `kernel-design.md §6.4`. DeltaNet ping-pong scratch buffer
-     (~384 MiB at np=8 worst case; sized for the locked np=1 T6
-     run). Partial restore on rejected suffix.
+  Per `feedback_probe_before_implementing`: measure first, build
+  only if measurement demands it.
 
-   - **T6.B — Bonus re-decode** (built on T6.A):
-     `kernel-design.md §6.7`. Inside `llama_dflash_draft`, after
-     accept decision: restore DeltaNet to position-`P+k`, re-decode
-     bonus at position `P+k+1`. Hybrid model requires T6.A.
+  **Restructured layering**:
 
-   - **T6.C — `cb_eval` extract hook trim-on-`seq_rm`**:
-     `kernel-design.md §6.8`. Append-only fix already landed in T5;
-     T6.C adds the trim contract via `llama_dflash_trim_extract` C
-     API called alongside `seq_rm`.
+   - **T6.A — DeltaNet state save/restore foundation** ✓ CLOSED.
+     Per kernel-design.md §6.4. Lives in libllama; the C API
+     (`llama_dflash_state_snapshot/_restore`, ping-pong scratch)
+     is present and unit-tested. Dormant in the current example
+     (superseded by `llama_spec_ckpt_*` for production path).
+     Kept for potential superset/redesign per the T6 Q&A.
 
-   - **T6.D — `dflash_verify_attn` from scratch** (determinism
-     kernel): sm_75 PTX `mma.sync.m16n8k8`, fixed-split-size per
-     `kernel-design.md §6.3`. Replaces target's regular attention
-     in the verify path with a deterministic, batch-invariant
-     equivalent at ne[1]=1+BS. BF16→FP16 cast for target's
-     AutoRound-preserved `linear_attn.in_proj_a/b` at server init.
+   - **T6.α — Late-stream coherence via `llama_spec_ckpt_*`**:
+     Wire the example to use `llama_spec_ckpt_init(AUTO, BS+1)`
+     at bind time, then per cycle:
+       1. `llama_spec_ckpt_save(ctx, 0)` enables save_per_step_ssm
+       2. verify decode (BS+1 tokens; delta_net auto-saves per-step
+          intermediates to `ckpt.per_step_ssm[il]` /
+          `ckpt.per_step_qkv[il]`)
+       3. accept-prefix from per-position target argmax
+       4. `llama_spec_ckpt_restore(ctx, 0, P, n_accepted)` —
+          per_step_restore stitches s_l[il] back to
+          "state after id_last + n_accepted drafts" + seq_rm to
+          P+n_accepted+1
+       5. single-token decode of bonus at P+n_accepted+1 (batch
+          shape 1, deterministic)
+       6. `llama_dflash_trim_extract(ctx, P+n_accepted+1, -1)`
+          (T6.C API still relevant)
+       7. `llama_spec_ckpt_discard(ctx)` before any post-cycle
+          decode > 1 tokens (save_per_step_ssm is a global flag)
+     Closes when re-running T5 closure prompt produces coherent
+     output throughout n_predict=128 (no late-stream loop tail).
+     Target-only baseline at temp=0, n=256 confirmed no natural
+     repetition emerges (data/gate4-target-only-n256.runlog).
 
-   - **T6.E — 3-run byte-identical determinism gate**:
-     `test-dflash-3run-byte-identical.cpp`. Drives the same
-     prompt 3 times, asserts byte-identical drafter+target
-     outputs. `dflash_verify_attn` at `ne[1]=5` byte-deterministic
-     across the 3 runs. State save/restore round-trip
-     bit-identical.
+   - **T6.β — Determinism probe (3-run SHA-256)**:
+     Run the T6.α-configured example 3 times on the same prompt
+     at temp=0, np=1. SHA-256 the emitted token sequences.
+     If all 3 match → determinism gate closes empirically. Target's
+     existing CUDA attention has no atomicAdd / no randomness —
+     should already be deterministic at fixed batch shape.
+     Capture hashes to `data/gate5-T6beta-determinism.json`.
 
-   - **T6.F — Late-stream coherence gate** (inherited from T5):
-     `test-dflash-late-stream-coherence.cpp`. Re-run T5 closure
-     prompt at n=128, temp=0, BS=4. Closes when output stays
-     coherent throughout the full n_predict (no repetition tail).
-     Target-only baseline at temp=0, n=256 confirmed (data/
-     gate4-target-only-n256.runlog) that NO natural repetition
-     loop emerges in the model's output — the late-stream
-     repetition observed at T5 closure is a real DFlash artifact,
-     not model behavior. T6.F is a justified gate, not a red
-     herring.
+   - **T6.D — `dflash_verify_attn` from scratch** (deferred,
+     conditional): Only if T6.β shows non-determinism that can't
+     be cheaply fixed. sm_75 PTX `mma.sync.m16n8k8` fixed-split-size
+     per kernel-design.md §6.3. ~80-150k tokens of CUDA kernel
+     work; kept in plan for traceability if needed.
+
+   - **T6.C — `cb_eval` extract hook trim-on-`seq_rm`** ✓ landed.
+     `llama_dflash_trim_extract` C API exposed; used by T6.α.
 
   **Spec hygiene done at T6.1**: 2 invariants migrated to
   `bindings_external`
@@ -298,16 +319,16 @@ Checkbox semantics per CLAUDE.md §5.
 
   **Spec edits done at T6.2**: `kernel-design.md §6.7` (bonus
   re-decode mechanics) and `§6.8` (cb_eval extract hook contract +
-  trim-on-seq_rm) added.
+  trim-on-seq_rm) added. §6.4 to be updated noting T6.A dormancy
+  vs `llama_spec_ckpt_*` canonical path.
 
-  **Closure (composite)**:
-   - 3-run byte-identical drafter+target outputs at np=1 on
-     Qwen3.6-27B production prompts (T6.E binding).
-   - State save/restore round-trip bit-identical (T6.A binding).
-   - `dflash_verify_attn` at `ne[1]=5` byte-deterministic across
-     3 runs (T6.D binding).
-   - T5 closure prompt produces coherent output for the full
-     n_predict=128, no repetition tail (T6.F binding).
+  **Closure (revised)**:
+   - **T6.α**: T5 closure prompt produces coherent output for full
+     n_predict=128 with no repetition tail. Accept rate ≥ T5's
+     2.256 baseline.
+   - **T6.β**: 3-run byte-identical token sequence on the same
+     prompt at temp=0, np=1.
+   - **T6.D**: only if T6.β fails.
 
   **NOT in T6 scope** (T7 territory): byte-identical-to-target-only
   output. The target-only vs DFlash divergence observed at the
