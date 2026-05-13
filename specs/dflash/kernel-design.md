@@ -587,9 +587,63 @@ Tradeoff documented; pick KV_BLOCK_SIZE = 32 with double-buffer at Gate 3 if KV_
 
 ### 6.4 `dflash_state_checkpoint` / `dflash_state_restore`
 
-**File**: `ggml-cuda/dflash-state-checkpoint.cu`
+**Status (2026-05-13)**: deferred in favour of `llama_spec_ckpt_*`
+(see below). The originally-spec'd `dflash_state_checkpoint` /
+`_restore` kernels were not needed for the T6.α coherence path:
+ik_llama.cpp already has a PER_STEP-aware checkpoint mechanism
+that handles partial-accept restore at any `accepted_step`.
 
-**Signatures**:
+**Canonical mechanism — `llama_spec_ckpt_*` (PER_STEP mode)**:
+
+The pre-existing API in `include/llama.h:840-847`:
+
+```c
+LLAMA_API int  llama_spec_ckpt_init   (struct llama_context *, int mode, int max_tokens);
+LLAMA_API bool llama_spec_ckpt_save   (struct llama_context *, llama_seq_id);
+LLAMA_API bool llama_spec_ckpt_restore(struct llama_context *, llama_seq_id, llama_pos n_past, int accepted_step);
+LLAMA_API void llama_spec_ckpt_discard(struct llama_context *);
+```
+
+How it works (PER_STEP mode):
+- `llama_spec_ckpt_init(AUTO, max_tokens=BS+1)`: allocates
+  `ckpt.per_step_ssm[il]` and `ckpt.per_step_qkv[il]` sized for
+  `max_tokens` rows per layer, plus a `s_l_shadow[il]` snapshot tier.
+  Selects PER_STEP unless mixed CPU/GPU recurrent layers or
+  n_seq_max > 1, in which case falls back to GPU_FALLBACK / CPU.
+- `llama_spec_ckpt_save(ctx, seq_id)`: captures the shadow
+  (current s_l state) AND sets `kv.save_per_step_ssm = true`.
+- The next `llama_decode` with `n_tokens > 1` triggers
+  `delta_net::build_qkv` to copy intermediate SSM states to
+  `ckpt.per_step_ssm[il]` and the qkv_mixed conv features to
+  `ckpt.per_step_qkv[il]` (one entry per batch token).
+- `llama_spec_ckpt_restore(ctx, seq_id, n_past, accepted_step)`:
+  the CUDA kernel `ggml_backend_cuda_per_step_restore_layers`
+  (see `ggml/src/ggml-cuda/per-step-restore.cu`) stitches s_l[il]
+  to "state after the first `accepted_step+1` batch tokens" by:
+    1. Phase 1 (conv state): for each (col, d), source is
+       `qkv[d + src_token * conv_dim]` where
+       `src_token = accepted_step - (d_conv-2) + col`. Falls back
+       to the shadow when src_token < 0.
+    2. Phase 2 (SSM state): byte-copy
+       `ssm_ptrs[il] + accepted_step * ssm_state_dim`
+       to `s_l[il] + conv_state_dim`.
+  Then sets `cells[seq_id].pos = n_past + accepted_step` and
+  calls `llama_kv_cache_seq_rm(seq_id, n_past + accepted_step + 1, -1)`.
+
+For DFlash: `accepted_step = n_accepted` restores state to "after
+id_last + n_accepted accepted drafts" — exactly the state needed
+for the next decode at position `P + n_accepted + 1` (the bonus
+position). The bonus is then committed by a single-token decode at
+that position.
+
+**Caveat (`save_per_step_ssm` is global)**: the flag stays set until
+`llama_spec_ckpt_discard`. While set, any `llama_decode` with
+`n_tokens > 1` attempts the per-step save into a buffer sized for
+`max_tokens` rows. The caller must `_discard` before any post-cycle
+multi-token decode (e.g., between cycles, or use single-token bonus
+decodes only).
+
+**Original signatures (deferred)**:
 
 ```cpp
 __global__
