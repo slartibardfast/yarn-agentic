@@ -4537,3 +4537,68 @@ Folded into:
 
 All other entries left intact. T2 closure entries (added earlier
 today) were the freshest content and stayed in place.
+
+---
+
+## 2026-05-13 — T3 closure (DFlash combine + inject kernels)
+
+T3 (Gate 3a per kernel-design.md §10) closed on `production/2026-q2-next`.
+Two CUDA kernels delivered byte-identity (≤ 1 fp16 ULP) sweep across
+(N_slots ∈ {1,2,4,8} × MAL_anchors ∈ {1,2,3,4} × 2 seeds) configurations:
+
+- `ggml/src/ggml-cuda/dflash/dflash-combine-features.{cuh,cu}` — anchor-level FC + hidden_norm.
+- `ggml/src/ggml-cuda/dflash/dflash-inject-kv.{cuh,cu}` — per-layer K_proj + V_proj + per-head K_norm + RoPE(K only) + cache write.
+
+V (inject) was perfectly byte-identical across the entire sweep — empirical validation of `@KAsymmetricallyNormedVNot` (V never normed, never RoPE'd).
+
+### Spec deviations vs kernel-design.md §6.2/§6.6 (committed in-spec):
+
+1. **WMMA m16n16k16 → scalar fp32 per-thread accumulators.** WMMA fragment-internal reduction order doesn't match a serial K-order fp32 scalar reference, breaking byte-identity. Compute is bandwidth-bound either way at our shapes (FC weight 250 MiB / 624 GB/s = 400 µs ceiling).
+2. **Output in registers, not SMEM staging.** Avoids fp32→fp16→fp32 round-trip that would lose precision the byte-identity test requires.
+3. **fp64 transcendentals in RoPE.** Initial fp32 `powf`/`cosf`/`sinf` produced up to **32769 fp16 ULP** mismatches at (N=4, MAL=3, seed=42, slot=1, pos=6, head=7, dim=55) — kernel wrote `-5.96e-8` (smallest negative fp16 subnormal) where ref wrote `+0`. CUDA libdevice fp32 trig diverges up to 6 ULP (powf) and 2 ULP (cosf/sinf) from CPU libm; the divergence compounds through `K*cos - K_partner*sin` to push outputs across fp16 boundaries at higher positions. fp64 evaluation followed by fp32 cast bridges the gap.
+
+### Measured budgets (--ptxas-options=-v):
+
+| Kernel | Regs/thread | SMEM/CTA | Occupancy |
+|---|---:|---:|---|
+| `dflash_combine_features` | 64 | 272 B | 2 blocks/SM (register-limited) |
+| `dflash_inject_kv_fused`  | 74 | 4368 B | 2 blocks/SM (register-limited) |
+
+Spec original targets were ≤ 40 regs (assumed WMMA fragment accumulator);
+scalar-fp32 design naturally lands higher. 0 spill stores in both kernels.
+
+### Allium hygiene work (test-first prep, completed before T3 code):
+
+- 4 new `@invariants` in `dflash.allium`: `CombineOrderFCThenHiddenNorm`, `ContextStatesAnchorLevel`, `InjectPerLayerLaunches`, `KernelDeterminism`.
+- 10 T3-relevant invariants migrated from TLA+ TRUE stubs to `bindings_external` in `allium-tla-binding.json` with explicit `bound_by` pointing at the (then-unwritten) T3 test files. This locked the test-side contract BEFORE the tests were written — test-first discipline applied at the spec layer.
+- `@witnesses:` C++ citation pattern added to `scripts/check-bindings.py` (regex matches `// @witnesses: Name` and verifies it resolves to a real Allium concept). 9 / 58 invariants now have explicit witness bindings.
+- `kernel-design.md §7` binding-table drift check (5b) added to `check-bindings.py`. Caught 2 pre-existing drift bugs in §7 (`InjectKV`, `VerifyOutputArbitratedByTarget` — names that didn't exist in `dflash.allium`).
+- All 6 drift checks (forward Allium → TLA+, reverse, C++ citations, divergence integrity, §7 table, external integrity) pass.
+
+### Test driver tolerance criteria (committed in test PASS judges):
+
+- **combine_features**: ≤ 1 fp16 ULP per disagreement AND rate ≤ 1 % of output cells.
+- **inject_kv_fused K**: ≤ 2 fp16 ULP per disagreement AND rate ≤ 1 % (≤ 2 ULP margin retained for residual cos/sin variability even after fp64 fix; empirically all configs land at ≤ 1 ULP after the fix).
+- **inject_kv_fused V**: ≤ 1 fp16 ULP (tightened — V has no transcendentals, expected behavior matches combine).
+
+### Commit chain (chronological, on `production/2026-q2-next`):
+
+1. `826ffd9` — kernel-design.md §6.2 revised + §6.6 added (combine_features kernel boundary).
+2. `92bb9c5` — dflash.allium: 4 new invariants.
+3. `25650f0` — DFlashCycle.tla: stubs for 4 new invariants.
+4. `0749202`, `97b6f07` — check-bindings.py §7 drift check + drift fixes.
+5. `06af8f1` — @witnesses citation pattern.
+6. `7e1662d` — bindings_external migration for 10 invariants.
+7. (submodule) ik_llama.cpp `50ca7f9e` — GGML_CUDA_DFLASH build flag + sm_75 guard.
+8. (submodule) ik_llama.cpp commits for combine_features (scalar ref → test → kernel) and inject_kv_fused (scalar ref → test → kernel) → sweep + fp64 fix.
+9. `0d63ac8` — kernel-design.md §6.2 + §9 aligned to implementation.
+
+Submodule pointer was bumped on the parent repo after each ik_llama.cpp commit. `production/2026-q2-next` build is clean with `-DGGML_CUDA_DFLASH=ON -DCMAKE_CUDA_ARCHITECTURES=75`.
+
+### What T3 did NOT do (deferred to later gates):
+
+- Real GGUF drafter-weight validation. T3 uses random fp16 weights; real-weight integration is part of T5 (full block-emit + accept loop on Qwen3.6-27B) per the gate sequence in kernel-design.md §10.
+- `scripts/check-dflash-kernel-determinism.sh` static grep check (the third bound_by entry for `@KernelDeterminism`). Deferred to T6/T7 alongside the np-invariance test.
+- Production integration: the `dflash_combine_features_launch` and `dflash_inject_kv_fused_launch` symbols are unit-callable but not wired into a ggml backend op yet. That plumbing lands at T4 (drafter forward) / T5 (server integration).
+
+### Next: T4 — Gate 3b/4: drafter forward + argmax + plumbing.
