@@ -4488,6 +4488,20 @@ Two non-obvious findings for future-me:
    decoder-shape heuristic (look for mlp + attn children) found it
    robustly.
 
+**Correction (2026-05-13)**: the earlier T2-closure entries
+described the comparison as "cross-quantization (ik_llama Q-mix
+vs vLLM INT4 AutoRound)". That framing is wrong. The production
+GGUF (`qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf`) is a
+faithful repackaging of the same AutoRound INT4 weights into GGUF —
+"tool1lossless" indicates no further requantization. So both stacks
+load the same quantized weights; the 0.99988+ cosine sim reflects
+purely stack-level float-arithmetic noise (kernel order, fp32
+accumulation timing, dequant micro-implementation) — NOT
+quantization error. This makes the hook-placement signal stronger,
+not weaker: there's no quantization mismatch to mask a wrong hook,
+so a misplaced hook would have shown up clearly. T2 closure stands
+GREEN with the corrected interpretation.
+
 **Files**:
 - ik_llama.cpp: `include/llama.h`, `src/llama-cparams.h`,
   `src/llama-decoder-internal.h`, `src/llama.cpp`,
