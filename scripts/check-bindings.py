@@ -56,6 +56,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SPEC_DIR = REPO_ROOT / "specs" / "dflash"
 ALLIUM_SPEC = SPEC_DIR / "dflash.allium"
 BINDING_JSON = SPEC_DIR / "allium-tla-binding.json"
+KERNEL_DESIGN = SPEC_DIR / "kernel-design.md"
 TLA_FILES = [SPEC_DIR / "DFlashCycle.tla", SPEC_DIR / "DFlashMultiSlot.tla"]
 CPP_TEST_DIR = REPO_ROOT / "ik_llama.cpp" / "tests" / "dflash-speculative"
 
@@ -118,6 +119,24 @@ def allium_invariant_names(ast: dict) -> set[str]:
     return names
 
 
+def allium_other_names(ast: dict) -> set[str]:
+    """Names of Allium contracts, entities, and enums (anything kernel-design
+    §7 may legitimately reference besides @invariants)."""
+    names: set[str] = set()
+    for decl in ast["module"]["declarations"]:
+        blk = decl.get("Block")
+        if not blk:
+            continue
+        kind = blk.get("kind")
+        if kind in ("Contract", "Entity", "Enum"):
+            nm = blk.get("name", {})
+            if isinstance(nm, dict):
+                n = nm.get("name")
+                if n:
+                    names.add(n)
+    return names
+
+
 # ---------- TLA helpers ----------------------------------------------------
 
 TLA_DEF_RE = re.compile(r"^(?P<name>[A-Z][A-Za-z0-9_]*)\s*==")
@@ -140,6 +159,35 @@ def all_tla_names() -> set[str]:
     for p in TLA_FILES:
         out |= tla_definition_names(p)
     return out
+
+
+# ---------- Markdown helpers ----------------------------------------------
+
+# Match a backtick-quoted CamelCase name in a markdown table-row's left column.
+# A table row starts with `|`, and the left column ends at the next `|`.
+KD_TABLE_NAME_RE = re.compile(r"^\|\s*`([A-Z][A-Za-z0-9_]+)`\s*\|")
+
+
+def kernel_design_section7_names() -> set[str]:
+    """Extract invariant-shaped names from kernel-design.md §7 binding table.
+    Names are recognized as backtick-quoted CamelCase tokens in the first
+    cell of a markdown table row, within the §7 section."""
+    names: set[str] = set()
+    if not KERNEL_DESIGN.exists():
+        return names
+    in_section_7 = False
+    for line in KERNEL_DESIGN.read_text().splitlines():
+        if line.startswith("## 7."):
+            in_section_7 = True
+            continue
+        if in_section_7 and line.startswith("## "):
+            break
+        if not in_section_7:
+            continue
+        m = KD_TABLE_NAME_RE.match(line)
+        if m:
+            names.add(m.group(1))
+    return names
 
 
 # ---------- C++ helpers ---------------------------------------------------
@@ -170,7 +218,9 @@ def run_checks(report_only: bool = False) -> int:
 
     ast = allium_ast()
     allium_invs = allium_invariant_names(ast)
+    allium_others = allium_other_names(ast)
     tla_names = all_tla_names()
+    kd_section7 = kernel_design_section7_names()
     binding = json.loads(BINDING_JSON.read_text())
     helpers = set(binding.get("tla_helpers", []))
     divergences = binding.get("divergences", [])
@@ -179,11 +229,13 @@ def run_checks(report_only: bool = False) -> int:
     diverge_tla = {d["tla"] for d in divergences}
     external_allium = {e["allium"] for e in externals}
 
-    info(f"Allium invariants: {len(allium_invs)}")
-    info(f"TLA definitions:   {len(tla_names)}")
-    info(f"TLA helpers:       {len(helpers)}")
-    info(f"Divergences:       {len(divergences)}")
-    info(f"External bindings: {len(externals)}")
+    info(f"Allium invariants:        {len(allium_invs)}")
+    info(f"Allium other (contracts/entities/enums): {len(allium_others)}")
+    info(f"TLA definitions:          {len(tla_names)}")
+    info(f"TLA helpers:              {len(helpers)}")
+    info(f"Divergences:              {len(divergences)}")
+    info(f"External bindings:        {len(externals)}")
+    info(f"kernel-design.md §7 names: {len(kd_section7)}")
     info("")
 
     # CHECK 1 — FORWARD: every Allium invariant bound in TLA or external
@@ -268,8 +320,30 @@ def run_checks(report_only: bool = False) -> int:
     else:
         info(green(f"    OK — {len(divergences)} divergence entries valid."))
 
-    # CHECK 5 — external integrity
-    info("[5] external-binding integrity")
+    # CHECK 5b — kernel-design.md §7 binding table
+    info("[5b] kernel-design.md §7 -> Allium")
+    kd_unbound = []
+    for name in sorted(kd_section7):
+        if name in allium_invs:
+            continue
+        if name in allium_others:
+            continue
+        if name in diverge_tla:
+            continue
+        kd_unbound.append(name)
+    if kd_unbound:
+        failures += 1
+        fail("kernel-design.md §7 cites names not in Allium spec:")
+        for n in kd_unbound:
+            print(f"  {n}", file=sys.stderr)
+        print("  Resolution: rename row to a real Allium @invariant / contract / "
+              "entity / enum, or add the missing concept to specs/dflash/dflash.allium.",
+              file=sys.stderr)
+    else:
+        info(green(f"    OK — all {len(kd_section7)} §7 table names resolve."))
+
+    # CHECK 6 — external integrity
+    info("[6] external-binding integrity")
     ext_errors = []
     for e in externals:
         if e.get("allium") not in allium_invs:
