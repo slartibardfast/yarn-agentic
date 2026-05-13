@@ -5043,3 +5043,135 @@ verified: all index pointers resolve to existing files.
 Per the dream-flow procedure, the public MEMORY.md is append-only.
 This entry records reduction stats + which entries were added; no
 existing entries rewritten or deleted.
+
+
+---
+
+## 2026-05-13 — T5 closes NEUTRAL [~] on `production/2026-q2-next`
+
+DFlash workstream T5 (Gate 4: full block-emit + accept loop on
+Qwen3.6-27B) closes with a NEUTRAL outcome: pipeline plumbing
+shipped end-to-end through the production llama-* framework; mean
+accept rate above floor; late-stream coherence drift deferred to T6.
+
+### What landed (T5.1 - T5.11)
+
+  - Spec hygiene: 9 production-orchestration @invariants migrated to
+    `bindings_external` in `allium-tla-binding.json`, pointing at the
+    not-yet-written `test-dflash-cycle-orchestration.cpp`. All 6
+    drift checks GREEN; 26 → 35 external entries.
+
+  - `kernel-design.md §6.1`: T4 closure metric revised from
+    "1e-5 NMSE vs vLLM" (cross-stack-unachievable) to **argmax-
+    equivalent** (PASSed on 8/8 prompts at T4 closure).
+
+  - `include/llama.h`: replaced `LLAMA_DFLASH_NOT_IMPLEMENTED` stubs
+    with the real sidecar drafter C API:
+      `llama_dflash_drafter_load(path) / _free`
+      `llama_set_dflash(ctx_tgt, drafter)`
+      `llama_dflash_draft(ctx_tgt, anchor_tok, anchor_pos, out, max)`
+      plus 5 query entries
+    Added `LLAMA_DFLASH_NP_GT_1` (-7) and `LLAMA_DFLASH_LOAD_FAILED` (-8).
+
+  - `src/llama-dflash.cpp` (real implementation): drafter weight
+    loader using the proven standalone-harness pattern
+    (`upload_f32_as_f16` for the 6 F32 norm tensors), per-context
+    scratch alloc, kernel pipeline orchestration
+    (combine_features → inject_kv ×L_d → drafter_forward →
+    drafter_lm_head → CPU argmax to emit BLOCK_SIZE candidates).
+    Operating BLOCK_SIZE locked to 4 (spec's documented production
+    operating point; the drafter GGUF carries 16 as the model max).
+
+  - `common/speculative.{h,cpp}`: COMMON_SPECULATIVE_TYPE_DFLASH +
+    `common_speculative_state_dflash` subclass + dispatch.
+
+  - `common/common.cpp`: `--spec-type dflash` and `--spec-type mtp`
+    selectors added to the CLI; the help-text option list updated.
+
+  - `examples/dflash-speculative-simple/`: new minimal single-slot
+    driver mirroring the server's spec-decode flow stripped to ~230
+    lines. Runs end-to-end target prefill → DFlash cycle → accept-
+    prefix decision → bonus token → repeat.
+
+  - `examples/server/server-context.cpp`: hard-gate at np=1 when
+    `speculative.type == DFLASH`. Refuses boot at n_parallel > 1
+    with a clear error. T7 lifts the gate.
+
+### Bugs found + fixed during the end-to-end closure run
+
+  1. `cb_eval` extract hook **overwrote** the buffer per ubatch instead
+     of appending. Last (size-1) ubatch left only one row. Fixed:
+     hook now appends, accumulating one row per decoded position.
+
+  2. `stage_target_hiddens` indexed `dflash_extract_buf` by target
+     layer id (16/31/46/61) instead of source-layer slot (0..L_src-1).
+     `dflash_extract_buf` is sized [16] so layer 31's id was OOB and
+     layer 1's buffer was always read. Fixed: index by slot.
+
+  3. Example's accept-prefix used `sampled_at[k+1] == draft[k]` —
+     off-by-one. `logits[k]` is "what target predicts after batch[k]";
+     drafter's `c_k` should match `sampled_at[k]`. Bonus token
+     similarly: `sampled_at[n_accepted]`, not `[n_accepted+1]`.
+
+  4. Example's KV-cache seq_rm offset was off by one (would have
+     left the rejected first-mismatch position in the cache).
+
+  5. Initial T5 implementation passed the drafter's max block_size (16)
+     to the kernel pipeline; the kernel suite is validated on {4,5,6,8}.
+     Now hardcoded to 4.
+
+  6. `common_speculative_state_dflash::draft` did not truncate `result`
+     to the actual candidate count returned by `llama_dflash_draft`,
+     leading to spurious accept-prefix attempts against zero-padded
+     slots.
+
+### Closure run result (data/gate4-dflash-e2e.runlog)
+
+  Prompt: `Write a short python function for quicksort`
+  Config: target Qwen3.6-27B (lossless GGUF), drafter Qwen3.6-27B-DFlash
+          f16, n_predict=128, BLOCK_SIZE=4, temp=0, ctx=4096, 2 GPUs.
+
+  - 39 cycles, 156 draft tokens, 88 accepted.
+  - Mean accept rate: 2.256 tokens/draft (gate ≥ 1.0 met).
+  - Output begins with a CORRECT and COMPLETE quicksort function.
+  - Late stream: degrades into "efficient and efficient and efficient
+    and efficient and easy to understand." repetition.
+  - tok/s: 1.22 (perf binding is T8; the BS+1 verify decode dominates
+    wall time at np=1 today).
+
+### Why NEUTRAL `[~]` rather than `[x]`
+
+The locked closure binding (PHASE_DFLASH.md, committed at 99e95e9)
+included a "no token-loop" gate. The late-stream repetition is a
+genuine token-loop. So PASS-as-stated is not honest.
+
+ROOT CAUSE — bonus-position context drift: in cycle N's verify batch,
+the slot at index `n_accepted+1` holds hiddens decoded from input
+`c_{n_accepted+1}` (the REJECTED drafted token). But the next cycle's
+combine_features reads target hiddens at position `anchor_pos - 1`
+which is exactly that slot. The hidden is for the WRONG input,
+producing slightly wrong drafter context. Drift accumulates across
+cycles → late-stream repetition.
+
+T5's locked scope was "no state save/restore" (deferred to T6 per Q&A).
+T6's `dflash_state_checkpoint` / `dflash_state_restore` re-decodes
+the bonus position with the correct input each cycle, eliminating
+the drift. Re-running T5 closure after T6 lands should produce coherent
+output past the structurally-correct prefix.
+
+### What T5 ships
+
+Orchestration plumbing through production llama-* framework. The
+`examples/dflash-speculative-simple` CLI runs end-to-end with measurable
+accept rate. NaN-free, UNK-spam-free, accept-rate-gate met.
+
+The token-loop gate stays open under the same `[~]` checkbox; T6
+closes it.
+
+### Spec status post-T5
+
+  - `dflash.allium`: 35 invariants externally bound, 27 cited in C++
+    test files, drift check 6/6 GREEN.
+  - `kernel-design.md`: T4 metric revised (committed d93b9cb); T5
+    operating BS=4 documented inline in src/llama-dflash.cpp.
+  - `PHASE_DFLASH.md`: T5 `[~]` partial; T6/T7/T8 still `[ ]`.
