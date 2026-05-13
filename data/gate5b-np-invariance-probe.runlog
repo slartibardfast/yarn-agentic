@@ -1,0 +1,14 @@
+test-dflash-np-invariance: L_d=2 BLOCK_SIZE=4 D_emb=64 H_q=4 H_kv=2 D_h=16 intermediate=96 SeqLen=32
+[N=1] running drafter_forward...
+[N=1]   slot 0 hash (FNV-1a 64): 0x3eb027444026cd53
+[N=2] running drafter_forward...
+[N=2]   slot 0 hash (FNV-1a 64): 0x3eb027444026cd53
+[N=4] running drafter_forward...
+[N=4]   slot 0 hash (FNV-1a 64): 0x3eb027444026cd53
+[N=8] running drafter_forward...
+[N=8]   slot 0 hash (FNV-1a 64): 0x3eb027444026cd53
+[N=1 vs N=2]  BYTE-IDENTICAL across 256 elements
+[N=1 vs N=4]  BYTE-IDENTICAL across 256 elements
+[N=1 vs N=8]  BYTE-IDENTICAL across 256 elements
+---
+[PASS] drafter_forward is np-invariant across N ∈ {1,2,4,8}

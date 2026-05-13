@@ -1,0 +1,48 @@
+{
+  "gate": "T7 / Gate 5b — drafter np-invariance",
+  "binding": "Slot 0 output of drafter_forward must be byte-identical across N_slots ∈ {1,2,4,8} when each slot's content is identical.",
+  "date_iso": "2026-05-13",
+  "branch": "production/2026-q2-next",
+  "test": "tests/dflash-speculative/test-dflash-np-invariance.cpp",
+  "executable": "/opt/llm/build-dflash/bin/test-dflash-np-invariance",
+  "result": "PASS",
+  "method": {
+    "shape": {
+      "L_d": 2,
+      "BLOCK_SIZE": 4,
+      "SeqLen": 32,
+      "D_emb": 64,
+      "H_q": 4,
+      "H_kv": 2,
+      "D_h": 16,
+      "intermediate": 96,
+      "swa_window": 16,
+      "rope_base": 10000.0,
+      "norm_eps": 1.0e-6
+    },
+    "layer_types": "[0=SWA, 1=full]",
+    "seeds_swept": [31337, 42, 137, 4242],
+    "N_swept": [1, 2, 4, 8],
+    "per_seed_subtests": "16 (4 seeds × 4 N values)",
+    "comparison": "byte-by-byte memcmp of slot 0's 256 fp16 elements, plus FNV-1a 64 hash logging"
+  },
+  "per_seed_slot0_fnv1a64": {
+    "31337": "0x3eb027444026cd53",
+    "42":    "0xb183ef637526e2fd",
+    "137":   "0x5b2c84a9458d87c5",
+    "4242":  "0x4499d6ffbaa6098f"
+  },
+  "summary": {
+    "seeds_passed": 4,
+    "seeds_failed": 0,
+    "subruns_byte_identical": "12 / 12 (N=1 vs N=2, N=1 vs N=4, N=1 vs N=8, × 4 seeds)"
+  },
+  "architectural_extension": {
+    "lm_head": "dflash_drafter_lm_head_launch takes n_rows (not N_slots); per-row CTA dispatch with no N_slots-dependent geometry. If drafter_forward hidden is byte-identical, lm_head logits at slot 0's rows are byte-identical.",
+    "argmax_match": "dflash_argmax_match_launch's per-slot argmax is one-warp computation on slot's logit rows. No cross-slot reduction. Per-slot output depends ONLY on that slot's logit rows.",
+    "combine_features": "T3 closure already validated byte-identity vs CPU oracle across N_slots ∈ {1,2,4,8}; per-anchor CTA dispatch.",
+    "inject_kv_fused": "T3 closure already validated byte-identity vs CPU oracle across N_slots ∈ {1,2,4,8}; per-anchor-per-layer CTA dispatch."
+  },
+  "out_of_scope_for_this_gate": "Full-cycle coherence at np > 1 through the TARGET stack — the production multi-slot Qwen3.6-27B determinism bug surface (per project_mtp_multislot_determinism_investigation_failed). T7 is a kernel-level invariance probe; np > 1 end-to-end ship gates on T9 + that prior bug surface being navigated separately.",
+  "implementation_note": "Drafter_forward kernel deviated from spec §6.1's 'cooperative WMMA mega-kernel' (see dflash-drafter-forward.cu:8-12 — uses regular per-step __global__ launches with grid_rows = N_slots × Q, block_sum_f32 per-block reduction). This deviation is exactly the TML 3-kernel pattern (kernel-design.md §5.5). The probe witnesses the deviation is correct: no N_slots-dependent reduction order."
+}

@@ -1,0 +1,37 @@
+test-dflash-np-invariance: L_d=2 BLOCK_SIZE=4 D_emb=64 H_q=4 H_kv=2 D_h=16 intermediate=96 SeqLen=32
+Sweep: seeds × N ∈ {1,2,4,8} — slot 0 output must be byte-identical across N for each seed.
+[seed=31337] ----
+  [N=1]  slot 0 FNV-1a64: 0x3eb027444026cd53
+  [N=2]  slot 0 FNV-1a64: 0x3eb027444026cd53
+  [N=4]  slot 0 FNV-1a64: 0x3eb027444026cd53
+  [N=8]  slot 0 FNV-1a64: 0x3eb027444026cd53
+  [N=1 vs N=2]  BYTE-IDENTICAL (256 elements)
+  [N=1 vs N=4]  BYTE-IDENTICAL (256 elements)
+  [N=1 vs N=8]  BYTE-IDENTICAL (256 elements)
+[seed=42] ----
+  [N=1]  slot 0 FNV-1a64: 0xb183ef637526e2fd
+  [N=2]  slot 0 FNV-1a64: 0xb183ef637526e2fd
+  [N=4]  slot 0 FNV-1a64: 0xb183ef637526e2fd
+  [N=8]  slot 0 FNV-1a64: 0xb183ef637526e2fd
+  [N=1 vs N=2]  BYTE-IDENTICAL (256 elements)
+  [N=1 vs N=4]  BYTE-IDENTICAL (256 elements)
+  [N=1 vs N=8]  BYTE-IDENTICAL (256 elements)
+[seed=137] ----
+  [N=1]  slot 0 FNV-1a64: 0x5b2c84a9458d87c5
+  [N=2]  slot 0 FNV-1a64: 0x5b2c84a9458d87c5
+  [N=4]  slot 0 FNV-1a64: 0x5b2c84a9458d87c5
+  [N=8]  slot 0 FNV-1a64: 0x5b2c84a9458d87c5
+  [N=1 vs N=2]  BYTE-IDENTICAL (256 elements)
+  [N=1 vs N=4]  BYTE-IDENTICAL (256 elements)
+  [N=1 vs N=8]  BYTE-IDENTICAL (256 elements)
+[seed=4242] ----
+  [N=1]  slot 0 FNV-1a64: 0x4499d6ffbaa6098f
+  [N=2]  slot 0 FNV-1a64: 0x4499d6ffbaa6098f
+  [N=4]  slot 0 FNV-1a64: 0x4499d6ffbaa6098f
+  [N=8]  slot 0 FNV-1a64: 0x4499d6ffbaa6098f
+  [N=1 vs N=2]  BYTE-IDENTICAL (256 elements)
+  [N=1 vs N=4]  BYTE-IDENTICAL (256 elements)
+  [N=1 vs N=8]  BYTE-IDENTICAL (256 elements)
+---
+sweep summary: 4/4 seeds PASSed (fails=0 skips=0)
+[PASS] drafter_forward is np-invariant across N ∈ {1,2,4,8} for 4 seeds
