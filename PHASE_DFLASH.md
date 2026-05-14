@@ -418,7 +418,7 @@ Checkbox semantics per CLAUDE.md §5.
   np = 1 only; T9 (np > 1 aggregate) is gated on navigating that
   separate bug surface.
 
-- [ ] **T8 — Gate 6: Qwen3.6-27B speedup measurement**
+- [x] **T8 — Gate 6: Qwen3.6-27B speedup measurement** (CLOSED 2026-05-14)
   - Pre-Gate MTP `--draft 3` baseline measurement (mandatory anchor — see auto-memory `feedback_anchor_to_measured_baselines`).
   - DFlash speedup measurement, block_size sweep ∈ {4, 5, 6, 8}.
   - Ship outcome: PASS (≥ 1.5× MTP) → ship `profiles/qwen36-27b-x1-dflash.sh`; NEUTRAL (1.0–1.5×) → tunable option; FAIL (< 1.0×) → stay on MTP.
