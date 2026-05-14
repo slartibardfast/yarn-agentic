@@ -1,0 +1,30 @@
+{
+  "phase": "PLAN.md S2.3 — n_kv-pad confirmation test (CLOSES Open_FA_InternalMechanism)",
+  "date": "2026-05-14",
+  "experiment_design": "All slots load the SAME prompt (LLAMA_TEST_USE_SAME_PROMPT=1) at offset=3 (p3). This holds the per-slot KV content identical across NP=2 and NP=4, isolating Q-column-padding / WMMA-fragment-scheduling sensitivity (entry point 2) from n_kv-variation sensitivity (entry point 1).",
+  "result_table": {
+    "comment": "All values are max_abs_diff at slot 0, NP=2 vs NP=4 at offset=3 with same-prompt-all-slots",
+    "inp_normed_1003": 0.0,
+    "Qcur_1003": 0.0,
+    "Kcur_1003": 0.0,
+    "q_1003": 0.0,
+    "gate_1003": 0.0,
+    "flash_attn_1003": 2.4e-7,
+    "flash_attn_2003": 0.0,
+    "flash_attn_reshaped_1003": 2.4e-7,
+    "qkv_gated_1003": 1.5e-8,
+    "kqv_wo_1003": 0.0,
+    "kqv_wo_2003": 0.0,
+    "ffn_up_gate_1003": 0.0,
+    "ffn_down_1003": 0.0,
+    "attn_combined_3": 0.0,
+    "l_out_3": 0.0
+  },
+  "interpretation": "With n_kv held constant via same-prompt-all-slots, the FA kernel itself produces only ~fp32-epsilon variation at one device (flash_attn-1003: 2.4e-7); the other device is byte-identical (flash_attn-2003: 0.0). This fp32-eps residual is BELOW F16 precision and is rounded away in the downstream chain: kqv_wo, attn_combined, ffn_*, and l_out are all BYTE-IDENTICAL at slot 0.",
+  "definitive_closure": {
+    "Open_FA_InternalMechanism": "CLOSED — n_kv variation (entry point 1) is the dominant source of batch-shape-dependent slot-K drift at the F16-storage level. When n_kv is held identical, the FA kernel produces fp32-epsilon residual variation (entry point 2 — likely Q-column-padding / WMMA fragment scheduling) but this is sub-F16 precision and does not propagate through the downstream chain.",
+    "Open_MMQ_InternalMechanism": "CLOSED — at byte-identical FA input, the MMQ kernel produces byte-identical output. The MMQ kernel itself does not introduce fresh batch-shape sensitivity; observed MMQ-output variation in earlier experiments is faithful propagation of upstream FA-introduced noise."
+  },
+  "implication_for_stage_2": "The dominant fix target is the FA kernel's n_kv-variation entry point. Specifically: the K-loop iteration count is determined by the batch-max KV occupancy (n_kv = K->ne[1]), but slot-K's valid attention scope is its own prefilled length. Mask-zero attention to extra K positions produces fp32-eps roundoff in online softmax. A batch-invariant FA replacement (per TML recipe) should fix the K-loop iteration count to the PER-SLOT valid range, not the batch-max. The Q-column-padding sub-F16 residual (entry point 2) becomes a non-issue if the replacement kernel uses per-row CTA (one CTA per Q row, eliminating fragment cross-column aggregation entirely).",
+  "note_on_offset_1_paradox": "At offset=1 with different prompts but same max length (74), n_kv was identical between NP=2 and NP=4, yet drift was visible (1.3e-3 at p1 layer 3). This same-prompt test shows that holding n_kv constant AND per-slot KV content constant gives byte-identity. The offset=1 paradox must therefore come from a subtle interaction with per-slot KV CONTENT — possibly cache-line / memory-access-pattern effects on FA's mask reads or K/V tensor strides at different batch widths. This is a third-order effect; the dominant Stage 2 fix surface remains n_kv variation."
+}

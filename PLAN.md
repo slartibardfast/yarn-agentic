@@ -114,17 +114,34 @@ Expected breakdown (per S2.1):
 
 Cost: 25–40k tokens (cb_eval matcher extension + 8 captures + analysis). Higher than S2.2 because of harness extension and per-op file proliferation.
 
-### S2.4 — Design replacement kernels (with perf contract)
+### S2.4 — Design replacement kernels (SoTA sm_75 spec)
 
-For each op needing replacement, document in `specs/deltanet/batch-invariance.md` (new spec file):
+Per `feedback_kernel_replacements_must_be_sota_sm75`: any replacement kernel spec MUST be SoTA for sm_75 with full register allocations and profiling data committed. Not aspirational "TML recipe applied" prose — concrete numbers.
 
-- New kernel grid + block geometry (per-row CTA, fixed compile-time tile dims).
-- Reduction strategy (warp-shuffle inner; SMEM-tree across warps; no cross-block atomics on float).
-- Numerical contract: scalar fp32 oracle behavior to bind byte-identity.
-- **Perf contract**: per-call latency target derived from TU102 ceiling — HBM bandwidth (624 GB/s per GPU, 1.25 TB/s aggregate) for memory-bound ops, fp16 tensor-core peak (130.5 TFLOPs per GPU, 261 TFLOPs aggregate) for compute-bound ops. Target cited as % of relevant ceiling, work amount shown.
-- **Tensor-core usage**: any GEMM-shaped op MUST use Turing `mma.sync.m16n8k8` PTX (or WMMA m16n16k16 fp16) at our shapes. Deviations require explicit justification with perf cost in the spec.
+For each op needing replacement, document in `specs/deltanet/<kernel-name>.md`:
 
-**Verify by**: spec file committed with perf contract section explicit.
+- **Kernel design**: state-of-the-art for sm_75, citing the specific Turing features used:
+  - `mma.sync.m16n8k8` PTX (the only m16n8k8 tensor-core instruction on Turing)
+  - `ldmatrix.sync` swizzle patterns for shared-memory loads
+  - 64 KiB SMEM per SM budget
+  - 65536-register file per SM budget
+  - 32-thread warps, no warp-level subdivision
+- **Grid + block geometry**: per-row CTA, fixed compile-time tile dims, explicit blockDim / gridDim for the target shape.
+- **Per-thread register budget**: from `--ptxas-options=-v` output, committed to the spec. Target ≤ 64 regs/thread for high occupancy.
+- **SMEM layout per CTA**: bytes per buffer, total per-CTA budget, expected blocks-per-SM via occupancy calculator.
+- **Reduction strategy**: warp-shuffle inner; SMEM-tree across warps; no cross-block atomics on float.
+- **Numerical contract**: scalar fp32 oracle behavior to bind byte-identity (mirror DFlash T3/T4 wmma-mimicking-oracle pattern).
+- **Perf contract** (anchored to TU102 ceiling):
+  - HBM bandwidth: 624 GB/s per-GPU, 1.25 TB/s aggregate with NVLINK
+  - FP16 tensor-core peak: 130.5 TFLOPs per-GPU, 261 TFLOPs aggregate
+  - NVLINK aggregate: ~100 GB/s
+  - Target latency or throughput cited as % of relevant ceiling, with work amount (bytes streamed or FLOPs computed) shown explicitly.
+- **Profiling-data binding**: committed nsys + ncu profile artifacts at the target shape in `data/deltanet/` showing the kernel hits its target. The DESIGN is incomplete without these.
+- **Tensor-core usage mandatory** for any GEMM-shaped op at our shapes. Scalar fp32 deviations require explicit justification with perf-cost analysis in the spec.
+
+Template: `specs/dflash/kernel-design.md §6.1, §6.2, §6.3, §6.6` — each has full register budgets, SMEM allocations, occupancy targets, and binding to architecture peaks. Mirror that template.
+
+**Verify by**: spec file committed with all of the above; `--ptxas-options=-v` output captured; nsys/ncu profiles bound.
 
 ### S2.5 — Implement replacement kernels + scalar oracle + unit test
 
@@ -285,14 +302,41 @@ Bold-on-design (commit to TML batch-invariance recipe + staged approach). Measur
 
 ## Pickup state
 
-D1 + S2.1 (3 of 8 prompts) closed 2026-05-14.
+Stage 1, S2.1, S2.2, S2.3 (incl. n_kv-pad confirmation) all CLOSED 2026-05-14. Allium + TLA+ specs locked. Ready for **S2.4 design (SoTA sm_75 FA replacement kernel)**.
 
-Next work: **complete S2.1 — capture p2, p4–p7** (5 more NP=2 captures at offset=2..6, then per-prompt first-divergent-layer analysis vs NP=4 offset=0). Cheap, ~5–8k tokens, finishes the multi-prompt D2 evidence.
+### Findings summary (2026-05-14)
 
-Then **S2.2 — op-level localization at each prompt's first-divergent layer**. This is where the bulk of Stage 2's diagnostic value lives: which specific kernel call diverges first at p3 layer 0, at p1 layer 3, at p0 layer 19? The answer drives S2.4 design scope.
+**Mechanism definitively identified:** the FA kernel's K-loop iteration count is determined by the BATCH-MAX KV occupancy (`ne11 = K->ne[1]`), not the per-slot valid range. Mask-zero attention to extra K positions produces fp32-eps roundoff in the online softmax that amplifies through subsequent GEMMs to F16-visible drift.
 
-First reads for resuming session:
-1. `data/deltanet/d2-first-divergent-layer.json` + `d2-multi-prompt-update.json` — current evidence.
-2. `ik_llama.cpp/tests/dflash-speculative/test-deltanet-d1-capture.cpp` — the harness; S2.1 just re-runs with new offsets, S2.2 extends with intermediate-tensor matching.
-3. `ik_llama.cpp/src/graphs/build_qwen35.cpp` — layer-by-layer ops named by `cb()` calls. The cb names are what S2.2's cb_eval matches on.
-4. `ik_llama.cpp/src/llama.cpp:9608-9676` — the `llama_dflash_extract_cb_eval` matcher. Extension for S2.2: match more names than just `l_out-<il>`.
+n_kv-pad confirmation test (`data/deltanet/s2-3-nkvpad-confirmation.json`): when all slots load the SAME prompt (per-slot KV content identical), slot-0 chain is byte-identical from `kqv_wo` onward. Residual fp32-eps variation at `flash_attn-1003` (2.4e-7) is sub-F16; rounded away downstream.
+
+Spec closures (`specs/deltanet/batch-invariance.allium`):
+- `FA_NkvIsDominantBatchShapeEntryPoint` — n_kv is the dominant source
+- `MMQ_FaithfulPropagation` — MMQ propagates noise faithfully; not a fresh source
+
+### S2.4 (next): SoTA sm_75 FA replacement kernel spec
+
+Per `feedback_kernel_replacements_must_be_sota_sm75` — the replacement spec MUST include:
+1. State-of-the-art sm_75 design (Turing `mma.sync.m16n8k8`, `ldmatrix.sync`, 64KiB SMEM, 65536 regs)
+2. Fully worked-out register allocations from `--ptxas-options=-v`
+3. Profiling data baseline (nsys + ncu) committed to repo
+4. Performance contract: % of TU102 ceiling (HBM 624 GB/s, fp16 tensor-core 130.5 TFLOPs per-GPU)
+
+Template: `specs/dflash/kernel-design.md §6.1, §6.2, §6.3, §6.6`. Each has full register budgets, SMEM allocations, occupancy targets, and architecture-peak bindings. Mirror that structure.
+
+**Specific FA fix:** the K-loop at `fattn-wmma-f16.cuh:180`:
+```cpp
+for (int k_VKQ_0 = ip*FATTN_KQ_STRIDE; k_VKQ_0 < ne11; k_VKQ_0 += parallel_blocks*FATTN_KQ_STRIDE)
+```
+Replace `ne11` with `ne11_for_slot_K = (slot K's actual KV occupancy, padded to FATTN_KQ_STRIDE)`. Combined with per-row CTA (TML recipe — eliminates fragment cross-column aggregation), this addresses the dominant entry point empirically.
+
+MMQ replacement is OPTIONAL for batch-invariance (closed via MMQ_FaithfulPropagation). If MMQ is replaced for perf per the SoTA mandate, it must preserve byte-identity propagation.
+
+### First reads for resuming session (S2.4 design)
+
+1. `data/deltanet/s2-3-nkvpad-confirmation.json` — definitive mechanism finding
+2. `data/deltanet/s2-3-kernel-internals-reading.md` — kernel-internal structural analysis
+3. `specs/deltanet/batch-invariance.allium` — closed invariants + Stage 2 design hints
+4. `specs/dflash/kernel-design.md §6.x` — template for the SoTA spec format
+5. `ik_llama.cpp/ggml/src/ggml-cuda/fattn-wmma-f16.cuh` — the FA kernel we're replacing
+6. The "ssiu/flash-attention-turing" public sm_75 FA reference (cited in DFlash kernel-design) — only public FA implementation tuned for sm_75 head_dim=128 at ~63% peak on T4. Layout reference for the per-row CTA replacement.

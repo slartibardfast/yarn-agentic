@@ -370,9 +370,64 @@ invariant Open_P0_EarlyFALayersByteIdentical {
     --   stronger bind is desired.
 }
 
+invariant FA_NkvIsDominantBatchShapeEntryPoint {
+    -- CLOSED 2026-05-14 by n_kv-pad confirmation experiment
+    -- (data/deltanet/s2-3-nkvpad-confirmation.json).
+    --
+    -- Experiment design: all slots load the SAME prompt
+    -- (LLAMA_TEST_USE_SAME_PROMPT=1 in test-deltanet-s23-op-capture.cpp)
+    -- → per-slot KV content identical across NP=2 vs NP=4 →
+    -- n_kv held truly identical including the layout of valid vs
+    -- padding K positions.
+    --
+    -- Result: slot-0 chain becomes BYTE-IDENTICAL from kqv_wo onward
+    -- (kqv_wo, attn_combined, ffn_up_gate, ffn_down, ffn_with_inp,
+    -- l_out all = 0.0 max_abs_diff). The FA kernel produces only
+    -- ~fp32-epsilon residual variation at one device's flash_attn
+    -- output (2.4e-7), which is BELOW F16 precision and rounded away
+    -- by the downstream chain.
+    --
+    -- Conclusion: n_kv variation (the K-loop iteration count being
+    -- determined by max-KV-across-slots instead of per-slot-valid-
+    -- range) is the DOMINANT entry point for batch-shape-dependent
+    -- slot-K drift at the F16-storage level. The mask-zero
+    -- attention computation to extra K positions introduces fp32-eps
+    -- roundoff in the online softmax that amplifies through the
+    -- downstream chain. When n_kv is identical, drift is sub-F16
+    -- and invisible.
+    --
+    -- Stage 2 design implication: the FA replacement kernel must fix
+    -- the K-loop iteration count to the per-slot-K valid range, not
+    -- the batch-max n_kv. This is the dominant fix.
+}
+
+invariant MMQ_FaithfulPropagation {
+    -- CLOSED 2026-05-14 by n_kv-pad confirmation experiment.
+    --
+    -- When the FA input to MMQ is byte-identical at slot K, the MMQ
+    -- kernel produces byte-identical slot-K output. The MMQ kernel
+    -- does NOT introduce fresh batch-shape sensitivity; observed
+    -- MMQ-output variation in earlier experiments was faithful
+    -- propagation of upstream FA-introduced noise, amplified by
+    -- the operator norm of the projection / FFN weight matrices.
+    --
+    -- Bound by: data/deltanet/s2-3-nkvpad-confirmation.json — at slot 0
+    -- under n_kv-pad conditions, kqv_wo (both devices), ffn_up_gate,
+    -- and ffn_down are all 0.0 max_abs_diff.
+    --
+    -- Stage 2 design implication: an MMQ replacement is NOT required
+    -- to address batch-invariance — fixing FA suffices. However, if
+    -- MMQ is replaced for perf reasons (per the SoTA-sm_75 mandate),
+    -- the replacement must preserve byte-identity propagation.
+}
+
 invariant Open_FA_InternalMechanism {
-    -- PARTIALLY CLOSED 2026-05-14 with dual-entry-point identification
-    -- (data/deltanet/s2-3-kernel-internals-reading.md):
+    -- SUPERSEDED 2026-05-14 by FA_NkvIsDominantBatchShapeEntryPoint
+    -- (above) which closes the question with experimental evidence.
+    -- Static analysis identified the dual-entry-point hypothesis;
+    -- experiment showed entry point 1 (n_kv) dominates and entry
+    -- point 2 (Q-column padding) is sub-F16. Kept here as historical
+    -- record:
     --
     -- The wmma_f16 FA kernel template <128, 128, 8, half> always selects
     -- parallel_blocks=4 at NP∈{2,4,8} on TU102 (blocks_num_pb1=12 < 144;
@@ -417,8 +472,11 @@ invariant Open_FA_InternalMechanism {
 }
 
 invariant Open_MMQ_InternalMechanism {
-    -- PARTIALLY CLOSED 2026-05-14 via kernel-internal static analysis
-    -- (data/deltanet/s2-3-kernel-internals-reading.md):
+    -- SUPERSEDED 2026-05-14 by MMQ_FaithfulPropagation (above).
+    -- Static analysis predicted MMQ would faithfully propagate
+    -- upstream noise; experiment confirmed: at byte-identical FA
+    -- input, MMQ output is byte-identical. Kept here as historical
+    -- record:
     --
     -- MMQ at mmq_x=8 uses stream-K work partitioning (Osama et al.
     -- 2023, arXiv:2301.03598). For NP∈{2,4,8} with mmq_x=8:

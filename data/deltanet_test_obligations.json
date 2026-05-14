@@ -389,14 +389,36 @@
       }
     },
     {
+      "id": "invariant.FA_NkvIsDominantBatchShapeEntryPoint",
+      "category": "invariant",
+      "description": "Verify invariant FA_NkvIsDominantBatchShapeEntryPoint holds after every state-changing rule that touches constrained entities",
+      "source_construct": "FA_NkvIsDominantBatchShapeEntryPoint",
+      "expression": "}",
+      "source_span": {
+        "start": 17533,
+        "end": 19068
+      }
+    },
+    {
+      "id": "invariant.MMQ_FaithfulPropagation",
+      "category": "invariant",
+      "description": "Verify invariant MMQ_FaithfulPropagation holds after every state-changing rule that touches constrained entities",
+      "source_construct": "MMQ_FaithfulPropagation",
+      "expression": "}",
+      "source_span": {
+        "start": 19070,
+        "end": 20054
+      }
+    },
+    {
       "id": "invariant.Open_FA_InternalMechanism",
       "category": "invariant",
       "description": "Verify invariant Open_FA_InternalMechanism holds after every state-changing rule that touches constrained entities",
       "source_construct": "Open_FA_InternalMechanism",
       "expression": "}",
       "source_span": {
-        "start": 17533,
-        "end": 20078
+        "start": 20056,
+        "end": 22828
       }
     },
     {
@@ -406,8 +428,8 @@
       "source_construct": "Open_MMQ_InternalMechanism",
       "expression": "}",
       "source_span": {
-        "start": 20080,
-        "end": 21567
+        "start": 22830,
+        "end": 24467
       }
     }
   ]
