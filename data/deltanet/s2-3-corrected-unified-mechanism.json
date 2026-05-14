@@ -1,0 +1,30 @@
+{
+  "phase": "PLAN.md S2.3 — corrected unified mechanism finding",
+  "date": "2026-05-14",
+  "supersedes": "data/deltanet/s2-3-op-level-localization.json's 'two distinct kernel mechanisms' framing",
+  "correction_note": "With clean same-offset comparison (slot 0 has same prompt in both NP=2 and NP=4 captures), the FA and MMQ kernel-internal nondeterminism are revealed as different visibility surfaces of the SAME underlying mechanism, not two distinct mechanisms.",
+  "per_prompt_clean_same_offset_layer_3": {
+    "p0_offset_0": {"flash_attn_1003_max_diff": 2.38e-7, "flash_attn_2003_max_diff": 0.0, "l_out_slot0": 0.0, "class": "sub_f16_FA_noise_no_visible_drift"},
+    "p1_offset_1": {"flash_attn_1003_max_diff": 5.09e-4, "flash_attn_2003_max_diff": 5.97e-4, "l_out_slot0": 1.31e-3, "class": "FA_above_f16_at_layer_3"},
+    "p2_offset_2": {"flash_attn_1003_max_diff": 0.0, "flash_attn_2003_max_diff": 0.0, "l_out_slot0": 0.0, "class": "no_visible_drift"},
+    "p3_offset_3": {"flash_attn_1003_max_diff": 6.16e-4, "flash_attn_2003_max_diff": 5.65e-4, "l_out_slot0": 1.48e-3, "class": "FA_above_f16_at_layer_3"},
+    "p4_offset_4": {"flash_attn_1003_max_diff": 7.69e-4, "flash_attn_2003_max_diff": 7.62e-4, "l_out_slot0": 2.60e-3, "class": "FA_above_f16_at_layer_3"}
+  },
+  "per_prompt_clean_same_offset_layer_19": {
+    "p0_offset_0": {"flash_attn_1019_max_diff": 4.77e-7, "flash_attn_2019_max_diff": 4.77e-7, "l_out_slot0": 5.70e-3, "class": "FA_below_f16_but_MMQ_amplifies_at_layer_19"}
+  },
+  "unified_mechanism": {
+    "name": "fp_arithmetic_internal_batch_shape_sensitivity",
+    "description": "The same kernel TEMPLATE running on slot-K's IDENTICAL inputs produces fp32-epsilon-level numerical variation across different batch widths (NP=2 vs NP=4). This is data-dependent: at most layer/prompt combinations the noise stays below F16 precision and the F16-stored residual is byte-identical. At some combinations (data-dependent), the FA kernel's noise already crosses F16 at its output (p1/p3/p4 layer 3). At other combinations, FA stays sub-F16 but the FFN MMQ kernels amplify the noise above F16 (p0 layer 19).",
+    "kernels_with_this_sensitivity": ["wmma_f16_case<128, 128, 8, half>", "mul_mat_q_case<TYPE, mmq_x=8>"],
+    "fp32_eps_noise_floor": "approximately 1e-7 at any FA call with the same template at different NP; this is the floor that propagates",
+    "f16_precision_visibility_threshold": "~1e-3 to 1e-4 at residual magnitudes — depends on layer position and data"
+  },
+  "open_invariants_now_partially_closed": {
+    "Open_FA_SourceClass_OtherPrompts": "p2 at layer 3 = NO drift (CORRECTION). p4 at layer 3 = drift confirmed. p5 cannot be tested cleanly (np=4 offset>=5 requires p8.txt which doesn't exist).",
+    "Open_P0_EarlyFALayersByteIdentical": "p0 layer 3 confirmed byte-identical at l_out level (FA noise sub-F16); the pattern strongly suggests layers 7, 11, 15 also byte-identical but not yet verified.",
+    "still_open_FA_internal_mechanism": "The specific COMPUTATION inside wmma_f16 that introduces fp32-eps batch-shape-dependent variation. Needs kernel-internal reading. Likely candidates: parallel_blocks reduction at parallel_blocks > 1, cross-warp __syncthreads serialization order, KQ_acc warp-shuffle ordering, or atomic-fragment combining when ntiles_x = 1 but ne11 varies.",
+    "still_open_MMQ_internal_mechanism": "Same as above for MMQ. Likely: stream-K partial-sum combining or per-block fragment reduction order when ne11 varies and ntiles_x = 1."
+  },
+  "implication_for_stage_2_design": "Stage 2 fix scope = ONE underlying problem (kernel fp-arithmetic-internal batch-shape sensitivity) addressed by applying TML batch-invariance recipe to BOTH the FA wmma_f16 kernel AND the MMQ kernel. The 'two distinct mechanisms' framing was premature — they share the same root cause."
+}
