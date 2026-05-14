@@ -52,14 +52,110 @@
       }
     },
     {
+      "id": "entity-fields.WmmaFAKernel",
+      "category": "entity_fields",
+      "description": "Verify all declared fields on WmmaFAKernel are present with correct types",
+      "source_construct": "WmmaFAKernel",
+      "source_span": {
+        "start": 2845,
+        "end": 3394
+      },
+      "detail": {
+        "fields": [
+          "template"
+        ]
+      }
+    },
+    {
+      "id": "entity-fields.MmqKernel",
+      "category": "entity_fields",
+      "description": "Verify all declared fields on MmqKernel are present with correct types",
+      "source_construct": "MmqKernel",
+      "source_span": {
+        "start": 3396,
+        "end": 3744
+      },
+      "detail": {
+        "fields": [
+          "template"
+        ]
+      }
+    },
+    {
+      "id": "entity-fields.DeltaNetRecurrenceKernel",
+      "category": "entity_fields",
+      "description": "Verify all declared fields on DeltaNetRecurrenceKernel are present with correct types",
+      "source_construct": "DeltaNetRecurrenceKernel",
+      "source_span": {
+        "start": 3746,
+        "end": 4011
+      },
+      "detail": {
+        "fields": [
+          "template"
+        ]
+      }
+    },
+    {
+      "id": "entity-fields.PerLayerResidual",
+      "category": "entity_fields",
+      "description": "Verify all declared fields on PerLayerResidual are present with correct types",
+      "source_construct": "PerLayerResidual",
+      "source_span": {
+        "start": 4013,
+        "end": 4425
+      },
+      "detail": {
+        "fields": [
+          "layer_type",
+          "storage",
+          "drift"
+        ]
+      }
+    },
+    {
+      "id": "entity-fields.PerSlotKVCache",
+      "category": "entity_fields",
+      "description": "Verify all declared fields on PerSlotKVCache are present with correct types",
+      "source_construct": "PerSlotKVCache",
+      "source_span": {
+        "start": 4427,
+        "end": 4569
+      },
+      "detail": {
+        "fields": [
+          "np"
+        ]
+      }
+    },
+    {
+      "id": "entity-fields.HybridPipeline",
+      "category": "entity_fields",
+      "description": "Verify all declared fields on HybridPipeline are present with correct types",
+      "source_construct": "HybridPipeline",
+      "source_span": {
+        "start": 4571,
+        "end": 5218
+      },
+      "detail": {
+        "fields": [
+          "fa_kernel",
+          "mmq_kernel",
+          "deltanet_kernel",
+          "residual",
+          "kv_cache"
+        ]
+      }
+    },
+    {
       "id": "invariant.StorageBranchInvariant",
       "category": "invariant",
       "description": "Verify invariant StorageBranchInvariant holds after every state-changing rule that touches constrained entities",
       "source_construct": "StorageBranchInvariant",
       "expression": "}",
       "source_span": {
-        "start": 5237,
-        "end": 5708
+        "start": 5440,
+        "end": 5911
       }
     },
     {
@@ -69,8 +165,8 @@
       "source_construct": "RepDeterminismAtSameNP",
       "expression": "}",
       "source_span": {
-        "start": 5710,
-        "end": 6062
+        "start": 5913,
+        "end": 6265
       }
     },
     {
@@ -80,8 +176,8 @@
       "source_construct": "DispatcherTemplateUniformity_FA",
       "expression": "}",
       "source_span": {
-        "start": 6064,
-        "end": 6577
+        "start": 6267,
+        "end": 6780
       }
     },
     {
@@ -91,8 +187,8 @@
       "source_construct": "DispatcherTemplateUniformity_MMQ",
       "expression": "}",
       "source_span": {
-        "start": 6579,
-        "end": 6995
+        "start": 6782,
+        "end": 7198
       }
     },
     {
@@ -102,8 +198,8 @@
       "source_construct": "DispatcherTemplateUniformity_DeltaNet",
       "expression": "}",
       "source_span": {
-        "start": 6997,
-        "end": 7250
+        "start": 7200,
+        "end": 7453
       }
     },
     {
@@ -113,8 +209,8 @@
       "source_construct": "ProjectionGEMMSlotInvariance",
       "expression": "}",
       "source_span": {
-        "start": 7252,
-        "end": 7778
+        "start": 7455,
+        "end": 7981
       }
     },
     {
@@ -124,8 +220,8 @@
       "source_construct": "DeltaNetSlotInvariance",
       "expression": "}",
       "source_span": {
-        "start": 7780,
-        "end": 8332
+        "start": 7983,
+        "end": 8535
       }
     },
     {
@@ -135,8 +231,8 @@
       "source_construct": "KernelFPArithmeticBatchShapeSensitivity",
       "expression": "}",
       "source_span": {
-        "start": 8334,
-        "end": 9713
+        "start": 8537,
+        "end": 9916
       }
     },
     {
@@ -146,8 +242,8 @@
       "source_construct": "WmmaFAShapeSensitiveAtSomeInputs",
       "expression": "}",
       "source_span": {
-        "start": 9715,
-        "end": 10072
+        "start": 9918,
+        "end": 10275
       }
     },
     {
@@ -157,8 +253,8 @@
       "source_construct": "WmmaFAByteIdenticalAtOtherInputs",
       "expression": "}",
       "source_span": {
-        "start": 10074,
-        "end": 10657
+        "start": 10277,
+        "end": 10860
       }
     },
     {
@@ -168,8 +264,8 @@
       "source_construct": "MmqShapeSensitiveViaAmplification",
       "expression": "}",
       "source_span": {
-        "start": 10659,
-        "end": 11186
+        "start": 10862,
+        "end": 11389
       }
     },
     {
@@ -179,8 +275,8 @@
       "source_construct": "DriftCascadeAfterFirstDivergence",
       "expression": "}",
       "source_span": {
-        "start": 11188,
-        "end": 11779
+        "start": 11391,
+        "end": 11982
       }
     },
     {
@@ -190,8 +286,8 @@
       "source_construct": "PerPromptDriftSiteVariability",
       "expression": "}",
       "source_span": {
-        "start": 11781,
-        "end": 13133
+        "start": 11984,
+        "end": 13336
       }
     },
     {
@@ -201,8 +297,8 @@
       "source_construct": "TokenLevelGreedyArgmaxNP1_NP2_Identity",
       "expression": "}",
       "source_span": {
-        "start": 13135,
-        "end": 13484
+        "start": 13338,
+        "end": 13687
       }
     },
     {
@@ -212,8 +308,8 @@
       "source_construct": "TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift",
       "expression": "}",
       "source_span": {
-        "start": 13486,
-        "end": 14078
+        "start": 13689,
+        "end": 14281
       }
     },
     {
@@ -223,8 +319,8 @@
       "source_construct": "NotHeld_FA_BatchInvariance",
       "expression": "}",
       "source_span": {
-        "start": 14304,
-        "end": 14515
+        "start": 14507,
+        "end": 14718
       }
     },
     {
@@ -234,8 +330,8 @@
       "source_construct": "NotHeld_MMQ_BatchInvariance",
       "expression": "}",
       "source_span": {
-        "start": 14517,
-        "end": 14666
+        "start": 14720,
+        "end": 14869
       }
     },
     {
@@ -245,8 +341,8 @@
       "source_construct": "NotHeld_LayerLevelByteIdentity_NP2_NP4",
       "expression": "}",
       "source_span": {
-        "start": 14668,
-        "end": 14984
+        "start": 14871,
+        "end": 15187
       }
     },
     {
@@ -256,8 +352,8 @@
       "source_construct": "NotHeld_TokenLevelDeterminism_NP4",
       "expression": "}",
       "source_span": {
-        "start": 14986,
-        "end": 15286
+        "start": 15189,
+        "end": 15489
       }
     },
     {
@@ -267,8 +363,8 @@
       "source_construct": "Open_FA_SourceClass_OtherPrompts",
       "expression": "}",
       "source_span": {
-        "start": 15507,
-        "end": 16005
+        "start": 15710,
+        "end": 16208
       }
     },
     {
@@ -278,8 +374,8 @@
       "source_construct": "Open_P0_EarlyFALayersByteIdentical",
       "expression": "}",
       "source_span": {
-        "start": 16007,
-        "end": 16556
+        "start": 16210,
+        "end": 16759
       }
     },
     {
@@ -289,8 +385,8 @@
       "source_construct": "Open_FA_InternalMechanism",
       "expression": "}",
       "source_span": {
-        "start": 16558,
-        "end": 16984
+        "start": 16761,
+        "end": 17187
       }
     },
     {
@@ -300,8 +396,8 @@
       "source_construct": "Open_MMQ_InternalMechanism",
       "expression": "}",
       "source_span": {
-        "start": 16986,
-        "end": 17365
+        "start": 17189,
+        "end": 17568
       }
     }
   ]

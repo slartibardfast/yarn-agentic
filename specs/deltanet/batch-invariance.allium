@@ -61,52 +61,63 @@ enum DriftLevel {
 -- Entities
 -- ============================================================================
 
-entity HybridPipeline {
-    -- The vanilla decode forward pass of Qwen 3.5/3.6 target on sm_75.
-    -- 64 transformer + 1 MTP layer (MTP not on vanilla path at cparams.mtp=false).
-    -- n_embd=5120, head_dim_q=256, head_dim_v=128, n_heads=12, n_kv_heads=2.
-    -- FA layers at indices {3, 7, 11, 15, 19, 23, ..., 63} (full_attn_interval=4).
-    -- All other indices are linear_attn. Weights Q4_0 / Q4_0_AR16 / BF16 / F16 / F32.
-    -- KV cache Q4_0 (K + V). flash_attn enabled.
-}
-
 entity WmmaFAKernel {
     -- The full-attention kernel template selected for sm_75 with Q4_0 KV
-    -- cache at decode shapes. Template:
+    -- cache at decode shapes:
     --   ggml_cuda_flash_attn_ext_wmma_f16_case<128, 128, 8, half>
-    -- Dispatcher: ggml/src/ggml-cuda/fattn.cu:140 routes here on
-    -- sm_75 because (!new_mma_available(cc) || K->ne[0] != V->ne[0]).
+    -- Dispatcher: ggml/src/ggml-cuda/fattn.cu:140 routes here on sm_75
+    -- because (!new_mma_available(cc) || K->ne[0] != V->ne[0]).
     -- Internal branch on Q->ne[1] picks cols_per_block=8 for n_tokens<=8
-    -- (fattn-wmma-f16.cu:81). Same compile-time template at NP=2/4/8.
-    -- Grid geometry varies with n_tokens (different work distribution
-    -- within the same template).
+    -- (fattn-wmma-f16.cu:81). Same compile-time template at NP=2/4/8;
+    -- grid geometry varies with n_tokens.
+    template: KernelTemplate
 }
 
 entity MmqKernel {
     -- The quantized matmul kernel template for projection and FFN GEMMs
-    -- at decode shapes. ggml/src/ggml-cuda/mmq.cu + mmq.cuh.
-    -- Dispatcher: mul_mat_q_case (mmq.cuh:4175). For ne11 in {2, 4, 8}
-    -- the mmq_x_best picker converges on mmq_x=8 because ntiles_x=1
-    -- yields nparts=1 on the first iteration. Same template at all NP.
+    -- at decode shapes (ggml/src/ggml-cuda/mmq.cu + mmq.cuh). Dispatcher
+    -- mul_mat_q_case at mmq.cuh:4175: for ne11 in {2, 4, 8} the mmq_x_best
+    -- picker converges on mmq_x=8 (ntiles_x=1 → nparts=1 on first iter).
+    template: KernelTemplate
 }
 
 entity DeltaNetRecurrenceKernel {
-    -- The DeltaNet linear-attention recurrence kernel for recurrent layers.
-    -- ggml/src/ggml-cuda/delta-net.cu. Dispatch: n_tokens<=8 branch picks
-    -- threads_per_block=256 (delta-net.cu:219). Same kernel at NP∈{1,2,4,8}.
+    -- The DeltaNet linear-attention recurrence kernel for recurrent
+    -- layers. ggml/src/ggml-cuda/delta-net.cu. Dispatch: n_tokens<=8
+    -- branch picks threads_per_block=256 (delta-net.cu:219).
+    template: KernelTemplate
 }
 
 entity PerLayerResidual {
     -- The l_out-<il> tensor produced at each transformer layer exit.
     -- Shape [n_embd=5120, n_tokens=N, 1, 1] at decode. Storage precision
     -- is F32 when N=1 (np=1 single-token path) and F16 when N>=2
-    -- (np>=2 multi-token path) per the qwen35 build graph's batch
-    -- dim threshold.
+    -- (np>=2 multi-token path) per the qwen35 build graph's batch-dim
+    -- threshold.
+    layer_type: LayerType
+    storage: ResidualStoragePrecision
+    drift: DriftLevel
 }
 
 entity PerSlotKVCache {
     -- Per-slot KV state for both attention paths. Logically per-slot
     -- independent. Q4_0 dtype.
+    np: NPMode
+}
+
+entity HybridPipeline {
+    -- The vanilla decode forward pass of Qwen 3.5/3.6 target on sm_75.
+    -- 64 transformer + 1 MTP layer (MTP not on vanilla path at
+    -- cparams.mtp=false). n_embd=5120, head_dim_q=256, head_dim_v=128,
+    -- n_heads=12, n_kv_heads=2. FA layers at indices {3, 7, 11, 15, 19,
+    -- 23, ..., 63} (full_attn_interval=4). All other indices are
+    -- linear_attn. Weights Q4_0 / Q4_0_AR16 / BF16 / F16 / F32. KV
+    -- cache Q4_0 (K + V). flash_attn enabled.
+    fa_kernel: WmmaFAKernel
+    mmq_kernel: MmqKernel
+    deltanet_kernel: DeltaNetRecurrenceKernel
+    residual: PerLayerResidual
+    kv_cache: PerSlotKVCache
 }
 
 -- ============================================================================
