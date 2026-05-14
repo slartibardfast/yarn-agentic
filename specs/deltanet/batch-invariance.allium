@@ -120,6 +120,21 @@ entity HybridPipeline {
     kv_cache: PerSlotKVCache
 }
 
+-- Top-level contract that anchors HybridPipeline at the root of the
+-- entity reference chain. The contract surface is the per-layer
+-- forward step at one decode position: given a residual stream and
+-- the pipeline state, compute the next layer's residual.
+contract LayerForwardStep {
+    invoke: (pipeline: HybridPipeline, in_residual: PerLayerResidual) -> PerLayerResidual
+
+    @invariant LayerForwardIsPerSlotDeterministic
+        -- For fixed pipeline state and fixed in_residual at slot K, the
+        -- contract produces a unique out_residual at slot K. This is
+        -- the per-slot determinism that holds across reps at fixed NP
+        -- (per RepDeterminismAtSameNP); it does NOT hold across NP
+        -- (per KernelFPArithmeticBatchShapeSensitivity).
+}
+
 -- ============================================================================
 -- INVARIANTS — empirically established as of 2026-05-14
 -- ============================================================================

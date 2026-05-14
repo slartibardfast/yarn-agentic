@@ -148,14 +148,24 @@
       }
     },
     {
+      "id": "contract-signature.LayerForwardStep.invoke",
+      "category": "contract_signature",
+      "description": "Verify implementation satisfies contract LayerForwardStep.invoke",
+      "source_construct": "LayerForwardStep.invoke",
+      "source_span": {
+        "start": 5512,
+        "end": 5597
+      }
+    },
+    {
       "id": "invariant.StorageBranchInvariant",
       "category": "invariant",
       "description": "Verify invariant StorageBranchInvariant holds after every state-changing rule that touches constrained entities",
       "source_construct": "StorageBranchInvariant",
       "expression": "}",
       "source_span": {
-        "start": 5440,
-        "end": 5911
+        "start": 6212,
+        "end": 6683
       }
     },
     {
@@ -165,8 +175,8 @@
       "source_construct": "RepDeterminismAtSameNP",
       "expression": "}",
       "source_span": {
-        "start": 5913,
-        "end": 6265
+        "start": 6685,
+        "end": 7037
       }
     },
     {
@@ -176,8 +186,8 @@
       "source_construct": "DispatcherTemplateUniformity_FA",
       "expression": "}",
       "source_span": {
-        "start": 6267,
-        "end": 6780
+        "start": 7039,
+        "end": 7552
       }
     },
     {
@@ -187,8 +197,8 @@
       "source_construct": "DispatcherTemplateUniformity_MMQ",
       "expression": "}",
       "source_span": {
-        "start": 6782,
-        "end": 7198
+        "start": 7554,
+        "end": 7970
       }
     },
     {
@@ -198,8 +208,8 @@
       "source_construct": "DispatcherTemplateUniformity_DeltaNet",
       "expression": "}",
       "source_span": {
-        "start": 7200,
-        "end": 7453
+        "start": 7972,
+        "end": 8225
       }
     },
     {
@@ -209,8 +219,8 @@
       "source_construct": "ProjectionGEMMSlotInvariance",
       "expression": "}",
       "source_span": {
-        "start": 7455,
-        "end": 7981
+        "start": 8227,
+        "end": 8753
       }
     },
     {
@@ -220,8 +230,8 @@
       "source_construct": "DeltaNetSlotInvariance",
       "expression": "}",
       "source_span": {
-        "start": 7983,
-        "end": 8535
+        "start": 8755,
+        "end": 9307
       }
     },
     {
@@ -231,8 +241,8 @@
       "source_construct": "KernelFPArithmeticBatchShapeSensitivity",
       "expression": "}",
       "source_span": {
-        "start": 8537,
-        "end": 9916
+        "start": 9309,
+        "end": 10688
       }
     },
     {
@@ -242,8 +252,8 @@
       "source_construct": "WmmaFAShapeSensitiveAtSomeInputs",
       "expression": "}",
       "source_span": {
-        "start": 9918,
-        "end": 10275
+        "start": 10690,
+        "end": 11047
       }
     },
     {
@@ -253,8 +263,8 @@
       "source_construct": "WmmaFAByteIdenticalAtOtherInputs",
       "expression": "}",
       "source_span": {
-        "start": 10277,
-        "end": 10860
+        "start": 11049,
+        "end": 11632
       }
     },
     {
@@ -264,8 +274,8 @@
       "source_construct": "MmqShapeSensitiveViaAmplification",
       "expression": "}",
       "source_span": {
-        "start": 10862,
-        "end": 11389
+        "start": 11634,
+        "end": 12161
       }
     },
     {
@@ -275,8 +285,8 @@
       "source_construct": "DriftCascadeAfterFirstDivergence",
       "expression": "}",
       "source_span": {
-        "start": 11391,
-        "end": 11982
+        "start": 12163,
+        "end": 12754
       }
     },
     {
@@ -286,8 +296,8 @@
       "source_construct": "PerPromptDriftSiteVariability",
       "expression": "}",
       "source_span": {
-        "start": 11984,
-        "end": 13336
+        "start": 12756,
+        "end": 14108
       }
     },
     {
@@ -297,8 +307,8 @@
       "source_construct": "TokenLevelGreedyArgmaxNP1_NP2_Identity",
       "expression": "}",
       "source_span": {
-        "start": 13338,
-        "end": 13687
+        "start": 14110,
+        "end": 14459
       }
     },
     {
@@ -308,8 +318,8 @@
       "source_construct": "TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift",
       "expression": "}",
       "source_span": {
-        "start": 13689,
-        "end": 14281
+        "start": 14461,
+        "end": 15053
       }
     },
     {
@@ -319,8 +329,8 @@
       "source_construct": "NotHeld_FA_BatchInvariance",
       "expression": "}",
       "source_span": {
-        "start": 14507,
-        "end": 14718
+        "start": 15279,
+        "end": 15490
       }
     },
     {
@@ -330,8 +340,8 @@
       "source_construct": "NotHeld_MMQ_BatchInvariance",
       "expression": "}",
       "source_span": {
-        "start": 14720,
-        "end": 14869
+        "start": 15492,
+        "end": 15641
       }
     },
     {
@@ -341,8 +351,8 @@
       "source_construct": "NotHeld_LayerLevelByteIdentity_NP2_NP4",
       "expression": "}",
       "source_span": {
-        "start": 14871,
-        "end": 15187
+        "start": 15643,
+        "end": 15959
       }
     },
     {
@@ -352,8 +362,8 @@
       "source_construct": "NotHeld_TokenLevelDeterminism_NP4",
       "expression": "}",
       "source_span": {
-        "start": 15189,
-        "end": 15489
+        "start": 15961,
+        "end": 16261
       }
     },
     {
@@ -363,8 +373,8 @@
       "source_construct": "Open_FA_SourceClass_OtherPrompts",
       "expression": "}",
       "source_span": {
-        "start": 15710,
-        "end": 16208
+        "start": 16482,
+        "end": 16980
       }
     },
     {
@@ -374,8 +384,8 @@
       "source_construct": "Open_P0_EarlyFALayersByteIdentical",
       "expression": "}",
       "source_span": {
-        "start": 16210,
-        "end": 16759
+        "start": 16982,
+        "end": 17531
       }
     },
     {
@@ -385,8 +395,8 @@
       "source_construct": "Open_FA_InternalMechanism",
       "expression": "}",
       "source_span": {
-        "start": 16761,
-        "end": 17187
+        "start": 17533,
+        "end": 17959
       }
     },
     {
@@ -396,8 +406,8 @@
       "source_construct": "Open_MMQ_InternalMechanism",
       "expression": "}",
       "source_span": {
-        "start": 17189,
-        "end": 17568
+        "start": 17961,
+        "end": 18340
       }
     }
   ]
