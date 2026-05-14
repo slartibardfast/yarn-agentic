@@ -346,23 +346,33 @@ The kernel work has progressed past spec-locking. Current state on 2026-05-14:
 6. `examples/llama-bench/llama-bench.cpp` fix: `--tensor-split 1,1` now parses correctly (was sending all weight to GPU 0; fixed at commit c267962)
 7. `data/deltanet/perf/baseline/enable-gpu-profiling.sh` — sudo script to enable non-root ncu profiling (NVreg_RestrictProfilingToAdminUsers=0). Applied 2026-05-14; survives reboot.
 
-**Pre-merge follow-up gates surfaced 2026-05-14 (must close before merge):**
+**Pre-implementation perf-floor captures (sequencing corrected 2026-05-14):**
 
-- **`G1` — llama-bench Hadamard support**: llama-bench has no `-khad / -vhad`
-  flag and doesn't read `LLAMA_ARG_K_CACHE_HADAMARD` / `LLAMA_ARG_V_CACHE_HADAMARD`.
-  Production runs Q4_0 KV with Hadamard rotation; current baseline does not.
-  Patch llama-bench (mirror `common.cpp:1666-1672` flag-parse + `common.cpp:513-514`
-  env-var read; set `cparams.k_cache_hadamard` / `v_cache_hadamard` in
-  `to_llama_cparams()` at `llama-bench.cpp:1167-1180`). ~30 LOC patch.
-  Re-capture baseline with production config after the patch lands.
-- **`G2` — Q4_0 + Hadamard baseline re-capture**: once G1 closed, re-run
-  `RUN.sh` with `-ctk q4_0 -ctv q4_0 -khad -vhad`. The Q4_0 KV footprint
-  (~4 GiB vs 16 GiB) also makes ncu kernel-replay viable (was OOMing on
-  GPU snapshot buffer with F16 KV + 32 GiB model).
-- **`G3` — ncu detailed metrics**: after G2 baseline captured, ncu the
-  wmma_f16 kernel for registers/thread, SMEM bytes per block, SM throughput
-  %, memory bandwidth %. Then re-run on the new kernel after implementation
-  for direct comparison.
+Original G1→G2→G3 sequencing flipped: patching the measurement harness before
+the measurement is methodologically backwards (patch becomes a suspect for any
+anomaly in the measured numbers). Corrected sequence is two zero-/minimal-
+source-touch captures FIRST, then llama-bench ergonomics patch lands as a
+post-implementation regression-test surface (not a measurement prereq).
+
+- **`P1` — nsys on production llama-server**: zero source touch. Wrapper
+  `nsys profile` around the running `profiles/qwen36.sh` server; drive a fixed
+  HTTP prompt; extract FA kernel wall-clock range. This is the literal
+  production path — already at Q4_0 + Hadamard via server cparams. Output:
+  `data/deltanet/perf/baseline/nsys-llama-server-prod.nsys-rep`.
+- **`P2` — ncu on minimally-patched test-np-validity-vanilla**: 2-LOC patch
+  (flip `cparams.k_cache_hadamard = cparams.v_cache_hadamard = true` — existing
+  fields, production-supported, no new code). Q4_0 KV footprint (~4 GiB) +
+  fixed-shape test binary fits in VRAM for ncu kernel-replay snapshot. Captures
+  detailed FA kernel metrics: registers/thread, SMEM bytes/block, SM throughput
+  %, memory bandwidth %. Output: `data/deltanet/perf/baseline/ncu-fa-vanilla-prod.ncu-rep`.
+- **`G1` (post-S2.5 follow-up, NOT a measurement prereq)** — llama-bench
+  Hadamard flag support: `-khad / -vhad` + env-var reads, mirror
+  `common.cpp:1666-1672` flag-parse + `common.cpp:513-514` env-var. Lands AFTER
+  the new kernel exists, as a regression-test ergonomic so future sweeps can be
+  driven through llama-bench at production KV config.
+
+P1 + P2 together establish the perf floor the replacement must match or beat.
+S2.5 kernel implementation gates on these landing.
 
 **Next step — S2.5 kernel implementation:**
 
