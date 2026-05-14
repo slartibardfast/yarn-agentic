@@ -302,8 +302,8 @@
       "description": "Verify implementation satisfies contract DraftBlockEmit.invoke",
       "source_construct": "DraftBlockEmit.invoke",
       "source_span": {
-        "start": 16450,
-        "end": 16661
+        "start": 18790,
+        "end": 19001
       }
     },
     {
@@ -312,8 +312,8 @@
       "description": "Verify implementation satisfies contract TargetVerifyBlock.invoke",
       "source_construct": "TargetVerifyBlock.invoke",
       "source_span": {
-        "start": 22386,
-        "end": 22508
+        "start": 24726,
+        "end": 24848
       }
     },
     {
@@ -322,8 +322,8 @@
       "description": "Verify implementation satisfies contract AcceptPrefixDecision.invoke",
       "source_construct": "AcceptPrefixDecision.invoke",
       "source_span": {
-        "start": 26444,
-        "end": 26590
+        "start": 28784,
+        "end": 28930
       }
     },
     {
@@ -332,8 +332,8 @@
       "description": "Verify implementation satisfies contract AdvanceState.invoke",
       "source_construct": "AdvanceState.invoke",
       "source_span": {
-        "start": 29599,
-        "end": 29756
+        "start": 31939,
+        "end": 32096
       }
     },
     {
@@ -343,8 +343,8 @@
       "source_construct": "SharedEmbedAndLMHead",
       "expression": "}",
       "source_span": {
-        "start": 32053,
-        "end": 32344
+        "start": 34393,
+        "end": 34684
       }
     },
     {
@@ -354,8 +354,8 @@
       "source_construct": "FeatureSourceFixedPerDeployment",
       "expression": "}",
       "source_span": {
-        "start": 32532,
-        "end": 32687
+        "start": 34872,
+        "end": 35027
       }
     },
     {
@@ -365,8 +365,8 @@
       "source_construct": "BlockSizeFixedAtContextStart",
       "expression": "}",
       "source_span": {
-        "start": 33038,
-        "end": 33603
+        "start": 35378,
+        "end": 35943
       }
     },
     {
@@ -376,8 +376,19 @@
       "source_construct": "PerDeploymentDeterminism",
       "expression": "}",
       "source_span": {
-        "start": 34033,
-        "end": 34369
+        "start": 36373,
+        "end": 36709
+      }
+    },
+    {
+      "id": "invariant.KernelDeterminism",
+      "category": "invariant",
+      "description": "Verify invariant KernelDeterminism holds after every state-changing rule that touches constrained entities",
+      "source_construct": "KernelDeterminism",
+      "expression": "}",
+      "source_span": {
+        "start": 37125,
+        "end": 39131
       }
     },
     {
@@ -387,8 +398,8 @@
       "source_construct": "SpeculativeCycleAtomicity",
       "expression": "}",
       "source_span": {
-        "start": 34696,
-        "end": 34914
+        "start": 39458,
+        "end": 39676
       }
     },
     {
@@ -398,8 +409,8 @@
       "source_construct": "SyncBeforeStepAdvance",
       "expression": "}",
       "source_span": {
-        "start": 35317,
-        "end": 35694
+        "start": 40079,
+        "end": 40456
       }
     },
     {
@@ -409,8 +420,8 @@
       "source_construct": "NoCrossSlotRegionOverlap",
       "expression": "}",
       "source_span": {
-        "start": 36282,
-        "end": 37140
+        "start": 41044,
+        "end": 41902
       }
     },
     {
@@ -420,8 +431,8 @@
       "source_construct": "DraftKVViaInjectionNotCrossAttention",
       "expression": "}",
       "source_span": {
-        "start": 37540,
-        "end": 38525
+        "start": 42302,
+        "end": 43287
       }
     },
     {
@@ -431,8 +442,8 @@
       "source_construct": "PerSlotDraftKVCache",
       "expression": "}",
       "source_span": {
-        "start": 38735,
-        "end": 39376
+        "start": 43497,
+        "end": 44138
       }
     },
     {
@@ -442,8 +453,8 @@
       "source_construct": "HybridTargetRecurrentStateTracking",
       "expression": "}",
       "source_span": {
-        "start": 40124,
-        "end": 41186
+        "start": 44886,
+        "end": 45948
       }
     },
     {
@@ -453,8 +464,8 @@
       "source_construct": "DPAttentionNotSupported",
       "expression": "}",
       "source_span": {
-        "start": 41398,
-        "end": 41808
+        "start": 46160,
+        "end": 46570
       }
     },
     {
@@ -464,8 +475,8 @@
       "source_construct": "PipelineParallelismRequiresPpSizeEq1",
       "expression": "}",
       "source_span": {
-        "start": 41810,
-        "end": 42199
+        "start": 46572,
+        "end": 46961
       }
     },
     {
@@ -475,8 +486,8 @@
       "source_construct": "ContextBudgetAtNp8",
       "expression": "}",
       "source_span": {
-        "start": 42512,
-        "end": 43179
+        "start": 47274,
+        "end": 47941
       }
     },
     {
@@ -486,8 +497,8 @@
       "source_construct": "DrafterIsDenseQwen3",
       "expression": "}",
       "source_span": {
-        "start": 43489,
-        "end": 43695
+        "start": 48251,
+        "end": 48457
       }
     },
     {
@@ -497,8 +508,8 @@
       "source_construct": "DrafterTargetVocabIdentity",
       "expression": "}",
       "source_span": {
-        "start": 43961,
-        "end": 44190
+        "start": 48723,
+        "end": 48952
       }
     },
     {
@@ -508,8 +519,8 @@
       "source_construct": "MultimodalTurnsRoutedAroundDrafter",
       "expression": "}",
       "source_span": {
-        "start": 44996,
-        "end": 45539
+        "start": 49758,
+        "end": 50301
       }
     },
     {
@@ -519,8 +530,8 @@
       "source_construct": "SourceLayerCountMatchesDrafterTraining",
       "expression": "}",
       "source_span": {
-        "start": 45940,
-        "end": 46224
+        "start": 50702,
+        "end": 50986
       }
     },
     {
@@ -530,8 +541,8 @@
       "source_construct": "TargetLayerIdsPlusOneAtRuntime",
       "expression": "}",
       "source_span": {
-        "start": 46662,
-        "end": 47003
+        "start": 51424,
+        "end": 51765
       }
     },
     {
@@ -541,8 +552,8 @@
       "source_construct": "NoTreeDraftingNoChainRollout",
       "expression": "}",
       "source_span": {
-        "start": 47211,
-        "end": 47336
+        "start": 51973,
+        "end": 52098
       }
     }
   ]
