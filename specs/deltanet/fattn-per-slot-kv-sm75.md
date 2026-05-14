@@ -344,15 +344,15 @@ Per §11 — there is no env gate, so the baseline must be captured BEFORE the m
    - Hit its §8 perf contract (positive bind, % of TU102 peak)
    - Match byte-identity vs scalar oracle (closure of §7)
 
-4. **Shape regimes covered (mandatory; no shape can be skipped)**:
+4. **Shape regimes covered (mandatory for the production path):**
    - Decode: NP ∈ {1, 2, 4, 8}, n_kv ∈ {short_prompt_32, medium_512, long_4096, max_16384}
    - Small-batch prefill: NP=1, n_tokens ∈ {16, 32, 64, 128}
    - Mid prefill: NP=1, n_tokens ∈ {256, 512}
    - Full prefill: NP=1, n_tokens ∈ {1024, 2048, 4096}
-   - HEAD_DIM_Q ∈ {128, 256} (Qwen variants on production)
-   - With and without softcap (Qwen 3.6 uses softcap for some layers)
+   - HEAD_DIM_Q=256, HEAD_DIM_V=128 (the production tuple; OQ-4 LOCKED)
+   - USE_SOFTCAP ∈ {false, true}
 
-   Total: ~80 (shape, baseline-vs-replacement) measurement pairs. nsys + ncu data for all of them committed.
+   Total at the production (256, 128) tuple: ~30 (shape, baseline-vs-replacement) measurement pairs. nsys + ncu data committed for all.
 
 5. **Surface failures, do not fall back**: if any shape pair shows regression or fails byte-identity, the spec is updated with the failure mode named, the implementation iterated, and the measurement re-run. Per §11 thoroughness bar 4: failure surfaces, not silent fallback.
 
@@ -366,21 +366,31 @@ Per user direction (2026-05-14): this is a REPLACEMENT, not an A/B rollout. Ther
 
 ### Dispatcher change (production)
 
-`fattn.cu` lines 60-148 — current sm_75 path that ends at `ggml_cuda_flash_attn_ext_wmma_f16(ctx, dst)` becomes:
+`fattn.cu` line 140 — the sm_75 path currently routes ALL shapes that hit `(!new_mma_available(cc) || K->ne[0] != V->ne[0])` to `ggml_cuda_flash_attn_ext_wmma_f16`. The new dispatch:
 
 ```cpp
-// sm_75 fast path: batch-invariant per-slot-KV-bounded FA replacement.
-if (!new_mma_available(cc)) {
-    fattn_per_slot_kv_sm75_dispatch(ctx, dst);  // routes on (HEAD_DIM_Q, HEAD_DIM_V, USE_SOFTCAP)
+// sm_75 production path: route Qwen 3.5/3.6 (HEAD_DIM_Q=256, HEAD_DIM_V=128)
+// to the batch-invariant per-slot replacement. All other head-dim tuples
+// keep wmma_f16 (OQ-4 LOCKED — scope is the production Qwen target only).
+if (!new_mma_available(cc) || K->ne[0] != V->ne[0]) {
+    if (Q->ne[0] == 256 && V->ne[0] == 128) {
+        fattn_per_slot_kv_sm75_dispatch(ctx, dst);  // routes on KV_BLOCK_SIZE, USE_SOFTCAP
+        return;
+    }
+    ggml_cuda_flash_attn_ext_wmma_f16(ctx, dst);
     return;
 }
 ```
 
-The `_dispatch` function picks template parameters based on the tensor's `Q->ne[0]`, `V->ne[0]`, and `op_params[2]` (softcap). All template specializations are compiled in for every supported HEAD_DIM combination (see OQ-4 resolution below).
+`fattn_per_slot_kv_sm75_dispatch` routes on:
+- `KV_BLOCK_SIZE` ∈ {32, 64} — pre-merge profile sweep determines the per-shape mapping (OQ-1 LOCKED)
+- `USE_SOFTCAP` ∈ {false, true} — based on `op_params[2] != 0` (OQ-6 LOCKED)
+
+4 total template instantiations for the production path.
 
 ### What changes in `fattn.cu`
 
-The lines that previously routed to `wmma_f16` (60-148 inclusive) are replaced with the single `fattn_per_slot_kv_sm75_dispatch` call. The `fattn-wmma-f16.cu` + `.cuh` files remain in the tree but are no longer reachable on sm_75 — they stay for non-Turing fp16-mma paths and for non-Qwen models that may still need the wmma_f16 layout. Removal of wmma_f16 entirely is a follow-up that requires auditing all callers across the supported model set.
+The single `if` branch at line 140 wraps the existing `wmma_f16` call with a head-dim-tuple check. `wmma_f16` continues to handle non-(256, 128) head-dim tuples on sm_75 (other models, other layers). `fattn-wmma-f16.cu` + `.cuh` files stay in the tree.
 
 ### Compatibility surface
 
@@ -402,29 +412,27 @@ Per `feedback_no_workarounds`: a straight replacement means no escape hatch. If 
 
 ---
 
-## 12. Open questions for user input
+## 12. Open questions — ALL RESOLVED (2026-05-14)
 
-Per §11 straight-replacement mandate: every OQ below must be RESOLVED (not deferred to implementation) before the spec is locked. Each carries a proposal; user sign-off on each closes the spec.
+User signed off on the answers; the spec is locked unless evidence requires re-opening a specific OQ (per `feedback_surface_tradeoff_decisions.md`).
 
-**OQ-1 — KV_BLOCK_SIZE: single value or shape-dispatched.** Proposal: instantiate BOTH `KV_BLOCK_SIZE=32` (double-buffered K+V, 2 blocks/SM) and `KV_BLOCK_SIZE=64` (single-buffer, 1 block/SM) as templates. Pre-merge profile sweep at §10 S2.5.d locks per-shape dispatch table (e.g., `KV_BLOCK_SIZE=32 if n_kv ≤ 1024 else 64`). Single value risks under-tuning at one regime.
+**OQ-1 — KV_BLOCK_SIZE — LOCKED:** instantiate BOTH `KV_BLOCK_SIZE=32` AND `KV_BLOCK_SIZE=64` templates. Pre-merge profile sweep (S2.5.d) locks the per-shape dispatch table.
 
-**OQ-2 — slot_seq_lens build-graph path.** Proposal: (a) new ggml input tensor populated from `llama_context`'s per-slot KV-cache state. Plumbed through `build_qwen35.cpp` (and any other build_* that uses full_attention) and stashed on `default_decoder`. Required for production flexibility. (b) op_params-encoded is a non-starter since max_n_seqs varies across deployments and the op_params slot is small.
+**OQ-2 — slot_seq_lens — LOCKED:** new ggml input tensor `slot_seq_lens: int32[n_seqs]`, plumbed through `build_qwen35.cpp` (and any other `build_*` using `full_attention`), stashed on `default_decoder`. The build-graph layer that emits attention computes this from the current per-slot KV-cache occupancy.
 
-**OQ-3 — Combine kernel.** Proposal: REUSE `flash_attn_combine_results` from `fattn-common.cuh`. The output layout from `fattn_per_slot_kv_sm75` must match wmma_f16's `dst_partial` + `dst_meta` layout exactly. Implementation must verify with a unit test asserting layout compatibility before any production use. If a future shape needs a different layout, write `fattn_combine_per_slot_kv_sm75` as a sibling rather than altering the existing one.
+**OQ-3 — Combine kernel — LOCKED:** REUSE `flash_attn_combine_results` from `fattn-common.cuh`. The output layout from `fattn_per_slot_kv_sm75` MUST match wmma_f16's `dst_partial` + `dst_meta` layout exactly. A layout-compatibility unit test is mandatory before production use.
 
-**OQ-4 — HEAD_DIM_Q coverage.** Per §11 thoroughness mandate, every production HEAD_DIM_Q must be template-instantiated. Production models on this host:
-- Qwen 3.5 / 3.6 (production target): HEAD_DIM_Q=256, HEAD_DIM_V=128
-- Older Qwen / other models that may share this path: needs explicit audit
+**OQ-4 — Head-dim coverage — LOCKED:** instantiate ONLY `<HEAD_DIM_Q=256, HEAD_DIM_V=128>` for the Qwen 3.5/3.6 production target. The dispatcher routes the (256, 128) tuple to the new kernel; ALL OTHER `(HEAD_DIM_Q, HEAD_DIM_V)` tuples on sm_75 continue to use the existing `wmma_f16` path. wmma_f16 is NOT removed entirely — it stays for non-(256, 128) head dims. The "straight replacement" applies to the production-Qwen path only.
 
-Proposal: instantiate `<256, 128>` for the production target, plus `<128, 128>` for likely-needed compatibility. Audit at S2.5 start; add more instantiations if any production model uses different values. The dispatcher routes (HEAD_DIM_Q, HEAD_DIM_V) tuples to the matching template; unsupported tuples → GGML_ABORT (NOT a silent fallback to wmma_f16, since wmma_f16 is gone on sm_75 after this lands).
+This narrows the spec significantly: only the production (256, 128) path needs the new kernel + perf validation + byte-identity binding. Other models on sm_75 continue to use wmma_f16 with their existing (possibly batch-shape-sensitive) behavior. Acceptable because those models aren't in this workstream's scope.
 
-**OQ-5 — Mask shape compatibility.** Proposal: kernel reads mask `[n_kv_max, n_tokens]` AND uses `slot_seq_lens[slot]` for K-loop bound. Mask is evaluated for in-range K positions (alibi, special-position masking). Mask read for K positions ≥ slot_seq_lens[slot] is SKIPPED (the K-loop terminates first). Equivalence with wmma_f16: at slot K's valid K range, the mask is applied identically; beyond it, the new kernel doesn't iterate (wmma_f16 iterates with mask-zero contribution; the new kernel doesn't iterate at all — the empirical n_kv-pad evidence shows this is the source of the difference we want to eliminate).
+**OQ-5 — Mask handling — LOCKED:** kernel reads mask `[n_kv_max, n_tokens]` AND uses `slot_seq_lens[slot]` for K-loop bound. Mask is evaluated for in-range K positions (alibi, special-position masking). Mask read for K positions ≥ `slot_seq_lens[slot]` is SKIPPED (K-loop terminates first).
 
-**OQ-6 — Soft-capping (`USE_SOFTCAP` template).** Proposal: instantiate both `USE_SOFTCAP=false` and `USE_SOFTCAP=true` templates. Dispatcher routes based on `op_params[2] != 0`. Qwen 3.6 27B uses softcap on some layers; both template specializations required.
+**OQ-6 — Softcap — LOCKED:** instantiate both `USE_SOFTCAP=false` and `USE_SOFTCAP=true` templates. Dispatcher routes on `op_params[2] != 0`. Total template instantiations = 2 (KV_BLOCK_SIZE) × 2 (USE_SOFTCAP) × 1 (HEAD_DIM tuple) = **4 kernel variants** for the production (256, 128) path.
 
-**OQ-7 — ALiBi / position-bias handling.** wmma_f16 supports `get_alibi_slope` for ALiBi position bias. Qwen 3.6 27B does not use ALiBi (uses RoPE on Q/K instead). Proposal: kernel template-instantiates `USE_ALIBI=false` for the production-Qwen path. If other models need ALiBi on sm_75 after wmma_f16 removal, add `USE_ALIBI=true` instantiation. Audit during S2.5 start.
+**OQ-7 — ALiBi — LOCKED OUT:** no `USE_ALIBI` template. Production Qwen 3.6 27B uses RoPE, not ALiBi. If a future sm_75 model needs ALiBi at (256, 128), this OQ re-opens with new evidence.
 
-**OQ-8 — Attention sinks.** wmma_f16 supports attention sinks (`flash_attn_ext_add_sinks`). Production Qwen 3.6 27B does not currently use this. Proposal: skip in initial template; add `USE_SINKS=true` instantiation if/when needed. Audit before commit.
+**OQ-8 — Attention sinks — LOCKED OUT:** no `USE_SINKS` template. Production Qwen 3.6 27B does not use sinks. Same re-open condition as OQ-7.
 
 ---
 
