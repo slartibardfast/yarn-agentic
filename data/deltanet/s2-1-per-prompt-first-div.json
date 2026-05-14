@@ -1,0 +1,79 @@
+{
+  "phase": "PLAN.md S2.1 \u2014 all 8 prompts NP=2 vs NP=4 first-divergent layer",
+  "date": "2026-05-14",
+  "comparison": "NP=2 slot K (offset chosen so slot K is the target prompt) vs NP=4 slot K (offset chosen the same)",
+  "note": "p7 uses slot 1 of np=2 offset=6 since np=2 offset=7 needs nonexistent p8.txt",
+  "per_prompt": {
+    "p0": {
+      "first_div": 19,
+      "identical": 19,
+      "type": "FA",
+      "max_at_first": 0.005700260400772095
+    },
+    "p1": {
+      "first_div": 3,
+      "identical": 3,
+      "type": "FA",
+      "max_at_first": 0.002964019775390625
+    },
+    "p2": {
+      "first_div": 3,
+      "identical": 3,
+      "type": "FA",
+      "max_at_first": 0.007114410400390625
+    },
+    "p3": {
+      "first_div": 0,
+      "identical": 0,
+      "type": "DeltaNet",
+      "max_at_first": 0.991908073425293
+    },
+    "p4": {
+      "first_div": 3,
+      "identical": 3,
+      "type": "FA",
+      "max_at_first": 0.002595864236354828
+    },
+    "p5": {
+      "first_div": 3,
+      "identical": 3,
+      "type": "FA",
+      "max_at_first": 0.0011078529059886932
+    },
+    "p6": {
+      "first_div": null,
+      "identical": 64,
+      "type": "no_drift",
+      "max_at_first": null
+    },
+    "p7": {
+      "first_div": null,
+      "identical": 64,
+      "type": "no_drift",
+      "max_at_first": null
+    }
+  },
+  "summary": {
+    "fa_count": 5,
+    "deltanet_count": 1,
+    "no_drift_first_decode_count": 2,
+    "fa_layer_indices": [
+      3,
+      7,
+      11,
+      15,
+      19,
+      23,
+      27,
+      31,
+      35,
+      39,
+      43,
+      47,
+      51,
+      55,
+      59,
+      63
+    ]
+  }
+}
