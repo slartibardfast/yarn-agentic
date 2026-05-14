@@ -1,0 +1,22 @@
+{
+  "phase": "PLAN.md Stage 1 — NP=2 self-determinism floor",
+  "date": "2026-05-14",
+  "task": "S1.1 — Multi-rep NP=2 byte-identity",
+  "config": {
+    "model": "/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf",
+    "np": 2,
+    "offset": 0,
+    "prompts": ["p0", "p1"],
+    "n_reps": 2,
+    "first_decoded_token_only": true,
+    "data_dirs": ["data/deltanet/d1/ (rep1)", "data/deltanet/s1-rep2/ (rep2)"]
+  },
+  "result": {
+    "n_pairs": 128,
+    "n_identical": 128,
+    "n_differ": 0,
+    "per_layer_per_slot": "all 64 layers × 2 slots produce byte-identical residual bytes across reps"
+  },
+  "closure": "S1.1 GREEN; Stage 1 (NP=2 self-determinism floor) closes immediately. CUDA-level determinism on identical inputs holds.",
+  "implication_for_stage_2": "Stage 2 byte-identity binding criterion (NP=2 ↔ NP=4 vs the NP=2 reference) is well-defined and reproducible. Drift introduced by changing np IS the only signal — no noise floor from within-np non-determinism."
+}
