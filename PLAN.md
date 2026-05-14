@@ -61,42 +61,58 @@ Run the D1 harness 3 times at NP=2 with offset=0. Same prompts (p0, p1), same co
 
 ## Stage 2 — NP=2 ↔ NP=4 byte-identity
 
-### S2.1 — Multi-prompt D2 confirmed first-divergent layers (DONE)
+### S2.1 — Multi-prompt first-divergent-layer map (CLOSED)
 
-Already captured in `data/deltanet/d2-multi-prompt-update.json`:
+Captured in `data/deltanet/s2-1-per-prompt-first-div.json` (all 8 prompts):
 
 | Prompt | first-divergent layer | layer type | max_abs_diff |
 |---|---|---|---|
-| p0 | 19 | FA | 0.006 |
-| p1 | 3  | FA | 0.003 |
-| p3 | 0  | DeltaNet | 0.99 |
+| p0 | 19 | FA (5th FA layer) | 0.006 |
+| p1 | 3  | FA (1st FA layer) | 0.003 |
+| p2 | 3  | FA (1st FA layer) | 0.007 |
+| p3 | 0  | **DeltaNet** | **0.99** |
+| p4 | 3  | FA (1st FA layer) | 0.003 |
+| p5 | 3  | FA (1st FA layer) | 0.001 |
+| p6 | — | no drift at first decoded token | — |
+| p7 | — | no drift at first decoded token | — |
 
-Open items for closure of S2.1: extend coverage to p2, p4, p5, p6, p7 (the prompts not yet captured). 5 additional captures × ~30s each.
+Distribution at first-decoded-token: FA = 5/8, DeltaNet = 1/8, no drift = 2/8.
 
-**Verify by**: `data/deltanet/s2-1-per-prompt-first-div.json` covers all 8 prompts.
+### S2.2 — Kernel-dispatch characterization (cheap hypothesis test, before op-level capture)
 
-### S2.2 — Per-prompt op-level localization at first-divergent layer
+**Hypothesis under test:** the drift originates at heuristic-dispatch flips — cuBLAS picks a different `cublasGemmAlgo_t` at M=2 vs M=4, or the FA kernel template varies at n_tokens=2 vs n_tokens=4. If TRUE, the fix is targeted (force fixed algorithm at the named call sites). If FALSE, drift is computational (split-K accumulators, atomic reductions, etc.) and S2.3 op-level capture is needed.
 
-For each prompt's first-divergent layer, instrument intermediate ops via cb_eval matching:
-- `attn_norm-<il>`, `Q-<il>`, `K-<il>`, `V-<il>`, `KQV-<il>` (FA output), `O-<il>`, `ffn_norm-<il>`, MLP intermediate names, `l_out-<il>`
+Instrumentation:
+- **cuBLAS**: enable `CUBLAS_LOGINFO_DBG=1` (or equivalent); capture `cublasGemmAlgo_t` picked at every GEMM call site, tagged with the (M, N, K, op_name) tuple. Compare logs from NP=2 vs NP=4 runs.
+- **FA**: instrument the FA dispatcher (`fattn-common.cuh` or equivalent) to printf the chosen kernel template parameters (KQ_per_iter, head_dim, n_seq_block, ncols) at every FA call. Compare logs.
+- **DeltaNet recurrence**: confirm `threads_per_block` selection (256 vs 128) is identical across NP=2 and NP=4 — both have n_tokens ∈ {2, 4}, both ≤ 8, both should hit the 256-thread variant. If confirmed identical → DeltaNet kernel itself is dispatched the same way; p3's drift must originate upstream (its input RMSNorm or Q/K/V projection GEMM).
+- **Projection GEMM dispatcher in ggml-cuda**: separately, instrument `ggml-cuda.cu`'s matmul entry point to log which backend (cuBLAS heuristic vs MMQ vs cuBLAS fixed) gets selected.
+
+Cost: roughly 10–15k tokens (instrumentation + 2 runs + log diff). Cheaper than S2.3 op-level capture because no harness extension or cb_eval matching changes — just printf at the dispatch sites.
+
+**Verify by**: `data/deltanet/s2-2-dispatch-trace.json` records the kernel/algo/template chosen at each call site at NP=2 and NP=4, with diffs flagged. If any diff is found at or near the first-divergent layer for any prompt, the hypothesis is confirmed and the named call site is the S2.4 design target.
+
+**Decision branch on S2.2 outcome:**
+- DISPATCH DIFFERS at the first-divergent layer for some prompt → skip S2.3; go directly to S2.4 design with the named call site(s) as the target.
+- DISPATCH IDENTICAL across all call sites → drift is computational; run S2.3.
+
+### S2.3 — Per-prompt op-level intermediate capture (CONDITIONAL on S2.2 not naming it)
+
+Only run if S2.2's dispatcher trace doesn't name a clear culprit. Heavier diagnostic — extends the cb_eval extract API to match intermediate-op tensor names, not just `l_out-<il>`.
+
+For each prompt's first-divergent layer (S2.1 result), capture per-op intermediates:
+- `attn_norm-<il>`, `Q-<il>`, `K-<il>`, `V-<il>`, `KQV-<il>` (FA output), `attn_out-<il>` (O projection), `ffn_norm-<il>`, MLP gate/up/down intermediates, `l_out-<il>`
 
 Find the FIRST op at the layer where NP=2 vs NP=4 residual differs.
 
-**Verify by**: `data/deltanet/s2-2-per-prompt-op-localization.json` maps each prompt → (layer, first-divergent op, kernel name).
+**Verify by**: `data/deltanet/s2-3-per-prompt-op-localization.json` maps each prompt → (layer, first-divergent op, kernel name).
 
-Expected breakdown (per current D2):
+Expected breakdown (per S2.1):
 - p3 layer 0: localize within DeltaNet's input pipeline (RMSNorm → Q/K/V projection → recurrence kernel)
-- p1 layer 3: localize within first FA layer (attn_norm → Q/K/V → FA → O)
+- p1/p2/p4/p5 layer 3: localize within first FA layer (attn_norm → Q/K/V → FA → O)
 - p0 layer 19: localize within mid-stack FA layer (same ops, different position)
 
-### S2.3 — Kernel-dispatch characterization
-
-For each first-divergent op named in S2.2, dump kernel dispatch parameters at np=2 vs np=4:
-- cuBLAS GEMM: enable `CUBLAS_LOGINFO_DBG`; capture `cublasGemmAlgo_t` picked at each (M, N, K).
-- FA: instrument the FA dispatcher to printf chosen template parameters (KQ_per_iter, head_dim, n_seq_block).
-- DeltaNet recurrence: confirm `threads_per_block` selection (256 vs 128). Same n_tokens=N across np values means same kernel — drift origin must be upstream.
-
-**Verify by**: `data/deltanet/s2-3-dispatch-trace.json` shows kernel/algo/tile picked at each np for each first-divergent op.
+Cost: 25–40k tokens (cb_eval matcher extension + 8 captures + analysis). Higher than S2.2 because of harness extension and per-op file proliferation.
 
 ### S2.4 — Design replacement kernels (with perf contract)
 
@@ -152,13 +168,13 @@ Sub-tasks mirror Stage 2 in shape. The drift signature (sub-F16 at layer 0) is d
 
 **Verify by**: `data/deltanet/s3-1-per-prompt-first-div.json`.
 
-### S3.2 — Op-level localization
+### S3.2 — Kernel-dispatch characterization (cheap hypothesis test)
 
-Same approach as S2.2 but for NP=4 vs NP=8 transition.
+Same approach as S2.2 — dispatcher trace at NP=4 vs NP=8. Compare to S2.2's NP=2 vs NP=4 dispatch logs; if Stage 3 introduces a fresh dispatch flip at a previously-stable call site, that's the new target.
 
-### S3.3 — Kernel-dispatch characterization
+### S3.3 — Op-level localization (CONDITIONAL)
 
-Same approach as S2.3.
+Same approach as S2.3, only if S3.2 doesn't name the culprit precisely.
 
 ### S3.4 — Design replacement kernels
 
