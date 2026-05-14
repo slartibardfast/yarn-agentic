@@ -1,0 +1,28 @@
+{
+  "phase": "PLAN.md D2 — first-divergent-layer localization",
+  "date": "2026-05-14",
+  "model": "/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf",
+  "n_layer_transformer": 64,
+  "n_embd": 5120,
+  "full_attn_interval": 4,
+  "fa_layer_indices": [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51, 55, 59, 63],
+  "deltanet_layer_indices": "all other indices in [0, 63]",
+  "comparison": "slot 0 (p0) post-prefill, first-generated-token l_out-<il> residual",
+  "first_byte_identity_break_by_np_pair": {
+    "1_vs_2":   {"layer": 0, "type": "storage_path", "note": "F32 single-token decode vs F16 multi-token; storage precision delta, not computational"},
+    "1_vs_4":   {"layer": 0, "type": "storage_path", "note": "same as 1 vs 2"},
+    "1_vs_8":   {"layer": 0, "type": "storage_path", "note": "same as 1 vs 2"},
+    "2_vs_4":   {"layer": 19, "type": "full_attention", "note": "FIRST CLEAN COMPUTATIONAL DRIFT — both NP=2 and NP=4 use F16 multi-token storage; byte-identical through layers 0-18; layer 19 is the first FA layer where drift breaks F16 precision"},
+    "2_vs_8":   {"layer": 0, "type": "sub_f16_precision", "note": "max_abs_diff at layer 0 ≈ 1e-6 (F32 epsilon, below F16 precision); cumulative drift through DeltaNet pipeline at different batch widths"},
+    "4_vs_8":   {"layer": 0, "type": "sub_f16_precision", "note": "max_abs_diff at layer 0 ≈ 1e-6 (F32 epsilon); same nature as 2 vs 8"}
+  },
+  "headline_finding": "PRIMARY drift between NP=2 and NP=4 first amplifies above F16 precision at LAYER 19 (full_attention). DeltaNet recurrence kernel itself is not the source — layers 0-18 are byte-identical NP=2↔NP=4. The user's working hypothesis that 'DeltaNet is non-deterministic at np>1' is overturned: the FA path is the dominant drift amplifier at the NP=2/4 transition documented in T9.1. Layer 19's full_attention op is the D3 target.",
+  "secondary_finding": "Sub-F16-precision drift exists at layer 0 for ALL non-{2,4} NP transitions (1 vs anything, 2 vs 8, 4 vs 8). Source is upstream of DeltaNet's recurrence kernel — most likely the RMSNorm / Q/K/V projection GEMMs feeding into DeltaNet. Below F16 storage precision so doesn't show byte difference at NP=2 vs NP=4 storage path, but is a real fp32 computational difference present at all non-byte-equivalent NP transitions.",
+  "d3_targets": {
+    "primary": "Layer 19 full_attention ops at NP=2 vs NP=4: instrument FA dispatcher (fattn-common.cuh) + Q/K/V projection GEMMs + output projection at this specific layer. The byte-identity break at exactly this layer suggests the FA kernel template / tile geometry pick differs at n_tokens=4 vs n_tokens=2 (PHASE45 D10.e + DFlash T9 hint: Turing m16n8k8 tile, 4 hits new tile boundary).",
+    "secondary": "Layer 0 NP=4 vs NP=8 (or NP=2 vs NP=8) sub-F16 drift: instrument RMSNorm + Q/K/V GEMMs in DeltaNet's input pipeline at varying n_tokens"
+  },
+  "harness": "ik_llama.cpp/tests/dflash-speculative/test-deltanet-d1-capture.cpp",
+  "data_dir": "data/deltanet/d1/",
+  "files_per_run": "64 transformer layers × N slots = 64*N .bin files (each n_embd=5120 floats); manifest JSON"
+}
