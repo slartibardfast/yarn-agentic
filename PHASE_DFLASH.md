@@ -423,9 +423,11 @@ Checkbox semantics per CLAUDE.md §5.
   - DFlash speedup measurement, block_size sweep ∈ {4, 5, 6, 8}.
   - Ship outcome: PASS (≥ 1.5× MTP) → ship `profiles/qwen36-27b-x1-dflash.sh`; NEUTRAL (1.0–1.5×) → tunable option; FAIL (< 1.0×) → stay on MTP.
 
-- [ ] **T9 — Gate 7 (conditional on T7 GREEN): batched verify at np > 1**
-  - Aggregate vs vanilla batched at np=8.
-  - Ship outcome: PASS (≥ 1.8× vanilla) → `profiles/qwen36-27b-x8-dflash.sh`.
+- [~] **T9 — Charter revised (2026-05-14): np > 1 *validity* lockdown — gates the kernel optimization workstream**
+  - Original perf-comparison framing retired (slow kernels make aggregate measurement uninformative until kernels are rewritten).
+  - Bar: 5 falsifiable per-slot asserts — terminates, PPL ∈ [1, 50], ≥ 95% in-vocab, no decode failures, no NaN/Inf.
+  - **T9.1 vanilla `[x]`**: harness `tests/dflash-speculative/test-np-validity-vanilla.cpp`; 14/14 slot-runs PASS across np ∈ {2, 4, 8} on Qwen 3.6 27B. PPL 1.18–3.14, all in-band. Data: `data/phase_dflash_t8/gate7-validity-vanilla-np{2,4,8}.json`. Vanilla validity locked.
+  - **T9.2 DFlash `[ ]`**: deferred. The current C API `llama_dflash_draft(ctx, anchor_token, anchor_pos, …)` is single-slot — no `seq_id`, no slot array. Multi-slot validity requires a 4-layer libllama extension (multi-slot C API + adapter + server gate lift + harness). Scope estimate ~115–185k tokens. **This is the gating prerequisite** before any DFlash kernel optimization (dual-TU102 + NVLINK envelope work) is justified — the kernel-side multi-slot support exists (T7), but there's no validated dispatch path yet.
 
 ## Verification (end-of-phase composite)
 

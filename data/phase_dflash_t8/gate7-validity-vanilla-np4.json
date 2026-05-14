@@ -1,0 +1,12 @@
+{
+  "np": 4,
+  "n_gen": 64,
+  "spec": "none",
+  "slots": [
+    {"slot": 0, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p0.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 1.610658, "ppl_ok": true, "first_tokens": [198, 248045, 248068, 271, 248069]},
+    {"slot": 1, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p1.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 1.862197, "ppl_ok": true, "first_tokens": [20139, 1204, 264, 41163, 579]},
+    {"slot": 2, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p2.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 1.733452, "ppl_ok": true, "first_tokens": [13, 220, 16, 17, 25]},
+    {"slot": 3, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p3.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 1.738858, "ppl_ok": true, "first_tokens": [25, 198, 332, 9751, 75318]}
+  ],
+  "n_fail": 0
+}
