@@ -1,0 +1,308 @@
+{
+  "version": 3,
+  "obligations": [
+    {
+      "id": "enum-comparable.NPMode",
+      "category": "enum_comparable",
+      "description": "Verify fields typed with enum NPMode are comparable",
+      "source_construct": "NPMode",
+      "source_span": {
+        "start": 2250,
+        "end": 2287
+      }
+    },
+    {
+      "id": "enum-comparable.LayerType",
+      "category": "enum_comparable",
+      "description": "Verify fields typed with enum LayerType are comparable",
+      "source_construct": "LayerType",
+      "source_span": {
+        "start": 2288,
+        "end": 2346
+      }
+    },
+    {
+      "id": "enum-comparable.ResidualStoragePrecision",
+      "category": "enum_comparable",
+      "description": "Verify fields typed with enum ResidualStoragePrecision are comparable",
+      "source_construct": "ResidualStoragePrecision",
+      "source_span": {
+        "start": 2347,
+        "end": 2406
+      }
+    },
+    {
+      "id": "enum-comparable.KernelTemplate",
+      "category": "enum_comparable",
+      "description": "Verify fields typed with enum KernelTemplate are comparable",
+      "source_construct": "KernelTemplate",
+      "source_span": {
+        "start": 2407,
+        "end": 2546
+      }
+    },
+    {
+      "id": "enum-comparable.DriftLevel",
+      "category": "enum_comparable",
+      "description": "Verify fields typed with enum DriftLevel are comparable",
+      "source_construct": "DriftLevel",
+      "source_span": {
+        "start": 2547,
+        "end": 2670
+      }
+    },
+    {
+      "id": "invariant.StorageBranchInvariant",
+      "category": "invariant",
+      "description": "Verify invariant StorageBranchInvariant holds after every state-changing rule that touches constrained entities",
+      "source_construct": "StorageBranchInvariant",
+      "expression": "}",
+      "source_span": {
+        "start": 5237,
+        "end": 5708
+      }
+    },
+    {
+      "id": "invariant.RepDeterminismAtSameNP",
+      "category": "invariant",
+      "description": "Verify invariant RepDeterminismAtSameNP holds after every state-changing rule that touches constrained entities",
+      "source_construct": "RepDeterminismAtSameNP",
+      "expression": "}",
+      "source_span": {
+        "start": 5710,
+        "end": 6062
+      }
+    },
+    {
+      "id": "invariant.DispatcherTemplateUniformity_FA",
+      "category": "invariant",
+      "description": "Verify invariant DispatcherTemplateUniformity_FA holds after every state-changing rule that touches constrained entities",
+      "source_construct": "DispatcherTemplateUniformity_FA",
+      "expression": "}",
+      "source_span": {
+        "start": 6064,
+        "end": 6577
+      }
+    },
+    {
+      "id": "invariant.DispatcherTemplateUniformity_MMQ",
+      "category": "invariant",
+      "description": "Verify invariant DispatcherTemplateUniformity_MMQ holds after every state-changing rule that touches constrained entities",
+      "source_construct": "DispatcherTemplateUniformity_MMQ",
+      "expression": "}",
+      "source_span": {
+        "start": 6579,
+        "end": 6995
+      }
+    },
+    {
+      "id": "invariant.DispatcherTemplateUniformity_DeltaNet",
+      "category": "invariant",
+      "description": "Verify invariant DispatcherTemplateUniformity_DeltaNet holds after every state-changing rule that touches constrained entities",
+      "source_construct": "DispatcherTemplateUniformity_DeltaNet",
+      "expression": "}",
+      "source_span": {
+        "start": 6997,
+        "end": 7250
+      }
+    },
+    {
+      "id": "invariant.ProjectionGEMMSlotInvariance",
+      "category": "invariant",
+      "description": "Verify invariant ProjectionGEMMSlotInvariance holds after every state-changing rule that touches constrained entities",
+      "source_construct": "ProjectionGEMMSlotInvariance",
+      "expression": "}",
+      "source_span": {
+        "start": 7252,
+        "end": 7778
+      }
+    },
+    {
+      "id": "invariant.DeltaNetSlotInvariance",
+      "category": "invariant",
+      "description": "Verify invariant DeltaNetSlotInvariance holds after every state-changing rule that touches constrained entities",
+      "source_construct": "DeltaNetSlotInvariance",
+      "expression": "}",
+      "source_span": {
+        "start": 7780,
+        "end": 8332
+      }
+    },
+    {
+      "id": "invariant.KernelFPArithmeticBatchShapeSensitivity",
+      "category": "invariant",
+      "description": "Verify invariant KernelFPArithmeticBatchShapeSensitivity holds after every state-changing rule that touches constrained entities",
+      "source_construct": "KernelFPArithmeticBatchShapeSensitivity",
+      "expression": "}",
+      "source_span": {
+        "start": 8334,
+        "end": 9713
+      }
+    },
+    {
+      "id": "invariant.WmmaFAShapeSensitiveAtSomeInputs",
+      "category": "invariant",
+      "description": "Verify invariant WmmaFAShapeSensitiveAtSomeInputs holds after every state-changing rule that touches constrained entities",
+      "source_construct": "WmmaFAShapeSensitiveAtSomeInputs",
+      "expression": "}",
+      "source_span": {
+        "start": 9715,
+        "end": 10072
+      }
+    },
+    {
+      "id": "invariant.WmmaFAByteIdenticalAtOtherInputs",
+      "category": "invariant",
+      "description": "Verify invariant WmmaFAByteIdenticalAtOtherInputs holds after every state-changing rule that touches constrained entities",
+      "source_construct": "WmmaFAByteIdenticalAtOtherInputs",
+      "expression": "}",
+      "source_span": {
+        "start": 10074,
+        "end": 10657
+      }
+    },
+    {
+      "id": "invariant.MmqShapeSensitiveViaAmplification",
+      "category": "invariant",
+      "description": "Verify invariant MmqShapeSensitiveViaAmplification holds after every state-changing rule that touches constrained entities",
+      "source_construct": "MmqShapeSensitiveViaAmplification",
+      "expression": "}",
+      "source_span": {
+        "start": 10659,
+        "end": 11186
+      }
+    },
+    {
+      "id": "invariant.DriftCascadeAfterFirstDivergence",
+      "category": "invariant",
+      "description": "Verify invariant DriftCascadeAfterFirstDivergence holds after every state-changing rule that touches constrained entities",
+      "source_construct": "DriftCascadeAfterFirstDivergence",
+      "expression": "}",
+      "source_span": {
+        "start": 11188,
+        "end": 11779
+      }
+    },
+    {
+      "id": "invariant.PerPromptDriftSiteVariability",
+      "category": "invariant",
+      "description": "Verify invariant PerPromptDriftSiteVariability holds after every state-changing rule that touches constrained entities",
+      "source_construct": "PerPromptDriftSiteVariability",
+      "expression": "}",
+      "source_span": {
+        "start": 11781,
+        "end": 13133
+      }
+    },
+    {
+      "id": "invariant.TokenLevelGreedyArgmaxNP1_NP2_Identity",
+      "category": "invariant",
+      "description": "Verify invariant TokenLevelGreedyArgmaxNP1_NP2_Identity holds after every state-changing rule that touches constrained entities",
+      "source_construct": "TokenLevelGreedyArgmaxNP1_NP2_Identity",
+      "expression": "}",
+      "source_span": {
+        "start": 13135,
+        "end": 13484
+      }
+    },
+    {
+      "id": "invariant.TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift",
+      "category": "invariant",
+      "description": "Verify invariant TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift holds after every state-changing rule that touches constrained entities",
+      "source_construct": "TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift",
+      "expression": "}",
+      "source_span": {
+        "start": 13486,
+        "end": 14078
+      }
+    },
+    {
+      "id": "invariant.NotHeld_FA_BatchInvariance",
+      "category": "invariant",
+      "description": "Verify invariant NotHeld_FA_BatchInvariance holds after every state-changing rule that touches constrained entities",
+      "source_construct": "NotHeld_FA_BatchInvariance",
+      "expression": "}",
+      "source_span": {
+        "start": 14304,
+        "end": 14515
+      }
+    },
+    {
+      "id": "invariant.NotHeld_MMQ_BatchInvariance",
+      "category": "invariant",
+      "description": "Verify invariant NotHeld_MMQ_BatchInvariance holds after every state-changing rule that touches constrained entities",
+      "source_construct": "NotHeld_MMQ_BatchInvariance",
+      "expression": "}",
+      "source_span": {
+        "start": 14517,
+        "end": 14666
+      }
+    },
+    {
+      "id": "invariant.NotHeld_LayerLevelByteIdentity_NP2_NP4",
+      "category": "invariant",
+      "description": "Verify invariant NotHeld_LayerLevelByteIdentity_NP2_NP4 holds after every state-changing rule that touches constrained entities",
+      "source_construct": "NotHeld_LayerLevelByteIdentity_NP2_NP4",
+      "expression": "}",
+      "source_span": {
+        "start": 14668,
+        "end": 14984
+      }
+    },
+    {
+      "id": "invariant.NotHeld_TokenLevelDeterminism_NP4",
+      "category": "invariant",
+      "description": "Verify invariant NotHeld_TokenLevelDeterminism_NP4 holds after every state-changing rule that touches constrained entities",
+      "source_construct": "NotHeld_TokenLevelDeterminism_NP4",
+      "expression": "}",
+      "source_span": {
+        "start": 14986,
+        "end": 15286
+      }
+    },
+    {
+      "id": "invariant.Open_FA_SourceClass_OtherPrompts",
+      "category": "invariant",
+      "description": "Verify invariant Open_FA_SourceClass_OtherPrompts holds after every state-changing rule that touches constrained entities",
+      "source_construct": "Open_FA_SourceClass_OtherPrompts",
+      "expression": "}",
+      "source_span": {
+        "start": 15507,
+        "end": 16005
+      }
+    },
+    {
+      "id": "invariant.Open_P0_EarlyFALayersByteIdentical",
+      "category": "invariant",
+      "description": "Verify invariant Open_P0_EarlyFALayersByteIdentical holds after every state-changing rule that touches constrained entities",
+      "source_construct": "Open_P0_EarlyFALayersByteIdentical",
+      "expression": "}",
+      "source_span": {
+        "start": 16007,
+        "end": 16556
+      }
+    },
+    {
+      "id": "invariant.Open_FA_InternalMechanism",
+      "category": "invariant",
+      "description": "Verify invariant Open_FA_InternalMechanism holds after every state-changing rule that touches constrained entities",
+      "source_construct": "Open_FA_InternalMechanism",
+      "expression": "}",
+      "source_span": {
+        "start": 16558,
+        "end": 16984
+      }
+    },
+    {
+      "id": "invariant.Open_MMQ_InternalMechanism",
+      "category": "invariant",
+      "description": "Verify invariant Open_MMQ_InternalMechanism holds after every state-changing rule that touches constrained entities",
+      "source_construct": "Open_MMQ_InternalMechanism",
+      "expression": "}",
+      "source_span": {
+        "start": 16986,
+        "end": 17365
+      }
+    }
+  ]
+}

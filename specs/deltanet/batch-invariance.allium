@@ -361,12 +361,7 @@ invariant Open_MMQ_InternalMechanism {
     -- ntiles_x=1 but different ne11. To verify: read kernel internals.
 }
 
--- ============================================================================
--- DECLARATIONS for cross-stack references
--- ============================================================================
-
-deferred TestDeltaNetD1Capture
-deferred TestDeltaNetS23OpCapture
-deferred TestNPValidityVanilla
-deferred FattnWmmaF16Case_128_128_8_half
-deferred MulMatQCase_mmq_x_8
+-- Cross-stack references (tests + kernels) live in the binding JSON's
+-- `bindings_external` section (specs/deltanet/allium-tla-binding.json), not
+-- as `deferred` declarations here — per feedback_allium_deferred_usage,
+-- `deferred` is for cross-.allium references only.

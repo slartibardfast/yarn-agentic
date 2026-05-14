@@ -46,18 +46,29 @@ jobs:
             https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
           ls -la .tla-tools/
 
-      - name: Allium syntax check
+      - name: Allium syntax check (DFlash)
         run: |
           source "$HOME/.cargo/env"
           allium check specs/dflash/dflash.allium
 
-      - name: Allium obligation ledger drift check
+      - name: Allium syntax check (DeltaNet batch-invariance)
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/deltanet/batch-invariance.allium
+
+      - name: Allium obligation ledger drift check (DFlash)
         run: |
           source "$HOME/.cargo/env"
           allium plan specs/dflash/dflash.allium > /tmp/obligations.json
           # The committed ledger must match what `allium plan` produces now.
           # Drift means someone edited the spec without regenerating.
           diff data/dflash_test_obligations.json /tmp/obligations.json
+
+      - name: Allium obligation ledger drift check (DeltaNet)
+        run: |
+          source "$HOME/.cargo/env"
+          allium plan specs/deltanet/batch-invariance.allium > /tmp/deltanet-obligations.json
+          diff data/deltanet_test_obligations.json /tmp/deltanet-obligations.json
 
       - name: Binding integrity (Allium ↔ TLA ↔ C++)
         run: |
@@ -149,3 +160,33 @@ jobs:
             exit 1
           fi
           echo "Negative control CrossSlotRace correctly falsifies NoCrossSlotRegionOverlap."
+
+      # ===========================================================================
+      # DeltaNet batch-invariance TLC checks
+      # ===========================================================================
+
+      - name: TLC — DeltaNet PipelineDeterminism ModalP3 (must PASS)
+        run: |
+          cd specs/deltanet
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config PipelineDeterminism_ModalP3.cfg PipelineDeterminism.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on the DeltaNet ModalP3 config:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "DeltaNet ModalP3 base PASSES — no errors."
+
+      - name: TLC — DeltaNet PipelineDeterminism OutlierP0 (must PASS)
+        run: |
+          cd specs/deltanet
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config PipelineDeterminism_OutlierP0.cfg PipelineDeterminism.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on the DeltaNet OutlierP0 config:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "DeltaNet OutlierP0 base PASSES — no errors."
