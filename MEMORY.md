@@ -5397,3 +5397,117 @@ remains outside T7's scope. T8 (np=1 speedup) is unblocked; T9
 - Structured result: `data/gate5b-np-invariance.json`
 - Tracker: T7 marked `[x]` in `PHASE_DFLASH.md` with closure evidence
 - T8 pickup brief written at end of `PHASE_DFLASH.md`
+
+---
+
+## T8 Phase 1 — bench-side spec apples-to-apples + DFlash extract F16/F32 fix (2026-05-13/14)
+
+Closed Phase 1's bench infrastructure for cross-spec comparison
+(none / mtp / dflash) with PPL-of-output as the quality bound.
+Three non-obvious findings other sessions need:
+
+1. **`llama_dflash_extract_cb_eval` F16/F32 dtype split**. The
+   `l_out-<il>` residual stream tensor is F32 for single-token
+   decodes (per-cycle anchor / fallback) and **F16 for multi-token
+   ubatches** (prefill, verify). The original cb_eval counted
+   `nbytes / sizeof(float)` regardless of `t->type`, giving half
+   the row count for F16 prefill. The `dflash_extract_buf` ended
+   up 52 rows short on a 103-token prefill, and every DFlash
+   draft cycle returned rc=-5 ("extract buffer too short").
+   Fix landed in `src/llama.cpp llama_dflash_extract_cb_eval`:
+   branch on `t->type`, convert F16 → F32 via
+   `ggml_fp16_to_fp32_row` before append.
+
+2. **`spec_ckpt`'s `save_per_step_ssm` flag must be discarded
+   before any post-spec-loop long-batch decode.** The flag stays
+   on across cycles by design — verify's BS+1=5 tokens routes
+   into a 5-sized per_step buffer. When the next decode is a
+   prefill (≫ 5 tokens) or PPL re-decode (prompt + gen), the
+   prefill-shape data misroutes into the 5-sized buffer and trips
+   `ggml.c:5391`'s tensor-view assertion. Fix in
+   `examples/llama-bench/llama-bench.cpp`: call
+   `llama_spec_ckpt_discard(ctx)` between reps and before
+   compute_ppl_of_output, then `llama_spec_ckpt_init` re-arms
+   per_step.
+
+3. **MTP wiring depths beyond the original recipe**. Bench needs
+   ALL of: `mparams.mtp = true` (load NextN layers from GGUF);
+   `cparams.mtp = true` + `cparams.pooling_type = NONE` on the
+   target context (not just `cparams_dft`); permanent
+   `llama_set_embeddings(ctx, true)` for Qwen 3.6 + MTP
+   (`src/llama.cpp:5411,5427` extracts BOTH logits and embeddings
+   when nextn_predict_layers > 0 — flipping it off breaks MTP);
+   per-cycle re-seed of `llama_set_draft_input_hidden_state(ctx,
+   embedding at row n_acc of the verify decode)` mirroring
+   `server-context.cpp:4019-4030`; and use `llama_get_logits_ith(ctx, i)`
+   indexed by BATCH POSITION not need-slot counter.
+
+DFLASH_DIAG=1 + DFLASH_TIMING=1 env-gated stderr tracing preserved
+in `llama_dflash_extract_cb_eval`, `stage_target_hiddens`,
+`llama_dflash_trim_extract`, and `test_gen_spec` for future
+debugging of the same bug class.
+
+Phase 1 closure: `--spec none` tg128 29.4 t/s, `--spec mtp draft=3`
+37.6 t/s (+13.0% vs 33.23 production memory baseline, within ±20%),
+`--spec dflash draft=4` 1.35 t/s.
+
+## T8 Phase 4 — measurement of record, DFlash kernel limit named (2026-05-14)
+
+T8 closed. Phase 3 ship-gate dataset (8 prompts × 3 specs × 3 reps,
+`data/phase_dflash_t8/gate6-spec-*.json`, aggregated via
+`aggregate-gate6.py` to `gate6-summary.json`):
+
+  --spec none     tg128 = 29.31 t/s | ppl 1.160
+  --spec mtp=3    tg128 = 33.86 t/s | accept 43.6% | ppl 3.091
+  --spec dflash=4 tg128 =  1.139 t/s | accept 54.1% | ppl 1.158
+
+Non-obvious finding worth recording: **DFlash output is essentially
+identical to vanilla greedy in quality** (ppl geomean 1.158 vs
+greedy 1.160; MTP sits at 3.091, 3× higher). At 54% acceptance
+DFlash is more greedy-faithful than MTP at 43.6%. So the throughput
+gap is *entirely* a kernel-perf issue, not a quality regression —
+T1–T7's argmax-equivalent kernel correctness binds end-to-end
+through the bench.
+
+The 0.034× MTP throughput is attributed to two named kernels at
+~1% of TU102 hardware peak:
+- `dflash_drafter_lm_head_kernel` (`ggml/src/ggml-cuda/dflash/dflash-drafter-lm-head.cu:37-64`):
+  one CTA per row, scalar fp32 dot per thread over D_emb=5120,
+  no tensor cores, no SMEM weight tile. 1228 ms/call vs ~2 ms
+  TU102 BF16 memory-bandwidth ceiling for the 1.2 GiB weight scan
+  → **600× off ceiling**.
+- `gemm_row_x_col_kernel` (`ggml/src/ggml-cuda/dflash/dflash-drafter-forward.cu:121-141`):
+  5 CTAs on 72 SMs = 7% SM utilization, scalar fp32, no tensor cores.
+
+Both were reference impls that closed T3/T4's byte-identity bindings
+against scalar fp32 oracles — correct, deliberately un-tuned.
+
+**Canonical optimization envelope for the next workstream** (dual
+TU102 with NVLINK):
+- HBM bandwidth: 624 GB/s × 2 = 1.25 TB/s aggregate
+- FP16 tensor core peak: 130.5 TFLOPs × 2 = 261 TFLOPs
+- NVLINK aggregate: ~100 GB/s — enough for a 248k-float logits
+  allreduce in ~1 ms after V-shard
+- Path: V-shard lm_head across both GPUs (124160 cols each),
+  F16 tensor-core GEMV per-GPU (Turing `mma.sync.m16n8k8`),
+  multi-CTA grid covering ~all 72 SMs, NCCL allreduce 248k floats
+- T7's source-read noted the implementation deviates from spec
+  `kernel-design.md §6.1` — the cooperative WMMA mega-kernel
+  (5 transformer layers + lm_head under `cudaLaunchCooperativeKernel`)
+  is absent. That's the other named optimization target.
+
+T8 doesn't pursue this; it records the data point honestly and
+hands off to the kernel optimization workstream. Per CLAUDE.md §4
+"no follow-up cover" — the slow kernels ARE the limiting factor;
+the closure says so directly, naming the fix paths without dressing
+the verdict as PASS/NEUTRAL.
+
+**Artifacts**:
+- Bench: `examples/llama-bench/llama-bench.cpp` (spec extension)
+- Smoke test: `tests/dflash-speculative/test-llama-bench-spec-init.cpp`
+- Aggregation: `data/phase_dflash_t8/aggregate-gate6.py`
+- Closure dataset: `data/phase_dflash_t8/gate6-summary.json`
+- Per-cycle attribution: `data/phase_dflash_t8/cycle-timing-{dflash,mtp}.runlog`
+- nsys kernel breakdown: `data/phase_dflash_t8/dflash-nsys-1cycle.{nsys-rep,sqlite}`
+- 8 ship-gate prompts: `data/phase_dflash_t8/prompts/p[0-7].txt`
+- Phase tracker: T8 marked closed in `PHASE_DFLASH.md` Phase 4
