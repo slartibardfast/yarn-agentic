@@ -1,0 +1,56 @@
+{
+  "phase": "PLAN.md Stage 2.2 — kernel-dispatch characterization",
+  "date": "2026-05-14",
+  "method": "Static code analysis of dispatchers on sm_75 (CC_TURING) production path. No runtime instrumentation needed — the dispatcher branch structure for NP=2/4/8 is fully determined by compile-time + n_tokens-based static branches.",
+  "production_config": {
+    "arch": "qwen35 (dense, NOT moe — production GGUF general.architecture=qwen35)",
+    "build_path": "src/graphs/build_qwen35.cpp::build_qwen35() (line 127, NOT build_qwen35moe at line 1)",
+    "cc": "sm_75 (CC_TURING) on dual Quadro RTX 6000",
+    "kv_cache_dtype": "Q4_0 (quantized)",
+    "weight_dtype": "Q4_0 / Q4_0_AR16 (quantized; AutoRound-preserved BF16 for linear_attn projections)",
+    "fp16_mma_available": true,
+    "new_mma_available": false,
+    "int8_mma_available": true
+  },
+  "dispatchers_inspected": {
+    "FA_full_attention": {
+      "site": "ggml/src/ggml-cuda/fattn.cu:140 → ggml_cuda_flash_attn_ext_wmma_f16 → fattn-wmma-f16.cu:81-104",
+      "rationale": "On sm_75 with Q4_0 KV cache, the line-140 condition (!new_mma_available || K->ne[0] != V->ne[0]) is TRUE → wmma_f16 path. Inside wmma_f16, Q->ne[1]<=8 branch (line 81) is hit at all NP∈{2,4,8} → cols_per_block=8.",
+      "template_selected_per_np": {
+        "NP=2": "ggml_cuda_flash_attn_ext_wmma_f16_case<128, 128, 8, half>",
+        "NP=4": "ggml_cuda_flash_attn_ext_wmma_f16_case<128, 128, 8, half>",
+        "NP=8": "ggml_cuda_flash_attn_ext_wmma_f16_case<128, 128, 8, half>"
+      },
+      "differs_at_NP_2_vs_4": false
+    },
+    "MMQ_quantized_matmul": {
+      "site": "ggml/src/ggml-cuda/mmq.cuh:4175-4220 mul_mat_q_case",
+      "rationale": "mmq_x_best picker: for ne11<=8, the loop's first iteration with mmq_x=8 gives ntiles_x=1, nparts=1, so loop exits with mmq_x_best=8. Same template at NP=2/4/8.",
+      "template_selected_per_np": {
+        "NP=2": "launch_mul_mat_q<type, mmq_x=8, MMQ_NWARPS=8, need_check>",
+        "NP=4": "launch_mul_mat_q<type, mmq_x=8, MMQ_NWARPS=8, need_check>",
+        "NP=8": "launch_mul_mat_q<type, mmq_x=8, MMQ_NWARPS=8, need_check>"
+      },
+      "differs_at_NP_2_vs_4": false,
+      "note": "ggml_cuda_should_use_mmq returns true on sm_75 because int8_mma_available(cc) is TRUE (CC_TURING>=int8_mma threshold) — MMQ path is taken for all NP>=2 quantized matmul. NP=1 may go MMVQ instead (src1->ne[1]==1 && ne[1]<=MMVQ_MAX_BATCH_SIZE)."
+    },
+    "DeltaNet_recurrence": {
+      "site": "ggml/src/ggml-cuda/delta-net.cu:219 delta_net_f32_cuda",
+      "rationale": "Branch `if (n_tokens <= 8)` selects threads_per_block=256 (num_warps=8). All NP∈{2,4,8} hit n_tokens<=8.",
+      "template_selected_per_np": {
+        "NP=2": "delta_net_recurrent_f32<HEAD_DIM=128, block_size=256>",
+        "NP=4": "delta_net_recurrent_f32<HEAD_DIM=128, block_size=256>",
+        "NP=8": "delta_net_recurrent_f32<HEAD_DIM=128, block_size=256>"
+      },
+      "differs_at_NP_2_vs_4": false
+    }
+  },
+  "headline_finding": "The heuristic-dispatch-flip hypothesis is FALSIFIED at NP=2 vs NP=4. All three relevant kernels (FA wmma_f16, MMQ, DeltaNet recurrence) use IDENTICAL template parameters at NP=2 and NP=4 on production sm_75 dense path. The kernel selection is uniform.",
+  "implication": "Drift is INTERNAL to the kernels, not from heuristic dispatch. Same template, different work amount (M=2 vs M=4 cols of work, or batched recurrence with n_seqs=2 vs n_seqs=4). The kernels' INNER computation is batch-shape sensitive.",
+  "candidates_for_s2_3_op_level_capture": [
+    "MMQ kernel internal: reduction order over K within a tile may depend on M-direction work distribution at small M",
+    "FA wmma_f16 kernel internal: padding behavior for Q->ne[1] < cols_per_block=8, or shared-memory K/V loading patterns that depend on actual Q->ne[1]",
+    "DeltaNet kernel internal: cross-batch effects via shared memory or scheduling, even though grid blocks should be independent per (batch, head)"
+  ],
+  "next_step": "S2.3 (op-level intermediate capture) becomes necessary because the cheap dispatcher trace did NOT find a dispatch flip. Extend cb_eval matching to capture per-op intermediates within each first-divergent layer (Q-il, K-il, V-il, KQV-il, attn_out-il, etc.) to localize WHICH kernel call's output first differs."
+}
