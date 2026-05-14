@@ -1,0 +1,67 @@
+ggml_cuda_init: GGML_CUDA_FORCE_MMQ:    no
+ggml_cuda_init: GGML_CUDA_FORCE_CUBLAS: no
+ggml_cuda_init: found 2 CUDA devices:
+  Device 0: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24022 MiB
+  Device 1: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24019 MiB
+common_speculative_state_mtp: collapsed-context MTP on shared ctx (seq_id=0)
+common_speculative_state_mtp: collapsed-context MTP on shared ctx (seq_id=0)
+[dflash-timing cycle 1] P=103 n_acc=0 total=103.02ms | draft=46.22 save=0.00 verify=56.17 argmax=0.61 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 2] P=104 n_acc=0 total=67.14ms | draft=15.44 save=0.00 verify=51.09 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 3] P=105 n_acc=0 total=68.01ms | draft=15.97 save=0.00 verify=51.42 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 4] P=106 n_acc=0 total=67.69ms | draft=15.95 save=0.00 verify=51.12 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 5] P=107 n_acc=2 total=67.33ms | draft=15.49 save=0.00 verify=51.20 argmax=0.61 accept=0.00 restore=0.01 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 6] P=110 n_acc=2 total=67.96ms | draft=15.95 save=0.00 verify=51.37 argmax=0.61 accept=0.00 restore=0.01 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 7] P=113 n_acc=3 total=67.32ms | draft=15.68 save=0.00 verify=50.99 argmax=0.62 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 8] P=117 n_acc=2 total=67.23ms | draft=15.64 save=0.00 verify=50.98 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 9] P=120 n_acc=3 total=67.44ms | draft=15.60 save=0.00 verify=51.23 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 10] P=124 n_acc=3 total=67.18ms | draft=15.58 save=0.00 verify=50.97 argmax=0.60 accept=0.00 restore=0.01 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 11] P=128 n_acc=1 total=67.33ms | draft=15.65 save=0.00 verify=51.05 argmax=0.61 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 12] P=130 n_acc=0 total=67.57ms | draft=15.49 save=0.00 verify=51.44 argmax=0.62 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 13] P=131 n_acc=0 total=67.49ms | draft=15.70 save=0.00 verify=51.15 argmax=0.61 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 14] P=132 n_acc=2 total=67.12ms | draft=15.47 save=0.00 verify=51.00 argmax=0.62 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 15] P=135 n_acc=1 total=67.97ms | draft=16.09 save=0.00 verify=51.26 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 16] P=137 n_acc=0 total=67.58ms | draft=15.90 save=0.00 verify=51.05 argmax=0.61 accept=0.00 restore=0.02 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 17] P=138 n_acc=0 total=67.23ms | draft=15.47 save=0.00 verify=51.13 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 18] P=139 n_acc=0 total=67.56ms | draft=15.87 save=0.00 verify=51.05 argmax=0.61 accept=0.00 restore=0.01 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 19] P=140 n_acc=0 total=67.89ms | draft=15.95 save=0.00 verify=51.31 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 20] P=141 n_acc=0 total=67.24ms | draft=15.57 save=0.00 verify=51.06 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 21] P=142 n_acc=0 total=67.07ms | draft=15.49 save=0.00 verify=50.93 argmax=0.62 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 22] P=143 n_acc=2 total=67.71ms | draft=16.03 save=0.00 verify=51.06 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 23] P=146 n_acc=2 total=67.10ms | draft=15.48 save=0.00 verify=50.99 argmax=0.61 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 24] P=149 n_acc=0 total=67.07ms | draft=15.49 save=0.00 verify=50.95 argmax=0.60 accept=0.00 restore=0.01 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 25] P=150 n_acc=0 total=67.45ms | draft=15.81 save=0.00 verify=51.02 argmax=0.60 accept=0.00 restore=0.01 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 26] P=151 n_acc=3 total=67.82ms | draft=15.81 save=0.00 verify=51.39 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 27] P=155 n_acc=1 total=67.75ms | draft=15.90 save=0.00 verify=51.23 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 28] P=157 n_acc=3 total=67.20ms | draft=15.57 save=0.00 verify=50.99 argmax=0.61 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 29] P=161 n_acc=3 total=67.65ms | draft=15.72 save=0.00 verify=51.32 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 30] P=165 n_acc=3 total=68.06ms | draft=16.12 save=0.00 verify=51.32 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 31] P=169 n_acc=3 total=67.63ms | draft=15.80 save=0.00 verify=51.22 argmax=0.60 accept=0.00 restore=0.01 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 32] P=173 n_acc=3 total=67.39ms | draft=15.77 save=0.00 verify=51.02 argmax=0.58 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 33] P=177 n_acc=3 total=66.99ms | draft=15.45 save=0.00 verify=50.93 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 34] P=181 n_acc=3 total=67.94ms | draft=15.96 save=0.00 verify=51.36 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 35] P=185 n_acc=3 total=67.17ms | draft=15.59 save=0.00 verify=50.97 argmax=0.58 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 36] P=189 n_acc=1 total=67.10ms | draft=15.51 save=0.00 verify=50.98 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 37] P=191 n_acc=3 total=67.81ms | draft=15.83 save=0.00 verify=51.37 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 38] P=195 n_acc=2 total=67.14ms | draft=15.49 save=0.00 verify=51.01 argmax=0.61 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 39] P=198 n_acc=0 total=67.10ms | draft=15.47 save=0.00 verify=51.00 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 40] P=199 n_acc=3 total=67.81ms | draft=15.86 save=0.00 verify=51.33 argmax=0.59 accept=0.00 restore=0.01 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 41] P=203 n_acc=3 total=67.61ms | draft=15.82 save=0.00 verify=51.17 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 42] P=207 n_acc=3 total=67.69ms | draft=15.94 save=0.00 verify=51.12 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 43] P=211 n_acc=1 total=67.29ms | draft=15.50 save=0.00 verify=51.17 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 44] P=213 n_acc=2 total=67.12ms | draft=15.49 save=0.00 verify=51.01 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 45] P=216 n_acc=3 total=67.76ms | draft=16.01 save=0.00 verify=51.11 argmax=0.61 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 46] P=220 n_acc=0 total=67.21ms | draft=15.48 save=0.00 verify=51.11 argmax=0.60 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 47] P=221 n_acc=3 total=67.36ms | draft=15.56 save=0.00 verify=51.16 argmax=0.61 accept=0.00 restore=0.01 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 48] P=225 n_acc=0 total=67.54ms | draft=15.45 save=0.00 verify=51.47 argmax=0.59 accept=0.00 restore=0.01 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 49] P=226 n_acc=2 total=67.94ms | draft=15.62 save=0.00 verify=51.70 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing cycle 50] P=229 n_acc=2 total=67.74ms | draft=15.84 save=0.00 verify=51.28 argmax=0.59 accept=0.00 restore=0.02 trim=0.00 reseed=0.01 bk=0.00
+[dflash-timing TOTAL n_cycles=50 emit=130] total=3409.51ms
+  draft   =   815.54 ms ( 23.9%)
+  save    =     0.00 ms (  0.0%)
+  verify  =  2562.77 ms ( 75.2%)
+  argmax  =    29.99 ms (  0.9%)
+  accept  =     0.04 ms (  0.0%)
+  restore =     0.78 ms (  0.0%)
+  trim    =     0.00 ms (  0.0%)
+  reseed  =     0.27 ms (  0.0%)
+  bookkep =     0.12 ms (  0.0%)

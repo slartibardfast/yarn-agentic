@@ -1,0 +1,1 @@
+Explain how a transformer's self-attention mechanism works. Cover the query/key/value projections, the scaled dot-product, the softmax over scores, and why masking is needed in causal models.

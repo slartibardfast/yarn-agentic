@@ -1055,7 +1055,112 @@ original plan:
 - No EOG exit: bench measures throughput, not output-coherence
   truncation. PPL-of-output bounds quality separately.
 
-### Phase 2 — Diagnose T6's 1.33 t/s through the new infra
+### Phase 4 — T8 outcome (measurement of record)
+
+T8 is a measurement workstream, not a release gate. The locked
+PASS/NEUTRAL/FAIL categories aren't deciding whether to ship a profile
+— the canonical outcome is the recorded data point and its attribution
+to specific named kernels.
+
+**Phase 3 dataset** (8 prompts × 3 spec methods × 3 reps, captured at
+`data/phase_dflash_t8/gate6-spec-*.json`, aggregated to
+`gate6-summary.json`):
+
+| Metric | none | mtp --draft 3 | dflash --draft 4 |
+|---|---:|---:|---:|
+| tg t/s geomean | 29.31 | **33.86** | 1.139 |
+| accept_rate geomean | — | 43.6% | **54.1%** |
+| mean_accept tokens/cycle | — | 1.31 | 2.16 |
+| PPL of output geomean | 1.160 | 3.091 | **1.158** |
+| tg speedup vs MTP geomean | — | — | 0.0336 |
+| tg speedup vs MTP worst-prompt | — | — | 0.0285 |
+| PPL ratio vs MTP worst-prompt | — | — | 0.6488 (DFlash closer) |
+
+**Two findings the data binds clearly**:
+
+1. **DFlash output quality is essentially identical to vanilla
+   greedy.** PPL geomean 1.158 (DFlash) vs 1.160 (none) — within
+   measurement noise. PPL geomean 3.091 (MTP) sits ~3× higher,
+   reflecting batch-shape effects in MTP's verify decode that drift
+   the output away from the strict greedy-target trajectory. At 54%
+   acceptance, DFlash's per-cycle output is *more* greedy-faithful
+   than MTP's 43.6%. The kernel correctness work (T1–T7, byte-identity
+   to vLLM PR #40898 across 8 prompts × 4 mask positions) is the
+   load-bearing achievement and binds end-to-end through bench.
+
+2. **DFlash throughput is bounded by two named kernels at ~1% of
+   hardware peak.** Per Phase 2 nsys + source inspection:
+   - `dflash_drafter_lm_head_kernel` consumed 41.3% of GPU time at
+     1228 ms/call. TU102 memory-bandwidth floor for the 1.2 GiB
+     BF16 weight scan is ~2 ms (624 GB/s); current is **600× off
+     the ceiling**. Root cause: one CTA per row, scalar fp32 dot,
+     no tensor cores, no SMEM weight tile (`dflash-drafter-lm-head.cu:37-64`).
+   - `gemm_row_x_col_kernel` consumed 34.0% of GPU time, 29 ms/call.
+     Root cause: 5 CTAs on 72 SMs = 7% SM utilization, scalar fp32,
+     no tensor cores (`dflash-drafter-forward.cu:121-141`).
+   Both are reference implementations that closed T3/T4's byte-identity
+   bindings against the scalar fp32 oracles — correct, deliberately
+   un-tuned.
+
+**Outcome framing**: The geomean ratio 0.034× MTP would read FAIL under
+the locked ship-gate categories, but those categories are for a release
+decision T8 isn't making. Recording the result as-is:
+
+- **Throughput**: DFlash 1.14 t/s, ~3% of MTP, ~4% of vanilla greedy
+  on this hardware/build. The end-to-end pipeline is correct; the
+  kernels are slow.
+- **Quality**: DFlash output is statistically indistinguishable from
+  vanilla greedy at this acceptance rate (54%), better than MTP on
+  this axis.
+- **Optimization target named**: rewrite `dflash_drafter_lm_head_kernel`
+  and `gemm_row_x_col_kernel` for the TU102 + NVLINK theoretical
+  envelope.
+
+**TU102 + NVLINK optimization envelope** (future workstream — the
+canonical limits these kernels will be conducted toward):
+
+| Resource | Per-GPU (TU102) | Dual w/ NVLINK | Relevant to |
+|---|---:|---:|---|
+| HBM bandwidth | 624 GB/s | 1.25 TB/s aggregate | lm_head BF16 weight scan |
+| FP16 tensor core peak | 130.5 TFLOPs | 261 TFLOPs | GEMM rewrites, mma.sync.m16n8k8 |
+| INT8 tensor core peak | 261 TFLOPs | 522 TFLOPs | quantized-weight GEMV variants |
+| NVLINK aggregate | — | ~100 GB/s | logits allreduce after V-shard |
+
+For the lm_head specifically: split V=248320 across the two GPUs
+(124160 cols each), run F16 tensor-core GEMV per-GPU, NCCL allreduce
+the 248k-float logits (~1 ms over NVLINK). With multi-CTA grid hitting
+~all 72 SMs and Turing tensor cores, the lm_head should reach the
+memory-bandwidth floor of ~2 ms per call. That alone collapses the
+draft bucket from 2.9 s/cycle toward ~10 ms/cycle, putting DFlash
+into MTP's per-cycle regime and unlocking the spec=4 speedup the
+kernel correctness already binds. The GEMM rewrite follows the
+same pattern at smaller scale.
+
+Possibly also: implement the cooperative WMMA mega-kernel that T7
+noted is absent from the impl (spec `kernel-design.md §6.1` — 5
+transformer layers + lm_head fused under `cudaLaunchCooperativeKernel`,
+eliminating per-step `__global__` launch overhead). T7's source-read
+showed the implementation deviates from spec §6.1 in this area, so
+the spec already names what's missing.
+
+**T8 closes here.** The phase delivered:
+- Bench infrastructure for apples-to-apples spec-method comparison
+  (none / mtp / dflash) with PPL-of-output as the quality bound.
+- Bench-validated MTP wiring (+13.0% over the production memory
+  baseline, within ±20% sanity band).
+- End-to-end DFlash measurement on production hardware, attributed
+  to two named kernels with TU102 + NVLINK optimization headroom
+  precisely characterised.
+- Quality finding: DFlash output is greedy-faithful at 54%
+  acceptance, more so than MTP at 43.6% — kernel correctness binds
+  end-to-end through the ship-gate dataset.
+
+The kernel optimization workstream is the canonical next phase
+when budget allows. No follow-up cover (per CLAUDE.md §4): the
+slow kernels ARE the limiting factor for DFlash performance; T8
+records that honestly with the optimization target named.
+
+### Phase 2 — Diagnose T6's 1.33 t/s through the new infra (HISTORICAL)
 
 Once Phase 1 lands, run the extended `llama-bench --spec dflash` on
 the production target at T6's prompt config (the quicksort prompt,

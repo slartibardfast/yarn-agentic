@@ -1,0 +1,1 @@
+Compare and contrast supervised learning, unsupervised learning, and reinforcement learning. For each, give a definition, a representative algorithm, and a real-world application.

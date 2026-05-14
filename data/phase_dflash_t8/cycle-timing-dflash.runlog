@@ -1,0 +1,53 @@
+ggml_cuda_init: GGML_CUDA_FORCE_MMQ:    no
+ggml_cuda_init: GGML_CUDA_FORCE_CUBLAS: no
+ggml_cuda_init: found 2 CUDA devices:
+  Device 0: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24022 MiB
+  Device 1: Quadro RTX 6000, compute capability 7.5, VMM: yes, VRAM: 24019 MiB
+[dflash] drafter loaded: 5 layers, hidden=5120, ffn=17408, vocab(target)=?, BS=16, swa=2048, mask=248070
+[dflash] bound: seq_len_cap=4096 mal_cap=4096 V=248320  source_layers=[1,16,31,46,61]
+common_speculative_state_dflash: DFlash sidecar drafter bound to ctx_tgt (block_size=16)
+[dflash] drafter loaded: 5 layers, hidden=5120, ffn=17408, vocab(target)=?, BS=16, swa=2048, mask=248070
+[dflash] bound: seq_len_cap=4096 mal_cap=4096 V=248320  source_layers=[1,16,31,46,61]
+common_speculative_state_dflash: DFlash sidecar drafter bound to ctx_tgt (block_size=16)
+[dflash-timing cycle 1] P=103 n_acc=0 total=2711.07ms | draft=2584.74 save=2.37 verify=122.05 argmax=0.81 accept=0.00 restore=1.10 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 2] P=104 n_acc=1 total=2671.35ms | draft=2568.98 save=1.57 verify=99.51 argmax=0.81 accept=0.00 restore=0.46 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 3] P=106 n_acc=1 total=2684.86ms | draft=2582.53 save=1.55 verify=99.51 argmax=0.79 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 4] P=108 n_acc=2 total=2692.85ms | draft=2590.32 save=1.57 verify=99.74 argmax=0.74 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 5] P=111 n_acc=3 total=2764.59ms | draft=2662.38 save=1.53 verify=99.46 argmax=0.75 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 6] P=115 n_acc=1 total=2756.79ms | draft=2654.38 save=1.56 verify=99.55 argmax=0.80 accept=0.00 restore=0.48 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 7] P=117 n_acc=4 total=2749.05ms | draft=2646.20 save=1.64 verify=99.93 argmax=0.80 accept=0.00 restore=0.46 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 8] P=122 n_acc=4 total=2761.96ms | draft=2659.28 save=1.57 verify=99.84 argmax=0.80 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 9] P=127 n_acc=4 total=2766.97ms | draft=2664.26 save=1.56 verify=99.82 argmax=0.81 accept=0.00 restore=0.51 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 10] P=132 n_acc=4 total=2750.83ms | draft=2648.81 save=1.54 verify=99.30 argmax=0.73 accept=0.00 restore=0.45 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 11] P=137 n_acc=4 total=2773.25ms | draft=2670.56 save=1.56 verify=99.83 argmax=0.81 accept=0.00 restore=0.48 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 12] P=142 n_acc=4 total=2826.24ms | draft=2721.38 save=1.55 verify=102.06 argmax=0.78 accept=0.00 restore=0.45 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 13] P=147 n_acc=4 total=2908.25ms | draft=2805.59 save=1.56 verify=99.81 argmax=0.81 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 14] P=152 n_acc=4 total=2921.08ms | draft=2818.85 save=1.53 verify=99.51 argmax=0.74 accept=0.00 restore=0.44 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 15] P=157 n_acc=4 total=2917.41ms | draft=2815.20 save=1.52 verify=99.48 argmax=0.75 accept=0.00 restore=0.45 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 16] P=162 n_acc=4 total=2903.97ms | draft=2801.58 save=1.54 verify=99.67 argmax=0.73 accept=0.00 restore=0.45 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 17] P=167 n_acc=4 total=2910.71ms | draft=2808.02 save=1.55 verify=99.85 argmax=0.82 accept=0.00 restore=0.46 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 18] P=172 n_acc=2 total=2931.83ms | draft=2828.96 save=1.55 verify=100.04 argmax=0.80 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 19] P=175 n_acc=4 total=2923.42ms | draft=2820.65 save=1.56 verify=99.95 argmax=0.80 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 20] P=180 n_acc=4 total=3005.47ms | draft=2902.54 save=1.54 verify=100.05 argmax=0.85 accept=0.00 restore=0.49 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 21] P=185 n_acc=4 total=3000.65ms | draft=2897.68 save=1.55 verify=100.14 argmax=0.82 accept=0.00 restore=0.46 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 22] P=190 n_acc=2 total=2995.32ms | draft=2892.55 save=1.56 verify=99.92 argmax=0.82 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 23] P=193 n_acc=4 total=2994.42ms | draft=2891.29 save=1.69 verify=100.16 argmax=0.81 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 24] P=198 n_acc=4 total=3008.31ms | draft=2905.57 save=1.52 verify=99.99 argmax=0.75 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 25] P=203 n_acc=4 total=3006.37ms | draft=2899.66 save=1.54 verify=103.89 argmax=0.80 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 26] P=208 n_acc=4 total=3033.19ms | draft=2930.19 save=1.55 verify=100.23 argmax=0.75 accept=0.00 restore=0.46 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 27] P=213 n_acc=4 total=3025.36ms | draft=2922.87 save=1.54 verify=99.75 argmax=0.74 accept=0.00 restore=0.45 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 28] P=218 n_acc=1 total=3174.56ms | draft=3071.92 save=1.54 verify=99.90 argmax=0.74 accept=0.00 restore=0.45 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 29] P=220 n_acc=1 total=3167.80ms | draft=3065.14 save=1.54 verify=99.87 argmax=0.77 accept=0.00 restore=0.48 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 30] P=222 n_acc=3 total=3172.19ms | draft=3069.17 save=1.54 verify=100.20 argmax=0.81 accept=0.00 restore=0.47 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 31] P=226 n_acc=2 total=3171.12ms | draft=3068.09 save=1.55 verify=100.20 argmax=0.82 accept=0.00 restore=0.45 trim=0.00 reseed=0.00 bk=0.00
+[dflash-timing cycle 32] P=229 n_acc=4 total=3159.92ms | draft=3056.73 save=1.56 verify=100.35 argmax=0.81 accept=0.00 restore=0.46 trim=0.00 reseed=0.00 bk=0.01
+[dflash-timing TOTAL n_cycles=32 emit=132] total=93241.12ms
+  draft   = 89926.11 ms ( 96.4%)
+  save    =    50.58 ms (  0.1%)
+  verify  =  3223.54 ms (  3.5%)
+  argmax  =    25.18 ms (  0.0%)
+  accept  =     0.03 ms (  0.0%)
+  restore =    15.53 ms (  0.0%)
+  trim    =     0.03 ms (  0.0%)
+  reseed  =     0.00 ms (  0.0%)
+  bookkep =     0.10 ms (  0.0%)

@@ -1,0 +1,1 @@
+A train leaves City A at 9:00 AM travelling at 80 km/h. Another train leaves City B at 10:00 AM travelling at 100 km/h on the same track toward A. If the cities are 540 km apart, at what time do the trains meet, and how far from A?

@@ -1,0 +1,1 @@
+Given an integer array nums and an integer target, return the indices of the two numbers such that they add up to target. Each input has exactly one solution, and the same element may not be used twice. Write a Python solution with O(n) time complexity.
