@@ -1,0 +1,37 @@
+{
+  "phase": "PLAN.md S2.3 — op-level intermediate localization (deep)",
+  "date": "2026-05-14",
+  "harness": "ik_llama.cpp/tests/dflash-speculative/test-deltanet-s23-op-capture.cpp",
+  "cb_eval_perturbation_resolved": "Initial cb_eval implementation returned true for `ask` on ALL tensors, breaking scheduler fusions and producing ~4.46 max_abs_diff vs production path. Fix: filter in BOTH ask and post-compute phases. Verified: filtered S2.3 captures byte-identical to D1 captures at l_out-0 (cb_eval is now production-faithful).",
+  "comparisons_run": [
+    {"prompt": "p3", "layer": 3, "config": "NP=2 offset=3 vs NP=4 offset=3 (slot 0 = p3 both)", "first_divergent_op": "flash_attn (per-device il_cb 1003/2003)", "max_abs_diff": [0.000352, 0.000524]},
+    {"prompt": "p1", "layer": 3, "config": "NP=2 offset=1 vs NP=4 offset=1", "first_divergent_op": "flash_attn", "max_abs_diff": [0.000433, 0.000332]},
+    {"prompt": "p0", "layer": 19, "config": "NP=2 offset=0 vs NP=4 offset=0", "first_divergent_op": "qkv_gated → flash_attn_reshaped chain", "fa_byte_identical": true, "first_diff_magnitude": "sub-fp32-epsilon (5.96e-8 to 4.77e-7)", "amplified_to": 0.006}
+  ],
+  "two_distinct_kernel_mechanisms": {
+    "FA_shape_sensitivity": {
+      "description": "wmma_f16_case<128, 128, 8, half> on sm_75 produces batch-shape-different slot-0 output even with byte-identical Q/K/V inputs at slot 0. Confirmed at p1, p3 layer 3 (and likely p2, p4, p5 — to be verified). max_abs_diff in the 3e-4 to 5e-4 range at FA output, cascades to ~0.001-0.002 at l_out.",
+      "kernel": "ggml/src/ggml-cuda/fattn-wmma-f16.cuh + fattn-wmma-f16.cu",
+      "template_path_on_sm_75": "fattn.cu:140 (non-new-mma, Q4_0 KV cache) → fattn-wmma-f16.cu:81-104 (Q->ne[1]<=8 default precision) → case<128, 128, 8, half>",
+      "input_invariance_confirmed": "Qcur, Kcur, Vcur (post-proj) IDENTICAL; Qcur_normed, Kcur_normed (post-RMSNorm) IDENTICAL; q (post-reshape) IDENTICAL; gate IDENTICAL"
+    },
+    "MMQ_shape_sensitivity_via_amplification": {
+      "description": "MMQ kernel with mmq_x=8 template for FFN GEMMs has its own batch-shape sensitivity. Becomes visible at p0 layer 19 where FA is byte-identical: tiny initial noise (sub-fp32-epsilon, 5.96e-8) gets amplified by MMQ at qkv_wo to 2.5e-5, then by ffn_up_gate to 0.0015, then by ffn_down to 0.006.",
+      "kernel": "ggml/src/ggml-cuda/mmq.cu + mmq.cuh",
+      "template_path": "mmq.cuh:4175 mul_mat_q_case → mmq_x=8 selected at ne11<=8",
+      "amplification_factor": "~10^5 across the FFN chain"
+    }
+  },
+  "what_this_tells_us": {
+    "primary_finding": "TWO separate kernel families need fixing at Stage 2: FA wmma_f16 AND MMQ. Fixing only FA addresses p1/p3 (and likely p2/p4/p5) but not p0 — where FA is stable and MMQ FFN amplification is the source. Fixing only MMQ wouldn't address the p3 FA-source case where MMQ alone amplifies from an already-large 0.0005 input.",
+    "the_dispatchers_are_NOT_the_source": "S2.2 confirmed dispatcher uniformity: same FA template, same MMQ template at NP=2/4/8. The shape-sensitivity is INTERNAL to the kernels with the same template, when the actual grid/work distribution varies with M.",
+    "data_dependent_signature": "Different prompts trigger different kernel mechanisms. p1/p3 expose FA's sensitivity; p0 exposes MMQ's amplification of upstream FA-stable but sub-eps noise.",
+    "stage_2_fix_scope": "BOTH FA and MMQ kernel replacements needed. Apply TML batch-invariance recipe to each. DFlash kernel-design §6.3 (dflash_verify_attn) is a direct fit for the FA replacement on sm_75."
+  },
+  "next_step_options": [
+    "Look at the wmma_f16 kernel internals to identify the specific batch-shape-dependent computation (cross-warp reduction order? tile geometry? KV streaming pattern?)",
+    "Capture at layers 7, 11, 15 for p0 to confirm earlier FA layers are byte-identical (i.e., why p0 defers to layer 19 specifically)",
+    "Capture at layer 23+ for p0 to see if drift origin shifts at later FA layers",
+    "Multi-prompt confirmation at p2, p4, p5 layer 3 to lock in 'first FA layer is FA-source for modal case'"
+  ]
+}
