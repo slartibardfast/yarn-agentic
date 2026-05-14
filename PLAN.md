@@ -332,11 +332,39 @@ Replace `ne11` with `ne11_for_slot_K = (slot K's actual KV occupancy, padded to 
 
 MMQ replacement is OPTIONAL for batch-invariance (closed via MMQ_FaithfulPropagation). If MMQ is replaced for perf per the SoTA mandate, it must preserve byte-identity propagation.
 
-### First reads for resuming session (S2.4 design)
+### First reads for resuming session
 
-1. `data/deltanet/s2-3-nkvpad-confirmation.json` — definitive mechanism finding
-2. `data/deltanet/s2-3-kernel-internals-reading.md` — kernel-internal structural analysis
-3. `specs/deltanet/batch-invariance.allium` — closed invariants + Stage 2 design hints
-4. `specs/dflash/kernel-design.md §6.x` — template for the SoTA spec format
-5. `ik_llama.cpp/ggml/src/ggml-cuda/fattn-wmma-f16.cuh` — the FA kernel we're replacing
-6. The "ssiu/flash-attention-turing" public sm_75 FA reference (cited in DFlash kernel-design) — only public FA implementation tuned for sm_75 head_dim=128 at ~63% peak on T4. Layout reference for the per-row CTA replacement.
+The kernel work has progressed past spec-locking. Current state on 2026-05-14:
+
+**Completed and committed:**
+
+1. `specs/deltanet/fattn-per-slot-kv-sm75.md` — locked spec (all 8 OQs resolved)
+2. `ik_llama.cpp/tests/dflash-speculative/fattn-per-slot-kv-sm75-reference.h` — scalar fp32 oracle (S2.5.a)
+3. `ik_llama.cpp/tests/dflash-speculative/test-fattn-per-slot-kv-sm75.cpp` — RED unit test (S2.5.b) covering ~256 configs × 3 scenarios (oracle-vs-kernel, rep-determinism, batch-invariance)
+4. `ik_llama.cpp/tests/dflash-speculative/fattn-per-slot-kv-sm75-stub.cpp` — temporary stub returning -1, replaced when the real launcher lands
+5. `data/deltanet/perf/baseline/llama-bench-shapes.json` (and `SUMMARY.md`) — pre-merge wmma_f16 wall-clock at NP=1 across prefill 16/32/128/512/1024/2048 and decode 1/4/8 tokens. Speed-of-light numbers: tg1 ≈ 29.7 t/s, tg4 ≈ 30.6 t/s, tg8 ≈ 31.3 t/s, pp512+ saturates at ~385 t/s
+6. `examples/llama-bench/llama-bench.cpp` fix: `--tensor-split 1,1` now parses correctly (was sending all weight to GPU 0; fixed at commit c267962)
+7. `data/deltanet/perf/baseline/enable-gpu-profiling.sh` — sudo script to enable non-root ncu profiling (NVreg_RestrictProfilingToAdminUsers=0). Applied 2026-05-14; survives reboot.
+
+**Next step — S2.5 kernel implementation:**
+
+Replace the stub `fattn_per_slot_kv_sm75_launch` with the real kernel in
+`ik_llama.cpp/ggml/src/ggml-cuda/fattn-per-slot-kv-sm75.cu` per the spec.
+Per-row CTA + multi-head packing, Turing `mma.sync.m16n8k8` PTX, fp32
+accumulators, per-slot K-loop bound. 4 template instantiations:
+KV_BLOCK_SIZE ∈ {32, 64} × USE_SOFTCAP ∈ {false, true}.
+
+First reads for the kernel implementation session:
+
+1. `specs/deltanet/fattn-per-slot-kv-sm75.md` — the spec to implement
+2. `ik_llama.cpp/ggml/src/ggml-cuda/fattn-wmma-f16.cuh` — the kernel being replaced (reference layout)
+3. `specs/dflash/kernel-design.md §6.3` (dflash_verify_attn) — same per-row-CTA pattern; structural ancestor
+4. `data/deltanet/perf/baseline/SUMMARY.md` — perf floor the replacement must match or beat
+5. `data/deltanet/perf/baseline/ncu-fa-decode.ncu-rep` (after ncu re-capture) — wmma_f16's measured registers/thread, SMEM, occupancy, SM/memory throughput pct-of-peak
+6. The "ssiu/flash-attention-turing" public sm_75 FA reference — only public FA implementation tuned for sm_75 head_dim=128 at ~63% peak on T4. Layout reference for the per-row CTA replacement.
+
+When the real launcher lands:
+- Swap `fattn-per-slot-kv-sm75-stub.cpp` out of the `test-fattn-per-slot-kv-sm75` add_executable in `tests/CMakeLists.txt`
+- Add `fattn-per-slot-kv-sm75.cu` to the ggml-cuda library build
+- Wire dispatcher at `fattn.cu:140` to route (HEAD_DIM_Q=256, HEAD_DIM_V=128) tuples through the new kernel
+- Tests transition RED → GREEN; perf measurement (S2.5.d) gates the merge
