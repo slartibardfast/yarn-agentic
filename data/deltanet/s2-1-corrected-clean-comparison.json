@@ -1,0 +1,17 @@
+{
+  "phase": "PLAN.md S2.1 — CORRECTED clean comparison (same slot, same offset, only NP varies)",
+  "date": "2026-05-14",
+  "correction_note": "Earlier S2.1 finding (data/deltanet/s2-1-per-prompt-first-div.json) compared slot 0 of NP=2 offset=X to slot K of NP=4 offset=0 (where K is chosen so prompt matches). This conflates batch-shape effect with slot-position-encoded-prefill-order effects. With both captures at the SAME offset (same prompt in slot 0 of both), the picture changes:",
+  "per_prompt_clean": {
+    "p0": {"first_div": 19, "type": "FA", "max_diff": 0.0057, "note": "5th FA layer, drift deferred from earlier layers"},
+    "p3": {"first_div": 3,  "type": "FA", "max_diff": 0.0015, "note": "CORRECTED — was reported as DeltaNet layer 0 max_diff 0.99 in the earlier (uncontrolled) comparison. Clean test shows DeltaNet path at layer 0 is BYTE-IDENTICAL between NP=2 and NP=4; drift first kicks in at the FIRST FA layer (3)."},
+    "p4": {"first_div": 3,  "type": "FA", "max_diff": 0.0026, "note": "First FA layer (no change from earlier finding)"}
+  },
+  "headline_correction": "DeltaNet is NOT a drift source at the NP=2 → NP=4 transition. The earlier 'p3 = DeltaNet catastrophe' finding was an artifact of comparing slot 0 (NP=2) to slot 3 (NP=4) — different memory positions encode different prefill orders. With proper control (same slot 0, same offset, same prompt), ALL prompts that drift show drift starting at an FA layer. The FA path is the dominant amplifier; DeltaNet recurrence is clean.",
+  "supporting_evidence": {
+    "s23_layer_0_per_op_at_p3_same_offset": "data/deltanet/s23/ shows ALL named DeltaNet ops at layer 0 byte-identical between NP=2 offset=3 and NP=4 offset=3 (linear_attn_out, qkv_mixed, state_in, state_fused, etc.). ffn_with_inp and l_out at slot 0 also byte-identical. Confirms no layer-0 drift for p3 when slot position is held constant.",
+    "d1_same_offset_clean": "NP=2 offset=3 slot 0 (p3) vs NP=4 offset=3 slot 0 (p3): first divergent layer = 3 (FA). Layers 0, 1, 2 byte-identical."
+  },
+  "s23_methodology_note": "S2.3's cb_eval installation may perturb the compute path (force fewer fusions). A 4.46 max_diff observed between D1 (libllama's cb_eval matcher) and S2.3 (custom cb_eval) captures of the same data confirms this. S2.3 captures are internally consistent (apples-to-apples within S2.3); but absolute values may differ from the no-cb_eval production path. For batch-shape diagnosis this doesn't matter — we compare NP=2 to NP=4 both via the same path.",
+  "next_step": "S2.3 at LAYER 3 (the actual first-divergent FA layer) for p3 at same offset — captures the op-level source within the FA layer. Then localize to specific kernel call."
+}
