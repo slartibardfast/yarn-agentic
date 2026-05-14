@@ -6,6 +6,13 @@ Status: DRAFT — Stage 2 design (S2.4)
 Companion to `specs/deltanet/batch-invariance.allium` (locks the invariants this kernel must restore)
 Template follows `specs/dflash/kernel-design.md §6.3`
 
+**Correction 2026-05-14**: original OQ-4 lock had HEAD_DIM_V=128. GGUF
+metadata on the production target shows `qwen35.attention.value_length=256`
+and the nsys trace confirms `flash_attn_ext_f16<256, 256, ...>` at runtime
+— V head dim equals K head dim at 256. Spec corrected throughout (§3, §8,
+§9). KV_BLOCK_SIZE primary choice flipped from 32→16 to fit Dv=256 V tile
+in 8 KiB SMEM and retain 2 blocks/SM occupancy at 17 KiB total per CTA.
+
 ---
 
 ## 1. Scope
@@ -54,9 +61,9 @@ Smem-load helper: **`ldmatrix.sync.aligned.x4.m8n8.shared.b16`** with swizzled S
 
 ```cpp
 template<
-    int HEAD_DIM_Q,         // 256 for Qwen 3.6 27B (and 64/96/128 for compat)
-    int HEAD_DIM_V,         // 128 for Qwen 3.6 27B (V dim differs from Q dim)
-    int KV_BLOCK_SIZE,      // K-loop iteration tile; {32, 64} (see §8)
+    int HEAD_DIM_Q,         // 256 for Qwen 3.6 27B
+    int HEAD_DIM_V,         // 256 for Qwen 3.6 27B (corrected 2026-05-14 — matches HEAD_DIM_Q on this target)
+    int KV_BLOCK_SIZE,      // K-loop iteration tile; primary {16}, alt {32} (see §8 / §9)
     bool USE_SOFTCAP        // whether attn_soft_cap is non-zero
 >
 __launch_bounds__(128, 2)  // ≤ 64 regs/thread, 2 blocks/SM, target 50% occupancy
@@ -256,13 +263,22 @@ The oracle is hand-written CPU code, ≤ 300 LOC, in `tests/dflash-speculative/f
 
 ### Decode regime (n_tokens=1 per slot, NP ∈ {1..8})
 
-| Shape | n_kv | Work | Memory traffic | HBM-bound target | Wall-clock target |
-|---|---:|---:|---:|---:|---:|
-| NP=1 | 4096 | ~12 MFLOPS | 4 MiB K + 2 MiB V = 6 MiB | 6 MiB / 624 GB/s = 9.6 µs | < 15 µs (62% of HBM) |
-| NP=4 | 4096 | ~48 MFLOPS | 6 MiB K+V (shared via L2) | 9.6 µs | < 15 µs |
-| NP=8 | 4096 | ~96 MFLOPS | 6 MiB | 9.6 µs | < 20 µs |
+Per slot at n_kv=4096, HEAD_DIM_Q=HEAD_DIM_V=256, n_kv_heads=4 (gqa=6):
+- K bytes/slot: 4 × 4096 × 256 × 2 = 8 MiB
+- V bytes/slot: 4 × 4096 × 256 × 2 = 8 MiB
+- Q bytes/slot: 24 × 1 × 256 × 4 (fp32) = 24 KiB (negligible)
+- **Total per slot: ~16 MiB K+V traffic at full context**
 
-Decode is HBM-bandwidth-bound (compute << bandwidth). Target: ≥ 60% of per-GPU HBM bandwidth = 374 GB/s effective. Tensor-core utilization at decode is incidental (small compute load); target ≥ 5% of 130.5 TFLOPs = 6.5 TFLOPs, which is trivial.
+| Shape | n_kv | Memory traffic | HBM-bound target | Wall-clock target |
+|---|---:|---:|---:|---:|
+| NP=1 | 4096 | 16 MiB K+V | 16 MiB / 624 GB/s = 25.6 µs | < 35 µs (73% of HBM) |
+| NP=4 | 4096 | 16 MiB/slot (L2 reuse limited; mostly unique) | ~30 µs | < 40 µs / slot |
+| NP=8 | 4096 | 16 MiB/slot | ~35 µs | < 50 µs / slot |
+| NP=1 | 56 (measured baseline) | ~250 KiB K+V | ~0.4 µs HBM | wmma_f16 baseline 20.4 µs (launch-overhead-bound) |
+
+Decode is HBM-bandwidth-bound at long context; launch-overhead-bound at short context. Target: ≥ 60% of per-GPU HBM bandwidth = 374 GB/s effective at n_kv=4096. At short n_kv (~50), the floor is launch overhead + small SMEM staging, target ≤ 20 µs (matches measured wmma_f16 baseline; SoTA mandate: BEAT not just match).
+
+Tensor-core utilization at decode is incidental (small compute load); target ≥ 5% of 130.5 TFLOPs = 6.5 TFLOPs, which is trivial.
 
 ### Prefill regime (n_tokens=1024, NP=1)
 
@@ -282,28 +298,42 @@ Per the SoTA mandate, the new kernel must MATCH OR BEAT wmma_f16 at every measur
 
 ### Per-thread registers (target ≤ 64 for 2 blocks/SM occupancy)
 
-| Category | Count | Notes |
-|---|---:|---|
-| Q row registers | 16 (8 halfs × 2 = 4 fp32 equiv per thread, 16 rows / 4 = 4 rows per thread group) | Q tile 16 × HEAD_DIM_Q halfs distributed across 128 threads. At HEAD_DIM_Q=256: 16×256/128 = 32 halfs/thread = 16 fp32-equiv. **OVER BUDGET** — need to load Q from SMEM lazily per mma block. Spec to verify. |
-| KQ accumulator | 16 × 8 / 4 warps = 32 fp32 per warp = 1 per thread per fragment, × n_fragments | TBD with --ptxas-options=-v |
-| VKQ accumulator | HEAD_DIM_V × 16 / 128 = 16 fp32 per thread (HEAD_DIM_V=128) | Fits |
-| Online softmax state | 16 fp32 (rowsum) + 16 fp32 (max) = 32 fp32 per CTA = 1 fp32 per 4 threads | Fits |
-| Loop counters, indices, etc. | ~10 | — |
+At HEAD_DIM_Q = HEAD_DIM_V = 256, 16 Q rows per CTA, 128 threads:
 
-**OPEN — Q tile budget**: at HEAD_DIM_Q=256 with 16 Q rows, total Q tile is 16×256×2 = 8 KiB. If kept entirely in registers (4096 halfs / 128 threads = 32 halfs/thread = 16 fp32 regs/thread), Q alone is 16 regs/thread. Add VKQ + KQ + online softmax + control → likely 50-70 regs/thread total. Spec assumption: Q is partially in SMEM, fetched per mma block; ~16-24 regs for Q at any time. **Will be validated with --ptxas-options=-v during S2.5 implementation.**
+| Category | Count (fp32-equiv regs/thread) | Notes |
+|---|---:|---|
+| VKQ accumulator | 16 rows × 256 dim / 128 threads = 32 fp32/thread | Largest single category. Must live in registers across the entire K-loop. |
+| KQ accumulator (mma frag) | 16 × KV_BLOCK_SIZE / 4 warps / 32 threads per mma frag | At KV_BLOCK_SIZE=16: 2 mma N-tiles × 2 frag regs each = ~4 fp32/thread per warp. |
+| Online softmax state (per Q row) | 16 fp32 max + 16 fp32 rowsum × 1 per thread group | ~2-4 regs/thread depending on thread→row mapping. |
+| Q tile (lazy SMEM staging — NOT all-registers) | ~8-16 fp32-equiv/thread peak | Q stored in SMEM as 8 KiB tile; loaded as fragments per mma. Peak register use during fragment load only. |
+| Loop counters, indices, ptrs | ~10 regs/thread | — |
+
+**Estimated total: ~50-60 regs/thread.** Tight against 64-reg target for 2 blocks/SM. The VKQ accumulator alone at 32 fp32 is the dominant load — can't be reduced without splitting VKQ across multiple K-loop passes (which would re-do the online softmax accumulation per pass — not acceptable for byte-identity).
+
+If `--ptxas-options=-v` shows > 64 regs, fall back to 1 block/SM. Spec accepts 1 block/SM as the worst case; the SoTA target is 2 blocks/SM where achievable.
 
 ### Per-CTA SMEM (target ≤ 32 KiB for 2 blocks/SM occupancy with 64 KiB cap)
 
-| Buffer | Size | Notes |
-|---|---:|---|
-| Q tile (alternative to all-registers) | 8 KiB | 16 rows × HEAD_DIM_Q=256 × 2 bytes |
-| K block (KV_BLOCK_SIZE × HEAD_DIM_Q halfs, swizzled) | 32 KiB at KV_BLOCK_SIZE=64; 16 KiB at KV_BLOCK_SIZE=32 |
-| V block (KV_BLOCK_SIZE × HEAD_DIM_V halfs, swizzled) | 16 KiB at KV_BLOCK_SIZE=64; 8 KiB at KV_BLOCK_SIZE=32 |
-| KQ scores (16 × KV_BLOCK_SIZE fp32) | 4 KiB at KV_BLOCK_SIZE=64 |
+At HEAD_DIM_Q = HEAD_DIM_V = 256:
 
-**Total at `KV_BLOCK_SIZE=32`, single-buffer K+V**: 8 + 16 + 8 + 2 = 34 KiB. Exceeds 32 KiB. Reduce Q SMEM (use registers more aggressively) → target 24 KiB. **Or use `KV_BLOCK_SIZE=64` single-buffer**: 8 + 32 + 16 + 4 = 60 KiB — fits in 64 KiB cap but `blocks/SM = 1` only. Half the occupancy.
+| Buffer | Size at KV_BLOCK_SIZE=16 | Size at KV_BLOCK_SIZE=32 |
+|---|---:|---:|
+| Q tile (SMEM staging) | 8 KiB (16 rows × 256 × 2) | 8 KiB |
+| K block (KV_BLOCK_SIZE × 256 × 2) | 8 KiB | 16 KiB |
+| V block (KV_BLOCK_SIZE × 256 × 2) | 8 KiB | 16 KiB |
+| KQ scores (16 × KV_BLOCK_SIZE × 4) | 1 KiB | 2 KiB |
+| **Total single-buffer K+V** | **25 KiB** | **42 KiB** |
+| **Total double-buffer K+V** | 41 KiB | 74 KiB (over cap) |
 
-**Decision point (proposed): `KV_BLOCK_SIZE=32` with double-buffered K+V** (=32 KiB K + 16 KiB V + Q-register-only = 48 KiB). Verifies with --ptxas-options=-v. At fallback: `KV_BLOCK_SIZE=32` single-buffer + Q in registers (24 KiB total), giving 2 blocks/SM but no K/V load/compute overlap.
+**Decision (locked 2026-05-14 — user: "obvious win")**: **`KV_BLOCK_SIZE = 16`, single-buffer K+V**.
+
+- 25 KiB total → fits 2 blocks/SM (64 KiB / 32 KiB cap per block × 2 = 64 KiB used)
+- No double-buffering needed at this size — occupancy hides K/V load latency
+- 2× the iteration count of KV_BLOCK_SIZE=32 (n_kv/16 iterations vs n_kv/32), but the 2× occupancy on memory-bound shapes more than compensates
+
+Alternative `KV_BLOCK_SIZE=32` single-buffer: 42 KiB → 1 block/SM. Compiled as a secondary template instantiation; selected when occupancy modeling shows the larger tile dominates at long-context prefill (TBD).
+
+**KV_BLOCK_SIZE=64 ELIMINATED**: 74 KiB exceeds 64 KiB SMEM cap at Dv=256.
 
 ---
 
@@ -323,7 +353,9 @@ Self-test: hand-verified on (zero Q, zero K, zero V) → output zero; (unit Q, u
 
 ### S2.5.b — RED unit test (`tests/dflash-speculative/test-fattn-per-slot-kv-sm75.cpp`)
 
-Random fp16 inputs × NP ∈ {1, 2, 4, 8} × slot_seq_lens ∈ {32, 128, 1024, 4096} × n_heads ∈ {1, 6, 12} × 4 seeds = 256 configs.
+Random fp16 inputs × NP ∈ {1, 2, 4, 8} × slot_seq_lens ∈ {32, 128, 1024, 4096} × n_heads ∈ {n_heads_q=24, n_kv_heads=4} (production shape; gqa=6) × 4 seeds = ~256 configs. KV_BLOCK_SIZE ∈ {16, 32}, USE_SOFTCAP ∈ {false, true}.
+
+HEAD_DIM_Q = HEAD_DIM_V = 256 (corrected 2026-05-14).
 
 Bind: byte-identity (or ≤ 1 fp16 ULP) of kernel output vs scalar oracle output at all configs.
 
