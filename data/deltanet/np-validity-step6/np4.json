@@ -1,0 +1,12 @@
+{
+  "np": 4,
+  "n_gen": 64,
+  "spec": "none",
+  "slots": [
+    {"slot": 0, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p0.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 5.989783, "ppl_ok": true, "n_prompt_tokens": 29, "generated_tokens": [313,198,220,328,24151,763,498,198,220,313,198,406,328,11510,763,7111,198,406,328,4532,763,328,32,1103,314,24959,310,381,10300,1,198,262,2390,198,262,328,7095,7402,763,498,16,11,220,17,11,220,18,11,220,19,11,220,20,11,220,20,11,220,21,11,220,22,11,220]},
+    {"slot": 1, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p1.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 10.387763, "ppl_ok": true, "n_prompt_tokens": 39, "generated_tokens": [271,248068,198,8160,579,264,7047,1817,25,271,16,13,220,2972,15771,2598,2570,5952,64700,198,256,471,2972,6065,64700,4091,264,12654,7873,314,264,893,911,318,11158,11,279,1156,2640,328,438,25072,1,694,353,1683,781,2977,328,438,5607,366,42418,13428,11,279,9640,2640,328,438,5607,366,487,694]},
+    {"slot": 2, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p2.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 8.496196, "ppl_ok": true, "n_prompt_tokens": 74, "generated_tokens": [13,220,16,16,25,15,15,6556,198,33,13,220,16,15,25,15,15,6556,198,34,13,220,16,17,25,15,15,5670,198,35,13,220,18,25,15,15,5670,198,15666,25,198,33,271,760,2614,513,4602,883,16107,13,198,22365,314,279,2614,513,804,883,279,709,498,32241,60,69]},
+    {"slot": 3, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p3.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 5.989080, "ppl_ok": true, "n_prompt_tokens": 33, "generated_tokens": [271,248068,198,8160,579,264,7047,1817,25,271,16,13,220,2972,2014,53983,2570,5396,64700,198,256,471,2972,2425,64700,561,1156,3766,264,9640,883,5484,6618,24092,286,11,11352,42820,25,198,406,471,328,760,1156,9640,1066,2640,25,359,760,1156,6587,264,11346,15673,314,1204,264,3050,11767,4138,11,3055]}
+  ],
+  "n_fail": 0
+}

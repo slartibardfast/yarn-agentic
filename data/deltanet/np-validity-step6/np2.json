@@ -1,0 +1,10 @@
+{
+  "np": 2,
+  "n_gen": 64,
+  "spec": "none",
+  "slots": [
+    {"slot": 0, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p0.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 4.123635, "ppl_ok": true, "n_prompt_tokens": 29, "generated_tokens": [653,357,1103,314,4947,198,36142,283,498,18,11,220,20,11,220,18,11,220,15,11,471,16,11,471,19,11,220,20,11,220,19,11,220,20,11,220,21,11,220,16,11,220,17,11,220,18,11,220,19,11,220,20,11,220,21,11,220,22,11,220,23,11,220,16]},
+    {"slot": 1, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p1.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 3.430221, "ppl_ok": true, "n_prompt_tokens": 39, "generated_tokens": [2972,5218,33214,92217,561,60277,17120,11,11192,303,279,328,66983,369,1942,1394,14235,1,318,53,299,86,5385,1778,444,2487,220,17,15,16,22,8,5392,11,13395,1452,443,12207,539,1608,638,12,51319,23038,310,11969,1248,29512,18948,303,22958,13,198,701,12,51319,16456,11,430,11192,303,279,328,66983]}
+  ],
+  "n_fail": 0
+}
