@@ -2,9 +2,9 @@
 title = "yarn-agentic"
 authors = []
 language = "en"
-src = "."
+src = "docs"
 
 [output.html]
 default-theme = "light"
 preferred-dark-theme = "navy"
-additional-css = ["theme/custom.css"]
+additional-css = ["docs/theme/custom.css"]
