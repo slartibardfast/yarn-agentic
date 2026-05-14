@@ -1,0 +1,18 @@
+{
+  "phase": "PLAN.md D2 — multi-prompt extension overturns p0-only conclusion",
+  "date": "2026-05-14",
+  "comparison": "slot 0 / slot K aligned by prompt; NP=2 (one prompt per slot) vs NP=4 offset=0 (4 prompts)",
+  "per_prompt_NP2_vs_NP4_first_divergent_layer": {
+    "p0": {"layer": 19, "type": "full_attention", "max_abs_diff": 0.0057, "note": "5th FA layer — covered earlier D2 finding"},
+    "p1": {"layer": 3,  "type": "full_attention", "max_abs_diff": 0.003,  "note": "1st FA layer — breaks immediately at first attention"},
+    "p3": {"layer": 0,  "type": "linear_attn_deltanet", "max_abs_diff": 0.99, "note": "DELTANET layer 0 breaks; max_abs_diff is significant (not sub-F16). DeltaNet IS a drift amplifier for some prompts."}
+  },
+  "headline_correction": "The 'DeltaNet is not the source' conclusion was p0-specific and wrong as a general claim. At NP=2 vs NP=4, the drift site varies by prompt:",
+  "headline_findings": [
+    "p3 confirms DeltaNet recurrence path is a drift amplifier at NP=2 → NP=4 (max_abs_diff 0.99 at layer 0).",
+    "p1 confirms first FA layer (layer 3) is a drift amplifier for some prompts.",
+    "p0 shows drift can defer to mid-stack (layer 19, 5th FA layer) without earlier layers triggering — those earlier layers DO have F32 drift but it stays sub-F16 for this prompt.",
+    "Drift sites span the WHOLE hybrid pipeline (DeltaNet + FA + their input GEMMs), not one specific kernel. The user's 'full vanilla hybrid pipeline' framing is the accurate scope."
+  ],
+  "implication": "PLAN.md restructure: STAGE-by-NP approach. Stage 1: NP=2 self-deterministic baseline. Stage 2: NP=2 ↔ NP=4 byte-identical per-prompt. Stage 3: NP=4 ↔ NP=8 byte-identical per-prompt. Each stage targets the ops that surface at its specific transition — DeltaNet recurrence + projection GEMMs + FA all in scope for Stage 2 because evidence shows all three contribute at different prompts."
+}
