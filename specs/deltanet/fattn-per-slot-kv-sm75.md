@@ -19,6 +19,13 @@ This spec defines the SoTA replacement for `ggml_cuda_flash_attn_ext_wmma_f16` o
 
 Production target: Qwen 3.6 27B (general.architecture=qwen35, hybrid linear_attn + full_attention). Hardware: dual Quadro RTX 6000 (sm_75 / TU102, 24 GiB each, NVLINK). The kernel runs on every `full_attention` layer at decode and prefill.
 
+**Production KV cache configuration** (per `profiles/qwen36.sh`):
+- `--cache-type-k q4_0 --cache-type-v q4_0` — both K and V cached as Q4_0 (4-bit quantized)
+- `--k-cache-hadamard --v-cache-hadamard` — Hadamard rotation applied to K and V values before storage (improves quantization fidelity at low bit-depths)
+- `-fa on` — flash-attention enabled
+
+The kernel must therefore accept Q4_0 K and V tensors (which the existing `wmma_f16` path handles via inline dequant to fp16 — see `fattn-mma-f16.cu:102-105`). The Hadamard rotation is applied at the build-graph level (via `cparams.k_cache_hadamard` / `cparams.v_cache_hadamard`); the K/V tensors arriving at the FA kernel are already in their post-Hadamard Q4_0 form, so the kernel itself does not need to handle the rotation step. Any test driver that wants to validate against production must apply the same rotation to its synthetic Q4_0 K/V inputs.
+
 **Out of scope:** Vulkan backend, sm_80+ (other ggml-cuda kernels handle those). The DeltaNet recurrence kernel (`delta-net.cu`) is not affected — it was already proven byte-identical across NP.
 
 ---

@@ -342,9 +342,27 @@ The kernel work has progressed past spec-locking. Current state on 2026-05-14:
 2. `ik_llama.cpp/tests/dflash-speculative/fattn-per-slot-kv-sm75-reference.h` — scalar fp32 oracle (S2.5.a)
 3. `ik_llama.cpp/tests/dflash-speculative/test-fattn-per-slot-kv-sm75.cpp` — RED unit test (S2.5.b) covering ~256 configs × 3 scenarios (oracle-vs-kernel, rep-determinism, batch-invariance)
 4. `ik_llama.cpp/tests/dflash-speculative/fattn-per-slot-kv-sm75-stub.cpp` — temporary stub returning -1, replaced when the real launcher lands
-5. `data/deltanet/perf/baseline/llama-bench-shapes.json` (and `SUMMARY.md`) — pre-merge wmma_f16 wall-clock at NP=1 across prefill 16/32/128/512/1024/2048 and decode 1/4/8 tokens. Speed-of-light numbers: tg1 ≈ 29.7 t/s, tg4 ≈ 30.6 t/s, tg8 ≈ 31.3 t/s, pp512+ saturates at ~385 t/s
+5. `data/deltanet/perf/baseline/llama-bench-shapes.json` (and `SUMMARY.md`) — pre-merge wmma_f16 wall-clock at NP=1 across prefill 16/32/128/512/1024/2048 and decode 1/4/8 tokens. Speed-of-light numbers: tg1 ≈ 29.7 t/s, tg4 ≈ 30.6 t/s, tg8 ≈ 31.3 t/s, pp512+ saturates at ~385 t/s. **Caveat**: this baseline uses F16 KV cache; production uses Q4_0 + Hadamard rotation (see SUMMARY.md warning). Re-capture at production KV config is a pre-merge gate.
 6. `examples/llama-bench/llama-bench.cpp` fix: `--tensor-split 1,1` now parses correctly (was sending all weight to GPU 0; fixed at commit c267962)
 7. `data/deltanet/perf/baseline/enable-gpu-profiling.sh` — sudo script to enable non-root ncu profiling (NVreg_RestrictProfilingToAdminUsers=0). Applied 2026-05-14; survives reboot.
+
+**Pre-merge follow-up gates surfaced 2026-05-14 (must close before merge):**
+
+- **`G1` — llama-bench Hadamard support**: llama-bench has no `-khad / -vhad`
+  flag and doesn't read `LLAMA_ARG_K_CACHE_HADAMARD` / `LLAMA_ARG_V_CACHE_HADAMARD`.
+  Production runs Q4_0 KV with Hadamard rotation; current baseline does not.
+  Patch llama-bench (mirror `common.cpp:1666-1672` flag-parse + `common.cpp:513-514`
+  env-var read; set `cparams.k_cache_hadamard` / `v_cache_hadamard` in
+  `to_llama_cparams()` at `llama-bench.cpp:1167-1180`). ~30 LOC patch.
+  Re-capture baseline with production config after the patch lands.
+- **`G2` — Q4_0 + Hadamard baseline re-capture**: once G1 closed, re-run
+  `RUN.sh` with `-ctk q4_0 -ctv q4_0 -khad -vhad`. The Q4_0 KV footprint
+  (~4 GiB vs 16 GiB) also makes ncu kernel-replay viable (was OOMing on
+  GPU snapshot buffer with F16 KV + 32 GiB model).
+- **`G3` — ncu detailed metrics**: after G2 baseline captured, ncu the
+  wmma_f16 kernel for registers/thread, SMEM bytes per block, SM throughput
+  %, memory bandwidth %. Then re-run on the new kernel after implementation
+  for direct comparison.
 
 **Next step — S2.5 kernel implementation:**
 
@@ -353,6 +371,11 @@ Replace the stub `fattn_per_slot_kv_sm75_launch` with the real kernel in
 Per-row CTA + multi-head packing, Turing `mma.sync.m16n8k8` PTX, fp32
 accumulators, per-slot K-loop bound. 4 template instantiations:
 KV_BLOCK_SIZE ∈ {32, 64} × USE_SOFTCAP ∈ {false, true}.
+
+The kernel must accept **Q4_0** K and V tensors (with inline dequant to fp16
+before mma — mirror `fattn-mma-f16.cu:102-105`'s `ggml_get_to_fp16_cuda` call).
+Hadamard rotation is applied at the build-graph level via cparams; the kernel
+receives post-rotation Q4_0 inputs and does not handle the rotation itself.
 
 First reads for the kernel implementation session:
 

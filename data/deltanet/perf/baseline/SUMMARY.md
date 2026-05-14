@@ -33,11 +33,36 @@ production tuple (HEAD_DIM_Q=256, HEAD_DIM_V=128). The spec's targets:
 | Prefill saturation | ~385 t/s | ≥ baseline (compute-bound; tensor-core peak floor 50%) |
 | Prefill pp16 (small batch) | 151 t/s | ≥ baseline (launch-overhead-dominated regime) |
 
+## ⚠️ Baseline uses F16 KV cache — production uses Q4_0 + Hadamard
+
+This baseline was captured with llama-bench's **default F16 KV cache**, NOT the
+production configuration. Production (`profiles/qwen36.sh`) uses:
+- `--cache-type-k q4_0 --cache-type-v q4_0` — Q4_0 quantized K and V
+- `--k-cache-hadamard --v-cache-hadamard` — Hadamard rotation on K and V
+
+llama-bench supports `-ctk q4_0 -ctv q4_0` (Q4_0 KV) but does NOT have a flag
+for Hadamard rotation. The `k_cache_hadamard` / `v_cache_hadamard` cparams are
+populated by `common.cpp:1666-1672` (`-khad / -vhad`) and the env vars
+`LLAMA_ARG_K_CACHE_HADAMARD` / `LLAMA_ARG_V_CACHE_HADAMARD` — none of which
+llama-bench reads. This is a llama-bench gap; **the spec's S2.5.d production-shape
+binding requires a llama-bench patch to add `-khad / -vhad` flags + env-var support
+before perf binding can be claimed at the production config.** (Tracked as a
+follow-up post-kernel-implementation.)
+
+For now, the F16-KV baseline below is the floor for the F16-KV configuration.
+The Q4_0 + Hadamard baseline must be re-captured (via patched llama-bench, OR
+via nsys-profile of `test-np-validity-vanilla` which DOES use Q4_0 + Hadamard
+via cparams) before merge.
+
+Sizes for reference: F16 KV = 16 GiB, Q4_0 KV = ~4 GiB. The smaller Q4_0
+footprint also makes ncu kernel-replay viable (it OOM'd on F16 + 32 GiB model
++ replay-buffer competition).
+
 ## Notes for the apples-to-apples comparison
 
-1. **KV cache type**: this bench uses default F16 KV cache (`type_k`, `type_v` = f16).
-   Production runs with `Q4_0` KV cache. Both wmma_f16 and `fattn_per_slot_kv_sm75`
-   must be benched at BOTH F16 and Q4_0 cache configurations before merging.
+1. **KV cache type and rotation**: see the warning above. The replacement kernel
+   must match wmma_f16's wall-clock at BOTH F16 KV (baseline here) AND Q4_0 +
+   Hadamard (production). Q4_0 + Hadamard is the canonical comparison.
 2. **MTP**: this bench doesn't enable MTP speculative decoding. Production decodes
    at np=1 with MTP draft=3 achieve ~33 t/s. The plain tg1 of 29.7 here is the
    pre-MTP baseline; replacement kernel must hit the same.
