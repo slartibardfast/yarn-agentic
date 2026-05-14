@@ -374,7 +374,48 @@ post-implementation regression-test surface (not a measurement prereq).
 P1 + P2 together establish the perf floor the replacement must match or beat.
 S2.5 kernel implementation gates on these landing.
 
-**Next step — S2.5 kernel implementation:**
+**S2.5 kernel implementation — Phase 2 progress (updated 2026-05-14):**
+
+Spec correction landed (Dv 128→256 per GGUF metadata; KV_BLOCK_SIZE primary
+flipped 32→16). Per Q&A (b/cosine/d/6c/3c/7b): raw PTX path, COSINE bind,
+skeleton-first incremental, full closure 6c, Approach C multi-head packing,
+3-stage incremental within Stage 2.2.
+
+Phase 2 sub-stages completed (each 464/464 GREEN across all 3 test scenarios):
+
+| Stage | Commit | Change |
+|---|---|---|
+| Phase 1 | `3b32170e` | naïve scalar device kernel + launcher (skeleton) |
+| Stage 2.1 | `dc024801` | mma.sync.m16n8k8 inner dot product (1-warp) |
+| Stage 2.2a | TBD | 4-warp CTA + partial-D SMEM reduction |
+| Stage 2.2b | TBD | Approach C multi-head decode packing (H=gqa=6 rows) |
+| Stage 2.2c | TBD | Q tile in SMEM (once per CTA) |
+| Stage 2.2d.1 | TBD | K block in SMEM (per K-iter cooperative load) |
+| Stage 2.2d.2 | TBD | V block in SMEM (per K-iter cooperative load) |
+| Stage 2.2d.3 | TBD | ldmatrix.sync.aligned.m8n8.x2.b16 for B-fragment loads |
+
+All variants accessible via `FATTN_KERNEL_VARIANT` env (phase1, stage21,
+stage22a, default → latest with Approach C decode pack + ldmatrix).
+
+Phase 2 remaining (Phase 2 closure 6c):
+
+- **Stage 2.2d.4 (deferred)**: SMEM swizzle for bank-conflict-free ldmatrix —
+  pure perf, no correctness blocker.
+- **Stage 2.3**: parallel_blocks split-K + custom combine kernel — required
+  for SoTA perf at decode NP=1 (current pb=1 gives only 4 grid CTAs at
+  NP=1 vs wmma_f16's 96, massively underutilizing GPU). The existing
+  `flash_attn_combine_results` doesn't appear to handle n_seqs > 1 (blockIdx.z
+  unused in its body — would write multiple slots to slot-0's output).
+  Custom combine needed.
+- **Production dispatcher wiring** at `fattn.cu:140` — needs a NEW launcher
+  accepting device-side ggml_tensor pointers (current launcher is
+  HostHalf-based). Also needs `slot_seq_lens` plumbed as a new ggml input
+  tensor per spec OQ-4 — build-graph change in `src/graphs/build_qwen35.cpp`.
+- **`test-np-validity-vanilla` binding** at NP={2, 4, 8} — proves end-to-end
+  determinism fix on production target.
+- **nsys/ncu** vs `data/deltanet/perf/baseline-prod/` — SoTA perf binding.
+
+**Original S2.5 spec deliverables status:**
 
 Replace the stub `fattn_per_slot_kv_sm75_launch` with the real kernel in
 `ik_llama.cpp/ggml/src/ggml-cuda/fattn-per-slot-kv-sm75.cu` per the spec.
