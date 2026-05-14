@@ -5565,7 +5565,7 @@ T9 closure also closes the original 10-task PHASE_DFLASH plan.
 
 Active workstream pivots from DFlash to **fixing vanilla np>1 non-determinism on Qwen 3.6 27B hybrid arch (linear_attn + full_attention)**. Anchor: T9.1 binary drift boundary at NP=2/4 (NP=1≡NP=2 byte-identical; NP=4≡NP=8 deterministic drift). All speculative-overlay work (DFlash multi-slot, MTP multi-slot, DFlash kernel optimization) is structurally downstream — overlays on a drifty target are broken before they ship.
 
-11 tasks (D1..D11). Localize via per-layer residual capture at np ∈ {1,2,4,8} reusing the DFlash T2 `cb_eval`-based extract API; replace identified ops per Thinking Machines Lab batch-invariance recipe (per-row CTA, fixed compile-time tile, no Split-K, no cross-block atomicAdd<float>, warp-shuffle + SMEM-tree reductions).
+11 tasks (D1..D11). Localize via per-layer residual capture at np ∈ {1,2,4,8} reusing the DFlash T2 `cb_eval`-based extract API; replace identified ops per Thinking Machines Lab batch-invariance recipe (per-row CTA, fixed compile-time tile, no Split-K, no cross-block `atomicAdd<float>`, warp-shuffle + SMEM-tree reductions).
 
 **Determinism and perf are co-equal binding gates.** The plan rejects "deterministic but slower" as a ship state. Heuristic dispatch (cuBLAS GEMM picker, FA split-size picker) is the source of BOTH batch-shape sensitivity AND perf loss at decode shapes; replacing it with fixed-tile bespoke kernels that hit tensor cores is expected to beat the heuristic on perf, not lose to it. D5 design carries explicit perf contracts (% of HBM bandwidth / tensor-core peak / NVLINK aggregate); D8 verifies positive perf outcomes, not regression thresholds.
 
