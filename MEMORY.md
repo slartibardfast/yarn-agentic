@@ -5511,3 +5511,52 @@ the verdict as PASS/NEUTRAL.
 - nsys kernel breakdown: `data/phase_dflash_t8/dflash-nsys-1cycle.{nsys-rep,sqlite}`
 - 8 ship-gate prompts: `data/phase_dflash_t8/prompts/p[0-7].txt`
 - Phase tracker: T8 marked closed in `PHASE_DFLASH.md` Phase 4
+
+---
+
+## T9 closed — vanilla np>1 validity + direct token diff vs NP=1 (2026-05-14)
+
+T9 closed `[x]`. Vanilla np > 1 produces VALID per-slot output on
+this hybrid stack (5 falsifiable asserts pass 14/14 slot-runs at
+np ∈ {2, 4, 8}; PPL of output stays in [1.18, 3.14]).
+
+Direct token diff vs single-slot NP=1 reference catches what the
+PPL-summary missed:
+
+  - **NP=1 ≡ NP=2 byte-identical for vanilla.** `cublasGemmEx`
+    picks the same algorithm at batch widths 1 and 2 on the vanilla
+    forward.
+  - **NP=4 ≡ NP=8 deterministic drift** for 3 of 4 common prompts.
+    Drift is BINARY at the NP=2/4 boundary, not accumulating with
+    batch width. (One outlier: p2 picks up an additional NP=8-only
+    drift past token 50.)
+  - Per-prompt first-divergence positions in greedy output:
+    p0:tok3, p1:tok19, p2:tok27, p3:tok0.
+
+This is NEW data on top of PHASE45 D10.e (which characterised the
+same root-cause framework — cuBLAS GEMM algo flip + FA split-size
+variance + greedy Lyapunov amplification — but for MTP and without
+the precise NP=2/4 binary-boundary finding). PHASE45 D10.e is
+closed; the planned D10.e.2 vLLM-style 3-kernel reduction-order
+rewrite is future work, NOT in any active phase.
+
+Future-work pointers (recorded but not active):
+  - Resolve vanilla drift = PHASE45 D10.e.2 (3-kernel reduction-
+    order rewrite). The NP=2/4 binary boundary T9 located gives a
+    concrete diagnostic anchor for which kernel.
+  - DFlash np>1 support (T9.2) needs a 4-layer libllama extension
+    (~115-185k tokens scoped in PHASE_DFLASH T9): multi-slot
+    `llama_dflash_draft`, per-slot `common_speculative_state_dflash`
+    adapter, server `np==1` gate lift, validity harness. Downstream
+    of the resolve-drift fix.
+  - DFlash kernel optimization (per Phase 4 closure) is downstream
+    of BOTH the resolve-drift fix and the multi-slot extension.
+
+Artifacts:
+  - Harness: `tests/dflash-speculative/test-np-validity-vanilla.cpp`
+  - Diff harness: `data/phase_dflash_t8/np-token-diff.py`
+  - Refs: `data/phase_dflash_t8/gate7-validity-vanilla-np1-p[0-7].json`
+  - Tests: `data/phase_dflash_t8/gate7-validity-vanilla-np{2,4,8}-tokens.json`
+  - Summary: `data/phase_dflash_t8/gate7-token-diff-summary.json`
+
+T9 closure also closes the original 10-task PHASE_DFLASH plan.

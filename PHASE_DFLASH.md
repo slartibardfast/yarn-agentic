@@ -423,11 +423,18 @@ Checkbox semantics per CLAUDE.md §5.
   - DFlash speedup measurement, block_size sweep ∈ {4, 5, 6, 8}.
   - Ship outcome: PASS (≥ 1.5× MTP) → ship `profiles/qwen36-27b-x1-dflash.sh`; NEUTRAL (1.0–1.5×) → tunable option; FAIL (< 1.0×) → stay on MTP.
 
-- [~] **T9 — Charter revised (2026-05-14): np > 1 *validity* lockdown — gates the kernel optimization workstream**
-  - Original perf-comparison framing retired (slow kernels make aggregate measurement uninformative until kernels are rewritten).
-  - Bar: 5 falsifiable per-slot asserts — terminates, PPL ∈ [1, 50], ≥ 95% in-vocab, no decode failures, no NaN/Inf.
-  - **T9.1 vanilla `[x]`**: harness `tests/dflash-speculative/test-np-validity-vanilla.cpp`; 14/14 slot-runs PASS across np ∈ {2, 4, 8} on Qwen 3.6 27B. PPL 1.18–3.14, all in-band. Data: `data/phase_dflash_t8/gate7-validity-vanilla-np{2,4,8}.json`. Vanilla validity locked.
-  - **T9.2 DFlash `[ ]`**: deferred. The current C API `llama_dflash_draft(ctx, anchor_token, anchor_pos, …)` is single-slot — no `seq_id`, no slot array. Multi-slot validity requires a 4-layer libllama extension (multi-slot C API + adapter + server gate lift + harness). Scope estimate ~115–185k tokens. **This is the gating prerequisite** before any DFlash kernel optimization (dual-TU102 + NVLINK envelope work) is justified — the kernel-side multi-slot support exists (T7), but there's no validated dispatch path yet.
+- [x] **T9 — np > 1 vanilla validity locked; drift characterised; resolve-drift + DFlash-multi-slot named as future work**
+  - Charter pivot recorded 2026-05-14: from perf-comparison to validity lockdown.
+  - Vanilla validity bar (5 falsifiable per-slot asserts) PASSES 14/14 slot-runs at np ∈ {2, 4, 8} on Qwen 3.6 27B.
+    Harness: `tests/dflash-speculative/test-np-validity-vanilla.cpp`; data: `data/phase_dflash_t8/gate7-validity-vanilla-np{2,4,8}.json`.
+  - Direct-token-diff vs NP=1 reference (the validity-bar refinement after the PPL-only first cut):
+    Findings new vs PHASE45 D10.e (which was MTP context):
+      * **NP=1 ≡ NP=2 byte-identical for vanilla** — `cublasGemmEx` happens to pick the same algorithm at batch widths 1 and 2 on the vanilla forward path.
+      * **NP=4 ≡ NP=8 deterministic drift** for 3 of 4 common prompts — drift is binary at the NP=2/4 boundary, not accumulating with batch width. (p2 anomaly: NP=8 introduces additional drift past token 50, a second-order effect.)
+      * Per-prompt first-divergence positions: p0:tok3, p1:tok19, p2:tok27, p3:tok0.
+    Data: `data/phase_dflash_t8/np-token-diff.py`, `gate7-validity-vanilla-np1-p[0-7].json`, `gate7-validity-vanilla-np{2,4,8}-tokens.json`, `gate7-token-diff-summary.json`.
+  - **Resolve-drift workstream is named, not started** — it IS the unfinished PHASE45 D10.e.2 plan (vLLM / Thinking-Machines 3-kernel reduction-order rewrite). Root cause framework already characterised there: cuBLAS GEMM heuristic picks different algorithms at different batch dimensions + FA split size varies with shape → ~1-3% per-row reduction-order drift, amplified by greedy argmax to functional output divergence. The NP=2/4 boundary T9.1 isolates is consistent with that framework and refines it (the boundary is at exactly batch=4 for vanilla, not at any M≥2 as PHASE45 originally framed for MTP). PHASE45 D10.e is closed; the planned D10.e.2 fix is future work.
+  - **DFlash multi-slot extension is named, not started** — the libllama API extension required to even attempt DFlash at np > 1 (multi-slot `llama_dflash_draft`, per-slot `common_speculative_state_dflash` adapter, server gate lift, harness) is ~115–185k tokens of work and is downstream of the resolve-drift workstream (no point optimizing on a drifty foundation). Both items recorded as future work.
 
 ## Verification (end-of-phase composite)
 
