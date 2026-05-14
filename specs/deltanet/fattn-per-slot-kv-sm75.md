@@ -104,21 +104,52 @@ __global__ void flash_attn_combine_results(
 
 ---
 
-## 4. Grid + block geometry
+## 4. Grid + block geometry — Approach C (multi-head packing)
+
+**Correction 2026-05-14**: prior wording said "one head per CTA — never crosses head boundary". That contradicts §1's locked Approach C and leaves m=16 mma.sync.m16n8k8 with 1-of-16 useful rows at decode. Reformulated below.
+
+### Packing rule
+
+Each CTA's 16-row Q tile is packed with `H × Q` (head × q-row) pairs:
+- `H` = number of consecutive Q heads from the same gqa group, `H ≤ gqa_ratio`, `H ∈ {divisors of gqa_ratio}` (for clean K-cache addressing)
+- `Q` = number of consecutive q_rows from the slot, `Q ≤ n_tokens`
+- `H × Q ≤ 16`; the remaining `16 - H × Q` rows are zero-padded (treated as mask=-inf in softmax)
+
+Pick `(H, Q)` to maximize `H × Q`:
+
+| `n_tokens` | `gqa_ratio = 6` example | (H, Q) | utilization |
+|---:|---|---|---:|
+| 1 | decode | (6, 1) | 6 / 16 = 37.5% |
+| 2 |   | (6, 2) | 12 / 16 = 75% |
+| 3 |   | (3, 3) | 9 / 16 = 56% — or (6, 2) wasting tok 3 to next CTA; pick (3, 3) per spec |
+| 4 |   | (3, 4) | 12 / 16 = 75% — or (1, 4) at 25%; pick (3, 4) |
+| 8 |   | (2, 8) | 16 / 16 = 100% |
+| ≥ 16 | prefill | (1, 16) | 100% — Approach A degenerate case |
+
+The chosen `(H, Q)` is a compile-time template parameter (one instantiation per `(H, Q)` pair we support — initial set: {(6,1), (3,3), (3,4), (2,8), (1,16)} for `gqa_ratio=6`; other `gqa_ratio` values get their own set). The dispatcher selects at launch.
 
 ### Grid
 
 ```
+n_q_tile = ⌈n_tokens / Q⌉
+n_h_tile = ⌈gqa_ratio / H⌉    // when H < gqa_ratio, multiple CTAs per gqa group
+
 dim3 grid(
-    n_seqs * n_query_tiles_per_seq,   // x: (slot, query-tile-within-slot) flattened
-    n_heads_q,                         // y: per-head
-    parallel_blocks                    // z: K-range split for this (slot, tile, head)
+    n_seqs * n_q_tile,        // x: (slot, q-tile) flattened
+    n_kv_heads * n_h_tile,    // y: (KV head, h-tile-within-group) flattened
+    parallel_blocks           // z: K-range split for this (slot, q-tile, h-tile)
 );
 ```
 
-where `n_query_tiles_per_seq = ⌈(n_tokens / 16)⌉`. At decode (n_tokens=1 per slot): 1 query tile per slot. At prefill (n_tokens=1024): 64 query tiles per slot.
+At decode shape (`n_tokens=1`, `gqa_ratio=6`, `(H, Q) = (6, 1)`): `n_q_tile = 1`, `n_h_tile = 1`. Grid.y = `n_kv_heads × 1 = 4` (was `n_heads_q = 24` in Approach A). Fewer CTAs per kernel; relies on `parallel_blocks` to fill SMs (see §4 split-K discussion below).
 
-Each CTA processes ONE 16-row Q tile × ONE head × ONE K-range chunk. The 16-row Q tile contains 16 consecutive query positions from the SAME slot (one slot only — never crosses slot boundary), enabling per-slot `n_kv` bound enforcement.
+At prefill shape (`n_tokens=1024`, `(H, Q) = (1, 16)`): `n_q_tile = 64`, `n_h_tile = 6`. Grid.y = `n_kv_heads × 6 = 24` (same as Approach A's `n_heads_q`). Grid totals `64 × 24 × 1 = 1536` CTAs — fills SMs many times over.
+
+Each CTA processes ONE 16-row Q tile (with the (H, Q) packing above) × ONE KV-head's gqa subgroup × ONE K-range chunk. The 16-row tile never crosses a slot boundary (per-slot K-bound is enforced via `slot_seq_lens[slot]` at the CTA level).
+
+### Block
+
+`blockDim.x = 32` (warp size), `blockDim.y = 4` (warps per CTA). `nwarps = 4`. Threads per CTA = 128.
 
 ### Block
 
@@ -133,12 +164,20 @@ parallel_blocks(slot_seq_lens[s]) =
 ```
 
 `max_pb_for_perf_target(s)` chooses the smallest `parallel_blocks` such that:
-- Total CTAs across grid fills ≥ 70% of SMs (`8 * n_seqs * n_query_tiles_per_seq * n_heads_q * parallel_blocks >= 0.7 * nsm * 2` — counting target 2 blocks/SM occupancy)
-- `parallel_blocks ≤ KV_BLOCK_SIZE` (don't fragment past a single K-block of work per CTA)
+- Total CTAs across grid fills ≥ 70% of SMs:
+  `n_seqs * n_q_tile * (n_kv_heads * n_h_tile) * parallel_blocks >= 0.7 * nsm * 2`
+  (counting target 2 blocks/SM occupancy)
+- `parallel_blocks ≤ ⌈n_kv_slot / KV_BLOCK_SIZE⌉` (don't fragment past one K-block per CTA)
 
-For decode at NP=8, n_heads_q=12, n_query_tiles_per_seq=1: `8 * 1 * 12 * pb >= 100.8` → `pb ≥ 2`. Pick `pb = max(2, n_kv_blocks)`. For long-context decode (n_kv=4096, KV_BLOCK_SIZE=64): n_kv_blocks=64; pb = 4 to 8 typical.
+For decode at NP=8, `(H, Q) = (6, 1)`, `n_q_tile = 1`, `n_kv_heads × n_h_tile = 4`:
+  `8 × 1 × 4 × pb >= 100.8` → `pb ≥ 4`. Pick `pb = max(4, ⌈n_kv_slot / KV_BLOCK_SIZE⌉)`.
+  At long-context decode (n_kv=4096, KV_BLOCK_SIZE=16): `n_kv_blocks = 256`; pb capped by SM fill at ~8.
 
-For prefill at NP=1, n_heads_q=12, n_query_tiles_per_seq=64: `1 * 64 * 12 * pb >= 100.8` → `pb ≥ 1`. No split-K needed; `pb = 1`.
+For decode at NP=1, `n_q_tile = 1`, `n_kv_heads × n_h_tile = 4`:
+  `1 × 1 × 4 × pb >= 100.8` → `pb ≥ 26`. This is the WORST case for grid fill — Approach C at decode NP=1 needs aggressive split-K to fill the GPU. At small n_kv (say 32), `n_kv_blocks = 2`, so pb capped at 2 → grid `1 × 4 × 2 = 8`, only 11% of target. Spec accepts this underutilization at very small n_kv (the kernel is launch-overhead-bound anyway at that scale).
+
+For prefill at NP=1, `(H, Q) = (1, 16)`, `n_q_tile = 64`, `n_kv_heads × n_h_tile = 24`:
+  `1 × 64 × 24 × pb >= 100.8` → `pb ≥ 1`. No split-K needed; `pb = 1`.
 
 **`parallel_blocks` is a function of `slot_seq_lens[s]` only, NOT of NP.** This is the key batch-invariance property: at the SAME slot K with the SAME n_kv, the SAME grid geometry is selected regardless of how many other slots are in the batch.
 
