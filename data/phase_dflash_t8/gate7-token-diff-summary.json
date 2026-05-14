@@ -1,0 +1,220 @@
+{
+  "per_prompt": {
+    "p0": {
+      "n_ref": 64,
+      "by_np": {
+        "2": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": -1,
+          "matching_prefix_len": 64,
+          "hamming_dist": 0,
+          "edit_distance": 0,
+          "rejoin_after_div": 0,
+          "test_text_after_div": ""
+        },
+        "4": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 3,
+          "matching_prefix_len": 3,
+          "hamming_dist": 60,
+          "edit_distance": 60,
+          "rejoin_after_div": 1
+        },
+        "8": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 3,
+          "matching_prefix_len": 3,
+          "hamming_dist": 60,
+          "edit_distance": 60,
+          "rejoin_after_div": 1
+        }
+      }
+    },
+    "p1": {
+      "n_ref": 64,
+      "by_np": {
+        "2": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": -1,
+          "matching_prefix_len": 64,
+          "hamming_dist": 0,
+          "edit_distance": 0,
+          "rejoin_after_div": 0,
+          "test_text_after_div": ""
+        },
+        "4": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 19,
+          "matching_prefix_len": 19,
+          "hamming_dist": 43,
+          "edit_distance": 8,
+          "rejoin_after_div": 2
+        },
+        "8": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 19,
+          "matching_prefix_len": 19,
+          "hamming_dist": 43,
+          "edit_distance": 8,
+          "rejoin_after_div": 2
+        }
+      }
+    },
+    "p2": {
+      "n_ref": 64,
+      "by_np": {
+        "4": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 27,
+          "matching_prefix_len": 27,
+          "hamming_dist": 27,
+          "edit_distance": 8,
+          "rejoin_after_div": 7
+        },
+        "8": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 27,
+          "matching_prefix_len": 27,
+          "hamming_dist": 29,
+          "edit_distance": 12,
+          "rejoin_after_div": 7
+        }
+      }
+    },
+    "p3": {
+      "n_ref": 64,
+      "by_np": {
+        "4": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 0,
+          "matching_prefix_len": 0,
+          "hamming_dist": 41,
+          "edit_distance": 27,
+          "rejoin_after_div": 23
+        },
+        "8": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 0,
+          "matching_prefix_len": 0,
+          "hamming_dist": 41,
+          "edit_distance": 27,
+          "rejoin_after_div": 23
+        }
+      }
+    },
+    "p4": {
+      "n_ref": 64,
+      "by_np": {
+        "8": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 31,
+          "matching_prefix_len": 31,
+          "hamming_dist": 30,
+          "edit_distance": 22,
+          "rejoin_after_div": 3
+        }
+      }
+    },
+    "p5": {
+      "n_ref": 64,
+      "by_np": {
+        "8": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 5,
+          "matching_prefix_len": 5,
+          "hamming_dist": 59,
+          "edit_distance": 2,
+          "rejoin_after_div": 0
+        }
+      }
+    },
+    "p6": {
+      "n_ref": 64,
+      "by_np": {
+        "8": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 0,
+          "matching_prefix_len": 0,
+          "hamming_dist": 64,
+          "edit_distance": 64,
+          "rejoin_after_div": 0
+        }
+      }
+    },
+    "p7": {
+      "n_ref": 64,
+      "by_np": {
+        "8": {
+          "n_ref": 64,
+          "n_test": 64,
+          "first_divergence_pos": 43,
+          "matching_prefix_len": 43,
+          "hamming_dist": 1,
+          "edit_distance": 1,
+          "rejoin_after_div": 20
+        }
+      }
+    }
+  },
+  "aggregates": {
+    "np2": {
+      "first_div_per_prompt": [
+        64,
+        64
+      ],
+      "edit_dist_per_prompt": [
+        0,
+        0
+      ]
+    },
+    "np4": {
+      "first_div_per_prompt": [
+        3,
+        19,
+        27,
+        0
+      ],
+      "edit_dist_per_prompt": [
+        60,
+        8,
+        8,
+        27
+      ]
+    },
+    "np8": {
+      "first_div_per_prompt": [
+        3,
+        19,
+        27,
+        0,
+        31,
+        5,
+        0,
+        43
+      ],
+      "edit_dist_per_prompt": [
+        60,
+        8,
+        12,
+        27,
+        22,
+        2,
+        64,
+        1
+      ]
+    }
+  }
+}

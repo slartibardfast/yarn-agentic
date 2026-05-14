@@ -1,0 +1,9 @@
+{
+  "np": 1,
+  "n_gen": 64,
+  "spec": "none",
+  "slots": [
+    {"slot": 0, "prompt": "/home/llm/yarn-agentic/data/phase_dflash_t8/prompts/p7.txt", "terminated": true, "decode_ok": true, "no_nan_inf": true, "in_vocab": 64, "n_gen": 64, "in_vocab_ok": true, "ppl": 1.320503, "ppl_ok": true, "n_prompt_tokens": 54, "generated_tokens": [25,198,2425,25,10001,283,498,17,11,220,22,11,220,16,16,11,220,16,20,1089,2100,283,220,24,198,4935,25,498,15,11,220,16,60,271,248068,271,248069,271,71093,12305,198,727,1330,8917,20449,25,1103,18078,1089,2100,25,514,8,1411,1103,18078,5491,198,262,3753,283,4535,198,262]}
+  ],
+  "n_fail": 0
+}
