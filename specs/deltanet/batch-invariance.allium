@@ -371,20 +371,60 @@ invariant Open_P0_EarlyFALayersByteIdentical {
 }
 
 invariant Open_FA_InternalMechanism {
-    -- The specific mechanism inside wmma_f16_case<128, 128, 8, half>
-    -- that breaks batch-invariance — candidates: parallel_blocks
-    -- reduction across blockIdx (when parallel_blocks > 1), cross-warp
-    -- __syncthreads ordering, KQ_acc warp-shuffle order, dst_meta
-    -- partial-sums combining with atomic add. To verify: read kernel
-    -- internals at fattn-wmma-f16.cuh.
+    -- PARTIALLY CLOSED 2026-05-14 via kernel-internal static analysis
+    -- (data/deltanet/s2-3-kernel-internals-reading.md):
+    --
+    -- The wmma_f16 FA kernel template <128, 128, 8, half> always selects
+    -- parallel_blocks=4 at NP∈{2,4,8} on TU102 (blocks_num_pb1=12 < 2*72=144;
+    -- threshold 4*blocks_num_pb1<2*nsm). Four blocks per Q column
+    -- compute partial KQ sums on stride-1024 K chunks; the separate
+    -- flash_attn_combine_results kernel combines them in fixed
+    -- iteration order l=0..3.
+    --
+    -- The combine kernel and per-block compute are FORMALLY
+    -- batch-shape-invariant given identical partial sums.
+    --
+    -- Most-likely entry point for the empirical fp32-eps slot-0
+    -- variation: n_kv = K->ne[1] (max KV-cache occupancy across slots
+    -- in the batch) differs with NP, varying the K-loop iteration
+    -- count. Mask-zero attention to slot-K's invalid K positions is
+    -- mathematically zero but produces fp32-eps roundoff in online-
+    -- softmax accumulators that propagates to slot-0 output.
+    --
+    -- To fully bind: pad all slots' KV occupancy to the same maximum
+    -- at prefill; verify slot-0 FA output becomes byte-identical at
+    -- NP=2 vs NP=4. Test described in
+    -- data/deltanet/s2-3-kernel-internals-reading.md "What would
+    -- empirically confirm the n_kv hypothesis".
 }
 
 invariant Open_MMQ_InternalMechanism {
-    -- The specific mechanism inside mmq.cuh's mul_mat_q at mmq_x=8
-    -- that amplifies upstream noise differently at M=2 vs M=4.
-    -- Candidates: stream-K reduction order, shared-memory tile loading
-    -- order, tensor-core fragment accumulation per-block when
-    -- ntiles_x=1 but different ne11. To verify: read kernel internals.
+    -- PARTIALLY CLOSED 2026-05-14 via kernel-internal static analysis
+    -- (data/deltanet/s2-3-kernel-internals-reading.md):
+    --
+    -- MMQ at mmq_x=8 uses stream-K work partitioning (Osama et al.
+    -- 2023, arXiv:2301.03598). For NP∈{2,4,8} with mmq_x=8:
+    -- ntx=⌈n/8⌉=1 in all cases; nty depends on ne01 (output dim, same
+    -- across NP). gridDim.x=nsm=72. Per-block work assignment
+    -- (kbc_start/stop) is identical across NP at decode shapes.
+    --
+    -- The fixup kernel mul_mat_q_stream_k_fixup combines stream-K
+    -- partial sums in fixed iteration order; FORMALLY batch-shape-
+    -- invariant.
+    --
+    -- For valid output column j=0 with same per-row inputs, the
+    -- formal MMQ sum is identical across NP. Observed variation in
+    -- valid-position MMQ outputs (e.g., kqv_wo divergence at p3
+    -- layer 3) is most likely PROPAGATION of the upstream FA's
+    -- batch-shape sensitivity through MMQ's faithful matmul,
+    -- amplified by the operator norm of the projection weight matrix
+    -- (typical 10²-10³ for 5120×5120 GEMM at this layer's spectrum).
+    --
+    -- To bind: see s2-3-kernel-internals-reading.md "Amplification
+    -- factor in MMQ" — the observed 5.96e-8 → 0.006 amplification at
+    -- p0 layer 19 across 4 chained GEMMs (Q/K/V/O projection × FFN
+    -- gate × FFN up × FFN down) is consistent with operator-norm
+    -- propagation, not independent MMQ-introduced noise.
 }
 
 -- Cross-stack references (tests + kernels) live in the binding JSON's
