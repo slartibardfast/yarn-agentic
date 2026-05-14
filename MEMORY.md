@@ -5570,3 +5570,25 @@ Active workstream pivots from DFlash to **fixing vanilla np>1 non-determinism on
 **Determinism and perf are co-equal binding gates.** The plan rejects "deterministic but slower" as a ship state. Heuristic dispatch (cuBLAS GEMM picker, FA split-size picker) is the source of BOTH batch-shape sensitivity AND perf loss at decode shapes; replacing it with fixed-tile bespoke kernels that hit tensor cores is expected to beat the heuristic on perf, not lose to it. D5 design carries explicit perf contracts (% of HBM bandwidth / tensor-core peak / NVLINK aggregate); D8 verifies positive perf outcomes, not regression thresholds.
 
 Plan committed at PLAN.md, commit `a` (this commit). On D7+D8 dual-GREEN closure, PLAN.md archives to `docs/phases/80-deltanet-determinism/PHASE_DELTANET.md`.
+
+## 2026-05-14 — Phase 2 fattn_per_slot_kv_sm75 kernel work complete
+
+S2.5 kernel for the DeltaNet np>1 determinism fix is built out through Stage 2.3 on `production/2026-q2-next`. Eight kernel sub-stages all GREEN at 464/464 across three test scenarios (oracle-vs-kernel COSINE, rep-determinism byte-id, batch-invariance slot-0 byte-id across NP):
+
+| Sub-stage | Change |
+|---|---|
+| Phase 1 | naïve scalar device kernel + launcher (skeleton) |
+| Stage 2.1 | `mma.sync.m16n8k8` PTX inner dot product (1-warp) |
+| Stage 2.2a | 4-warp CTA + partial-D SMEM reduction |
+| Stage 2.2b | Approach C multi-head decode packing (H=gqa=6 rows) |
+| Stage 2.2c | Q tile in SMEM (loaded once per CTA) |
+| Stage 2.2d.1 | K block in SMEM (per K-iter cooperative load) |
+| Stage 2.2d.2 | V block in SMEM (per K-iter cooperative load) |
+| Stage 2.2d.3 | `ldmatrix.sync.aligned.m8n8.x2.b16` for B-fragment loads |
+| Stage 2.3 | parallel_blocks split-K + custom combine kernel |
+
+All variants accessible via `FATTN_KERNEL_VARIANT` env (phase1, stage21, stage22a, stage22b, stage23, default). Stage 2.3 is opt-in via env — not yet promoted to default pending production-shape perf binding.
+
+Spec correction landed mid-implementation: HEAD_DIM_V 128→256 (GGUF metadata `qwen35.attention.value_length=256` confirmed by nsys trace `flash_attn_ext_f16<256,256,...>`). KV_BLOCK_SIZE primary 32→16 at corrected Dv.
+
+Phase 2 closure (6c) requires production-side integration that the kernel work has set up but not yet performed: dispatcher wiring at `fattn.cu:140`, `slot_seq_lens` ggml input tensor build-graph plumbing per spec OQ-4, `test-np-validity-vanilla` NP={2,4,8} byte-identity binding, nsys/ncu perf comparison vs `data/deltanet/perf/baseline-prod/` (the wmma_f16 floor: 26 µs/call at decode, 18.75% theoretical occupancy SMEM-limited, 3.7% DRAM throughput). These steps were declined for autonomous execution pending user direction on allocation strategy + build-graph integration approach.
