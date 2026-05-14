@@ -177,36 +177,60 @@ invariant DeltaNetSlotInvariance {
     --   IDENTICAL at slot 0
 }
 
-invariant WmmaFAShapeSensitiveAtSomeInputs {
-    -- The wmma_f16 FA kernel template <128, 128, 8, half> produces
-    -- byte-DIFFERENT slot-K output across NP values at SOME data inputs
-    -- (data-dependent), even when its Q/K/V inputs at slot K are
-    -- byte-identical and the dispatched template is identical. The
-    -- kernel violates batch-invariance internally for those inputs.
+invariant KernelFPArithmeticBatchShapeSensitivity {
+    -- UNIFIED MECHANISM (S2.3 correction 2026-05-14): the same kernel
+    -- TEMPLATE (wmma_f16_case<128,128,8,half> OR mul_mat_q_case<TYPE,
+    -- mmq_x=8>) running on slot-K's BYTE-IDENTICAL inputs produces
+    -- fp32-epsilon-level numerical variation across different batch
+    -- widths (NP=2 vs NP=4 vs NP=8). This is a property of the kernel's
+    -- internal FP-arithmetic at different grid/work distributions, NOT
+    -- of the template selection (which is uniform — see
+    -- DispatcherTemplateUniformity_*).
+    --
+    -- The fp32-epsilon noise floor is approximately 1e-7 at any FA call
+    -- across NP values for slot-K with identical inputs. Whether this
+    -- noise crosses the F16-precision threshold (~1e-3 to 1e-4 at
+    -- residual magnitudes) and becomes visible in the F16-stored
+    -- residual depends on data:
+    --
+    --   (a) FA output already above F16 at this layer (p1, p3, p4 at
+    --       layer 3 per data/deltanet/s2-3-corrected-unified-mechanism.json)
+    --   (b) FA below F16 but downstream MMQ FFN GEMMs amplify (p0 layer
+    --       19, where MMQ amplifies 4.8e-7 to 0.006 at l_out)
+    --   (c) Noise stays sub-F16 throughout the layer (p0 layer 3,
+    --       p2 layer 3 per same evidence)
+    --
     -- Bound by:
-    --   data/deltanet/s2-3-op-level-localization.json — p3 layer 3
-    --   flash_attn output max_abs_diff 0.000352 (device 0) / 0.000524
-    --   (device 1); p1 layer 3 flash_attn output max_abs_diff 0.000433
-    --   / 0.000332
+    --   data/deltanet/s2-3-corrected-unified-mechanism.json
+}
+
+invariant WmmaFAShapeSensitiveAtSomeInputs {
+    -- FACET of KernelFPArithmeticBatchShapeSensitivity (a): the FA
+    -- output already differs at F16 level at some prompt × layer
+    -- combinations. Bound by:
+    --   data/deltanet/s2-3-corrected-unified-mechanism.json — p1, p3,
+    --   p4 layer 3 flash_attn max_abs_diff in {5e-4, 6e-4, 8e-4} range
 }
 
 invariant WmmaFAByteIdenticalAtOtherInputs {
-    -- At some data inputs the same wmma_f16 FA kernel produces
-    -- byte-IDENTICAL slot-K output across NP values. The kernel's
-    -- nondeterminism is data-dependent, not unconditional. Bound by:
-    --   data/deltanet/s2-3-op-level-localization.json — p0 layer 19
-    --   flash_attn-1019 and flash_attn-2019 max_abs_diff = 0
+    -- FACET of KernelFPArithmeticBatchShapeSensitivity (c) and (b)
+    -- pre-amplification: at some inputs the FA kernel's noise stays
+    -- sub-F16 and the F16-stored output is byte-identical (modulo
+    -- ~2e-7 fp32-epsilon noise). Bound by:
+    --   data/deltanet/s2-3-corrected-unified-mechanism.json — p0 layer 3
+    --   FA max_abs_diff 2.4e-7; p0 layer 19 FA max_abs_diff 4.8e-7;
+    --   both result in byte-identical l_out at first decode position
+    --   IF no downstream amplification (e.g., p0 layer 3 → l_out 0.0).
 }
 
 invariant MmqShapeSensitiveViaAmplification {
-    -- The MMQ kernel mmq_x=8 template amplifies sub-fp32-epsilon
-    -- upstream noise differently at M=2 vs M=4, producing byte-different
-    -- output at slot K. Visible particularly in FFN GEMMs (ffn_up_gate,
-    -- ffn_down) where it amplifies a 5.96e-8 input difference to 0.006
-    -- at the layer's final residual. Bound by:
-    --   data/deltanet/s2-3-op-level-localization.json — p0 layer 19
-    --   qkv_gated → flash_attn_reshaped → kqv_wo → ffn_up_gate → ffn_down
-    --   chain shows amplification from 5.96e-8 to 0.006 over the FFN MMQs
+    -- FACET of KernelFPArithmeticBatchShapeSensitivity (b): the MMQ
+    -- FFN kernels amplify sub-F16 upstream noise above F16 at specific
+    -- prompt × layer combinations. Empirically observed only at p0
+    -- layer 19 in the current capture set. Bound by:
+    --   data/deltanet/s2-3-corrected-unified-mechanism.json — p0 layer 19
+    --   shows FA-1019/2019 below F16 but l_out at 0.006 from MMQ
+    --   amplification chain through kqv_wo → ffn_up_gate → ffn_down
 }
 
 invariant DriftCascadeAfterFirstDivergence {
@@ -222,12 +246,26 @@ invariant DriftCascadeAfterFirstDivergence {
 
 invariant PerPromptDriftSiteVariability {
     -- The first-divergent layer at NP=2 vs NP=4 is data-dependent.
-    -- Modal case for the production prompt set: layer 3 (first FA layer).
-    -- Outlier: p0 at layer 19 (5th FA layer). Two prompts (p6, p7) show
-    -- no drift at the first decoded token. Bound by:
-    --   data/deltanet/s2-1-per-prompt-first-div.json. Distribution:
-    --   FA-path-source = 5/8 prompts (p1, p2, p3, p4, p5 at layer 3;
-    --   p0 at layer 19); no drift at first decoded token = 2/8 (p6, p7)
+    -- CORRECTED with same-offset clean comparison
+    -- (data/deltanet/s2-3-corrected-unified-mechanism.json):
+    --   p0 (offset=0): l_out byte-identical until layer 19, where MMQ
+    --                  amplification produces max_abs_diff 0.006
+    --   p1 (offset=1): l_out diverges at layer 3 (FA above F16)
+    --   p2 (offset=2): l_out byte-identical at layer 3 (FA sub-F16,
+    --                  no MMQ amplification at this layer); class same
+    --                  as the p6/p7 "no drift" finding from S2.1
+    --   p3 (offset=3): l_out diverges at layer 3
+    --   p4 (offset=4): l_out diverges at layer 3
+    --   p5, p6, p7: cannot be tested at same-offset clean (np=4 with
+    --              offset >=5 needs p8.txt which doesn't exist)
+    --
+    -- Modal case among testable prompts: FA above F16 at layer 3
+    -- (3 of 5 testable prompts). Outliers: p0 (FA sub-F16 but MMQ
+    -- amplification at layer 19); p2 (sub-F16 throughout — no drift
+    -- at first decoded token). The original S2.1 finding that named
+    -- p1, p2, p3, p4, p5 as all "FA layer 3" was an artifact of
+    -- cross-slot comparison (slot 0 NP=2 vs slot K NP=4 for matching
+    -- prompt); clean same-offset shows p2 is in the no-drift class.
 }
 
 invariant TokenLevelGreedyArgmaxNP1_NP2_Identity {
@@ -283,18 +321,27 @@ invariant NotHeld_TokenLevelDeterminism_NP4 {
 -- ============================================================================
 
 invariant Open_FA_SourceClass_OtherPrompts {
-    -- p2, p4, p5 at layer 3 follow the same FA-source signature as
-    -- p1, p3 (FA kernel produces visibly different slot-0 output).
-    -- To verify: re-run S2.3 at offsets {2, 4, 5} and check that
-    -- flash_attn-1003 / flash_attn-2003 differs at slot 0.
+    -- PARTIALLY CLOSED 2026-05-14:
+    --   p2 layer 3: NO drift (FA byte-identical, l_out byte-identical)
+    --     — CORRECTION to S2.1's "p2 first-div layer 3" finding.
+    --   p4 layer 3: drift confirmed (l_out max_diff 2.6e-3) — FA-source
+    --     class.
+    --   p5 cannot be tested at same-offset (np=4 offset=5 needs p8.txt
+    --     which doesn't exist).
+    -- Bound by:
+    --   data/deltanet/s2-3-corrected-unified-mechanism.json
 }
 
 invariant Open_P0_EarlyFALayersByteIdentical {
-    -- For p0, the FA kernel output at layers 3, 7, 11, 15 is
-    -- byte-identical across NP=2 and NP=4 at slot 0 (i.e., p0 truly
-    -- avoids FA shape-sensitivity until layer 19 specifically).
-    -- To verify: re-run S2.3 at offset=0 with target_layers including
-    -- the per-device il_cb values for layers 3, 7, 11, 15.
+    -- PARTIALLY CLOSED 2026-05-14:
+    --   p0 layer 3 verified byte-identical at l_out (FA noise 2.4e-7
+    --   sub-F16; no MMQ amplification at layer 3 for p0).
+    --   Layers 7, 11, 15 not yet captured but pattern strongly implies
+    --   byte-identical too (l_out only differs at layer 19 per D1 data).
+    -- Bound by:
+    --   data/deltanet/s2-3-corrected-unified-mechanism.json (p0 layer
+    --   3 entry); confirmation at layers 7/11/15 still pending if
+    --   stronger bind is desired.
 }
 
 invariant Open_FA_InternalMechanism {
