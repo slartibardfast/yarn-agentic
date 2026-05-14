@@ -253,10 +253,42 @@ Bold-on-design (commit to TML batch-invariance recipe as the production framewor
 
 ## Pickup state
 
-D1 not started. T9.1 harness is the foundation; first work is extending its capture to per-layer residuals at all 65 layer indices.
+D1 + D2 CLOSED 2026-05-14. Drift localized; primary hypothesis ("DeltaNet recurrence kernel is the source") refuted by direct evidence; PLAN.md proceeds with refined targets.
 
-First reads for resuming session:
-1. `ik_llama.cpp/tests/dflash-speculative/test-np-validity-vanilla.cpp` — the harness to extend.
-2. `ik_llama.cpp/include/llama.h` for `llama_set_dflash_extract_layers` / `llama_get_dflash_extract_data` — the API to reuse.
-3. `data/phase_dflash_t8/gate7-token-diff-summary.json` — the T9 signature this plan is anchored to.
-4. `docs/phases/60-llama-context-decompose/PHASE45.md` — for D10.e framework context.
+### D1 closure
+
+- New harness: `ik_llama.cpp/tests/dflash-speculative/test-deltanet-d1-capture.cpp`
+- libllama: extract-layers cap bumped 16 → 80 to fit Qwen 3.6 27B's 65-layer target
+- Captures: 4 runs at np ∈ {1,2,4,8} offset=0, full transformer-stack per-slot residuals
+- Per-slot per-layer .bin (n_embd=5120 fp32) + manifest JSON in `data/deltanet/d1/`
+
+### D2 closure
+
+First byte-identity break by NP pair at slot 0 (p0):
+
+| NP pair | First-divergent layer | Layer type | Note |
+|---|---|---|---|
+| NP=1 ↔ NP≥2 | 0 | storage-path | F32 single-token vs F16 multi-token storage — not a clean computational delta |
+| **NP=2 ↔ NP=4** | **19** | **FULL_ATTENTION** | **byte-identical layers 0-18, breaks at the 5th FA layer** |
+| NP=2 ↔ NP=8 | 0 | sub-F16 | max_abs_diff ≈ 1e-6 (F32 epsilon, below F16 precision) |
+| NP=4 ↔ NP=8 | 0 | sub-F16 | same |
+
+`data/deltanet/d2-first-divergent-layer.json`
+
+### Headline implication for D3+
+
+**DeltaNet recurrence kernel is not the primary drift source.** The PLAN.md's working hypothesis was that DeltaNet's non-determinism at np>1 was the gating issue; D2 evidence overturns this. Layers 0-18 — which include DeltaNet recurrence + projections + interleaved earlier FA (indices 3, 7, 11, 15) — are byte-identical between NP=2 and NP=4 at slot 0 (p0). The drift first amplifies at LAYER 19 (FA), and earlier FA layers (3, 7, 11, 15) at the SAME NP transition do NOT introduce visible drift — which is itself a clue.
+
+Refined targets:
+- **D3 primary**: instrument layer 19 ops (Q/K/V/O GEMMs + FA kernel + RMSNorm) at NP=2 vs NP=4. The byte-identity break at exactly this layer suggests a kernel-template / tile-geometry pick at the layer's specific shape — possibly the FA kernel handles `n_tokens ∈ {1,2,3}` with one template and `n_tokens ≥ 4` with another (Turing `mma_f16` m16n8k8, 4 hits new tile boundary).
+- **D3 secondary**: at NP=4 vs NP=8 layer 0, sub-F16-precision drift from upstream of DeltaNet (RMSNorm or input GEMMs). Bring to fp32 representation if relevant.
+
+The user's "DeltaNet" framing is preserved as the workstream NAME (since the hybrid linear_attn + full_attention stack is the surface), but the empirical evidence reroutes D5+ design to the FA path as primary site.
+
+### First reads for resuming session
+
+1. `data/deltanet/d2-first-divergent-layer.json` — the D2 evidence + D3 target nomination.
+2. `ik_llama.cpp/ggml/src/ggml-cuda/fattn-*.cuh` + dispatcher — layer 19 FA op localization site.
+3. `ik_llama.cpp/src/graphs/build_qwen35.cpp` — for layer 19's per-op graph structure (Q/K/V → FA → O → ffn).
+4. `ik_llama.cpp/tests/dflash-speculative/test-deltanet-d1-capture.cpp` — the harness to extend at D3.
+5. T9.1 / PHASE45 D10.e context (already linked above).
