@@ -143,3 +143,43 @@ If (a) gives byte-identity and (b) shows the same drift signature without changi
 If (a) does NOT give byte-identity: there's an additional batch-shape-sensitive code path in the FA kernel internals (likely the warp-shuffle accumulators or the shared-memory bank-conflict scheduler interaction).
 
 Static reading alone gives high-probability identification but not a definitive bind. The empirical (a)+(b) test would lock the mechanism.
+
+## 2026-05-14 — n_kv hypothesis FALSIFIED by offset=1 evidence
+
+A retroactive verification of the n_kv hypothesis against the existing S2.3 capture set:
+
+| offset | max prompt tokens NP=2 | max prompt tokens NP=4 | n_kv differs? | empirical slot-0 drift |
+|---|---:|---:|:---:|---|
+| 0 | 39 | 74 | YES | YES (p0 layer 19 0.006) |
+| 1 | 74 | 74 | **NO** | **YES (p1 layer 3 0.0013)** |
+| 2 | 74 | 74 | NO | NO (byte-identical) |
+| 3 | 33 | 40 | YES | YES (p3 layer 3 0.0015) |
+| 4 | 40 | 54 | YES | YES (p4 layer 3 0.0026) |
+
+**Offset 1 falsifies the n_kv hypothesis as the sole source.** At offset=1 both NP configurations have p2 (74 tokens) as the longest prompt → max KV occupancy is the same, padded to the same FATTN_KQ_STRIDE-multiple. Yet drift is present at slot 0 (p1) layer 3.
+
+So the FA kernel has at least one additional batch-shape-sensitive code path beyond n_kv. Candidates ruled IN by the counterexample:
+
+(i) **Q-column padding configuration in shared memory**. At NP=2 only Q columns 0 and 1 hold real data (rest are explicit-0 padding); at NP=4 columns 0-3 hold real data. The WMMA fragment loads from shared memory; the load operation has shape-dependent bank-conflict patterns even when the per-column FRAGMENT MATH is mathematically independent. Fragment-internal warp-shuffle reductions may experience timing differences that interact with the asynchronous tensor-core scheduling.
+
+(ii) **gridDim.y depends on something that varies with NP**. Need to check launch_fattn body for whether n_head, n_seq, or other dimensions feed into the grid geometry beyond the parallel_blocks scaling.
+
+(iii) **Per-Q-row mask handling**: the mask is shared across the batch but indexed per-Q-row. Different number of valid Q rows changes the masking iteration patterns.
+
+(iv) **Cross-warp __syncthreads scheduling differences**. With identical work but different active-thread fraction (fewer real Q rows at NP=2), the warp scheduler may select different warp execution orders.
+
+None of these change the FORMAL output for valid positions, but they can produce fp32-eps level variation through hardware-level timing/scheduling effects on the FP arithmetic.
+
+## Updated framing for Open_FA_InternalMechanism
+
+The n_kv hypothesis explains some of the variability but NOT all. The empirically-correct framing is:
+
+**The wmma_f16 FA kernel has at least two distinct batch-shape-sensitive entry points:**
+
+1. **n_kv (the max KV occupancy across slots) varies with NP**, causing the K-loop iteration count to differ. Mask-zero contributions to slot-K's online softmax produce fp32-eps roundoff. Predicted by static analysis; empirically operative at offsets 0, 3, 4 where n_kv differs.
+
+2. **Q-column padding configuration / WMMA fragment scheduling varies with NP**, causing fp32-eps variation in slot-K output even when n_kv is held constant. Empirically operative at offset=1 (where n_kv is identical but drift still appears).
+
+For a fix, both paths must be addressed. The TML batch-invariance recipe (per-row CTA, no cross-column WMMA fragment scheduling, fixed compile-time tile geometry) inherently addresses both, since it eliminates the fragment-level cross-column aggregation entirely.
+
+This narrows the design space for Stage 2 (FA replacement kernel): the replacement must be a per-Q-row kernel that does NOT use WMMA fragments shared across Q columns, and that explicitly fixes K-loop iteration count to the per-slot-K valid range rather than to the batch-max n_kv.

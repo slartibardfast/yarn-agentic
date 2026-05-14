@@ -396,7 +396,7 @@
       "expression": "}",
       "source_span": {
         "start": 17533,
-        "end": 18930
+        "end": 20078
       }
     },
     {
@@ -406,8 +406,8 @@
       "source_construct": "Open_MMQ_InternalMechanism",
       "expression": "}",
       "source_span": {
-        "start": 18932,
-        "end": 20419
+        "start": 20080,
+        "end": 21567
       }
     }
   ]

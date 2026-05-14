@@ -371,31 +371,49 @@ invariant Open_P0_EarlyFALayersByteIdentical {
 }
 
 invariant Open_FA_InternalMechanism {
-    -- PARTIALLY CLOSED 2026-05-14 via kernel-internal static analysis
+    -- PARTIALLY CLOSED 2026-05-14 with dual-entry-point identification
     -- (data/deltanet/s2-3-kernel-internals-reading.md):
     --
     -- The wmma_f16 FA kernel template <128, 128, 8, half> always selects
-    -- parallel_blocks=4 at NP∈{2,4,8} on TU102 (blocks_num_pb1=12 < 2*72=144;
+    -- parallel_blocks=4 at NP∈{2,4,8} on TU102 (blocks_num_pb1=12 < 144;
     -- threshold 4*blocks_num_pb1<2*nsm). Four blocks per Q column
     -- compute partial KQ sums on stride-1024 K chunks; the separate
     -- flash_attn_combine_results kernel combines them in fixed
-    -- iteration order l=0..3.
-    --
-    -- The combine kernel and per-block compute are FORMALLY
+    -- iteration order l=0..3. Combine + per-block compute are FORMALLY
     -- batch-shape-invariant given identical partial sums.
     --
-    -- Most-likely entry point for the empirical fp32-eps slot-0
-    -- variation: n_kv = K->ne[1] (max KV-cache occupancy across slots
-    -- in the batch) differs with NP, varying the K-loop iteration
-    -- count. Mask-zero attention to slot-K's invalid K positions is
-    -- mathematically zero but produces fp32-eps roundoff in online-
-    -- softmax accumulators that propagates to slot-0 output.
+    -- TWO distinct batch-shape-sensitive entry points identified:
     --
-    -- To fully bind: pad all slots' KV occupancy to the same maximum
-    -- at prefill; verify slot-0 FA output becomes byte-identical at
-    -- NP=2 vs NP=4. Test described in
-    -- data/deltanet/s2-3-kernel-internals-reading.md "What would
-    -- empirically confirm the n_kv hypothesis".
+    -- (1) **n_kv** (= K->ne[1] = max KV-cache occupancy across slots)
+    --     varies with NP. The K-loop iteration count varies; mask-zero
+    --     attention to slot-K's invalid K positions produces fp32-eps
+    --     roundoff in online-softmax accumulators that propagates to
+    --     slot-0 output. Predicted by static analysis; empirically
+    --     operative at offsets 0, 3, 4 (where max prompt lengths differ
+    --     between NP=2 and NP=4 batches).
+    --
+    -- (2) **Q-column padding / WMMA fragment scheduling** varies with
+    --     NP. At NP=2 only Q columns 0-1 hold real data (6 padding);
+    --     at NP=4 columns 0-3 hold real data (4 padding). WMMA
+    --     fragment loads from shared memory have shape-dependent
+    --     bank-conflict patterns. Per-column FRAGMENT MATH is
+    --     mathematically independent, but fragment-internal warp-
+    --     shuffle reductions experience timing differences that may
+    --     interact with tensor-core scheduling, producing fp32-eps
+    --     variation in valid columns' outputs.
+    --
+    --     Empirically operative at offset=1: both NP=2 batch {p1, p2}
+    --     and NP=4 batch {p1, p2, p3, p4} have p2 as longest prompt
+    --     (74 tokens) → n_kv identical → entry point (1) inactive →
+    --     yet drift IS present at p1 layer 3 (1.3e-3 max_diff).
+    --     This FALSIFIES the hypothesis that n_kv is the sole source.
+    --
+    -- Implication for Stage 2 design: the FA replacement kernel must
+    -- address BOTH entry points. TML batch-invariance recipe inherently
+    -- handles both, since per-row CTA eliminates fragment-level
+    -- cross-column aggregation entirely, and fixed K-loop iteration
+    -- count (per-slot-K valid range, not batch-max) eliminates the
+    -- n_kv-dependent fp-eps source.
 }
 
 invariant Open_MMQ_InternalMechanism {
