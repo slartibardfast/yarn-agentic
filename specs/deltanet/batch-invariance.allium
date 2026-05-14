@@ -1,0 +1,325 @@
+-- allium: 3
+-- specs/deltanet/batch-invariance.allium
+--
+-- Scope: the CURRENT behavioural contract for the vanilla decode pipeline
+-- of the hybrid Qwen 3.5/3.6 architecture (linear_attn + full_attention)
+-- on the production 2026-q2-next branch of ik_llama.cpp, running on dual
+-- Quadro RTX 6000 (sm_75 / TU102) with the production target GGUF
+-- /opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf
+-- (general.architecture=qwen35, n_layer=65 with 64 transformer + 1 MTP).
+--
+-- "DeltaNet" in this spec NAMES the whole vanilla hybrid pipeline (the
+-- recurrent DeltaNet kernel together with the interleaved full-attention
+-- layers, projection GEMMs, RMSNorms, residual stream, FFN) — not solely
+-- the recurrence kernel. The user-named workstream phrase carries over
+-- from PLAN.md.
+--
+-- This spec captures the CURRENT state, INCLUDING the empirically-
+-- established failure of byte-identity at np > 1. The intent is to lock
+-- the truth of what the kernels do today from a position of confidence —
+-- after Stage 1 / S2.1 / S2.2 / S2.3 evidence — and to make subsequent
+-- design changes provable deviations from this baseline.
+--
+-- Evidence base (all under data/deltanet/ on 2026-q2-next):
+--   s1-1-rep-identity.json                 — Stage 1 NP=2 self-determinism
+--   s2-1-per-prompt-first-div.json         — S2.1 8-prompt first-divergent layer
+--   s2-1-corrected-clean-comparison.json   — S2.1 correction (same-offset comparison)
+--   s2-2-dispatch-trace.json               — S2.2 dispatcher uniformity at NP=2/4/8
+--   s2-3-op-level-localization.json        — S2.3 op-level localization (FA + MMQ)
+--
+-- Hardware envelope:
+--   - 2× Quadro RTX 6000 (sm_75 / TU102), 24 GiB each, NVLINK
+--   - HBM 624 GB/s per-GPU, 1.25 TB/s aggregate
+--   - FP16 tensor-core peak 130.5 TFLOPs per-GPU, 261 TFLOPs aggregate
+--   - fp16_mma_available=true; new_mma_available=false; int8_mma_available=true
+--
+-- Out of scope: Vulkan backend, Mamba / other recurrent stacks,
+-- quantization changes to the target weights, cross-host parity.
+
+-- ============================================================================
+-- Types
+-- ============================================================================
+
+enum NPMode { np1 | np2 | np4 | np8 }
+enum LayerType { linear_attn | full_attention | mtp_head }
+enum ResidualStoragePrecision { f32_storage | f16_storage }
+enum KernelTemplate {
+    wmma_f16_case_128_128_8_half |
+    mmq_x_8_nwarps_8 |
+    delta_net_recurrent_f32_hd128_b256 |
+    other_kernel
+}
+enum DriftLevel {
+    byte_identical |
+    sub_fp32_epsilon |
+    sub_f16_precision |
+    fp16_visible |
+    fp32_visible
+}
+
+-- ============================================================================
+-- Entities
+-- ============================================================================
+
+entity HybridPipeline {
+    -- The vanilla decode forward pass of Qwen 3.5/3.6 target on sm_75.
+    -- 64 transformer + 1 MTP layer (MTP not on vanilla path at cparams.mtp=false).
+    -- n_embd=5120, head_dim_q=256, head_dim_v=128, n_heads=12, n_kv_heads=2.
+    -- FA layers at indices {3, 7, 11, 15, 19, 23, ..., 63} (full_attn_interval=4).
+    -- All other indices are linear_attn. Weights Q4_0 / Q4_0_AR16 / BF16 / F16 / F32.
+    -- KV cache Q4_0 (K + V). flash_attn enabled.
+}
+
+entity WmmaFAKernel {
+    -- The full-attention kernel template selected for sm_75 with Q4_0 KV
+    -- cache at decode shapes. Template:
+    --   ggml_cuda_flash_attn_ext_wmma_f16_case<128, 128, 8, half>
+    -- Dispatcher: ggml/src/ggml-cuda/fattn.cu:140 routes here on
+    -- sm_75 because (!new_mma_available(cc) || K->ne[0] != V->ne[0]).
+    -- Internal branch on Q->ne[1] picks cols_per_block=8 for n_tokens<=8
+    -- (fattn-wmma-f16.cu:81). Same compile-time template at NP=2/4/8.
+    -- Grid geometry varies with n_tokens (different work distribution
+    -- within the same template).
+}
+
+entity MmqKernel {
+    -- The quantized matmul kernel template for projection and FFN GEMMs
+    -- at decode shapes. ggml/src/ggml-cuda/mmq.cu + mmq.cuh.
+    -- Dispatcher: mul_mat_q_case (mmq.cuh:4175). For ne11 in {2, 4, 8}
+    -- the mmq_x_best picker converges on mmq_x=8 because ntiles_x=1
+    -- yields nparts=1 on the first iteration. Same template at all NP.
+}
+
+entity DeltaNetRecurrenceKernel {
+    -- The DeltaNet linear-attention recurrence kernel for recurrent layers.
+    -- ggml/src/ggml-cuda/delta-net.cu. Dispatch: n_tokens<=8 branch picks
+    -- threads_per_block=256 (delta-net.cu:219). Same kernel at NP∈{1,2,4,8}.
+}
+
+entity PerLayerResidual {
+    -- The l_out-<il> tensor produced at each transformer layer exit.
+    -- Shape [n_embd=5120, n_tokens=N, 1, 1] at decode. Storage precision
+    -- is F32 when N=1 (np=1 single-token path) and F16 when N>=2
+    -- (np>=2 multi-token path) per the qwen35 build graph's batch
+    -- dim threshold.
+}
+
+entity PerSlotKVCache {
+    -- Per-slot KV state for both attention paths. Logically per-slot
+    -- independent. Q4_0 dtype.
+}
+
+-- ============================================================================
+-- INVARIANTS — empirically established as of 2026-05-14
+-- ============================================================================
+
+invariant StorageBranchInvariant {
+    -- The qwen35 build graph emits the per-layer residual tensor as F32
+    -- if and only if the decode batch has n_tokens = 1 (np = 1 path);
+    -- otherwise F16. Confirmed by DFLASH_DIAG=1 stderr trace showing
+    -- t->type at each cb_eval fire. Bound by:
+    --   data/deltanet/d2-first-divergent-layer.json (notes the storage
+    --   delta as the reason NP=1 vs NP>=2 comparisons mix storage with
+    --   computational delta)
+}
+
+invariant RepDeterminismAtSameNP {
+    -- For any fixed NP > 0, fixed prompt set, fixed offset, fixed initial
+    -- KV state, two independent runs produce byte-identical per-layer
+    -- per-slot residual streams. Bound by:
+    --   data/deltanet/s1-1-rep-identity.json — 128/128 (layer × slot)
+    --   pairs byte-identical at NP=2 across 2 reps
+}
+
+invariant DispatcherTemplateUniformity_FA {
+    -- For NP in {2, 4, 8} at decode (Q->ne[1] in {2, 4, 8}) on sm_75
+    -- with head_dim=128 and Q4_0 KV cache, the FA dispatcher selects
+    -- the same kernel template:
+    --   ggml_cuda_flash_attn_ext_wmma_f16_case<128, 128, 8, half>
+    -- Bound by:
+    --   Static analysis of fattn.cu line 140 + fattn-wmma-f16.cu lines
+    --   81-104; Q->ne[1] <= 8 branch, Q->ne[0]=128 case, default precision.
+    --   Documented in data/deltanet/s2-2-dispatch-trace.json
+}
+
+invariant DispatcherTemplateUniformity_MMQ {
+    -- For NP in {2, 4, 8} at decode (src1->ne[1] in {2, 4, 8}), the MMQ
+    -- dispatcher selects mmq_x = 8 (with MMQ_NWARPS = 8). Bound by:
+    --   Static analysis of mmq.cuh:4175-4220 — mmq_x_picker loop converges
+    --   on mmq_x=8 at ne11 <= 8 because ntiles_x=1 yields nparts=1 on
+    --   first iteration. Documented in data/deltanet/s2-2-dispatch-trace.json
+}
+
+invariant DispatcherTemplateUniformity_DeltaNet {
+    -- For NP in {1, 2, 4, 8} at decode (n_tokens <= 8), the DeltaNet
+    -- kernel dispatch selects threads_per_block = 256. Bound by:
+    --   Static analysis of delta-net.cu:219 n_tokens <= 8 branch
+}
+
+invariant ProjectionGEMMSlotInvariance {
+    -- For any prompt p at slot K, the projection GEMM outputs (Qcur,
+    -- Kcur, Vcur, Qcur_normed, Kcur_normed, gate, q) at any layer L
+    -- are byte-identical across NP values when the slot K of each
+    -- NP captures the same prompt p (same offset). Bound by:
+    --   data/deltanet/s2-3-op-level-localization.json — verified at
+    --   p3 layer 3 (offset=3, NP=2 vs NP=4), p1 layer 3 (offset=1),
+    --   p0 layer 19 (offset=0). All projection inputs IDENTICAL at slot 0.
+}
+
+invariant DeltaNetSlotInvariance {
+    -- For any prompt p at slot K, the DeltaNet recurrence kernel
+    -- outputs (linear_attn_out, delta_net_fused_raw, state_in,
+    -- state_fused, new_state, qkv_mixed, linear_attn_qkv_mixed) at any
+    -- linear_attn layer are byte-identical across NP values when slot
+    -- K of each NP captures the same prompt p (same offset). Bound by:
+    --   data/deltanet/s2-3-op-level-localization.json — initial layer 0
+    --   capture at p3 offset=3 NP=2 vs NP=4: all DeltaNet outputs
+    --   IDENTICAL at slot 0
+}
+
+invariant WmmaFAShapeSensitiveAtSomeInputs {
+    -- The wmma_f16 FA kernel template <128, 128, 8, half> produces
+    -- byte-DIFFERENT slot-K output across NP values at SOME data inputs
+    -- (data-dependent), even when its Q/K/V inputs at slot K are
+    -- byte-identical and the dispatched template is identical. The
+    -- kernel violates batch-invariance internally for those inputs.
+    -- Bound by:
+    --   data/deltanet/s2-3-op-level-localization.json — p3 layer 3
+    --   flash_attn output max_abs_diff 0.000352 (device 0) / 0.000524
+    --   (device 1); p1 layer 3 flash_attn output max_abs_diff 0.000433
+    --   / 0.000332
+}
+
+invariant WmmaFAByteIdenticalAtOtherInputs {
+    -- At some data inputs the same wmma_f16 FA kernel produces
+    -- byte-IDENTICAL slot-K output across NP values. The kernel's
+    -- nondeterminism is data-dependent, not unconditional. Bound by:
+    --   data/deltanet/s2-3-op-level-localization.json — p0 layer 19
+    --   flash_attn-1019 and flash_attn-2019 max_abs_diff = 0
+}
+
+invariant MmqShapeSensitiveViaAmplification {
+    -- The MMQ kernel mmq_x=8 template amplifies sub-fp32-epsilon
+    -- upstream noise differently at M=2 vs M=4, producing byte-different
+    -- output at slot K. Visible particularly in FFN GEMMs (ffn_up_gate,
+    -- ffn_down) where it amplifies a 5.96e-8 input difference to 0.006
+    -- at the layer's final residual. Bound by:
+    --   data/deltanet/s2-3-op-level-localization.json — p0 layer 19
+    --   qkv_gated → flash_attn_reshaped → kqv_wo → ffn_up_gate → ffn_down
+    --   chain shows amplification from 5.96e-8 to 0.006 over the FFN MMQs
+}
+
+invariant DriftCascadeAfterFirstDivergence {
+    -- Once any per-device intermediate diverges at a layer L, all
+    -- downstream computations within layer L diverge (kqv_wo,
+    -- attn_out_with_input, attn_combined via NCCL allreduce,
+    -- ffn_up_gate, ffn_down, ffn_with_inp, l_out). The drift then
+    -- propagates forward to all subsequent layers' residuals. Bound by:
+    --   data/deltanet/s2-3-op-level-localization.json — p1, p3 layer 3
+    --   cascade pattern visible at all per-device il_cb captures (1003,
+    --   2003) and the layer-final tensors (attn_combined, l_out)
+}
+
+invariant PerPromptDriftSiteVariability {
+    -- The first-divergent layer at NP=2 vs NP=4 is data-dependent.
+    -- Modal case for the production prompt set: layer 3 (first FA layer).
+    -- Outlier: p0 at layer 19 (5th FA layer). Two prompts (p6, p7) show
+    -- no drift at the first decoded token. Bound by:
+    --   data/deltanet/s2-1-per-prompt-first-div.json. Distribution:
+    --   FA-path-source = 5/8 prompts (p1, p2, p3, p4, p5 at layer 3;
+    --   p0 at layer 19); no drift at first decoded token = 2/8 (p6, p7)
+}
+
+invariant TokenLevelGreedyArgmaxNP1_NP2_Identity {
+    -- At the production prompt set (8 prompts × 64 generated tokens),
+    -- greedy argmax of final logits at NP=1 equals greedy argmax at
+    -- NP=2 for every position. Bound by:
+    --   data/phase_dflash_t8/gate7-token-diff-summary.json (NP=1 vs
+    --   NP=2 byte-identical at token level)
+}
+
+invariant TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift {
+    -- At the production prompt set, greedy argmax at NP=4 equals greedy
+    -- argmax at NP=8 for 3 of 4 drifting prompts, differs from NP=1/2
+    -- at specific positions per prompt. Outlier: p2 picks up additional
+    -- NP=8-only drift past token 50. Source: per-layer accumulation of
+    -- intra-decode drift from FA and MMQ kernel shape-sensitivities.
+    -- Bound by:
+    --   data/phase_dflash_t8/gate7-token-diff-summary.json combined with
+    --   WmmaFAShapeSensitiveAtSomeInputs and MmqShapeSensitiveViaAmplification
+}
+
+-- ============================================================================
+-- NON-INVARIANTS — explicitly NOT held at the current state
+-- ============================================================================
+
+invariant NotHeld_FA_BatchInvariance {
+    -- wmma_f16 FA kernel batch-invariance (slot-K output identical
+    -- across NP at any input) does NOT hold. Counterexample:
+    -- WmmaFAShapeSensitiveAtSomeInputs.
+}
+
+invariant NotHeld_MMQ_BatchInvariance {
+    -- MMQ kernel batch-invariance does NOT hold. Counterexample:
+    -- MmqShapeSensitiveViaAmplification.
+}
+
+invariant NotHeld_LayerLevelByteIdentity_NP2_NP4 {
+    -- For production prompt set, byte-identity of per-layer per-slot
+    -- residuals across NP=2 and NP=4 does NOT hold at any layer beyond
+    -- the first-divergent one. Counterexample: per-prompt first-divergent
+    -- layer in PerPromptDriftSiteVariability.
+}
+
+invariant NotHeld_TokenLevelDeterminism_NP4 {
+    -- At NP=4, greedy argmax at the production prompt set differs from
+    -- NP=2 at specific positions. Counterexample:
+    -- TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift (delta is
+    -- "deterministic drift" across reps but non-zero vs NP=2).
+}
+
+-- ============================================================================
+-- OPEN INVARIANTS — to confirm with additional capture
+-- ============================================================================
+
+invariant Open_FA_SourceClass_OtherPrompts {
+    -- p2, p4, p5 at layer 3 follow the same FA-source signature as
+    -- p1, p3 (FA kernel produces visibly different slot-0 output).
+    -- To verify: re-run S2.3 at offsets {2, 4, 5} and check that
+    -- flash_attn-1003 / flash_attn-2003 differs at slot 0.
+}
+
+invariant Open_P0_EarlyFALayersByteIdentical {
+    -- For p0, the FA kernel output at layers 3, 7, 11, 15 is
+    -- byte-identical across NP=2 and NP=4 at slot 0 (i.e., p0 truly
+    -- avoids FA shape-sensitivity until layer 19 specifically).
+    -- To verify: re-run S2.3 at offset=0 with target_layers including
+    -- the per-device il_cb values for layers 3, 7, 11, 15.
+}
+
+invariant Open_FA_InternalMechanism {
+    -- The specific mechanism inside wmma_f16_case<128, 128, 8, half>
+    -- that breaks batch-invariance — candidates: parallel_blocks
+    -- reduction across blockIdx (when parallel_blocks > 1), cross-warp
+    -- __syncthreads ordering, KQ_acc warp-shuffle order, dst_meta
+    -- partial-sums combining with atomic add. To verify: read kernel
+    -- internals at fattn-wmma-f16.cuh.
+}
+
+invariant Open_MMQ_InternalMechanism {
+    -- The specific mechanism inside mmq.cuh's mul_mat_q at mmq_x=8
+    -- that amplifies upstream noise differently at M=2 vs M=4.
+    -- Candidates: stream-K reduction order, shared-memory tile loading
+    -- order, tensor-core fragment accumulation per-block when
+    -- ntiles_x=1 but different ne11. To verify: read kernel internals.
+}
+
+-- ============================================================================
+-- DECLARATIONS for cross-stack references
+-- ============================================================================
+
+deferred TestDeltaNetD1Capture
+deferred TestDeltaNetS23OpCapture
+deferred TestNPValidityVanilla
+deferred FattnWmmaF16Case_128_128_8_half
+deferred MulMatQCase_mmq_x_8
