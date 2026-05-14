@@ -1,0 +1,129 @@
+{
+  "block_size": 4,
+  "n_prompts": 8,
+  "drafter_path": "/opt/models/qwen36-27b-dflash",
+  "target_path": "/opt/models/hf-cache/models--Intel--Qwen3.6-27B-int4-AutoRound/snapshots/a00e481620facd57da3a86eaa5c90e2e811d1aac",
+  "vllm_drafter_class": "DFlashQwen3ForCausalLM",
+  "per_prompt": [
+    {
+      "prompt_idx": 0,
+      "prompt": "Explain the difference between latent diffusion and pixel-space diffusion in two sentences.",
+      "n_prompt_tokens": 15,
+      "bonus_token_id": 271,
+      "n_target_layers_captured": 5,
+      "logits_shape": [
+        4,
+        248320
+      ],
+      "hidden_shape": [
+        4,
+        5120
+      ]
+    },
+    {
+      "prompt_idx": 1,
+      "prompt": "Summarize the plot of King Lear in one paragraph.",
+      "n_prompt_tokens": 12,
+      "bonus_token_id": 271,
+      "n_target_layers_captured": 5,
+      "logits_shape": [
+        4,
+        248320
+      ],
+      "hidden_shape": [
+        4,
+        5120
+      ]
+    },
+    {
+      "prompt_idx": 2,
+      "prompt": "Write Python code that fits a 2nd-degree polynomial to a list of (x, y) pairs.",
+      "n_prompt_tokens": 22,
+      "bonus_token_id": 271,
+      "n_target_layers_captured": 5,
+      "logits_shape": [
+        4,
+        248320
+      ],
+      "hidden_shape": [
+        4,
+        5120
+      ]
+    },
+    {
+      "prompt_idx": 3,
+      "prompt": "What are the main causes of the Peloponnesian War?",
+      "n_prompt_tokens": 14,
+      "bonus_token_id": 271,
+      "n_target_layers_captured": 5,
+      "logits_shape": [
+        4,
+        248320
+      ],
+      "hidden_shape": [
+        4,
+        5120
+      ]
+    },
+    {
+      "prompt_idx": 4,
+      "prompt": "Translate to French: The early-morning fog lingered over the harbour until the trawlers cut through it.",
+      "n_prompt_tokens": 23,
+      "bonus_token_id": 271,
+      "n_target_layers_captured": 5,
+      "logits_shape": [
+        4,
+        248320
+      ],
+      "hidden_shape": [
+        4,
+        5120
+      ]
+    },
+    {
+      "prompt_idx": 5,
+      "prompt": "List five practical steps for reducing memory allocations in a hot inner loop in Rust.",
+      "n_prompt_tokens": 16,
+      "bonus_token_id": 271,
+      "n_target_layers_captured": 5,
+      "logits_shape": [
+        4,
+        248320
+      ],
+      "hidden_shape": [
+        4,
+        5120
+      ]
+    },
+    {
+      "prompt_idx": 6,
+      "prompt": "Describe the role of telomeres in cellular aging.",
+      "n_prompt_tokens": 11,
+      "bonus_token_id": 271,
+      "n_target_layers_captured": 5,
+      "logits_shape": [
+        4,
+        248320
+      ],
+      "hidden_shape": [
+        4,
+        5120
+      ]
+    },
+    {
+      "prompt_idx": 7,
+      "prompt": "Write a haiku about a printing press.",
+      "n_prompt_tokens": 9,
+      "bonus_token_id": 271,
+      "n_target_layers_captured": 5,
+      "logits_shape": [
+        4,
+        248320
+      ],
+      "hidden_shape": [
+        4,
+        5120
+      ]
+    }
+  ]
+}
