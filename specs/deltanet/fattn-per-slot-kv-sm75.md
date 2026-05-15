@@ -814,3 +814,39 @@ For "complete determinism" beyond this scope, the next workstream needs to eithe
 1. Add a fp32-`frag_c_VKQ` wmma kernel variant and route concurrent batched-decode through it.
 2. Find and fix the multi_row_kernel cache-leakage bug, then route concurrent through that.
 3. Server-config: research how to actually disable cont-batching at the server level (small `--batch-size` + `--ubatch-size` tweaks were probed but didn't have the expected effect).
+
+---
+
+### 15.14 --no-cont-batching probe (2026-05-15 fourth iteration)
+
+`--no-cont-batching` (existing server flag) tested. Result: PARTIAL improvement, not full closure.
+
+| NP | Slot 0 | Slot 1 | Slot 2 | Slot 3 | Slot 4–7 |
+|---|---|---|---|---|---|
+| 1 (baseline) | `0d19ddd1` | — | — | — | — |
+| 2 concurrent | `baf9fab4` DIVERGE | `0d19ddd1` **MATCH** | — | — | — |
+| 4 concurrent | `780f5038` | `c9441eea` | `81bb2a43` | `780f5038` | — |
+| 8 concurrent | 4 distinct outputs across 8 slots | | | | |
+
+At NP=2, slot 1 matches NP=1 byte-identically. Slot 0 still diverges. Intra-batch invariance (slot 0 = slot 1) is NOT held — different slots produce different outputs even with cont-batching disabled.
+
+**Diagnosis**: server-config disabling doesn't fully eliminate concurrent processing. Slots are still processed in some interleaved fashion (the server thread pools and CUDA pool state differ per request order). The first-processed slot has different state (cuda graph cache empty, pool fresh) than the second-processed slot.
+
+For "complete determinism" we'd need:
+- NP-invariant CUDA graph topology (currently topology keys on Q->ne[3]*ne[2]*ne[1] which changes with parallel/ctx server settings).
+- NP-invariant memory pool state (currently each request reshuffles cuda_pool_alloc returns).
+- NP-invariant kernel dispatch (every op's tile selection must not depend on shape).
+
+These are deeper system-wide changes, each its own multi-week workstream.
+
+### 15.15 Session close — practical recommendation
+
+The FA-side work has been exhaustively explored (4 iterations across 2 session segments). Best achievable closure within FA scope:
+
+- **Production route**: `wmma_f16-pb1<256,256,8,float>` under `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1`.
+- **What's bound**: Sequential NP-cross byte-identity at any NP per slot (cache-leakage probe + slot-pin probe + dispatch unit test all GREEN).
+- **What's NOT bound**: Concurrent batched-decode at NP>1. Even with `--no-cont-batching`, slot ordering causes per-slot divergence.
+
+The complete-determinism goal requires touching non-FA ops (matmul dispatch, RoPE, RMSNorm reductions) AND deeper server/CUDA state (graph topology, pool allocation, scheduling order). Each is a separate workstream.
+
+**Recommendation**: stop the determinism-hunt loop here. The FA piece is delivered with clear partial closure. A new explicit phase (`PHASE_NON_FA_DETERMINISM` or similar) would be needed to attack the broader scope with appropriate planning.
