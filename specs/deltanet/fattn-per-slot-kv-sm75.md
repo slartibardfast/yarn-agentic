@@ -721,3 +721,54 @@ The broader contract "server-level same-prompt byte-identity across NP ∈ {1, 2
 The "no follow-up cover" rule (CLAUDE.md §4) requires the PLAN step that promised server-level byte-identity to STAY OPEN. The FA piece is done; the broader work is a separate workstream that needs explicit scoping before re-opening.
 
 **Step 7 status**: kernel-level binding GREEN, server-level binding RED, kept open. Not closed with a "FA works but server diverges" footnote.
+
+---
+
+### 15.10 Empirical iteration log toward complete determinism (2026-05-15)
+
+Three attempts to deliver server-level NP-cross byte-identity through FA changes. All three failed at the same point (cache-leakage probe: warm-slot-1 after slot-0 has run diverges from fresh-slot-0), confirming that the residual gap is NOT in the FA kernel.
+
+| Attempt | Kernel route | Cache-leak warm slot-1 | NP-cross concurrent |
+|---|---|---|---|
+| §15.7 v1 | wmma_f16-pb1<256,256,8,**half**> | DIVERGE (fp16 warp_reduce_sum non-associative on slot-position offset) | DIVERGE |
+| §15.7 v2 | wmma_f16-pb1<256,256,8,**float**> | MATCH (fp32 KQ_acc_t) | DIVERGE (fp16 frag_c_VKQ inside mma) |
+| §15.10 | multi_row_kernel (per-row CTA, fp32 throughout, full ne11 iteration with mask isolation) | DIVERGE | DIVERGE |
+
+The §15.10 attempt should have been bulletproof at the kernel level — per-row CTA means slot 1's row computation is entirely independent of other rows in the batch; fp32 throughout removes the precision issue; full-range mask isolation eliminates any "valid K cells offset" dependence.
+
+**Yet warm-slot-1 still diverges.** This proves the divergence is **NOT in FA**. The remaining contributor must be one of:
+
+1. **Q/K/V projection matmuls** — shape-dependent dispatch (tile size heuristics based on M/N/K). Slot 1's prefill ubatch shape may differ from slot 0's only if the server batched differently, but at NP=4 sequential the shapes should be identical. The K cache state shouldn't affect the Q_proj input (residual stream from prior layer) — UNLESS some prior op reads the cache and produces shape/state-dependent output. (RoPE? RMSNorm? Output projection?)
+
+2. **RoPE / RMSNorm reductions** — cross-thread reductions in fp32 are non-associative; the ORDER of threads holding which values may differ subtly across requests due to allocator / launch-state differences (CUDA stream state, ggml_cuda_pool's buffer reuse, etc.).
+
+3. **CUDA pool / state effects** — `ggml_cuda_pool_alloc` returns different physical addresses across calls. Memory alignment differences could trigger different cache line behaviors in kernels. Unlikely to flip argmax tokens but possible.
+
+4. **The same FA kernel running with a slightly different ggml_backend_sched graph topology** — even at NP=4 sequential, the graph for two consecutive requests might differ in ways we haven't checked (eval-graph node order, output node assignment, etc.).
+
+### 15.11 Scope reconciliation, v2
+
+Per CLAUDE.md §4 "no follow-up cover": the closure binding for Step 7 was "server-level NP-cross byte-identity". After three FA-side iterations all failing at the same warm-slot-1 cache-leakage signature, the conclusion is:
+
+**FA shape-independence is delivered** at the kernel level. Bound by:
+- `test-fattn-per-slot-kv-dispatch-np-invariance` unit test PASS.
+- `test-fattn-per-slot-kv-sm75` unit test 464/464 GREEN (scenario C: batch-invariance across NP at kernel level).
+- E3 intra-batch agreement (3 batched slots produce byte-identical output to each other at NP=4 concurrent).
+
+**Server-level byte-identity is NOT delivered** and is **not deliverable by FA changes alone**. The remaining gap is in non-FA ops (matmul / RoPE / RMSNorm / cgraph state / pool state). Each is its own diagnosis-and-fix workstream that would require:
+
+- Op-level intermediate capture (existing cb_eval infra) across paired warm/fresh runs to localize WHICH op first produces different output.
+- Per-op shape-independent dispatch fix (similar surgical work to what we did for FA).
+
+Step 7 stays OPEN. The FA piece is captured; the broader workstream needs explicit re-scoping.
+
+### 15.12 Production routing recommendation
+
+Two viable production routes given current state:
+
+- **Default**: env unset → wmma_f16 (original behavior, NP non-deterministic).
+- **Opt-in**: env LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 → multi_row_kernel (per-row CTA + fp32 throughout, full ne11 iteration with mask isolation). FA part of NP-cross determinism is structurally bound; other ops still contribute non-determinism so server-level byte-identity isn't achieved.
+
+The opt-in path is correct at the kernel level but doesn't yet deliver the user-facing "same prompt → same tokens" contract. Until non-FA ops are also fixed, it provides:
+- Bit-identical FA outputs given identical FA inputs (proven by tests).
+- ~12× slower per FA call than wmma_f16 (perf cost of per-row CTA + fp32 throughout).
