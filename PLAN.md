@@ -544,3 +544,35 @@ Diagnostic probe (`scripts/probe-np-determinism-sources.sh`) findings:
 Remaining divergence is upstream of FA + non-FA shape-dependent ops (Q/K/V matmuls, RoPE, RMSNorm) and possibly cgraph cache warm-up state at NP>1. See `specs/deltanet/fattn-per-slot-kv-sm75.md §15.8 / §15.9`.
 
 **Step 7 stays OPEN per CLAUDE.md §4 "no follow-up cover"**. The FA piece of NP determinism is delivered; server-level byte-identity at NP>1 requires shape-independence in non-FA ops too — a separate workstream that needs explicit scoping before re-opening.
+
+---
+
+### Second iteration (2026-05-15 session continuation, /loop fired)
+
+Diagnostic probes localized the FA-vs-non-FA divergence boundary:
+
+- `probe-cgraph-effect.sh` — disabling CUDA graph capture (`GGML_CUDA_DISABLE_GRAPHS=1`) does NOT fix divergence. Not graph state.
+- `probe-slot-pin.sh` — explicitly pinning slot IDs at request time PASSES (slot 0 + slot 1 both match NP=1, byte-identical) when each slot is the FIRST one used on a fresh server. Not slot-position dependence per se.
+- `probe-cache-leakage.sh` — slot 1 AFTER slot 0 has run **diverges**; slot 0 AFTER slot 1 has run **matches NP=1**. Asymmetric. Established that "cache state from a prior request affects subsequent slot's output".
+- `probe-chunk-alignment-hypothesis.sh` — slot 1 at different offsets (modulo FATTN_KQ_STRIDE) produces the SAME divergent output. Rules out fp16-warp-reduce-thread-position hypothesis at the simple level.
+
+FA-side iterations attempted (all in `specs/deltanet/fattn-per-slot-kv-sm75.md §15.10`):
+1. wmma_f16-pb1<256,256,8,half>: warm-slot-1 DIVERGES (fp16 warp_reduce_sum non-associative).
+2. wmma_f16-pb1<256,256,8,float>: warm-slot-1 MATCHES; concurrent batched-decode DIVERGES (fp16 frag_c_VKQ inside mma).
+3. multi_row_kernel (per-row CTA + fp32 throughout + full ne11 with mask): warm-slot-1 STILL DIVERGES.
+
+The §15.10/3 attempt should have been bulletproof at FA correctness level. That it still diverges proves the gap is NOT in FA.
+
+### Next iteration plan (for /loop pickup)
+
+Per `specs/deltanet/fattn-per-slot-kv-sm75.md §15.11`: the residual divergence is in non-FA ops. To make further progress on "complete determinism":
+
+1. Build a cb_eval-based probe that captures per-layer residual streams for slot 1 at warm vs fresh cache state. Use existing `examples/dflash-extract/` infrastructure as scaffolding.
+2. Compare layer outputs byte-for-byte. The FIRST divergent layer names the upstream culprit.
+3. Within that layer, capture op-level outputs (existing infra: cb_eval matches by tensor name suffix). Localize WHICH op (matmul / RoPE / RMSNorm / etc) first produces different output.
+4. Fix THAT op the way we fixed FA: identify shape dependence → force NP-independent dispatch.
+5. Repeat until cache-leakage probe + NP-cross harness PASS.
+
+This is potentially a long sequence (each non-FA op may have its own determinism breaker). Per CLAUDE.md §8 estimate-in-tokens: each op fix ~30k–80k tokens. Could be 10+ ops × 50k = 500k+ tokens of work for full coverage.
+
+The /loop is set to fire every 4 minutes; each iteration can target one op localization + fix.
