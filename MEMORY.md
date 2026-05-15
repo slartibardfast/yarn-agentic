@@ -5613,3 +5613,26 @@ All 10 sub-steps GREEN in a single session on `production/2026-q2-next`:
 Side fix in the same work: MMQ dispatcher's y-pointer arithmetic at mmq.cuh:4006 used `qk*sizeof(block_q8_1_mmq)/(4*QK8_1*sizeof(int))` which integer-truncates wrongly at qk<32. Re-anchored on `MMQ_ITER_K=256` so y-offset = `kb_iter * y_ints_per_kb0 = kb_iter * 72` for all quant types. This was a latent bug — Q4_0_AR16 was just the first qk<32 quant to be enabled for MMQ.
 
 Phase B (MMVQ for AR16) is OPTIONAL. The production env-gated path `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1` doesn't use MMVQ — it forces MMQ for all batch sizes. MMVQ matters only for the DEFAULT dispatch (without env) at small batch.
+
+## 2026-05-15 — PHASE_MMQ_Q4_0_AR16 Phase B CLOSED
+
+All 4 sub-steps GREEN in a single session continuation:
+
+- B.1 `ggml_cuda_mmvq_type_supported`: AR16 added
+- B.2 `vec_dot_q4_0_ar16_q8_1` + `mul_mat_vec_q4_0_ar16_q8_1_cuda` (instance file) — correctness binding: cosine 0.999988 (≥ 0.9999), NMSE 2.3e-05 (≤ 1e-4) vs CPU fp32 reference at M=1
+- B.3 mmvq.cu dispatch switch case
+- B.4 shape-invariance binding — row-0 of dst BYTE-IDENTICAL across M ∈ {1, 2, 4, 8} under MMVQ path (env unset)
+
+Two notable findings:
+
+1. **MMQ row-0 ≡ MMVQ row-0 byte-for-byte** on the same prompt. Phase A's A.10 test row 0 = Phase B's row 0 to the last bit (e.g. `+0.865397 +1.219897 +0.636013 -0.787369 ...` matching across both dispatch paths). The two completely independent code paths converge bitwise on AR16 — strong evidence that the kernel arithmetic and the dispatch layouts are correct AND symmetric.
+
+2. **Latent `kby` truncation bug** in `mmvq-templates.cuh` at the same logical class as the MMQ one closed in Phase A.4. The template had `kby = kbx * (qk/QK8_1)` which integer-truncates to 0 for `qk < QK8_1` types (AR16: 16/32=0). Rewritten as `kby = (kbx * qk) / QK8_1`. Mathematically identical for all qk≥QK8_1 types (Q4_0/Q4_1/Q5_0/Q5_1/Q6_0/Q8_0/all Q*_K/IQ*); only AR16 reaches the new case. Same fix pattern applied to the fused `k_fused_mul_mat_vec_q` variant. Regression: all Phase A unit tests still GREEN.
+
+AR16 vec_dot impl notes (vecdotq.cuh):
+- VDR=2: each thread handles one full AR16 block (2 ints, 16 K positions).
+- Adjacent threads/blocks share one Q8_1 block — pick the half via `kbx & 1`.
+- AR16's even/odd-nibble convention unpacked to linear-K via `__byte_perm` (0x5140 / 0x7362) before dp4a — same pattern as the load_tiles unpack in Phase A.3.
+- Half-sum for -8 correction computed inline via `__dp4a(0x01010101, u[i], ...)`: Q8_1's stored `s` covers 32 K, but each AR16 block sees only 16 K, so we re-sum the activation int8s for our half.
+
+Phase C (cuBLAS algo pinning for F16/BF16/F32 matmuls) is now the active critical-path phase for full NP-cross byte-identity under the production env stack.
