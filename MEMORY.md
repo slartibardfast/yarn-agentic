@@ -5674,3 +5674,24 @@ Candidate upstream culprits (to investigate in order):
 Test artifact: `/tmp/production-np-determinism/run-20260515T220247`.
 Kernel source: `ggml/src/ggml-cuda/mul-mat-f16-pinned.{cu,cuh}`.
 F32 still on cublasSgemm (display-identical with ULP-level differences in 50/64); custom F32 GEMM is a Phase C subtask.
+
+## 2026-05-15 — Phase CX residual gap PROVEN: FATTN wmma frag_c_VKQ inter-row contamination
+
+Unit test `tests/dflash-speculative/test-fattn-per-slot-kv-ncols-invariance.cpp` directly probes the spec's §15.13 claim. Setup: production shape (Dq=Dv=256, n_kv_heads=4, N_HEADS_Q=24, N_KV=256). Fixed row-0 Q, K, V, mask-row-0. Vary `n_tok ∈ {1, 2, 4, 8}` with random non-zero content in rows 1..n_tok-1 (different per call). Bit-compare row 0 output across `n_tok` values.
+
+Result: **FAIL — 5888/6144 floats differ, max |Δ| = 9.6e-2**. Row 0's first 8 displayed floats look identical to 6 decimals but the full row diverges substantially. The wmma_f16-pb1<256,256,8,float> kernel's row-0 output is NOT invariant to other rows' Q/mask content.
+
+This is the binding RED test for whichever Phase CX FA fix lands. Fixes the spec's §15.13 / §15.10 prior-work conclusion empirically.
+
+Hypotheses for mechanism (ordered by spec likelihood):
+1. WMMA fp16 `frag_c_VKQ` accumulator on Turing (m32n8k16 fragment) — line 81 of fattn-wmma-f16.cuh. fp16 fragment internals may share rounding resources across cells.
+2. `warp_reduce_max` / `warp_reduce_sum` in softmax — should be per-row at ncols=8 nwarps=8, but verify.
+3. Shared SMEM buffer reuse (`KQ` staging) — possible cross-row write-then-read race.
+
+Fix candidates:
+- **Option A**: fp32 frag_c_VKQ + parallel fp32 SMEM staging. ~50 LOC change in fattn-wmma-f16.cuh. SMEM doubles for VKQ stage (~16→24 KiB, still under 32 KiB/CTA 2-occupancy budget).
+- **Option B**: per-row CTA wmma template (cols_per_block=1 single-warp). Stronger structural guarantee; bigger rewrite.
+
+Production NP-determinism harness result with current state (Phase A+B+C+CX.1 done): 5/14 slots byte-identical, pattern shifting across runs. The shifting pattern + the new ncols-invariance test together establish the residual is FA inter-row, NOT scheduler-level jitter.
+
+Tracked: Phase CX.A in PHASE_MMQ_Q4_0_AR16.md §6b.
