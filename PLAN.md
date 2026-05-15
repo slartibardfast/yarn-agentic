@@ -576,3 +576,23 @@ Per `specs/deltanet/fattn-per-slot-kv-sm75.md §15.11`: the residual divergence 
 This is potentially a long sequence (each non-FA op may have its own determinism breaker). Per CLAUDE.md §8 estimate-in-tokens: each op fix ~30k–80k tokens. Could be 10+ ops × 50k = 500k+ tokens of work for full coverage.
 
 The /loop is set to fire every 4 minutes; each iteration can target one op localization + fix.
+
+---
+
+### Third iteration (session continuation, /loop fire 2 — multi_row → wmma fp32)
+
+Hypothesis test for multi_row: kernel claimed to be more NP-invariant than wmma but EMPIRICALLY failed cache-leakage probe. Has its own bugs.
+
+Reverted production route back to `wmma_f16-pb1<256, 256, 8, float>`. Verified:
+- `probe-cache-leakage.sh`: ALL 4 configs byte-identical.
+- `probe-slot-pin.sh`: slot 0 = slot 1 = NP=1, byte-identical.
+- `test-fattn-per-slot-kv-dispatch-np-invariance`: PASS.
+
+Remaining gap: concurrent batched-decode (ne[1]>1 with multiple slots in one FA call). Argmax flips after a few decode steps. Sourced from fp16 frag_c_VKQ inside the wmma mma instruction.
+
+Tried `--ubatch-size 1`: broke model output entirely (looped "the the the"). `--ubatch-size 16`: still diverged but more consistent (intra-batch agreement at lower NP). The ubatch tweak doesn't actually prevent concurrent batched-decode at runtime.
+
+Step 7 marked `[~]` (partial) per CLAUDE.md §5: sequential NP-cross GREEN, concurrent batched-decode RED, gap named and tracked. See `specs/deltanet/fattn-per-slot-kv-sm75.md §15.13` for the full scope summary and the three possible next-workstream paths:
+1. Add fp32-`frag_c_VKQ` wmma variant + parallel template family.
+2. Find and fix the multi_row_kernel cache-leakage bug.
+3. Server-config to actually disable concurrent batched-decode (deeper than `--ubatch-size`).
