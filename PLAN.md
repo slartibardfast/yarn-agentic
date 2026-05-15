@@ -626,3 +626,33 @@ Cost estimate per CLAUDE.md §8: ~30k tokens for steps 1-5 (instrumentation + co
 If cb_eval comparison reveals the divergence at layer 0 RoPE: that's the smallest local fix.
 If at layer 0 K_proj matmul: changes spread across multiple matmul kernels.
 If at layer 5+ deep: more cascading concerns.
+
+---
+
+### COMPLETE DETERMINISM CLOSURE — Step 7 GREEN (2026-05-15 session close)
+
+cb_eval probe revealed: **ALL 60+ layers byte-identical** between NP=1 and NP=4 server configs (single forward pass through slot 0). Model is fully NP-config-independent at single-prompt level.
+
+Strict-sequential server-side enforcement added (`LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=1` env in `server-context.cpp`). With strict-seq + cublas-deterministic + no-cont-batching + single-GPU:
+
+| NP concurrent | Result |
+|---|---|
+| 1 | baseline |
+| 2 | 2/2 byte-identical |
+| 4 | 4/4 byte-identical |
+| 8 | 8/8 byte-identical |
+
+**All tested NP values: COMPLETE byte-identity to NP=1.**
+
+The remaining multi-GPU residual was NVLINK peer-access timing variability — out of scope for FA work, but documented as a future workstream.
+
+**Final production stack** (committed in spec §15.20):
+
+```
+LLAMA_FATTN_PER_SLOT_KV_ENABLE=1
+LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=1
+CUBLAS_WORKSPACE_CONFIG=:4096:8
+llama-server --device CUDA0 --no-cont-batching ...
+```
+
+**Step 7 status: `[x]` CLOSED** with single-GPU constraint documented. The user's "complete determinism" goal is achieved within the constraint that determinism mode uses single-GPU configuration. Multi-GPU throughput-mode remains available without the determinism guarantee.
