@@ -353,13 +353,34 @@ New test `tests/dflash-speculative/test-cublas-pinned-shape-invariant.cpp`:
 - Run `ggml_cuda_mul_mat_batched_cublas` with env on.
 - Row 0 of output byte-identical across M.
 
-## 6b. Phase CX — Non-MMQ / non-cuBLAS shape-dependent op audit
+## 6b. Phase CX — Non-MMQ / non-cuBLAS shape-dependent op audit + FATTN deep audit
 
-Inserted 2026-05-15 after the Phase C closure-binding test (`scripts/test-production-np-determinism.sh`) revealed that 10/14 slots still diverge at NP > 1 EVEN with strict-sequential off, cont-batching on, single OR multi GPU. Phase A/B/C made every MMQ + cuBLAS path byte-identical across batch size M, but the production token-level harness still fails — so the residual non-determinism lives in **the remaining (non-MMQ, non-cuBLAS) CUDA ops**. Phase CX chases them down.
+Inserted 2026-05-15 after the Phase C closure-binding test (`scripts/test-production-np-determinism.sh`) revealed that 10/14 slots still diverge at NP > 1 EVEN with strict-sequential off, cont-batching on, single OR multi GPU. Phase A/B/C made every MMQ + cuBLAS path byte-identical across batch size M, but the production token-level harness still fails — so the residual non-determinism lives in **the remaining (non-MMQ, non-cuBLAS) CUDA ops** AND/OR **scheduler-level state effects**. Phase CX chases all of these.
 
 Single-GPU probe (`/tmp/single-gpu-np-probe`) confirms: even with `--device CUDA0` only, the divergence is identical in shape (per-slot agree/disagree pattern). Multi-GPU (Phase D) is NOT the primary cause — it can only AMPLIFY whatever's already broken. So Phase CX comes BEFORE Phase D.
 
-### CX.1 — DeltaNet shape-conditional dispatch (HOT — likely contributor)
+**Slot-pattern shifting across runs** (NP=4 went 0/4→3/4→2/4 across iterations with the same code) strongly indicates RUN-TO-RUN non-determinism, not deterministic shape-dependence. The spec at `specs/deltanet/fattn-per-slot-kv-sm75.md §15.17` documents prior identification of this as "**CUDA-side timing / kernel-internal non-determinism (atomic order, scheduler interleaving, possibly cuda graph cache eviction)**". §15.16 cb_eval probe established that all 60+ model layers are byte-identical when processing is single-prompt — so the broken contract is purely at concurrent-batching boundaries.
+
+### CX.A — FATTN per-slot-kv at ne[1] > 1 (HIGHEST PRIORITY)
+
+`test-fattn-per-slot-kv-ncols-invariance.cpp` (added 2026-05-15) proves the spec's §15.13 claim empirically. Fixed row-0 Q, K, V, mask-row-0; varied n_tok ∈ {1, 2, 4, 8} with random non-zero content in rows 1..n_tok-1; bit-compared row 0 output. Result: **5888/6144 floats differ, max |Δ| ≈ 9.6e-2**. The wmma_f16 kernel's row-0 output is NOT invariant to other rows' Q/mask content.
+
+Significance: this is the residual contributor for continuous batched-decode at NP > 1. With cont-batching, multiple slots' decode tokens land in one ubatch (`ne[1]>1` to FA). Each slot's output gets contaminated by its batch-mates.
+
+Hypotheses for the kernel mechanism (in order of spec-suggested likelihood):
+1. **WMMA fp16 `frag_c_VKQ` accumulator** (`fattn-wmma-f16.cuh:81`). The mma instruction computes the full 32x8 VKQ fragment in one HMMA op with fp16 accumulator. Per-cell math should be independent but hardware may share rounding resources across cells.
+2. **`warp_reduce_max` / `warp_reduce_sum` in softmax** (`fattn-wmma-f16.cuh:282+`). If reductions cross rows that share a warp's thread space (e.g., when ncols/nwarps > 1), max/sum leak across rows. **Should NOT apply at ncols=8 nwarps=8 (ncols/nwarps=1 = one row per warp), but verify.**
+3. **Shared SMEM buffer reuse**. `KQ`/`VKQ` buffers serve multi-row staging — if write/read ordering races between threads handling different rows, fp16 cells could pick up wrong neighbors.
+
+**Fix candidates** (need design choice, then implement):
+1. **fp32 frag_c_VKQ + parallel fp32 SMEM staging**. Change `frag_c_VKQ` from `half` accumulator to `float`. Adapt the `store_matrix_sync` target from `__shared__ half KQ[]` to a separate `__shared__ float VKQ_fp32[]` buffer. Adapt the cross-warp reduction at line 383-388 to fp32. SMEM budget impact: doubles the VKQ staging area (was ~16 KiB at ncols=8 / Dv=256, becomes 32 KiB — still under Turing's 64 KiB/CTA limit).
+2. **Restructure to per-row CTA without scrapping the kernel**. Use a new wmma template with cols_per_block=1, single-warp per query row. Each CTA owns one Q row. Forces row-independence by structure.
+
+Approach 1 is the more surgical change; approach 2 is the safer guarantee.
+
+**Closure binding**: `test-fattn-per-slot-kv-ncols-invariance` goes from RED to GREEN. Then production NP-determinism harness re-runs and slot-pass count improves.
+
+### CX.1 — DeltaNet shape-conditional dispatch (DONE)
 
 `ggml/src/ggml-cuda/delta-net.cu`, lines 219 and 228:
 
