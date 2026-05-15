@@ -485,3 +485,44 @@ Per `specs/deltanet/fattn-per-slot-kv-sm75.md §15.5`:
 - No more kernel-design iteration without spec update first
 - No path choice (P1/P2/P3) without explicit user decision
 - No production-routing change without P-choice
+
+---
+
+## Pickup state (revised 2026-05-15 — Path P2 locked, executing NP>1 determinism)
+
+### TL;DR
+
+User picked **P2** (modify `wmma_f16` in-place to take a per-row K-loop bound). Spec change committed as `§15.6 Path P2 LOCKED`. Now executing the 7-step delivery plan. Performance work on `fattn-per-slot-kv-sm75.cu` kernels is paused / retired.
+
+### Goal binding
+
+Closure: at `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1`, production server produces byte-identical slot-0 token sequences across NP ∈ {1, 2, 4, 8} given the same prompt. Empirically measured on Qwen 3.6 27B production target with Q4_0 + Hadamard KV. End-to-end production binding (not just a kernel unit-test argument).
+
+### 7-step plan (per spec §15.6)
+
+1. **ggml op signature** — `src[5]` length becomes `q->ne[1]` (n_tok), one per query row. Update ggml.c assertion + builder. Semantic rename in spec already done in §15.6.
+2. **Build-graph** — `build_std_attention` emits `inp_slot_seq_lens` of length `q->ne[1]` (was `q->ne[3]`). Decoder struct field renamed `inp_per_row_k_bound`.
+3. **llama.cpp populate** — for each token in batch: lookup seq_id → kv_self->seq_pos_max(seq_id) → write per_row_k_bound[i] = pos_max + 1.
+4. **wmma_f16 kernel** — accept nullable `const int * per_row_k_bound`. K-loop: `n_kv_eff = bound ? min(ne11, bound[my_q_row]) : ne11`. Plumb through `launch_fattn`.
+5. **Dispatcher** — when new ggml op is encountered, call wmma_f16 with the bound pointer. Default callers pass nullptr (no behavior change).
+6. **Retire `fattn-per-slot-kv-sm75.cu`** — add DEPRECATED comment block; remove from production dispatch routing. Keep compiled for unit test backing.
+7. **NP-cross byte-identity harness** — drive production server at NP={1,2,4,8} with identical prompt; compare slot-0 token sequences byte-for-byte across NP.
+
+### Closure verification (composite)
+
+- (a) Production smoke OK at default routing (no regression).
+- (b) NP-cross byte-identity GREEN at NP={1,2,4,8} on production prompts under env-on.
+- (c) 3-run intra-NP reproducibility GREEN at each NP.
+- (d) Unit test 464/464 stays GREEN (kernel-level invariance preserved as reference).
+- (e) wmma_f16 default-routing perf preserved (no measurable regression on baseline benchmarks).
+
+### What this plan does NOT do
+
+- No further perf work on the per-slot kernels (retired).
+- No SoTA-from-scratch redesigns.
+- No DFlash / MTP overlay work — strictly the np>1 determinism path on the production engine.
+
+### What's in `production/2026-q2-next` right now (post-spec-commit)
+
+- All §15.6 spec content committed and pushed.
+- Tree state at the production submodule: unchanged from prior reconciliation pickup. The bespoke kernels still route under env-on; Step 5 below will repoint dispatch to `wmma_f16+bound`.
