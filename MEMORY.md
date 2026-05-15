@@ -5592,3 +5592,24 @@ All variants accessible via `FATTN_KERNEL_VARIANT` env (phase1, stage21, stage22
 Spec correction landed mid-implementation: HEAD_DIM_V 128→256 (GGUF metadata `qwen35.attention.value_length=256` confirmed by nsys trace `flash_attn_ext_f16<256,256,...>`). KV_BLOCK_SIZE primary 32→16 at corrected Dv.
 
 Phase 2 closure (6c) requires production-side integration that the kernel work has set up but not yet performed: dispatcher wiring at `fattn.cu:140`, `slot_seq_lens` ggml input tensor build-graph plumbing per spec OQ-4, `test-np-validity-vanilla` NP={2,4,8} byte-identity binding, nsys/ncu perf comparison vs `data/deltanet/perf/baseline-prod/` (the wmma_f16 floor: 26 µs/call at decode, 18.75% theoretical occupancy SMEM-limited, 3.7% DRAM throughput). These steps were declined for autonomous execution pending user direction on allocation strategy + build-graph integration approach.
+
+## 2026-05-15 — PHASE_MMQ_Q4_0_AR16 Phase A CLOSED
+
+All 10 sub-steps GREEN in a single session on `production/2026-q2-next`:
+
+- A.2 macros + layout tables
+- A.3 `load_tiles_q4_0_ar16` — 8/8 sweep (mmq_y up to 128)
+- A.4 DP4A vec_dot — 6/6 sweep, cos=1.0, NMSE~8e-14
+- A.5 MMA (INT8 tensor-core) vec_dot — 6/6 at production shape, cos=1.0
+- A.6 mmq_type_traits wiring
+- A.7 covered by A.2 (no new quantize kernel)
+- A.8 mul_mat_q_case dispatch
+- A.9 instance file
+- A.1 (was deferred) mmq_supported gate
+- A.10 shape-invariance — byte-identical dst row 0 across M ∈ {1,4,8,16,32}
+
+§2.5 layout decision lock: AR16 uses unified Q8_0-style linear-K x_qs for BOTH DP4A and MMA paths. AR16's source-byte even/odd K convention is unpacked at load time via `__byte_perm` + `__vsubss4`. Single `load_tiles_q4_0_ar16`, single x_qs layout (84-int row stride), `vec_dot_dp4a` is trivial dp4a (no nibble extract, no -8 correction), `vec_dot_mma` uses mma_K4 (1 AR16 block per MMA op).
+
+Side fix in the same work: MMQ dispatcher's y-pointer arithmetic at mmq.cuh:4006 used `qk*sizeof(block_q8_1_mmq)/(4*QK8_1*sizeof(int))` which integer-truncates wrongly at qk<32. Re-anchored on `MMQ_ITER_K=256` so y-offset = `kb_iter * y_ints_per_kb0 = kb_iter * 72` for all quant types. This was a latent bug — Q4_0_AR16 was just the first qk<32 quant to be enabled for MMQ.
+
+Phase B (MMVQ for AR16) is OPTIONAL. The production env-gated path `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1` doesn't use MMVQ — it forces MMQ for all batch sizes. MMVQ matters only for the DEFAULT dispatch (without env) at small batch.
