@@ -58,7 +58,9 @@ start_server() {
     sleep 3
     # vanilla decode (no -mtp / --draft); env enables the per-slot-kv ggml op
     # which routes to wmma_f16 pb=1 for NP-invariant determinism.
-    LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 "$BIN" -m "$GGUF" \
+    LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
+    LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=1 \
+    "$BIN" -m "$GGUF" \
         --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
         -ngl 999 -fa on \
         --ctx-size "$total_ctx" --parallel "$np" \
@@ -66,6 +68,7 @@ start_server() {
         --cache-type-k q4_0 --cache-type-v q4_0 \
         --k-cache-hadamard --v-cache-hadamard \
         --no-context-shift \
+        --no-cont-batching \
         --port "$PORT" --host 127.0.0.1 \
         > "$RUN_DIR/server-np$np.log" 2>&1 &
     SRV=$!

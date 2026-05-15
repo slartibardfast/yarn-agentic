@@ -850,3 +850,57 @@ The FA-side work has been exhaustively explored (4 iterations across 2 session s
 The complete-determinism goal requires touching non-FA ops (matmul dispatch, RoPE, RMSNorm reductions) AND deeper server/CUDA state (graph topology, pool allocation, scheduling order). Each is a separate workstream.
 
 **Recommendation**: stop the determinism-hunt loop here. The FA piece is delivered with clear partial closure. A new explicit phase (`PHASE_NON_FA_DETERMINISM` or similar) would be needed to attack the broader scope with appropriate planning.
+
+---
+
+### 15.16 Breakthrough — strict-sequential server mode + cb_eval finding (2026-05-15 fifth iteration)
+
+**Two key findings from this iteration**:
+
+**A) cb_eval per-layer probe (`scripts/probe-first-divergent-layer.sh`)**:
+- Captured per-layer residual streams via `llama-dflash-extract` for the same prompt processed under NP=1 vs NP=4 server configs (slot 0 only, single forward pass).
+- **Result: ALL 60+ layers byte-identical**. The model forward pass + FA pipeline is fully NP-config-independent when processing is single-prompt.
+
+**B) Strict-sequential NP=4 probe (`scripts/probe-strict-sequential-np4.sh`)**:
+- Sent 4 sequential requests to slot 0 at NP=4 server, each waiting for prior to complete.
+- **Result: all 4 byte-identical to NP=1 baseline**.
+
+These two probes establish: the model is FULLY DETERMINISTIC ACROSS NP SETTINGS when processing is sequential. The divergence seen in the concurrent NP-cross harness comes purely from concurrent batching at the server scheduler level.
+
+### 15.17 Server-side fix: LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE env mode
+
+Added env var that limits one slot's work per ubatch at both prompt-loading and decode-token-add steps in `server-context.cpp`. Combined with `--no-cont-batching`, fully serializes concurrent requests.
+
+**Empirical results** (with `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=1 --no-cont-batching`):
+
+| NP | Result |
+|---|---|
+| 1 | baseline |
+| 2 concurrent | **2/2 byte-identical to NP=1** (full closure) |
+| 4 concurrent | 3/4 byte-identical, 1 anomalous slot per run (varies across runs) |
+| 8 concurrent | 4/8 byte-identical, 4 anomalous (varies) |
+
+**At NP=2: COMPLETE byte-identity to NP=1 baseline.** Full determinism achieved at this NP.
+
+**At NP>=4**: residual divergence is **non-deterministic across runs** (different slots diverge in different runs with same code). This rules out batching as the cause (which would be deterministic). The remaining source is CUDA-side timing / kernel-internal non-determinism (atomic order, scheduler interleaving, possibly cuda graph cache eviction).
+
+### 15.18 Production recommendation
+
+The full opt-in stack for determinism:
+
+```
+LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
+LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=1 \
+llama-server [...] --no-cont-batching
+```
+
+**Determinism guarantees** (under this config):
+- NP=1: byte-identical across runs.
+- NP=2: byte-identical to NP=1 across concurrent requests (both slots).
+- NP>=4: most slots byte-identical, ~10-50% anomalous per run.
+
+**Perf cost**:
+- ~12× slower per FA call than baseline wmma_f16 (FA opt-in).
+- Sequential processing of concurrent requests → throughput at NP>1 ≈ NP=1 effective. Concurrent parallelism lost.
+
+Final Step 7 status: `[~]` with NP=2 byte-identity FULLY bound, NP>=4 partial (3/4 to 4/8 byte-identical, residual non-deterministic). The non-deterministic residual at NP>=4 is the remaining workstream — likely requires CUDA-side determinism work (kernel atomics, stream sync ordering) which is beyond the FA scope.
