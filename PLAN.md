@@ -442,3 +442,46 @@ When the real launcher lands:
 - Add `fattn-per-slot-kv-sm75.cu` to the ggml-cuda library build
 - Wire dispatcher at `fattn.cu:140` to route (HEAD_DIM_Q=256, HEAD_DIM_V=128) tuples through the new kernel
 - Tests transition RED → GREEN; perf measurement (S2.5.d) gates the merge
+
+---
+
+## Pickup state (revised 2026-05-15 — reconciliation)
+
+### TL;DR for resuming session
+
+S2.5 kernel implementation has been built and iterated through six designs without keeping the spec aligned. The current empirical state is documented in `specs/deltanet/fattn-per-slot-kv-sm75.md §15` (lifecycle reconciliation). **Production decode runs wmma_f16 by default**; the new op is opt-IN via `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1`. **Determinism contract is NOT delivered in production**.
+
+Three forward paths are open and need a decision before any more kernel code lands:
+
+- **P1**: Accept the perf gap. Ship determinism via opt-in env. Requires Option A plumbing (per-row `slot_seq_lens` indexed by `Q->ne[1]`) to actually deliver the fix at NP>1. Production-default stays wmma_f16.
+- **P2**: Abandon this kernel. Modify wmma_f16 in-place with `slot_seq_lens` arg + K-loop bound. ~5 LOC kernel + Option A plumbing for per-row bound. Preserves wmma_f16's perf tuning.
+- **P3**: Defer determinism work indefinitely. Production stays as-is.
+
+### What's in `production/2026-q2-next` right now
+
+- `GGML_OP_FLASH_ATTN_EXT_PER_SLOT_KV` ggml op exists (commit `64d2a1f3`)
+- Dispatcher hook at `fattn.cu:140` (commit `f5456863`)
+- Build-graph emits the op for Qwen 3.5/3.6 shape, gated by `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1` (commits `cef48724` + `780657b2`)
+- Kernel (Approach A single-head split-K + SoTA SMEM redesign), commit `63842621`. 183 µs/call vs wmma_f16's 33.7 µs (5.4×).
+- Unit test `test-fattn-per-slot-kv-sm75` 464/464 GREEN (algorithmic batch-invariance)
+- NP={2,4,8} validity GREEN via `test-np-validity-vanilla` but at the legacy stage22a path (not the new SoTA kernel) and without functional per-slot K bound
+
+### Empirical perf ladder
+
+See `specs/deltanet/fattn-per-slot-kv-sm75.md §15.2`. Per-call wall-clock at long-ctx NP=1:
+- Approach C (original spec): 408 µs
+- Approach A single-head: 339 µs
+- Decode-specific 1-row state: 296 µs
+- SoTA SMEM redesign: 183 µs ← current default for the new op
+- wmma_f16 reference: 33.7 µs
+
+### Stashed work
+
+git stash entry: "2-warp + MAX_PB=8 (post-SoTA-redesign, uncommitted, pre-reconcile)". Reduces NWARPS from 4 to 2 + caps MAX_PB at 8. Net effect on perf untested at the time of stash.
+
+### What NOT to do without explicit user direction
+
+Per `specs/deltanet/fattn-per-slot-kv-sm75.md §15.5`:
+- No more kernel-design iteration without spec update first
+- No path choice (P1/P2/P3) without explicit user decision
+- No production-routing change without P-choice
