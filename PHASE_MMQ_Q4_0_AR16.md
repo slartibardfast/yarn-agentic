@@ -105,11 +105,15 @@ Phase A ─→ Phase B ─→ Phase C ─→ Phase D ─→ Phase E
 
 Goal: Q4_0_AR16 weight + F32 activation → MMQ kernel path; byte-identical row-0 output across `mmq_x` ∈ {compile-time-supported set}.
 
-### A.1 — Add Q4_0_AR16 to MMQ supported-types
+### A.1 — Add Q4_0_AR16 to MMQ supported-types (DEFERRED to last in phase)
 
 `ggml/src/ggml-cuda/mmq.cu:180-228`: add `case GGML_TYPE_Q4_0_AR16:` to the `switch (type)` setting `mmq_supported = true`.
 
 Verification: `ggml_cuda_should_use_mmq(GGML_TYPE_Q4_0_AR16, 750, 16)` returns true. Build passes.
+
+**Ordering note (2026-05-15, in-flight finding)**: A.1 enables MMQ dispatch for AR16. The dispatcher at `mmq.cu:36` switches `src0->type` to call `mul_mat_q_case<TYPE>(...)`. If A.1 is committed before A.8 (the dispatch case) and a user runs with `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1` and AR16 weights, the switch hits its default branch and aborts.
+
+To avoid this intermediate-state regression, A.1 is deferred to be the LAST mutation within Phase A. Steps land in order A.2 → A.3 → A.4 → A.5 → A.6 → A.7 → A.8 → A.9, then A.1 flips the gate, then A.10 binds.
 
 ### A.2 — Add Q4_0_AR16 cases to layout tables
 
