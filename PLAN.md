@@ -596,3 +596,33 @@ Step 7 marked `[~]` (partial) per CLAUDE.md §5: sequential NP-cross GREEN, conc
 1. Add fp32-`frag_c_VKQ` wmma variant + parallel template family.
 2. Find and fix the multi_row_kernel cache-leakage bug.
 3. Server-config to actually disable concurrent batched-decode (deeper than `--ubatch-size`).
+
+---
+
+### Fourth iteration (session continuation, /loop fire 3 — --no-cont-batching probe)
+
+Tested `--no-cont-batching` server flag. Result: partial improvement, not full closure.
+- NP=2: slot 1 byte-identical to NP=1. Slot 0 diverges.
+- NP=4: 3 distinct outputs across slots.
+- NP=8: 4 distinct outputs.
+
+Server state (CUDA graph cache, cuda_pool_alloc returns, scheduling order) varies per request order even with cont-batch disabled. The "first" slot processed has different state than "second", which leaks into FA inputs and decode outputs.
+
+Captured in spec §15.14 / §15.15.
+
+### Next iteration plan (for /loop fire 4 — cb_eval layer localization)
+
+The current `[~]` closure is honest but the user-facing "complete determinism" goal isn't met. To make further progress, the highest-value next step is cb_eval-based per-layer diff:
+
+1. Reuse `examples/dflash-extract/llama-dflash-extract` (uses cb_eval to capture residuals at named layers).
+2. Run prefill for slot 0 (NP=1 config) → dump per-layer residuals at all 60+ layers.
+3. Run prefill for slot 0 with NP=4 server config → dump per-layer residuals (same prompt, different server config).
+4. Compare residuals at each layer. The FIRST layer with non-identical output names the upstream culprit.
+5. Within that layer, capture op-level outputs (cb_eval matches by tensor-name suffix). Find WHICH op (matmul / RoPE / RMSNorm / attention output projection) first diverges.
+6. Fix that op like we fixed FA: identify shape dependence → force NP-independent dispatch.
+
+Cost estimate per CLAUDE.md §8: ~30k tokens for steps 1-5 (instrumentation + comparison). +30-80k per op fix. Could be 3-10 ops × 50k = 150-500k tokens for full coverage.
+
+If cb_eval comparison reveals the divergence at layer 0 RoPE: that's the smallest local fix.
+If at layer 0 K_proj matmul: changes spread across multiple matmul kernels.
+If at layer 5+ deep: more cascading concerns.
