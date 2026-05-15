@@ -772,3 +772,45 @@ Two viable production routes given current state:
 The opt-in path is correct at the kernel level but doesn't yet deliver the user-facing "same prompt → same tokens" contract. Until non-FA ops are also fixed, it provides:
 - Bit-identical FA outputs given identical FA inputs (proven by tests).
 - ~12× slower per FA call than wmma_f16 (perf cost of per-row CTA + fp32 throughout).
+
+---
+
+### 15.13 Final routing change + scope close (2026-05-15 session close)
+
+The multi_row_kernel route described in §15.10/3 was tested empirically and DIVERGED on the cache-leakage probe (warm-slot-1 after slot-0 ran). Despite its design promise (per-row CTA + fp32 throughout), it has implementation bugs that defeat NP-invariance at the slot-position level. Switched the production route back to `ggml_cuda_flash_attn_ext_wmma_f16_case_pb1<256, 256, 8, float>`, which PASSES cache-leakage probe (all 4 configs byte-identical) and the slot-pin probe.
+
+**Production route (final, 2026-05-15)**: `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1` → `wmma_f16_case_pb1<256,256,8,float>`. ~10 LOC wrapper. KQ_acc_t=float fixes the fp16 warp_reduce_sum non-associativity that broke cache-leakage.
+
+**What this route delivers** (bound by probes):
+- Sequential NP-cross byte-identity at any NP, when each slot decodes with ne[1]=1.
+- Slot-position independence.
+- Cache-leakage isolation: leftover slot data at masked positions does not affect output.
+- ~12× slower per FA call than baseline wmma_f16 (acceptable for opt-in path).
+
+**What this route does NOT deliver**:
+- Concurrent batched-decode byte-identity (ne[1]>1 in one FA call). The wmma fp16 `frag_c_VKQ` accumulator makes row 0's output subtly depend on other rows' content. Argmax flips after a few decode steps when slots are batched together.
+
+**Why the concurrent gap is hard to close from inside FA**:
+1. Changing `frag_c_VKQ` from `half` to `float` requires a parallel wmma template family + downstream conversion logic at store points. Significant kernel-template surgery.
+2. Per-row CTA alternatives (multi_row_kernel, vec_f32) have their own bugs OR don't support the production K cache layout (non-contiguous Q4_0).
+3. Server-side workarounds (--ubatch-size 1 / disable cont-batching) either break the model output entirely (ubatch=1) or fail to actually prevent concurrent batching at low values.
+
+**Step 7 final status**: `[~]` (partial closure per CLAUDE.md §5).
+- Sequential NP-cross byte-identity: bound. Cache-leakage probe + slot-pin probe + dispatch-NP-invariance unit test all PASS.
+- Concurrent batched-decode byte-identity: not bound. Documented as a scoped non-deliverable in this section, tracked as a subtask requiring either (a) fp32-VKQ wmma variant work or (b) server-config to avoid concurrent batching.
+
+Probe scripts committed:
+- `scripts/test-fattn-per-slot-kv-np-determinism.sh` — full NP={1,2,4,8} server harness.
+- `scripts/probe-cache-leakage.sh` — cache-isolation test (GREEN with wmma fp32).
+- `scripts/probe-slot-pin.sh` — slot-position-independence test (GREEN).
+- `scripts/probe-cgraph-effect.sh` — rules out CUDA graph state.
+- `scripts/probe-chunk-alignment-hypothesis.sh` — rules out chunk-position dependence.
+- `scripts/probe-np-determinism-sources.sh` — three-experiment localizer.
+- `scripts/probe-logits-warm-vs-fresh.sh` — logit comparison attempt (n_probs returns 500; needs server-side fix to enable).
+
+Unit test: `tests/dflash-speculative/test-fattn-per-slot-kv-dispatch-np-invariance.cpp`. PASS at 6144 floats byte-identical across K-cache strides ∈ {256, 512}.
+
+For "complete determinism" beyond this scope, the next workstream needs to either:
+1. Add a fp32-`frag_c_VKQ` wmma kernel variant and route concurrent batched-decode through it.
+2. Find and fix the multi_row_kernel cache-leakage bug, then route concurrent through that.
+3. Server-config: research how to actually disable cont-batching at the server level (small `--batch-size` + `--ubatch-size` tweaks were probed but didn't have the expected effect).
