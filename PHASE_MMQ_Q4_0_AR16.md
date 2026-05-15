@@ -2,7 +2,16 @@
 
 Date: 2026-05-15
 Branch: production/2026-q2-next
-Status: PLAN — design only, no code yet
+Status: **Phase A CLOSED 2026-05-15** — A.1, A.2, A.3, A.4, A.5, A.6, A.7, A.8, A.9, A.10 all GREEN.
+
+## Progress log
+
+- **2026-05-15** §2.5 layout decision LOCKED (unified Q8_0-style linear-K x_qs). Plan updated, see commit `103b6de`.
+- **2026-05-15** A.3 GREEN — `load_tiles_q4_0_ar16` sweep 8/8 PASS (mmq_y ∈ {16,32,64,128}, nwarps ∈ {4,8}, need_check ∈ {false,true}). Submodule commit `cf708fe5`.
+- **2026-05-15** A.4 GREEN — DP4A vec_dot sweep 6/6 PASS, cos=1.0, NMSE~8e-14. Includes dispatcher y-ptr arithmetic re-anchor on MMQ_ITER_K (fixes qk<32 integer-truncation latent bug). Submodule commit `76d39f7e`.
+- **2026-05-15** A.5 GREEN — MMA (INT8 tensor-core) vec_dot sweep 6/6 PASS, cos=1.0, NMSE~8e-14 at production shapes (mmq_x ∈ {8,16,32}, mmq_y=128, nwarps=8). Submodule commit `95f0b460`.
+- **2026-05-15** A.1 + A.6 + A.8 + A.9 wired: mmq_type_traits specialization, mul_mat_q_case dispatch, instance file, supported-types gate. Build clean. Existing binding tests still GREEN. Submodule commit `530eeab5`.
+- **2026-05-15** A.10 CLOSURE BINDING GREEN — ggml_mul_mat (Q4_0_AR16 × F32) at M ∈ {1,4,8,16,32} produces BYTE-IDENTICAL dst column 0 under `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`. Phase A CLOSED. Submodule commit `eb9ee4ab`.
 
 Source artifacts:
 - `specs/deltanet/fattn-per-slot-kv-sm75.md §15.22` (locked target).
