@@ -5650,3 +5650,27 @@ Diagnosis: continuous batching mixes per-slot tokens into different batch positi
 Confirms `project_fattn_per_slot_kv_p2_landed_kernel_only` finding: FATTN per-slot ALONE is NP-invariant; cross-NP byte-identity requires fixing the "non-FA ops" too.
 
 Path forward: Option 1 — replace the cuBLAS path under env with custom row-pinned F16/BF16 GEMM kernels (sm_75 SoTA-spec'd per `feedback_kernel_replacements_must_be_sota_sm75`). Option 2 (F32 conversion) is ruled out on bandwidth — lm_head at F32 is 8 ms/token vs 4 ms at BF16, that's 27% of the 30 ms/token budget.
+
+## 2026-05-15 — Phase C F16-pinned WMMA GEMM landed; production NP-determinism partial
+
+Built and landed `ggml_cuda_mul_mat_f16_pinned` — a row-pinned 16x16x16 wmma kernel that replaces cublasGemmEx F16 under `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`. Unit test `test-cublas-pinned-shape-invariant` confirms **row-0 byte-identical for F16 and BF16 across M ∈ {1, 4, 8, 16, 32}**.
+
+Production NP-determinism (`scripts/test-production-np-determinism.sh`) under the full §1 stack (multi-GPU, cont-batching enabled, no strict-sequential, env on) result:
+
+| NP | Slots OK / total |
+|---|---|
+| 2 | 1 / 2 (slot 0)             |
+| 4 | 2 / 4 (slots 0, 2)         |
+| 8 | 1 / 8 (slot 3)             |
+| **Total** | **4 / 14** (was 1/14 before F16-pinned) |
+
+Substantial improvement (1/14 → 4/14) but not closure. Slots passing/failing within a single np>1 server points to an UPSTREAM op being batch- or slot-dependent in ways the F16-pinned kernel can't reach. The slots that DO pass prove the kernel is correct in principle — the remaining problem is something between FATTN and lm_head.
+
+Candidate upstream culprits (to investigate in order):
+1. `--split-mode graph --tensor-split 1,1` — multi-GPU split may serialize differently per batch size. This is exactly what Phase D was scoped for.
+2. Hadamard rotation on K/V cache — per-slot pre-quantize matmul, may not be shape-invariant.
+3. Some kernel that uses block/warp id in fp arithmetic. (Pure speculation; check empirically.)
+
+Test artifact: `/tmp/production-np-determinism/run-20260515T220247`.
+Kernel source: `ggml/src/ggml-cuda/mul-mat-f16-pinned.{cu,cuh}`.
+F32 still on cublasSgemm (display-identical with ULP-level differences in 50/64); custom F32 GEMM is a Phase C subtask.
