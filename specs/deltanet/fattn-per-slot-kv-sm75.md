@@ -652,3 +652,32 @@ Eventual cleanup (deletion of the .cu file) is deferred to a soak period after P
 - Perf parity for the `decode_split_k` kernel — abandoned, will not be revisited under this spec.
 - Algorithmic redesign of `wmma_f16` — preserve as-is except for the K-bound check.
 - Sinks / softcap interaction with per-row bound — production target has neither at the layers we route; if encountered we fall back to the unbounded path for that call.
+
+---
+
+### 15.7 P2 implementation refinement (2026-05-15)
+
+Read-through of `fattn-wmma-f16.cuh` after locking §15.6 surfaced a refinement: the K-loop bound from §15.6 is **not the determinism primitive**. The existing per-row mask already pushes past-bound K positions to `-inf`, which is provably bit-identical no-op in the softmax math (max stays unchanged; `exp(-inf - max) = 0` contributes 0 to rowsum; VKQ accumulator unchanged).
+
+The actual NP>1 non-determinism in `wmma_f16` comes from two upstream dispatch decisions:
+
+1. **`parallel_blocks` (split-K depth) is chosen by a heuristic** based on `Q->ne[1] * Q->ne[2] * Q->ne[3]` — see `fattn-wmma-f16.cuh` ~line 476. At NP=1 this typically picks `parallel_blocks=4`; at NP=8 it picks `parallel_blocks=1`. Different K-loop partitioning ⇒ different combine sums ⇒ non-identical floats across NP.
+2. **`cols_per_block` is bucketed on `Q->ne[1]`** — see `fattn-wmma-f16.cu` ~line 81/107. Different `ncols` ⇒ different kernel instantiation ⇒ different fragment layouts and intermediates.
+
+For the production target (`Q->ne[0]=V->ne[0]=256`, NP∈{1,2,4,8} → `Q->ne[1]∈{1..8}`), the determinism fix is therefore:
+
+- Force `cols_per_block=8` (covers `ne[1]∈{1..8}` exactly without bucket variation).
+- Force `parallel_blocks=1` (no split-K; kernel writes directly to dst; no combine kernel involved).
+- `KQ_acc_t=half` (same as existing default for this case).
+
+This collapses to **exactly one existing template instantiation**: `ggml_cuda_flash_attn_ext_wmma_f16_case<256, 256, 8, half>` invoked under the parallel_blocks=1 branch.
+
+**Per-row K bound stays plumbed but unused for correctness.** It's available for a future perf optimization (trim K-loop tail past max-row-bound) but the determinism contract holds without it. The src[5] tensor on the ggml op remains required for shape validation; the dispatcher does not currently read its values.
+
+**Revised P2 implementation scope**:
+
+- Step 4 (kernel mod): **REMOVED**. No `wmma_f16` source change.
+- Step 4′ (new): add a thin wrapper in `fattn-wmma-f16.cuh` that exposes the parallel_blocks=1 branch directly, bypassing the heuristic. Single function, ~10 LOC.
+- Step 5 (dispatcher): in `fattn-per-slot-kv-sm75.cu`, reroute `ggml_cuda_flash_attn_ext_per_slot_kv_sm75()` to invoke the new wrapper.
+
+Net diff: smaller than §15.6 anticipated. No modification to the wmma_f16 kernel template body. No new template parameters propagating through `launch_fattn` / `fattn_kernel_t`. The bespoke per-slot kernels in `fattn-per-slot-kv-sm75.cu` are still retired from production routing per §15.6.
