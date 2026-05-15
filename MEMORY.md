@@ -5636,3 +5636,17 @@ AR16 vec_dot impl notes (vecdotq.cuh):
 - Half-sum for -8 correction computed inline via `__dp4a(0x01010101, u[i], ...)`: Q8_1's stored `s` covers 32 K, but each AR16 block sees only 16 K, so we re-sum the activation int8s for our half.
 
 Phase C (cuBLAS algo pinning for F16/BF16/F32 matmuls) is now the active critical-path phase for full NP-cross byte-identity under the production env stack.
+
+## 2026-05-15 — Phase C Option 3 (token-level NP-determinism harness) FAILED
+
+Ran the full §1 production env stack (LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 + LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1, multi-GPU, NO strict-sequential, NO --no-cont-batching) at NP ∈ {1, 2, 4, 8} for 64-token greedy decode. Result: **divergence at every NP > 1, including intra-NP=4 slot divergence** (slots 0/1/2/3 all produce different texts within one server invocation).
+
+Test artifact: `scripts/test-production-np-determinism.sh`. Run dir: `/tmp/production-np-determinism/run-20260515T214355`.
+
+Pattern: all slots produce the same first ~30-35 tokens, then diverge at a sentence boundary ("...the foundation for the field.") with logit ties broken differently per slot.
+
+Diagnosis: continuous batching mixes per-slot tokens into different batch positions across decode steps. Every batch-shape-dependent op then sees varying shapes per slot per step, and the per-token accumulator order drifts. cuBLAS lm_head + linear_attn in_proj (BF16/F16 paths) are the most likely contributors — Phase C partial state (algo hint + math mode + path unification) doesn't pin internal cuBLAS tile/split-K choices, which vary with M.
+
+Confirms `project_fattn_per_slot_kv_p2_landed_kernel_only` finding: FATTN per-slot ALONE is NP-invariant; cross-NP byte-identity requires fixing the "non-FA ops" too.
+
+Path forward: Option 1 — replace the cuBLAS path under env with custom row-pinned F16/BF16 GEMM kernels (sm_75 SoTA-spec'd per `feedback_kernel_replacements_must_be_sota_sm75`). Option 2 (F32 conversion) is ruled out on bandwidth — lm_head at F32 is 8 ms/token vs 4 ms at BF16, that's 27% of the 30 ms/token budget.
