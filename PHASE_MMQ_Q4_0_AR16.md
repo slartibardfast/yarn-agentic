@@ -2,7 +2,7 @@
 
 Date: 2026-05-15
 Branch: production/2026-q2-next
-Status: **Phase A CLOSED 2026-05-15** — A.1, A.2, A.3, A.4, A.5, A.6, A.7, A.8, A.9, A.10 all GREEN.
+Status: **Phase A + Phase B CLOSED 2026-05-15** — all 14 sub-steps (A.1–A.10, B.1–B.4) GREEN.
 
 ## Progress log
 
@@ -12,6 +12,7 @@ Status: **Phase A CLOSED 2026-05-15** — A.1, A.2, A.3, A.4, A.5, A.6, A.7, A.8
 - **2026-05-15** A.5 GREEN — MMA (INT8 tensor-core) vec_dot sweep 6/6 PASS, cos=1.0, NMSE~8e-14 at production shapes (mmq_x ∈ {8,16,32}, mmq_y=128, nwarps=8). Submodule commit `95f0b460`.
 - **2026-05-15** A.1 + A.6 + A.8 + A.9 wired: mmq_type_traits specialization, mul_mat_q_case dispatch, instance file, supported-types gate. Build clean. Existing binding tests still GREEN. Submodule commit `530eeab5`.
 - **2026-05-15** A.10 CLOSURE BINDING GREEN — ggml_mul_mat (Q4_0_AR16 × F32) at M ∈ {1,4,8,16,32} produces BYTE-IDENTICAL dst column 0 under `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`. Phase A CLOSED. Submodule commit `eb9ee4ab`.
+- **2026-05-15** Phase B GREEN — `vec_dot_q4_0_ar16_q8_1` (mmvq) + `mul_mat_vec_q4_0_ar16_q8_1_cuda` instance + supported-types + dispatch. B.2 cosine=0.999988 NMSE=2.3e-05 vs CPU fp32 ref; B.4 row-0 byte-identical across M ∈ {1,2,4,8}. Plus: **MMQ row-0 ≡ MMVQ row-0 byte-for-byte** on same prompt. mmvq-templates.cuh `kby = (kbx * qk) / QK8_1` is the surgical fix for `qk < QK8_1` (AR16's 16 < 32). Phase B CLOSED. Submodule commit pending.
 
 Source artifacts:
 - `specs/deltanet/fattn-per-slot-kv-sm75.md §15.22` (locked target).
@@ -500,7 +501,7 @@ Update `specs/deltanet/fattn-per-slot-kv-sm75.md §15.23`: full closure delivere
 | ggml-cuda/mmq.cu | `Q4_0_AR16` in `mul_mat_q_case` | NO |
 | ggml-cuda/template-instances/mmq-instance-q4_0_ar16.cu | file | NO |
 | ggml-cuda/quantize.cu | `Q4_0_AR16` in `quantize_mmq_q8_1_cuda` switch | NO |
-| ggml-cuda/mmvq.cu | `mul_mat_vec_q_q4_0_ar16_q8_1_cuda` + dispatch case | NO |
+| ggml-cuda/mmvq.cu | `mul_mat_vec_q_q4_0_ar16_q8_1_cuda` + dispatch case | YES |
 | ggml-cuda.cu | env-gated `cublasSetMathMode` + fixed algo | NO |
 | ggml-cuda.cu | env-gated peer-access serialization | NO |
 | data/mmq-q4-0-ar16-{dp4a,mma}.* | profile data | NO |
