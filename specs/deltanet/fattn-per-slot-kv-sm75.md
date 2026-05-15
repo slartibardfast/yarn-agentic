@@ -599,3 +599,56 @@ Per CLAUDE.md §5: spec edits commit + push BEFORE code. The drift in this secti
 - Any further kernel iteration → spec change first describing the new design intent and the empirical basis
 - Any path P1/P2/P3 choice → PLAN.md Pickup update first
 - No more "redesign the kernel mid-debate" cycles without explicit spec ack
+
+---
+
+### 15.6 Path P2 LOCKED (2026-05-15)
+
+**Decision**: Path P2 — modify `wmma_f16` in-place to take a per-row K-loop bound. The bespoke per-slot kernels in `fattn-per-slot-kv-sm75.cu` are retired from production dispatch.
+
+**Rationale**:
+- The 5× perf gap (§15.2) is structural at the per-row-CTA + SMEM-staged-K design philosophy. Further within-design tweaks show marginal returns.
+- `wmma_f16` is the production-perf-tuned kernel. Modifying it preserves the perf.
+- The kernel change to add a per-row K bound is ~5 LOC. The plumbing (per-row slot_seq_lens) is identical in both P1 and P2; P2 just substitutes a different (faster) kernel on the back end.
+- P1 would lock in a 5× FA-call regression for users opting into NP>1 determinism. P2 delivers determinism at no perf cost.
+
+**Semantic rename of `slot_seq_lens`** (binding signature change):
+
+The ggml op `GGML_OP_FLASH_ATTN_EXT_PER_SLOT_KV` was originally specified (§3) with `slot_seq_lens` of length `n_seqs = Q->ne[3]`. This is **structurally broken** for batched-decode NP>1 where ggml flattens N tokens into `Q->ne[1]=N` with `Q->ne[3]=1` (one tensor, multiple slot identities encoded only in the mask).
+
+**Revised semantics**:
+- `slot_seq_lens` becomes `per_row_k_bound` semantically: length `Q->ne[1]` (n_tok), one entry per query row.
+- `per_row_k_bound[i]` = the K position past which row `i` must be masked. For a token at sequence position `pos` in slot `s`, the bound is `pos + 1` (only past KV positions in the same slot are valid for that row).
+- The mask still carries the cross-slot exclusion (per-row, per-K-position `-inf`); the K-bound on top eliminates the dependence of softmax statistics on K-positions beyond `bound[i]` (those positions never enter the running max / rowsum).
+
+The §3 kernel signature should be read as:
+```cpp
+const int * __restrict__ per_row_k_bound,    // [Q->ne[1]] per-row K-loop bound
+```
+(replacing the original `slot_seq_lens[n_seqs]` line). The C++ field in the decoder struct is renamed `inp_per_row_k_bound`. The ggml op symbol stays `GGML_OP_FLASH_ATTN_EXT_PER_SLOT_KV` for now (the name documents intent, not signature shape).
+
+**Production routing (P2-locked)**:
+
+Under `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1`:
+- The new ggml op is emitted by `build_std_attention` with `per_row_k_bound` of length `Q->ne[1]`.
+- The dispatcher routes the new op to a **modified `wmma_f16`** that accepts a nullable `per_row_k_bound` pointer and applies it inside the K-loop.
+- When the pointer is nullptr (legacy callers — every call site that doesn't go through `ggml_flash_attn_ext_per_slot_kv`), `wmma_f16` behaves exactly as today.
+
+Under default (env unset): zero behavior change. `wmma_f16` is invoked with `per_row_k_bound=nullptr` from existing call sites and runs identically to current production.
+
+**Retirement of `fattn-per-slot-kv-sm75.cu` kernels**:
+
+The kernels in this file (`decode_split_k`, `multi_row`, `single_head_split_k`, `naive`, `combine`, `compute_pb`, `init_meta`, `stage21`, `stage22b`, `stage23`) are **deprecated from production dispatch**. They remain compiled to back the unit test (`tests/test-fattn-per-slot-kv-sm75-validity-determinism.cpp`) as a reference / oracle of algorithmic batch-invariance at the kernel level. A `// DEPRECATED — production routes through wmma_f16-with-bound. See specs §15.6` block goes at the top of the .cu file.
+
+Eventual cleanup (deletion of the .cu file) is deferred to a soak period after P2 ships and is confirmed stable.
+
+**Closure binding (production NP>1 determinism contract)**:
+
+- Production server at `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1`, same prompt, identical slot-0 token sequence bytewise across NP ∈ {1, 2, 4, 8}.
+- 3-run reproducibility at each NP (intra-NP determinism preserved).
+- `wmma_f16` perf at default routing not regressed (the new param is nullptr-defaulted and the K-loop check is a single branch outside the inner mma loop).
+
+**Out of scope of P2 (explicit non-goals)**:
+- Perf parity for the `decode_split_k` kernel — abandoned, will not be revisited under this spec.
+- Algorithmic redesign of `wmma_f16` — preserve as-is except for the K-bound check.
+- Sinks / softcap interaction with per-row bound — production target has neither at the layers we route; if encountered we fall back to the unbounded path for that call.
