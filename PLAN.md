@@ -526,3 +526,21 @@ Closure: at `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1`, production server produces byte-
 
 - All §15.6 spec content committed and pushed.
 - Tree state at the production submodule: unchanged from prior reconciliation pickup. The bespoke kernels still route under env-on; Step 5 below will repoint dispatch to `wmma_f16+bound`.
+
+---
+
+### Empirical results (2026-05-15 end of session)
+
+Steps 1–6 + 6.5 all committed and pushed. Build clean. Step 7 status:
+
+- **Kernel-level binding GREEN** — `test-fattn-per-slot-kv-dispatch-np-invariance` PASS (6144 fp32 floats byte-identical across K-cache strides {256, 512}).
+- **Server-level binding RED** — `test-fattn-per-slot-kv-np-determinism.sh` fails: NP>1 same-prompt outputs diverge from NP=1 baseline.
+
+Diagnostic probe (`scripts/probe-np-determinism-sources.sh`) findings:
+- E1: NP=1 3-run reproducibility PASS.
+- E2: NP=4 SEQUENTIAL 3 requests → 2/3 match NP=1 baseline byte-identical; 1/3 diverges ("foundation" vs "groundwork" at token ~15). Even without concurrent batching, NP=4 setting produces a per-request split.
+- E3: NP=4 CONCURRENT → 3 batched slots produce byte-identical output to each other (≠ NP=1); 1 solo-scheduled slot matches NP=1. The intra-batch agreement validates FA kernel-level NP-invariance at the server.
+
+Remaining divergence is upstream of FA + non-FA shape-dependent ops (Q/K/V matmuls, RoPE, RMSNorm) and possibly cgraph cache warm-up state at NP>1. See `specs/deltanet/fattn-per-slot-kv-sm75.md §15.8 / §15.9`.
+
+**Step 7 stays OPEN per CLAUDE.md §4 "no follow-up cover"**. The FA piece of NP determinism is delivered; server-level byte-identity at NP>1 requires shape-independence in non-FA ops too — a separate workstream that needs explicit scoping before re-opening.
