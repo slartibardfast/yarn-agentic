@@ -1,4 +1,4 @@
-# PHASE_MMQ_Q4_0_AR16 — write MMQ kernels for Q4_0_AR16
+# PHASE_MMQ_Q4_0_AR16 — full shape-invariant dispatch on production stack
 
 Date: 2026-05-15
 Branch: production/2026-q2-next
@@ -6,226 +6,408 @@ Status: PLAN — design only, no code yet
 
 Source artifacts:
 - `specs/deltanet/fattn-per-slot-kv-sm75.md §15.22` (locked target).
-- `MEMORY.md` entry `[NP-determinism complete closure (single-GPU)]` (current closure state).
-- `specs/deltanet/batch-invariance.allium` (the invariants this phase restores at concurrent batched-decode).
+- `specs/deltanet/batch-invariance.allium` (invariants restored at concurrent batched-decode).
+- `MEMORY.md` entry `[NP-determinism complete closure (single-GPU)]` (single-GPU + strict-sequential baseline).
 
-## 1. Context
+## 1. Scope
 
-The current NP-determinism closure (committed 2026-05-15) requires `LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=1` — serializes all slot processing at the server level. Throughput drops to NP=1-effective. The user has named the next constraint to remove: enable concurrent batched-decode without losing byte-identity.
+User direction (2026-05-15): everything previously listed as out-of-scope is now in-scope. Full SoTA delivery.
 
-The structural blocker is **production weights are Q4_0_AR16** (AutoRound 16-step variant of Q4_0). At batched-decode, the matmul kernel dispatch in ik_llama.cpp routes Q4_0_AR16 through:
-- ne[1] = 1: dequant → cuBLAS GEMV (algo picked per shape).
-- ne[1] > 1: dequant → cuBLAS GEMM (algo picked per shape).
+Closure binding: concurrent batched-decode at NP ∈ {2, 4, 8} produces byte-identical slot-0 token sequences to NP=1 baseline, **on multi-GPU (--tensor-split 1,1)**, **without strict-sequential decode**, **without --no-cont-batching**.
 
-cuBLAS auto-algorithm selection means row-0 output differs across ne[1] values. This breaks NP-cross byte-identity at concurrent batched-decode.
-
-The fix at the cost-effective seam: **add Q4_0_AR16 to the MMQ kernel family**. MMQ is per-tile, compile-time-fixed, has provable per-row independence at fixed `mmq_x`. Sister types Q4_0, Q5_0, Q6_0, Q8_0 all live in MMQ with the same structure; adding Q4_0_AR16 follows the established pattern.
-
-### 1.1 Q4_0_AR16 vs Q4_0
-
-| | Q4_0 | Q4_0_AR16 |
-|---|---|---|
-| Block size | 32 elements | 16 elements |
-| Per-block storage | 1 fp16 scale + 16 B nibbles | 1 fp16 scale + 8 B nibbles |
-| Total bytes/block | 18 | 10 |
-| Nibble packing | k even = low nibble, k odd = high nibble | identical |
-| Sign offset | -8 (recentered from unsigned 0..15) | identical |
-
-The block layout is identical except for block-size. The asymmetry: Q8_1 (activation quantization) has 32-element blocks (`QK8_1 = 32`). For Q4_0 there's a 1:1 block alignment; for Q4_0_AR16 there's a 2:1 alignment (two AR16 weight blocks dot against one Q8_1 activation block).
-
-### 1.2 Verification anchors (already exist, used as oracles)
-
-- `ggml_vec_dot_q4_0_ar16_q8_0` in `ggml/src/ggml.c:1634` — scalar CPU vec-dot. Reference oracle for the per-block math.
-- `dequantize_block_q4_0_ar16` in `ggml/src/ggml-cuda/convert.cu:115` — CUDA dequant kernel. Reference for the per-nibble unpacking.
-
-## 2. Goal binding (single closure criterion)
-
-Concurrent batched-decode at NP ∈ {2, 4, 8} produces byte-identical slot-0 token sequences to NP=1 baseline, under this stack:
-
+Production env stack (target):
 ```bash
 LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
 LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 \
 CUBLAS_WORKSPACE_CONFIG=:4096:8 \
-llama-server --device CUDA0 --no-cont-batching ...
+llama-server -m <gguf> \
+    --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
+    --parallel <N> --ctx-size <N*8192> \
+    -ngl 999 -fa on \
+    --cache-type-k q4_0 --cache-type-v q4_0 \
+    --k-cache-hadamard --v-cache-hadamard
 ```
 
-Note: **`LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE` is NOT set**. That's the whole point — we drop the serialization sledgehammer.
+No `LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE`, no `--no-cont-batching`, no `--device CUDA0` single-GPU restriction.
 
-Bound by: `scripts/test-fattn-per-slot-kv-np-determinism.sh` PASS, all NP values, all slot outputs byte-identical.
+Bound by: `scripts/test-fattn-per-slot-kv-np-determinism.sh` PASS, all slot outputs byte-identical at all tested NP values, ALL ITERATIONS over 5 runs (catch non-deterministic-source residues).
 
-## 3. Design
+## 2. Answers to open questions (resolved from source 2026-05-15)
 
-Pattern: clone Q4_0's MMQ touchpoints, adjust for 16-element blocks.
+### 2.1 Tile sizing — needs new macro for AR16
 
-### 3.1 Block packing layout — kept identical to Q4_0
+`MMQ_DP4A_TXS_Q4_0 = tile_x_sizes{mmq_y*WARP_SIZE + mmq_y, mmq_y*WARP_SIZE/QI4_0 + mmq_y/QI4_0, 0}` where `QI4_0 = 4` (= QK4_0/8).
 
-Each AR16 block is 10 bytes: 2 B scale + 8 B nibbles. The 8 B = 16 nibbles = 16 quants. Even k = low nibble, odd k = high nibble of byte k/2. After load + sign-subtract, each AR16 block gives 16 int8s in [-8, 7].
+For AR16: `QI_AR16 = QK_AR16/8 = 16/8 = 2`. The `qs` count per tile is identical to Q4_0 (`mmq_y*WARP_SIZE + mmq_y` — int-count doesn't care about block size). The `dm` (scale-count) is **2x larger** for AR16 because there are 2x more blocks per WARP_SIZE-row of K.
 
-For MMQ this means **a 32-element K-chunk = 2 AR16 blocks back-to-back in memory**. The first AR16 block provides codes for k=0..15; the second for k=16..31. Both blocks have their own fp16 scale. The Q8_1 activation has one fp16 scale + 1 fp16 sum for the same 32-element span.
+New macro required:
+```cpp
+#define MMQ_DP4A_TXS_Q4_0_AR16 tile_x_sizes{mmq_y*WARP_SIZE + mmq_y, mmq_y*WARP_SIZE/QI_AR16 + mmq_y/QI_AR16, 0}
+// expands to: tile_x_sizes{mmq_y*32 + mmq_y, mmq_y*16 + mmq_y/2, 0}
+```
 
-Per-32-element dot-product: `result = ar16_block[0].d * dot(int8 codes[0..15], q8_1.qs[0..15]) + ar16_block[1].d * dot(int8 codes[16..31], q8_1.qs[16..31])`. Then sum (or sum-correction) via the Q8_1 layout.
+For the MMA tile: `MMQ_MMA_TILE_X_K_Q8_0 = 2*WARP_SIZE + 2*WARP_SIZE/QI8_0 + 4 = 76`. For AR16's MMA tile:
+```cpp
+#define MMQ_MMA_TILE_X_K_Q4_0_AR16 (2*WARP_SIZE + 2*WARP_SIZE/QI_AR16 + 4)
+// = 64 + 32 + 4 = 100. % 8 == 4: passes the existing static_assert pattern.
+```
 
-### 3.2 Q8_1 DS layout choice
+### 2.2 Q8_1 quantization is activation-only (weight-type-independent)
 
-Q4_0 uses `MMQ_Q8_1_DS_LAYOUT_DS4` (d + sum). The sum is the row-sum of the Q8_1 activation block. It's used for asymmetric quant types (Q4_1 etc) but is included for Q4_0 too because the recentered code (qs - 8) introduces a constant 8-bias that must be subtracted.
+`quantize_mmq_q8_1` (quantize.cu:86) takes a Q8_1 DS layout template parameter, but the layout depends on whether the WEIGHT type needs sum correction. For Q4_0 and AR16, the weight has -8 recentering, so DS layout = `MMQ_Q8_1_DS_LAYOUT_DS4` (d + sum).
 
-Q4_0_AR16 has the same recentering (-8 offset). It needs the sum too. **Use `MMQ_Q8_1_DS_LAYOUT_DS4` for AR16.** Same as Q4_0.
+The actual Q8_1 BLOCK SIZE (`QK8_1 = 32`) doesn't change. The activation is always quantized in 32-element blocks. For AR16, two AR16 weight blocks line up with one Q8_1 activation block.
 
-### 3.3 Tile-size and traits
+So `quantize_mmq_q8_1_cuda` requires only a single new case-label `case GGML_TYPE_Q4_0_AR16:` that re-uses the existing `MMQ_Q8_1_DS_LAYOUT_DS4` path. No new quantization kernel needed.
 
-Approach: try to share Q4_0's `MMQ_DP4A_TXS_Q4_0` and `MMQ_MMA_TILE_X_K_Q8_0` directly. The tile structure works in terms of `mmq_y` (output-tile-rows) and `mmq_x` (output-tile-cols) which are unrelated to AR16's smaller block; the K-direction inside a tile sums over WARP_SIZE elements regardless of source block size. The block-size only affects HOW the per-K-position quant is loaded.
+### 2.3 DS4 layout for AR16 — sum-correction computed per-half inline
 
-### 3.4 Existing AR16 kernels to inherit
+The DS4 layout stores one `(d, s)` pair per 32-element Q8_1 block. For Q4_0 the sum-correction is:
+```
+-8 * d_w * d_a * s_a
+```
+where `d_w` is the single weight scale, `s_a` is the activation sum over 32 elements.
 
-`dequantize_block_q4_0_ar16` (convert.cu:115) — gives us the validated per-nibble unpack formula. The MMQ load_tiles is essentially "do this dequant + write to SMEM in MMQ's expected layout". Reuse the unpacking math.
+For AR16, two weight scales (`d_w0`, `d_w1`) cover the 32-element span. The sum-correction must split:
+```
+-8 * d_w0 * d_a * s_a_half0 + -8 * d_w1 * d_a * s_a_half1
+```
+where `s_a_half0 = sum(qs[0..15])` and `s_a_half1 = sum(qs[16..31])`.
 
-## 4. Step-by-step plan with verification
+`block_q8_1_mmq` only stores `s_a` (the full 32-element sum). Computing half-sums requires summing the int8 qs values inline in the AR16 MMQ kernel. Cost: ~16 int8 additions per 32-element K-chunk per per-warp output tile = negligible vs the dot-product itself.
 
-Each step is binding; closure requires its verification to PASS on the named oracle.
+So the existing DS4 layout works without storage change. The kernel does the extra half-sum reduction inline.
 
-### S1 — Survey existing Q4_0 MMQ touchpoints; produce a delta sheet
+### 2.4 Multi-GPU peer-access already has events but non-deterministic in practice
 
-Files to touch (audit by reading + grep):
-- `ggml/src/ggml-cuda/mmq.cuh` — `mmq_get_q8_1_ds_layout`, `mmq_get_dp4a_tile_x_sizes`, `mmq_get_mma_tile_x_k`, `load_tiles_q4_0`, `vec_dot_q4_0_q8_1_dp4a`, `mmq_type_traits<...,GGML_TYPE_Q4_0>`, `DECL_MMQ_CASE`.
-- `ggml/src/ggml-cuda/mmq.cu` — `ggml_cuda_should_use_mmq` supported-type list, `mul_mat_q_case<GGML_TYPE_Q4_0>` instantiation.
-- `ggml/src/ggml-cuda/quantize.cu` — `quantize_mmq_q8_1_cuda` (the Q8_1 quantization of activation rows). Currently aborts on unsupported types.
-- `ggml/src/ggml-cuda.cu` — `ggml_cuda_mul_mat` dispatch and the `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH` env path.
+`cudaStreamWaitEvent` is already used at ggml-cuda.cu:4383 and 5460. But empirically multi-GPU `--tensor-split 1,1` produced non-deterministic outputs in earlier tests (see spec §15.21).
 
-Verification: PHASE_MMQ_Q4_0_AR16.md gains a §5 "delta sheet" listing exactly which lines in each file to mirror.
+The non-determinism source must be either:
+(a) Event-based sync misses some path. Need to audit ALL peer-access call sites and confirm event sync.
+(b) The order of cross-device memcpy is timing-dependent even with events. Solution: serialize device-by-device processing (force one device to finish before the other starts).
 
-### S2 — Add Q4_0_AR16 to `ggml_cuda_should_use_mmq` supported-type list
+This phase (Phase D) audits and fixes.
 
-Single-line edit in `mmq.cu` around line 195 area: add `case GGML_TYPE_Q4_0_AR16:` to the `switch (type)` that sets `mmq_supported = true`.
+## 3. Architecture overview
 
-Verification: build succeeds; an empty test call `ggml_cuda_should_use_mmq(GGML_TYPE_Q4_0_AR16, /*cc=*/750, /*ne11=*/4)` returns true. No actual kernel invocation yet — just the type-support gate.
+Six phases, each with binding closure. Sequential dependency: A → B → C → D → E → F. Each phase commits + pushes immediately upon its closure binding.
 
-### S3 — Add `mmq_get_q8_1_ds_layout` case for Q4_0_AR16
+```
+                            +---> Phase F (closure binding)
+                            |          ↑
+Phase A ─→ Phase B ─→ Phase C ─→ Phase D ─→ Phase E
+(Q4_0_AR16  (Q4_0_AR16   (cuBLAS    (multi-GPU   (SoTA
+ MMQ)        MMVQ)        pinning)   peer-access  perf
+                                     determinism) tuning)
+```
 
-Mirror Q4_0's `MMQ_Q8_1_DS_LAYOUT_DS4`. Single-line edit in `mmq.cuh:50` area.
+## 4. Phase A — Q4_0_AR16 MMQ kernels
 
-Verification: build succeeds.
+Goal: Q4_0_AR16 weight + F32 activation → MMQ kernel path; byte-identical row-0 output across `mmq_x` ∈ {compile-time-supported set}.
 
-### S4 — Add `mmq_get_dp4a_tile_x_sizes` and `mmq_get_mma_tile_x_k` cases for Q4_0_AR16
+### A.1 — Add Q4_0_AR16 to MMQ supported-types
 
-Mirror Q4_0's `MMQ_DP4A_TXS_Q4_0` and `MMQ_MMA_TILE_X_K_Q8_0`. Two single-line edits.
+`ggml/src/ggml-cuda/mmq.cu:180-228`: add `case GGML_TYPE_Q4_0_AR16:` to the `switch (type)` setting `mmq_supported = true`.
 
-Verification: build succeeds.
+Verification: `ggml_cuda_should_use_mmq(GGML_TYPE_Q4_0_AR16, 750, 16)` returns true. Build passes.
 
-### S5 — Implement `load_tiles_q4_0_ar16<mmq_y, nwarps, need_check>`
+### A.2 — Add Q4_0_AR16 cases to layout tables
 
-Pattern: clone `load_tiles_q4_0` (mmq.cuh:316). Adjust for 16-element blocks:
-- `QI_AR16 = QK_AR16 / 8 = 2` (32-bit ints per block).
-- Where Q4_0 has `kbx = threadIdx.x / QI4_0` and `kqsx = threadIdx.x % QI4_0`, AR16 has `kbx = threadIdx.x / QI_AR16` and `kqsx = threadIdx.x % QI_AR16`.
-- Per (i, kbx, kqsx), read one int from `block_q4_0_ar16[i*stride + kbx].qs[kqsx]` and one fp16 scale.
-- Sign-subtract 8, same as Q4_0.
-- SMEM writes: int8s into `x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + ...]`; scale into `x_df[...]`. Use the same SMEM layout as Q4_0 — the consumer kernels (vec_dot) read from the same offsets.
+`mmq.cuh:50-area` `mmq_get_q8_1_ds_layout`: case Q4_0_AR16 → `MMQ_Q8_1_DS_LAYOUT_DS4`.
 
-Test oracle: `dequantize_block_q4_0_ar16` in convert.cu:115 produces the same per-nibble values. Cross-check on random inputs.
+`mmq.cuh:179-area`: add `MMQ_DP4A_TXS_Q4_0_AR16` macro (per §2.1).
 
-Verification: a new `tests/dflash-speculative/test-mmq-q4-0-ar16-load-tiles.cpp` that loads tiles, reads back via SMEM-dump kernel, compares to dequant oracle. PASS at random fp16 scales + nibble patterns over a sweep of (mmq_y, nwarps).
+`mmq.cuh:190-236` `mmq_get_dp4a_tile_x_sizes`: case Q4_0_AR16 → `MMQ_DP4A_TXS_Q4_0_AR16`.
 
-### S6 — Implement `vec_dot_q4_0_ar16_q8_1_dp4a` (DP4A path)
+`mmq.cuh:238-242`: add `MMQ_MMA_TILE_X_K_Q4_0_AR16` macro (per §2.1). Static_assert `% 8 == 4`.
 
-Per-tile dot-product using DP4A instruction (sm_75 supports). Two AR16 blocks dot against one Q8_1 block per 32-element K span.
+`mmq.cuh:270-area` `mmq_get_mma_tile_x_k`: case Q4_0_AR16 → `MMQ_MMA_TILE_X_K_Q4_0_AR16`.
 
-Reference: `vec_dot_q4_0_q8_1_dp4a<mmq_x, mmq_y, nwarps>`. Adapt the inner k01 loop to handle AR16's 2-block stride.
+Verification: build passes.
 
-Test oracle: scalar CPU `ggml_vec_dot_q4_0_ar16_q8_0` (in ggml.c:1634) — bit-equivalent at exact arithmetic; on GPU we accept fp32-rounded equality.
+### A.3 — Implement `load_tiles_q4_0_ar16<mmq_y, nwarps, need_check>`
 
-Verification: a new `tests/dflash-speculative/test-mmq-q4-0-ar16-dp4a.cpp` drives the dp4a path over random inputs, compares to scalar reference. Cosine ≥ 0.9999 at all tested shapes.
+Clone `load_tiles_q4_0` (mmq.cuh:316). Adjust:
+- `QI_AR16 = 2` replaces `QI4_0 = 4` in `kbx`/`kqsx` decomposition.
+- Source struct is `block_q4_0_ar16` (10 bytes) not `block_q4_0` (18 bytes).
+- Each thread reads 1 byte (= 2 nibbles = 2 quants) into one int32 by `get_int_b2(bxi->qs, kqsx)`.
+- Sign-subtract is same (`__vsubss4(... & 0x0F0F0F0F, 0x08080808)`).
+- SMEM layout: x_qs uses same `MMQ_MMA_TILE_X_K_Q4_0_AR16` (= 100) row stride for INT8_MMA; x_df uses 2x stride for AR16's 2x more scales.
 
-### S7 — Implement `vec_dot_q4_0_ar16_q8_1_mma` (Tensor-core MMA path)
+Verification: new test `tests/dflash-speculative/test-mmq-q4-0-ar16-load-tiles.cpp`:
+- Generate random `block_q4_0_ar16` rows.
+- Dispatch a kernel that calls `load_tiles_q4_0_ar16`, then dumps `x_qs` and `x_df` to global memory.
+- Compute the expected `x_qs` and `x_df` from `dequantize_block_q4_0_ar16` (convert.cu:115) which IS the validated unpacker.
+- Byte-equivalent across (mmq_y, nwarps, need_check) sweep.
 
-For Turing sm_75, MMQ MMA path uses `mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32` (int8 mma). Adapt `vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, nwarps, MMQ_Q8_1_DS_LAYOUT_DS4>` for AR16's 2-block-per-K span.
+### A.4 — Implement `vec_dot_q4_0_ar16_q8_1_dp4a<mmq_x, mmq_y, nwarps>`
 
-Test oracle: matches the DP4A output bit-for-bit (the underlying math is the same; only the SIMD width differs).
+Clone `vec_dot_q4_0_q8_1_dp4a` (mmq.cuh:443). Adjust per §2.3:
+- For each K-chunk of 32 vals, compute the dot product as TWO half-dot-products with separate weight scales.
+- Inside the inner accumulation: `sum += d_w0 * d_a * sum(int8(qx_half0) * int8(qy_half0)) - 8 * d_w0 * d_a * sum(qy_half0) + d_w1 * d_a * sum(qy_half1) ... -8 * d_w1 * d_a * sum(qy_half1)`.
+- The half-sums of `qy` are computed inline from `qy[0..15]` and `qy[16..31]` (16 int8 additions each per half-sum). One DP4A instruction takes 4 bytes; sum across 4 DP4As per half.
 
-Verification: `tests/dflash-speculative/test-mmq-q4-0-ar16-mma.cpp` drives the MMA path over random inputs, compares to DP4A path output at random (mmq_x, mmq_y) tile sizes. Byte-identical.
+Verification: new test `tests/dflash-speculative/test-mmq-q4-0-ar16-dp4a.cpp`:
+- Random Q4_0_AR16 weight matrix.
+- Random Q8_1 activation (run quantize_mmq_q8_1 with DS4 layout).
+- DP4A kernel produces output `dst`.
+- Scalar CPU reference: dequantize Q4_0_AR16 to F32 + dequantize Q8_1 to F32 + fp32 dot-product.
+- Cosine ≥ 0.9999, NMSE ≤ 1e-4. Per row sweep over (mmq_x, mmq_y, K).
 
-### S8 — Add `mmq_type_traits<...,GGML_TYPE_Q4_0_AR16>` specialization
+### A.5 — Implement `vec_dot_q4_0_ar16_q8_1_mma<mmq_x, mmq_y, nwarps>`
 
-Wires `load_tiles_q4_0_ar16` (S5), `vec_dot_q4_0_ar16_q8_1_mma` (S7), `vec_dot_q4_0_ar16_q8_1_dp4a` (S6). Mirror line 3605 (Q4_0's specialization). ~4 LOC edit.
+Clone `vec_dot_q8_0_q8_1_mma<...,DS4>` (mmq.cuh:area). The MMA path uses `mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32` (int8 MMA on sm_75). Same -8 correction with per-half scaling.
 
-Verification: build succeeds.
+Implementation strategy:
+- MMA produces int32 accumulator from int8 × int8.
+- After MMA, apply the per-K-chunk scale: `(d_w0, d_w1) * d_a * mma_int32_result`.
+- Sum-correction: `-8 * (d_w0 * d_a * s_a_half0 + d_w1 * d_a * s_a_half1)`. The half-sums come from the MMA input fragment summed inline.
 
-### S9 — Add Q4_0_AR16 case to `quantize_mmq_q8_1_cuda`
+Verification: new test `tests/dflash-speculative/test-mmq-q4-0-ar16-mma.cpp`:
+- Same setup as A.4.
+- MMA kernel output bit-identical to DP4A kernel output (the underlying math is the same; this verifies the MMA path).
 
-The activation row is fp32; quantize_mmq_q8_1_cuda converts to Q8_1. Currently aborts for unhandled types at mmq.cuh:111. Need to handle the case where the WEIGHT (src0) is Q4_0_AR16; the ACTIVATION (src1) Q8_1 is unaffected by AR16's block size (Q8_1 has its own 32-element block).
+### A.6 — Add `mmq_type_traits<...,GGML_TYPE_Q4_0_AR16>`
 
-Likely the existing Q4_0 Q8_1-quantization path works as-is. Verify by tracing the abort path; if AR16 just maps to the same Q8_1 quantization (because Q8_1's block size is the activation's, not the weight's), then a single case-label addition `case GGML_TYPE_Q4_0_AR16:` to the same branch suffices.
+Clone mmq.cuh:3605 specialization. Wire `load_tiles_q4_0_ar16` (A.3), `vec_dot_q4_0_ar16_q8_1_mma` (A.5), `vec_dot_q4_0_ar16_q8_1_dp4a` (A.4).
 
-Verification: round-trip test — F32 activation → Q8_1 → MMQ AR16 weights → output. Compare to scalar reference. PASS.
+Verification: build passes.
 
-### S10 — Add Q4_0_AR16 case to `mul_mat_q_case` dispatch in mmq.cu
+### A.7 — Add Q4_0_AR16 to `quantize_mmq_q8_1_cuda` switch
 
-Mirror line 111 area: add Q4_0_AR16 case calling `mul_mat_q_case<GGML_TYPE_Q4_0_AR16>(ctx, args, stream)`.
+Single case-label add at quantize.cu:area. Re-uses `MMQ_Q8_1_DS_LAYOUT_DS4` path. No new quantization kernel.
 
-Verification: end-to-end test calling `ggml_mul_mat` with Q4_0_AR16 weights, verify GGML_OP_MUL_MAT dispatcher routes to MMQ (via NVTX range "mmq" appearing in nsys trace, NOT "op_mul_mat_cublas").
+Verification: quantize round-trip test in `tests/dflash-speculative/test-mmq-q4-0-ar16-quantize.cpp`. F32 activation → Q8_1 → ds4 layout → dequant → cosine ≥ 0.9999.
 
-### S11 — Add MMQ instance file for Q4_0_AR16
+### A.8 — Add Q4_0_AR16 to `mul_mat_q_case` dispatch
 
-Mirror `template-instances/mmq-instance-q4_0.cu`: a 1-line `DECL_MMQ_CASE(GGML_TYPE_Q4_0_AR16);` in a new file `mmq-instance-q4_0_ar16.cu`. Add to CMakeLists if needed.
+`mmq.cu:111-area`: add `case GGML_TYPE_Q4_0_AR16: mul_mat_q_case<GGML_TYPE_Q4_0_AR16>(ctx, args, stream); break;`.
 
-Verification: build succeeds; binary contains the symbol (nm | grep Q4_0_AR16).
+### A.9 — Add MMQ instance file
 
-### S12 — Unit test: shape-invariance binding
+New file `ggml/src/ggml-cuda/template-instances/mmq-instance-q4_0_ar16.cu`:
+```cpp
+#include "../mmq.cuh"
+DECL_MMQ_CASE(GGML_TYPE_Q4_0_AR16);
+```
+Add to CMakeLists if instance files are listed explicitly.
 
-New test `tests/dflash-speculative/test-mmq-q4-0-ar16-shape-invariance.cpp`.
+Verification: `nm build/ggml/src/libggml.so | grep Q4_0_AR16` returns the symbol.
 
-Random Q4_0_AR16 weight matrix [K, N]; random fp32 activation [K, M] for M ∈ {1, 4, 8, 16}. Slice row 0 = same across all M. Run `ggml_mul_mat` with `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`. Compare row 0 of output across M. **Byte-identical** = PASS.
+### A.10 — Shape-invariance unit test
 
-This is the kernel-level binding for the concurrent-batched-decode goal.
+`tests/dflash-speculative/test-mmq-q4-0-ar16-shape-invariance.cpp`:
+- Random Q4_0_AR16 weight `[K, N]`. Random F32 activation row `a0[K]`.
+- Build activation tensors at `M ∈ {1, 4, 8, 16, 32}` with `M[0] = a0`, `M[1..M-1] = random`.
+- Run `ggml_mul_mat` with `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1` for each `M`.
+- Compare output row 0 across `M`. **Byte-identical** = PASS.
 
-### S13 — Production NP-cross harness (closure binding)
+This is the Phase A closure binding. If it fails, do NOT proceed to Phase B.
 
-Run `scripts/test-fattn-per-slot-kv-np-determinism.sh` with:
-- `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1`
-- `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`
-- `CUBLAS_WORKSPACE_CONFIG=:4096:8`
-- `--no-cont-batching` only (NOT `LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=1`).
-- Single GPU.
+## 5. Phase B — Q4_0_AR16 MMVQ kernels
 
-**Closure**: all slot outputs at NP ∈ {2, 4, 8} byte-identical to NP=1 baseline.
+Goal: Q4_0_AR16 also has MMVQ kernels so the default dispatch (without `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`) can route to MMVQ for small batch. This is for completeness: under the shape-invariant dispatch flag, MMQ is always chosen; under default dispatch, MMVQ allows perf at small batch.
 
-### S14 — Spec + MEMORY update + plan close
+### B.1 — Add Q4_0_AR16 to `ggml_cuda_mmvq_type_supported`
 
-- `specs/deltanet/fattn-per-slot-kv-sm75.md` §15.23: closure delivered, production stack updated.
-- `MEMORY.md` (auto) entry: shape-invariant dispatch closure on Q4_0_AR16 path.
-- This file marked `[x]` overall and the steps marked `[x]` per their verification.
+Single case-label add.
 
-## 5. Cross-cutting discipline (per CLAUDE.md)
+### B.2 — Implement `mul_mat_vec_q_q4_0_ar16_q8_1_cuda`
 
-- §1 Think Before Coding — every step has a verification check. If S5's load_tiles fails its byte-equivalence with the dequant oracle, STOP. Do not proceed to S6 with a known-wrong load.
-- §2 Simplicity First — don't add SoTA tile tuning; clone Q4_0's tile sizes exactly. Performance is OUT OF SCOPE for this phase. Correctness + byte-identity ONLY.
-- §3 Surgical Changes — only AR16-named symbols and the AR16 case-label additions. No drive-by cleanup of Q4_0 code.
-- §4 Goal-Driven — closure = S13 binding. Until S13 PASS, the phase stays `[ ]`.
-- §5 Plan auditing — every step that adds verification evidence commits + pushes immediately. Code commits go separately from this plan file.
-- §6 MEMORY.md — append a closure entry when S13 PASS. Append a "structural finding" entry if any step reveals something unexpected about the AR16 packing format.
+Clone `mul_mat_vec_q4_0_q8_1_cuda` (mmvq.cu:50). Per-row CTA structure (each output row gets its own CTA per the MMVQ pattern). Apply -8 correction with per-half-block weight scales.
 
-## 6. Out of scope
+Verification: `tests/dflash-speculative/test-mmvq-q4-0-ar16.cpp`. Cosine + NMSE against scalar reference.
 
-- **Performance**: clone Q4_0 tile sizes exactly. AR16's smaller block means more blocks per K span (2x); we accept the SMEM/register cost increase as the price of correctness. Tuning is post-closure.
-- **Multi-GPU PCIe peer-access timing**: separate workstream, named in §15.21 of the FA spec.
-- **MMVQ for Q4_0_AR16**: this phase adds MMQ only. MMVQ remains absent for AR16; the dispatch falls through to MMQ at all batch sizes when `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`.
-- **Other quant types**: this phase is AR16-only. Q4_1, Q5_K, etc. remain on their existing paths.
+### B.3 — Add Q4_0_AR16 case to MMVQ dispatch in `mmvq.cu`
 
-## 7. Open questions to resolve in S1
+Mirror the Q4_0 case at mmvq.cu:50.
 
-- Is `MMQ_DP4A_TXS_Q4_0` the right tile sizing for AR16? AR16 has half the block size; the K-direction tile width (`WARP_SIZE` elements) covers 2 AR16 blocks vs 1 Q4_0 block. Does that change `txs.qs` (the int-count per tile row) or `txs.dm` (scale-count)?
-- Does `quantize_mmq_q8_1_cuda` have any per-weight-type branching, or is the activation quantization purely a function of the activation tensor? If the latter, S9 is a single case-label add.
-- Does the MMA path need a different `MMQ_Q8_1_DS_LAYOUT` for AR16, given the 2-blocks-per-Q8_1-span structure? Or does the DS4 layout naturally accommodate (since the sum is over the activation's 32 elements which span 2 AR16 blocks)?
+### B.4 — Shape-invariance binding for MMVQ
 
-These need to be answered concretely in S1 before any code lands.
+Repeat the A.10 test but route through MMVQ (via `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=0`, batch ≤ MMVQ_MAX_BATCH_SIZE). Row 0 byte-identical across `M ∈ {1, 2, 4, 8}`.
 
-## 8. Snapshot — current state
+## 6. Phase C — cuBLAS algorithm pinning for F16/BF16/F32 matmuls
+
+Goal: ops with F16 / BF16 / F32 weights (`token_embd`, `lm_head`, RMSNorm output projection) currently route through `ggml_cuda_mul_mat_batched_cublas` or the cuBLAS path inside `ggml_cuda_op_mul_mat_cublas`. cuBLAS picks `cublasGemmAlgo_t` per (M, N, K, dtype) — different M (batch) → different algorithm → different fp accumulator order.
+
+### C.1 — Survey all `cublasGemmEx` call sites in ggml-cuda
+
+Grep for `cublasGemmEx`, `cublasSgemm`, `cublasGemmBatchedEx`, `cublasGemmStridedBatchedEx`. Document call site, current algo argument (typically `CUBLAS_GEMM_DEFAULT_TENSOR_OP` or similar), and the data types.
+
+### C.2 — Force a fixed algorithm under env
+
+Modify each call to (under env `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`) pass a fixed `cublasGemmAlgo_t` AND set `cublasSetMathMode(handle, CUBLAS_PEDANTIC_MATH)` once at handle creation.
+
+Algorithm choice: `CUBLAS_GEMM_ALGO0_TENSOR_OP` is a deterministic choice on Turing. Verify by:
+- Per call site, run with this algo at M ∈ {1, 4, 8, 16}. Row 0 must be byte-identical.
+
+### C.3 — cuBLAS pedantic math handle setup
+
+Add `cublasSetMathMode(ctx.cublas_handle(id), CUBLAS_PEDANTIC_MATH)` under env. Affects all subsequent calls on that handle. Set once on first use.
+
+### C.4 — Closure binding for Phase C
+
+New test `tests/dflash-speculative/test-cublas-pinned-shape-invariant.cpp`:
+- F16 weight `[K, N]` (e.g., `K=5120, N=5120` matching token_embd-class shapes).
+- F32 activation `[K, M]` for `M ∈ {1, 4, 8, 16, 32}`.
+- Row 0 of activation identical across M.
+- Run `ggml_cuda_mul_mat_batched_cublas` with env on.
+- Row 0 of output byte-identical across M.
+
+## 7. Phase D — Multi-GPU PCIe peer-access deterministic ordering
+
+Goal: with `--device CUDA0,CUDA1 --tensor-split 1,1`, the output is byte-identical to single-GPU output. Currently non-deterministic due to peer-access timing.
+
+### D.1 — Survey all `cudaMemcpyPeerAsync` call sites
+
+From earlier scan: 5 sites in ggml-cuda.cu at lines 816, 2184, 2190, 4348, 4368.
+
+For each, document:
+- Source/dest devices.
+- Stream.
+- Event sync before/after.
+
+### D.2 — Identify the non-deterministic site
+
+Hypothesis (per §15.21): one or more peer-access copies have no preceding `cudaStreamWaitEvent`, so the dest stream may start consuming before the source stream finishes writing. Result: race condition.
+
+Audit each site. Where missing, add explicit event creation + waitEvent pair.
+
+### D.3 — Force serialized cross-device boundary
+
+Even with events, the ORDER of inter-device transfers may matter. Add (under env) a deterministic ordering policy:
+- All cross-device transfers complete before the next graph node begins.
+- Use a single global event chain: each transfer signals an event; the next dependent kernel waits.
+
+### D.4 — Closure binding for Phase D
+
+New test `scripts/probe-multi-gpu-shape-invariant.sh`:
+- Single-GPU NP=1 baseline.
+- Multi-GPU NP=1 (--device CUDA0,CUDA1 --tensor-split 1,1) — should match single-GPU baseline.
+- Multi-GPU NP={2,4,8} concurrent — all slots match the single-GPU baseline.
+
+Bind: PASS on all NPs and devices.
+
+## 8. Phase E — SoTA performance tuning
+
+Required by `feedback_kernel_replacements_must_be_sota_sm75`: every kernel replacement must include register budget, occupancy, target % of TU102 peaks, committed nsys/ncu data.
+
+For each new kernel in Phases A and B:
+
+### E.1 — `load_tiles_q4_0_ar16` budget
+
+- Register count target: ≤ 32 regs/thread (matches Q4_0's load tile).
+- Occupancy: 2 CTAs/SM at WARP_SIZE × nwarps threads/CTA.
+- Target peak: not perf-critical (load step), goal is correctness + footprint.
+- Measure: `--ptxas-options=-v` registers, `cudaOccupancyMaxActiveBlocksPerMultiprocessor` blocks/SM.
+
+### E.2 — `vec_dot_q4_0_ar16_q8_1_dp4a` budget
+
+- Register count target: ≤ 48 regs/thread.
+- Occupancy: 2 CTAs/SM target.
+- Target peak: ≥ 60% of TU102 DP4A peak (Turing INT8 = 130 TFLOPS peak; DP4A subset achievable ~80 TFLOPS).
+- Measure: nsys range capturing one matmul + ncu metric `sm__inst_executed_pipe_xu_dp4a.sum` divided by elapsed time → effective DP4A throughput.
+- Commit: `data/mmq-q4-0-ar16-dp4a.{nsys-rep,sqlite,csv}` with the measurement results.
+
+### E.3 — `vec_dot_q4_0_ar16_q8_1_mma` budget
+
+- Register count target: ≤ 56 regs/thread (MMA register pressure).
+- Occupancy: 2 CTAs/SM.
+- Target peak: ≥ 70% of TU102 INT8 tensor-core peak.
+- Measure + commit: as E.2.
+
+### E.4 — `mul_mat_vec_q_q4_0_ar16_q8_1_cuda` (MMVQ) budget
+
+- Register count target: ≤ 32 regs/thread.
+- Per-row CTA structure → grid scales with output rows.
+- Target peak: ≥ 70% of DP4A peak.
+- Measure + commit.
+
+### E.5 — Overall production benchmark
+
+After Phases A–D close: run `llama-bench` with the full stack (env + multi-GPU + shape-invariant + no strict-seq), measure:
+- Prefill throughput (PP @ 512 tokens).
+- Decode throughput (TG @ 32 tokens).
+- Compare against the single-GPU + strict-sequential baseline.
+
+Closure: shape-invariant stack ≥ 0.95× the strict-sequential baseline at prefill, ≥ 4× at decode (concurrent batched-decode now active).
+
+### E.6 — Profile-driven tuning if Phase E targets miss
+
+If any of E.1–E.4 misses target: investigate via ncu. Common levers:
+- mmq_x / mmq_y tile-size grid search via `cudaOccupancyMaxActiveBlocksPerMultiprocessor` sweep.
+- Register pressure: `--maxrregcount`.
+- SMEM layout: bank-conflict elimination, padding.
+
+Document the tuning iterations in this PHASE file.
+
+## 9. Phase F — Closure binding
+
+### F.1 — Production NP-cross harness, multi-GPU, no strict-sequential
+
+Run `scripts/test-fattn-per-slot-kv-np-determinism.sh` with the §1 production stack (multi-GPU, no strict-seq, no --no-cont-batching).
+
+**Bind**: all slot outputs at NP ∈ {2, 4, 8} byte-identical to NP=1 baseline. Multi-run stability: run 5 times, all results byte-identical.
+
+### F.2 — Server perf benchmark
+
+Run `llama-bench` (or `llama-batched-bench`) at production shape with NP=8 concurrent. Throughput must be ≥ 4× the single-GPU + strict-sequential baseline (concurrent parallelism restored).
+
+### F.3 — Spec + MEMORY close
+
+Update `specs/deltanet/fattn-per-slot-kv-sm75.md §15.23`: full closure delivered.
+
+`MEMORY.md` (auto): append entry on the closure.
+
+## 10. Discipline (CLAUDE.md)
+
+- §1 Think Before Coding — open questions resolved in §2 of this file before any code lands.
+- §2 Simplicity First — within each kernel, clone the closest sibling kernel (Q4_0). No speculative abstractions.
+- §3 Surgical Changes — only AR16-named symbols + case-label additions + env-gated cuBLAS pinning + env-gated peer-access serialization.
+- §4 Goal-Driven — every step has a binding verification check. Stop on failure.
+- §5 Plan auditing — each phase commits + pushes immediately upon closure. Code commits go separately from plan-file updates.
+- §6 MEMORY.md — append entries on phase closures and on structural findings.
+- `feedback_no_skipping_lessening` — no declaring "good enough at single-GPU". The full stack is the goal.
+- `feedback_kernel_replacements_must_be_sota_sm75` — every new kernel has the Phase E budget + committed measurement data.
+- `feedback_test_first_discipline` — every step that adds a kernel has its test driver written BEFORE the kernel, in RED-first style.
+- `feedback_anchor_to_measured_baselines` — Phase F.2 perf comparison must use fresh-measured baseline at the same hardware + same prompt set.
+
+## 11. Verification matrix (single source of truth for closure)
+
+| Step | Test driver | Closure binding |
+|---|---|---|
+| A.3 | test-mmq-q4-0-ar16-load-tiles.cpp | byte-equivalent to dequant_block oracle, sweep (mmq_y, nwarps, need_check) |
+| A.4 | test-mmq-q4-0-ar16-dp4a.cpp | cos ≥ 0.9999, NMSE ≤ 1e-4 vs scalar fp32 ref |
+| A.5 | test-mmq-q4-0-ar16-mma.cpp | byte-identical to A.4 DP4A path output |
+| A.7 | test-mmq-q4-0-ar16-quantize.cpp | round-trip cos ≥ 0.9999 |
+| A.10 | test-mmq-q4-0-ar16-shape-invariance.cpp | row 0 byte-identical at M ∈ {1,4,8,16,32} |
+| B.2 | test-mmvq-q4-0-ar16.cpp | cos + NMSE vs scalar ref |
+| B.4 | test-mmvq-q4-0-ar16-shape-invariance.cpp | row 0 byte-identical at M ∈ {1,2,4,8} |
+| C.4 | test-cublas-pinned-shape-invariant.cpp | row 0 byte-identical at M ∈ {1,4,8,16,32} for F16/BF16/F32 weights |
+| D.4 | probe-multi-gpu-shape-invariant.sh | multi-GPU NP={1,2,4,8} all byte-identical to single-GPU NP=1 |
+| E.5 | llama-bench benchmark | shape-invariant stack ≥ 0.95× prefill, ≥ 4× decode vs single-GPU+strict-seq baseline |
+| F.1 | test-fattn-per-slot-kv-np-determinism.sh | all slots at NP={2,4,8} byte-identical to NP=1, 5 runs stable |
+| F.2 | llama-bench (full prod stack) | concurrent throughput restored |
+
+## 12. Snapshot — current state of touchpoints
 
 `production/2026-q2-next` head:
-- Q4_0_AR16 in `ggml_cuda_should_use_mmq` supported list: **NO**.
-- `load_tiles_q4_0_ar16`: **does not exist**.
-- `vec_dot_q4_0_ar16_q8_1_dp4a`: **does not exist**.
-- `vec_dot_q4_0_ar16_q8_1_mma`: **does not exist**.
-- `mmq_type_traits<...,GGML_TYPE_Q4_0_AR16>`: **does not exist**.
-- `mul_mat_q_case<GGML_TYPE_Q4_0_AR16>`: **does not exist**.
-- MMQ instance file for AR16: **does not exist**.
 
-This phase changes all 7 to YES.
+| File | Symbol | Status |
+|---|---|---|
+| ggml-cuda/mmq.cu | `Q4_0_AR16` in `ggml_cuda_should_use_mmq` switch | NO |
+| ggml-cuda/mmq.cuh | `MMQ_DP4A_TXS_Q4_0_AR16` macro | NO |
+| ggml-cuda/mmq.cuh | `MMQ_MMA_TILE_X_K_Q4_0_AR16` macro | NO |
+| ggml-cuda/mmq.cuh | `load_tiles_q4_0_ar16` | NO |
+| ggml-cuda/mmq.cuh | `vec_dot_q4_0_ar16_q8_1_dp4a` | NO |
+| ggml-cuda/mmq.cuh | `vec_dot_q4_0_ar16_q8_1_mma` | NO |
+| ggml-cuda/mmq.cuh | `mmq_type_traits<...,GGML_TYPE_Q4_0_AR16>` | NO |
+| ggml-cuda/mmq.cu | `Q4_0_AR16` in `mul_mat_q_case` | NO |
+| ggml-cuda/template-instances/mmq-instance-q4_0_ar16.cu | file | NO |
+| ggml-cuda/quantize.cu | `Q4_0_AR16` in `quantize_mmq_q8_1_cuda` switch | NO |
+| ggml-cuda/mmvq.cu | `mul_mat_vec_q_q4_0_ar16_q8_1_cuda` + dispatch case | NO |
+| ggml-cuda.cu | env-gated `cublasSetMathMode` + fixed algo | NO |
+| ggml-cuda.cu | env-gated peer-access serialization | NO |
+| data/mmq-q4-0-ar16-{dp4a,mma}.* | profile data | NO |
+
+All 14 transitions must complete for Phase F closure.
