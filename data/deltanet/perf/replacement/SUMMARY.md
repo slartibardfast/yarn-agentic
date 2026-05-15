@@ -8,25 +8,25 @@ Branch: production/2026-q2-next
 Both runs use `test-np-validity-vanilla` at NP=1, n_gen=64, Q4_0 KV + Hadamard,
 production target. The `LLAMA_FATTN_PER_SLOT_KV_DISABLE=1` env var forces the
 build-graph to emit ggml_flash_attn_ext (wmma_f16) instead of the new
-ggml_flash_attn_ext_per_slot_kv (Stage 2.3). Apples-to-apples.
+ggml_flash_attn_ext_per_slot_kv (per-slot-KV). Apples-to-apples.
 
 ### Small n_kv (24-token prompt, n_gen=32 → n_kv ≈ 24-56)
 
 | FA path | Per-call avg | Instances |
 |---|---:|---:|
 | wmma_f16 (`flash_attn_ext_f16`) | 20.4 µs | 1024 |
-| Stage 2.3 (`fattn_per_slot_kv_sm75_stage23_kernel`) | 80 µs | 1024 |
+| per-slot-KV (`fattn_per_slot_kv_sm75_stage23_kernel`) | 80 µs | 1024 |
 
-Ratio: Stage 2.3 is **4× slower** per call.
+Ratio: per-slot-KV is **4× slower** per call.
 
 ### Long n_kv (~1200-token prompt, n_gen=64 → n_kv ≈ 1200-1264)
 
 | FA path | Per-call avg | Instances |
 |---|---:|---:|
 | wmma_f16 (`flash_attn_ext_f16` + `stream_k_fixup`) | 24.5 + 9.2 = 33.7 µs | 2048 |
-| Stage 2.3 (`fattn_per_slot_kv_sm75_stage23_kernel` + `combine_kernel`) | 408 µs + small | 2048 |
+| per-slot-KV (`fattn_per_slot_kv_sm75_stage23_kernel` + `combine_kernel`) | 408 µs + small | 2048 |
 
-Ratio: Stage 2.3 is **12× slower** per call.
+Ratio: per-slot-KV is **12× slower** per call.
 
 **The gap WIDENS with n_kv (4× → 12×).** The earlier hypothesis "long context
 closes the gap" was wrong.
@@ -35,11 +35,11 @@ closes the gap" was wrong.
 
 Both paths split-K at decode shape:
 - wmma_f16: cols_per_block=8, parallel_blocks=4 → grid (4×3, 24, 1) = 288 — actually 96 per nsys; depends on ncols
-- Stage 2.3: MAX_PB=16, gqa=6 packed → grid (1, 4, 16) = 64 CTAs
+- per-slot-KV: MAX_PB=16, gqa=6 packed → grid (1, 4, 16) = 64 CTAs
 
 Per-CTA work:
 - wmma_f16 CTA: 1 (head, query-row, ip) tuple. mma fragments × n_kv/parallel_blocks K-positions. Light SMEM (~17 KiB).
-- Stage 2.3 CTA: 6 (head, query-row) tuples via Approach C pack. mma fragments × n_kv/pb_for_slot K-positions. PER-ROW softmax × 6 + V-accum × 6. Heavy SMEM staging (Q 8 KiB + K 8 KiB + V 8 KiB + KQ 2 KiB ≈ 26 KiB).
+- per-slot-KV CTA: 6 (head, query-row) tuples via Approach C pack. mma fragments × n_kv/pb_for_slot K-positions. PER-ROW softmax × 6 + V-accum × 6. Heavy SMEM staging (Q 8 KiB + K 8 KiB + V 8 KiB + KQ 2 KiB ≈ 26 KiB).
 
 The Approach C pack was supposed to be a win at decode (37.5% mma util vs
 12.5% for wmma_f16). In wall-clock terms it's a LOSS because the per-CTA work
@@ -84,7 +84,7 @@ In order of likely impact, smallest LOC first:
    it's needed; perf regression scope narrows. ~5-LOC change in
    build_std_attention.
 
-3. **Redesign Stage 2.3 without Approach C pack** (revert to Approach A).
+3. **Redesign per-slot-KV without Approach C pack** (revert to Approach A).
    Eats the m=16 mma at decode (1/16 useful), wins back the per-CTA work
    savings. Substantial kernel rewrite — same as taking Stage 2.2a as the
    default decode kernel + split-K wrapper. ~200 LOC.
@@ -95,7 +95,7 @@ In order of likely impact, smallest LOC first:
 
 ## Data files
 
-- `nsys-stage23-on-device-np1.nsys-rep` — Stage 2.3 small n_kv
-- `nsys-stage23-on-device-longctx.nsys-rep` — Stage 2.3 long n_kv
+- `nsys-per-slot-kv-on-device-np1.nsys-rep` — per-slot-KV small n_kv
+- `nsys-per-slot-kv-on-device-longctx.nsys-rep` — per-slot-KV long n_kv
 - `nsys-wmma_f16-longctx.nsys-rep` — wmma_f16 long n_kv (LLAMA_FATTN_PER_SLOT_KV_DISABLE=1)
 - (Reference: `../baseline-prod/nsys-vanilla-np1-q4_0-hadamard.nsys-rep` for wmma_f16 small n_kv)
