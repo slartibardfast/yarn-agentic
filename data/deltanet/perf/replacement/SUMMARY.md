@@ -1,94 +1,101 @@
-# Replacement perf — new FA op at production shape
+# Replacement perf — new FA op vs wmma_f16 (small + long n_kv)
 
-Date: 2026-05-14
+Date: 2026-05-15
 Branch: production/2026-q2-next
-Capture binary: `test-np-validity-vanilla` (post Hadamard + new FA op dispatch)
-Config: NP=1, n_gen=32, Q4_0 KV + Hadamard, production target GGUF.
 
-## Production FA kernel observed (Stage 2.3 on-device path)
+## Two captures, same shape, two FA paths
 
-```
-fattn_per_slot_kv_sm75_stage23_kernel(...)   — 80 µs/call avg
-fattn_per_slot_kv_sm75_combine_kernel(...)   — small (Dv-thread reduction)
-fattn_per_slot_kv_sm75_compute_pb_kernel(...) — small (per-slot fp ops)
-fattn_per_slot_kv_sm75_init_meta_kernel(...)  — small (clear -INF)
-```
+Both runs use `test-np-validity-vanilla` at NP=1, n_gen=64, Q4_0 KV + Hadamard,
+production target. The `LLAMA_FATTN_PER_SLOT_KV_DISABLE=1` env var forces the
+build-graph to emit ggml_flash_attn_ext (wmma_f16) instead of the new
+ggml_flash_attn_ext_per_slot_kv (Stage 2.3). Apples-to-apples.
 
-Grid at decode NP=1: `(1, 4, MAX_PB_HARD_CAP=16) = 64 CTAs`. CTAs at
-ip >= pb_for_slot return early after sentinel meta write. CUDA graph
-capture compatible (no host sync).
+### Small n_kv (24-token prompt, n_gen=32 → n_kv ≈ 24-56)
 
-## Headline comparison vs baseline-prod/wmma_f16 (small n_kv ≈ 24-56)
+| FA path | Per-call avg | Instances |
+|---|---:|---:|
+| wmma_f16 (`flash_attn_ext_f16`) | 20.4 µs | 1024 |
+| Stage 2.3 (`fattn_per_slot_kv_sm75_stage23_kernel`) | 80 µs | 1024 |
 
-| Metric | wmma_f16 baseline | Stage 2.3 on-device | Δ |
-|---|---:|---:|---:|
-| Avg time per call | 20.4 µs | 80.5 µs | +295% slower |
-| Instances | 1024 | 1024 | — |
-| % of total decode time | 0.8% | 3.2% | +2.4 pp |
-| Grid CTAs | 96 | 64 | -33% |
+Ratio: Stage 2.3 is **4× slower** per call.
 
-Iteration on Stage 2.3 from Stage 2.2b (single-pass): 82 → 80 µs. Minimal
-delta at THIS shape because n_kv is small (24-56 during n_gen=32 from a
-24-token prompt) → pb=1 → split-K provides zero benefit. 15 of 16 grid.z
-CTAs are sentinel-returns.
+### Long n_kv (~1200-token prompt, n_gen=64 → n_kv ≈ 1200-1264)
 
-## Why the gap persists at small n_kv
+| FA path | Per-call avg | Instances |
+|---|---:|---:|
+| wmma_f16 (`flash_attn_ext_f16` + `stream_k_fixup`) | 24.5 + 9.2 = 33.7 µs | 2048 |
+| Stage 2.3 (`fattn_per_slot_kv_sm75_stage23_kernel` + `combine_kernel`) | 408 µs + small | 2048 |
 
-At small n_kv per slot, the kernel is launch-overhead and SMEM-staging bound.
-Per-CTA work is dominated by:
-- Cooperative Q SMEM load (8 KiB)
-- Cooperative K SMEM load (8 KiB per K-block)
-- Cooperative V SMEM load (8 KiB per K-block)
-- mma + cross-warp D reduction
-- Output write
+Ratio: Stage 2.3 is **12× slower** per call.
 
-wmma_f16's path is leaner per CTA (255 regs/thread, smaller SMEM staging
-shadow), gets work done in fewer cycles even though it does ~16x more wasted
-mma rows. The new kernel's Approach C pack (6/16 useful rows = 37.5%) is
-better mma utilization than wmma_f16's ~12.5%, but doesn't compensate for
-the SMEM staging overhead at this n_kv.
+**The gap WIDENS with n_kv (4× → 12×).** The earlier hypothesis "long context
+closes the gap" was wrong.
 
-## Long-context measurement needed
+## Why the gap widens
 
-The perf comparison above is at **small n_kv**. At long-context decode
-(n_kv = 4096+), Stage 2.3 split-K actually splits: pb = 16 → grid = (1, 4, 16)
-= 64 CTAs with REAL work per CTA. The mma's dominate; SMEM staging amortizes.
-That's where the new kernel design pays off.
+Both paths split-K at decode shape:
+- wmma_f16: cols_per_block=8, parallel_blocks=4 → grid (4×3, 24, 1) = 288 — actually 96 per nsys; depends on ncols
+- Stage 2.3: MAX_PB=16, gqa=6 packed → grid (1, 4, 16) = 64 CTAs
 
-We don't yet have a measurement at production-typical n_kv (1k-10k+). The
-existing test runs at n_gen=32 starting from 24-token prompts, so max n_kv
-stays under 60. Long-context capture is a follow-up.
+Per-CTA work:
+- wmma_f16 CTA: 1 (head, query-row, ip) tuple. mma fragments × n_kv/parallel_blocks K-positions. Light SMEM (~17 KiB).
+- Stage 2.3 CTA: 6 (head, query-row) tuples via Approach C pack. mma fragments × n_kv/pb_for_slot K-positions. PER-ROW softmax × 6 + V-accum × 6. Heavy SMEM staging (Q 8 KiB + K 8 KiB + V 8 KiB + KQ 2 KiB ≈ 26 KiB).
 
-## End-to-end throughput
-
-Production smoke at NP=1 MTP draft=3:
-- Stage 2.2b dispatch: 51 t/s
-- Stage 2.3 on-device dispatch: 50.5 t/s
-- (wmma_f16 baseline production was historically ~55 t/s)
-
-~9% absolute throughput cost at the production smoke shape, attributed to
-the +60 µs per FA call × 16 FA layers × ~30 decoded tokens/sec.
+The Approach C pack was supposed to be a win at decode (37.5% mma util vs
+12.5% for wmma_f16). In wall-clock terms it's a LOSS because the per-CTA work
+scales with the number of packed rows and SMEM staging amortizes poorly.
 
 ## What's locked
 
-- **Determinism (structural)**: GREEN. Per-row CTA + per-slot K-loop bound +
-  no cross-block atomics. Unit test scenario C 464/464.
-- **Production integration**: GREEN. End-to-end run on production model.
-- **NP={2,4,8} validity**: GREEN. All slots PASS.
-- **CUDA graph capture compatibility**: GREEN. No host sync; works with
-  graph_reuse=true.
+- **Determinism (structural)**: GREEN. Algorithm is correct + batch-invariant.
+- **Production integration**: GREEN. End-to-end smoke runs, NP={2,4,8} validity GREEN.
+- **CUDA graph capture compatibility**: GREEN. No host sync.
 
-## What's still open
+## What's NOT locked
 
-- **Decode perf at long n_kv vs wmma_f16**: NOT MEASURED. Expected to be
-  the regime where Stage 2.3 pays off; capture needed at n_kv ~4k.
-- **Decode perf at small n_kv vs wmma_f16**: 4× slower. Need to either
-  reduce SMEM staging cost OR accept the gap as the cost of determinism.
-- **End-to-end byte-id NP=2 ≡ NP=4 ≡ NP=8 on identical prompts**: NOT
-  MEASURED at production shape.
+- **Decode FA per-call perf vs wmma_f16**: **RED at every shape measured**.
+  4× slower at small n_kv, 12× slower at long n_kv. Per-call FA time is 3-3.2%
+  of total decode wall-clock; 4-12× slowdown on that 3% bucket = +9-36% total
+  decode regression on the FA bucket. Real-world tg t/s: 50.5 vs ~55 baseline
+  ≈ -8%.
+
+## Why the design lost
+
+Approach C decode pack was the structural call from Q3 (3c). The mma
+utilization argument (6/16 useful rows vs wmma_f16's 1/8) IS correct on a
+per-instruction-issued basis. But the cost of packing — per-row softmax,
+per-row VKQ rescale, larger SMEM staging — dominates the gain at our shapes.
+
+wmma_f16's design philosophy: small per-CTA work, lots of CTAs, hide latency
+via occupancy. Our design philosophy: pack more work per CTA, fewer CTAs,
+better mma utilization. wmma_f16 wins.
+
+## Concrete remediation paths
+
+In order of likely impact, smallest LOC first:
+
+1. **Disable the new op auto-routing** until perf parity is shown.
+   Production stays on wmma_f16. Determinism story relies on the unit
+   test's structural argument (which still holds). One-line change.
+
+2. **Re-route only at NP > 1** (where the actual production bug fires).
+   At NP=1 the bug doesn't trigger (batch invariance with single slot is
+   trivial), so wmma_f16 at NP=1 = no determinism issue. New op only when
+   it's needed; perf regression scope narrows. ~5-LOC change in
+   build_std_attention.
+
+3. **Redesign Stage 2.3 without Approach C pack** (revert to Approach A).
+   Eats the m=16 mma at decode (1/16 useful), wins back the per-CTA work
+   savings. Substantial kernel rewrite — same as taking Stage 2.2a as the
+   default decode kernel + split-K wrapper. ~200 LOC.
+
+4. **Accept the perf gap as the cost of determinism**, ship as-is.
+   Production users see -8% decode t/s in exchange for np>1 working
+   correctly. Honest tradeoff but worth surfacing.
 
 ## Data files
 
-- `nsys-stage23-on-device-np1.nsys-rep` — current run with on-device Stage 2.3
-- `nsys-vanilla-np1-q4_0-hadamard-new-fa-op.nsys-rep` — prior run with
-  Stage 2.2b (preserved for diff)
+- `nsys-stage23-on-device-np1.nsys-rep` — Stage 2.3 small n_kv
+- `nsys-stage23-on-device-longctx.nsys-rep` — Stage 2.3 long n_kv
+- `nsys-wmma_f16-longctx.nsys-rep` — wmma_f16 long n_kv (LLAMA_FATTN_PER_SLOT_KV_DISABLE=1)
+- (Reference: `../baseline-prod/nsys-vanilla-np1-q4_0-hadamard.nsys-rep` for wmma_f16 small n_kv)
