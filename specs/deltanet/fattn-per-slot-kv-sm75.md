@@ -681,3 +681,43 @@ This collapses to **exactly one existing template instantiation**: `ggml_cuda_fl
 - Step 5 (dispatcher): in `fattn-per-slot-kv-sm75.cu`, reroute `ggml_cuda_flash_attn_ext_per_slot_kv_sm75()` to invoke the new wrapper.
 
 Net diff: smaller than §15.6 anticipated. No modification to the wmma_f16 kernel template body. No new template parameters propagating through `launch_fattn` / `fattn_kernel_t`. The bespoke per-slot kernels in `fattn-per-slot-kv-sm75.cu` are still retired from production routing per §15.6.
+
+---
+
+### 15.8 Empirical findings from server-level harness (2026-05-15)
+
+After §15.7 landed, two tests bind on the kernel-level claim:
+
+- `test-fattn-per-slot-kv-dispatch-np-invariance`: drives the new ggml op through the CUDA backend at production shape (Dq=Dv=256), varying K-cache stride from 256 to 512 with valid range pinned. Result: **PASS** — slot-0 output (6144 fp32 floats) byte-identical across K-cache stride values. The kernel is shape-independent as claimed.
+
+- `scripts/test-fattn-per-slot-kv-np-determinism.sh`: production server with `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1`, same prompt, greedy decode (T=0), NP ∈ {1, 2, 4, 8}. Result: **FAIL** — slot outputs at NP>1 do not match NP=1 baseline.
+
+`scripts/probe-np-determinism-sources.sh` localizes the remaining divergence with three controlled experiments. Findings on `production/2026-q2-next` at this spec version:
+
+| Experiment | Result | Interpretation |
+|---|---|---|
+| **E1** NP=1 three sequential requests | All 3 byte-identical. | Baseline reproducibility holds; sampler / PRNG / non-shape sources of non-determinism are NOT contributing. |
+| **E2** NP=4 three SEQUENTIAL requests (no concurrent batching) | run1 + run3 match NP=1 baseline; run2 diverges ("foundation" vs "groundwork" at token ~15). | Even without concurrent batching, NP=4 produces a non-deterministic split. Not FA — first-launch / warm-up / scheduler state varies per request when np>1. |
+| **E3** NP=4 four CONCURRENT requests | All 3 batched-together slots produce byte-identical output to each other (≠ NP=1); 1 solo-scheduled slot matches NP=1. | Intra-batch agreement at NP=4 batched-decode CONFIRMS the FA kernel-level NP-invariance holds at the server. Cross-batch divergence (solo decode vs batched decode) remains. |
+
+**Pattern**: the FA kernel is correctly shape-independent (E3 intra-batch agreement is the binding witness). The remaining cross-shape divergence is sourced from one or more of:
+
+1. **Non-FA shape-dependent ops**. Q/K/V projection matmuls, RoPE, RMSNorm, MLP, and output projection all have dispatch heuristics that choose tile sizes / launch geometry / split-K count based on M (batch / token dim). Each of these can produce non-identical floats when batched-decode (ne[1]>1) vs solo-decode (ne[1]=1). PHASE45 D10.e diagnosed FA as one of several contributors; the others remain unfixed.
+
+2. **First-launch / CUDA graph cache warm-up effects**. CUDA graph instantiation is shape-keyed; the first instance of a new graph runs eagerly, subsequent calls hit the cache. E2 run2 diverging from run1 + run3 (all serial, identical shapes by hypothesis) suggests some state varies between requests at NP>1 that doesn't vary at NP=1.
+
+3. **KV cache slot allocator placement**. llama-server's cell allocator assigns slot cells to physical KV cache positions. Across NP runs, slot 0's cells may land at different physical offsets. Even with per-row mask correctness, this changes the mask layout and the K-cache values at indexed positions, breaking byte-identity (though the FA proof argued this remained bit-identical via -inf masking — and indeed E3 intra-batch agreement validates that proof for in-batch slots).
+
+### 15.9 Scope reconciliation
+
+The §15.6/§15.7 contract is **FA shape-independence at the kernel dispatch level**, bound by the unit test and by the E3 intra-batch agreement observation. That contract is met.
+
+The broader contract "server-level same-prompt byte-identity across NP ∈ {1, 2, 4, 8}" is **NOT met** and is **not deliverable by FA changes alone**. It requires either:
+
+(a) NP-independent dispatch for every shape-dependent op (matmul tile choice, RoPE / RMSNorm reductions, etc.) — a project at least as large as the FA work itself.
+
+(b) Server-level controls that prevent shape variation (always-solo decode, disable concurrent batching, cgraph cache warm-up — partial mitigations).
+
+The "no follow-up cover" rule (CLAUDE.md §4) requires the PLAN step that promised server-level byte-identity to STAY OPEN. The FA piece is done; the broader work is a separate workstream that needs explicit scoping before re-opening.
+
+**Step 7 status**: kernel-level binding GREEN, server-level binding RED, kept open. Not closed with a "FA works but server diverges" footnote.
