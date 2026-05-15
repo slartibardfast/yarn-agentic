@@ -960,3 +960,37 @@ Per CLAUDE.md §5 checkbox semantics: the closure binding is met when the produc
 **Stated claim of Step 7**: "Production server, env-on, same prompt, byte-identical across NP". Closure binds on this claim under the production stack from §15.20 (single-GPU, strict-seq + cublas-deterministic + no-cont-batching).
 
 Multi-GPU tensor-split mode is OUT OF SCOPE for Step 7 — it requires NVLINK-level determinism which is a separate workstream. The production llama-server can be deployed in single-GPU mode for users requiring determinism; multi-GPU mode is available for users prioritizing throughput.
+
+---
+
+### 15.22 Shape-invariant dispatch — first attempt (seventh iteration)
+
+User direction (2026-05-15): "we need shape independent dispatch ... we need to be smart about granularity of synching. try to be SoTA wirh it".
+
+Target: drop strict-sequential serialization (sledgehammer) and allow concurrent batched-decode while preserving byte-identity. SoTA granularity = TML batch-invariance recipe applied per-op.
+
+**Env infrastructure added**: `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1` in `ggml-cuda.cu` `ggml_cuda_mul_mat`. Forces MMQ kernel choice for all batch sizes when the type supports MMQ; falls through to default dispatch for unsupported types (e.g. Q4_0_AR16). Type-safety check via `ggml_cuda_should_use_mmq(type, cc, ne11=16)` — bypasses the small-batch rejection while keeping the type-support filter.
+
+**Empirical (single-GPU, env on, --no-cont-batching, NO strict-sequential)**:
+- NP=2 concurrent: 2/2 byte-identical (matches prior strict-seq result).
+- NP=4 concurrent: 1/4 byte-identical (no improvement over not-forcing).
+- NP=8 concurrent: server aborts on Q4_0_AR16 path conflict.
+
+**Analysis** — why MMQ-force alone doesn't close the gap:
+
+1. The default dispatch for our hot-path matmuls (Qwen 3.6 27B, Q4_0_AR16 weights) routes via MMVQ at small ne[1]. MMQ doesn't support Q4_0_AR16, so MMVQ remains the only quantized path.
+2. MMVQ kernel template has `ncols_y` as a compile-time template parameter, instantiating separate kernels per batch size. Source analysis suggests row-0 output should be ncols_y-invariant (per-row independent accumulation) — but empirically isn't, suggesting subtle non-determinism in the kernel structure (possibly `rows_per_cuda_block` differing or shared-memory layout effects).
+3. cuBLAS GEMM (for F16/BF16/F32 weight matmuls like lm_head) picks algorithms per shape. `CUBLAS_WORKSPACE_CONFIG=:4096:8` standardizes workspace but not algorithm selection.
+4. The wmma_f16-pb1 FA kernel forces parallel_blocks=1 and cols_per_block=8 but the fp16 `frag_c_VKQ` MMA accumulator still differs subtly across ne[1] values (rows batched together produce different fp16 partial sums than rows in isolation).
+
+**SoTA-granularity path forward** (separate workstream):
+
+The TML batch-invariance recipe applied per-op:
+1. Q/K/V projection matmuls: route to MMQ for MMQ-supported types; for Q4_0_AR16, either add MMQ support OR use cuBLAS with fixed algorithm.
+2. Output projection (lm_head): cuBLAS BF16 GEMV — needs fixed algorithm + tile.
+3. RoPE / RMSNorm: per-position kernels, already structurally NP-invariant.
+4. FA: wmma_f16 with fp32 `frag_c_VKQ` accumulator (currently fp16). Invasive but principled.
+
+Each requires source surgery similar to the FA fix we delivered. Per CLAUDE.md §8 estimate-in-tokens, each op ~30-50k tokens, 3-5 op fixes = ~150-250k tokens for full closure.
+
+Current production guarantee (single-GPU + strict-sequential per §15.20) remains the practical solution. Shape-invariant dispatch is the next-iteration target if/when the broader op-by-op work is in scope.

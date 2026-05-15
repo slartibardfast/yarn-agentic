@@ -24,7 +24,6 @@ start_server() {
     pkill -x llama-server 2>/dev/null || true
     sleep 3
     LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
-    LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=1 \
     CUBLAS_WORKSPACE_CONFIG=:4096:8 \
     "$BIN" -m "$GGUF" \
         --device CUDA0 \
