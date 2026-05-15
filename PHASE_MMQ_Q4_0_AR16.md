@@ -138,12 +138,14 @@ This phase (Phase D) audits and fixes.
 Six phases, each with binding closure. Sequential dependency: A → B → C → D → E → F. Each phase commits + pushes immediately upon its closure binding.
 
 ```
-                            +---> Phase F (closure binding)
-                            |          ↑
-Phase A ─→ Phase B ─→ Phase C ─→ Phase D ─→ Phase E
-(Q4_0_AR16  (Q4_0_AR16   (cuBLAS    (multi-GPU   (SoTA
- MMQ)        MMVQ)        pinning)   peer-access  perf
-                                     determinism) tuning)
+                                     +---> Phase F (closure binding)
+                                     |          ↑
+Phase A ─→ Phase B ─→ Phase C ─→ Phase CX ─→ Phase D ─→ Phase E
+(Q4_0_AR16  (Q4_0_AR16   (cuBLAS    (non-MMQ     (multi-GPU   (SoTA
+ MMQ)        MMVQ)        pinning)   non-cuBLAS   peer-access  perf
+                                     ops:         determinism) tuning)
+                                     DeltaNet
+                                     etc.)
 ```
 
 ## 4. Phase A — Q4_0_AR16 MMQ kernels
@@ -351,6 +353,78 @@ New test `tests/dflash-speculative/test-cublas-pinned-shape-invariant.cpp`:
 - Run `ggml_cuda_mul_mat_batched_cublas` with env on.
 - Row 0 of output byte-identical across M.
 
+## 6b. Phase CX — Non-MMQ / non-cuBLAS shape-dependent op audit
+
+Inserted 2026-05-15 after the Phase C closure-binding test (`scripts/test-production-np-determinism.sh`) revealed that 10/14 slots still diverge at NP > 1 EVEN with strict-sequential off, cont-batching on, single OR multi GPU. Phase A/B/C made every MMQ + cuBLAS path byte-identical across batch size M, but the production token-level harness still fails — so the residual non-determinism lives in **the remaining (non-MMQ, non-cuBLAS) CUDA ops**. Phase CX chases them down.
+
+Single-GPU probe (`/tmp/single-gpu-np-probe`) confirms: even with `--device CUDA0` only, the divergence is identical in shape (per-slot agree/disagree pattern). Multi-GPU (Phase D) is NOT the primary cause — it can only AMPLIFY whatever's already broken. So Phase CX comes BEFORE Phase D.
+
+### CX.1 — DeltaNet shape-conditional dispatch (HOT — likely contributor)
+
+`ggml/src/ggml-cuda/delta-net.cu`, lines 219 and 228:
+
+```cpp
+if (n_tokens <= 8) {
+    constexpr int threads_per_block = 256;   // 8 warps
+} else {
+    constexpr int threads_per_block = 128;   // 4 warps
+}
+```
+
+The DeltaNet recurrent kernel's per-step `reduce_sum<block_size>(...)` produces a different cross-warp reduction order depending on the warp count (8 vs 4). The cross-warp SMEM tree at line 144-147 of delta-net.cu is `for (i = 0; i < block_size/WARP_SIZE; ++i) sum += all_sumK[i*WARP_SIZE_S + row]`, summing `block_size/WARP_SIZE` partial sums — 8 vs 4 → different fp32 rounding outcomes.
+
+Under continuous batching, the same slot's DeltaNet state path can flip between the two dispatch arms across calls when prompt-eval (n_tokens=12 per sequence) and decode (n_tokens=1) interleave. The recurrent state baked into the per-CTA register accumulator `state_local[i]` then drifts.
+
+**Fix**: pin a single `threads_per_block` under `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`, regardless of `n_tokens`. Recommendation: 256 (matches the n_tokens≤8 path which is the production decode shape). Validate that the n_tokens>8 prompt-eval shape still works with 256 — adjust SMEM budget if needed.
+
+**Verification**:
+- Unit test `tests/dflash-speculative/test-delta-net-shape-invariance.cu`: random inputs at (n_tokens ∈ {1, 4, 8, 12, 24, 48}, n_seqs ∈ {1, 2, 4, 8}), bit-compare per-(slot, head) output and final state across n_tokens values FOR FIXED slot inputs. PASS = byte-identical for the slot-0 path regardless of total `n_tokens`.
+- Production NP harness slot-pass count strictly INCREASES vs the 4/14 baseline.
+
+### CX.2 — FATTN-per-slot under cont-batching audit
+
+The `fattn-per-slot-kv-sm75` kernel was designed for NP-invariance per-slot (per `project_fattn_per_slot_kv_p2_landed_kernel_only`). Verify that the production code path still hits the kernel with `parallel_blocks=1` and `cols_per_block` fixed regardless of ubatch composition. Look for any dispatcher branch that picks a different FATTN variant based on `ne[1]` (token count) of the input.
+
+**Verification**: probe-only — run production NP harness with a `LLAMA_FATTN_PER_SLOT_KV_DEBUG=1` env that logs each FATTN dispatch's kernel selection + tile geometry. Confirm same kernel + same tile dims for all calls.
+
+### CX.3 — `rms_norm_f32` block_size dispatch audit
+
+`ggml/src/ggml-cuda/norm.cu:440-450`:
+
+```cpp
+static void rms_norm_f32_cuda(... int ncols ...) {
+    if (ncols < 1024) {
+        rms_norm_f32<256><<<...>>>(...);
+    } else {
+        rms_norm_f32<1024><<<...>>>(...);
+    }
+}
+```
+
+(Pseudocode — verify exact dispatch.) `block_size` switches based on `ncols` (hidden_dim), which is FIXED for a given model. So this isn't batch-shape-dependent for production. **No fix needed here** — but the audit confirms it.
+
+If `fused_rms_norm_f32` has its own dispatch on `n_tokens` or batch, fix per CX.1 pattern.
+
+### CX.4 — RoPE batch-invariance audit
+
+`ggml/src/ggml-cuda/rope.cu`: verify per-token RoPE is independent of total batch. Audit kernel launch geometry.
+
+### CX.5 — Element-wise op audit (GLU / SiLU / add / mul)
+
+Element-wise ops have no cross-position interaction. Should be batch-trivial. Confirm by grep.
+
+### CX.6 — `ggml_set_rows` / KV cache write per-slot audit
+
+KV cache writes use per-slot pointers but the writing kernel may have batch-dependent geometry. Audit.
+
+### CX.7 — Closure binding for Phase CX
+
+`scripts/test-production-np-determinism.sh` PASS at NP ∈ {1, 2, 4, 8}, 5 runs stable, on **single-GPU** (Phase D unlocks multi-GPU).
+
+If still FAIL after CX.1-CX.6: instrument per-op output capture (cb_eval callback at every named tensor) and bisect to find the first op whose output diverges between NP=1 and NP=2 slot 1.
+
+---
+
 ## 7. Phase D — Multi-GPU PCIe peer-access deterministic ordering
 
 Goal: with `--device CUDA0,CUDA1 --tensor-split 1,1`, the output is byte-identical to single-GPU output. Currently non-deterministic due to peer-access timing.
@@ -481,6 +555,8 @@ Update `specs/deltanet/fattn-per-slot-kv-sm75.md §15.23`: full closure delivere
 | B.2 | test-mmvq-q4-0-ar16.cpp | cos + NMSE vs scalar ref |
 | B.4 | test-mmvq-q4-0-ar16-shape-invariance.cpp | row 0 byte-identical at M ∈ {1,2,4,8} |
 | C.4 | test-cublas-pinned-shape-invariant.cpp | row 0 byte-identical at M ∈ {1,4,8,16,32} for F16/BF16/F32 weights |
+| CX.1 | test-delta-net-shape-invariance.cu | per-(slot, head) output byte-identical for slot-0 inputs at n_tokens ∈ {1,4,8,12,24,48} |
+| CX.7 | test-production-np-determinism.sh (single-GPU) | NP ∈ {1,2,4,8} byte-identical, 5 runs stable |
 | D.4 | probe-multi-gpu-shape-invariant.sh | multi-GPU NP={1,2,4,8} all byte-identical to single-GPU NP=1 |
 | E.5 | llama-bench benchmark | shape-invariant stack ≥ 0.95× prefill, ≥ 4× decode vs single-GPU+strict-seq baseline |
 | F.1 | test-fattn-per-slot-kv-np-determinism.sh | all slots at NP={2,4,8} byte-identical to NP=1, 5 runs stable |
@@ -503,8 +579,10 @@ Update `specs/deltanet/fattn-per-slot-kv-sm75.md §15.23`: full closure delivere
 | ggml-cuda/template-instances/mmq-instance-q4_0_ar16.cu | file | NO |
 | ggml-cuda/quantize.cu | `Q4_0_AR16` in `quantize_mmq_q8_1_cuda` switch | NO |
 | ggml-cuda/mmvq.cu | `mul_mat_vec_q_q4_0_ar16_q8_1_cuda` + dispatch case | YES |
-| ggml-cuda.cu | env-gated `cublasSetMathMode` + fixed algo | NO |
+| ggml-cuda.cu | env-gated `cublasSetMathMode` + fixed algo | YES |
+| ggml-cuda/mul-mat-f16-pinned.{cu,cuh} | F16 + F32 row-pinned GEMM | YES |
+| ggml-cuda/delta-net.cu | env-gated single threads_per_block | NO |
 | ggml-cuda.cu | env-gated peer-access serialization | NO |
 | data/mmq-q4-0-ar16-{dp4a,mma}.* | profile data | NO |
 
-All 14 transitions must complete for Phase F closure.
+All transitions must complete for Phase F closure.
