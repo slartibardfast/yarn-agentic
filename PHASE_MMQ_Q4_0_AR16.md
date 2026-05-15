@@ -34,23 +34,27 @@ Bound by: `scripts/test-fattn-per-slot-kv-np-determinism.sh` PASS, all slot outp
 
 ## 2. Answers to open questions (resolved from source 2026-05-15)
 
-### 2.1 Tile sizing — needs new macro for AR16
+### 2.1 Tile sizing — unified Q8_0-style layout per §2.5
 
-`MMQ_DP4A_TXS_Q4_0 = tile_x_sizes{mmq_y*WARP_SIZE + mmq_y, mmq_y*WARP_SIZE/QI4_0 + mmq_y/QI4_0, 0}` where `QI4_0 = 4` (= QK4_0/8).
+AR16 uses the unified unpacked sign-recentered layout (linear K per int) for **both** DP4A and MMA paths. Per-row sizing:
 
-For AR16: `QI_AR16 = QK_AR16/8 = 16/8 = 2`. The `qs` count per tile is identical to Q4_0 (`mmq_y*WARP_SIZE + mmq_y` — int-count doesn't care about block size). The `dm` (scale-count) is **2x larger** for AR16 because there are 2x more blocks per WARP_SIZE-row of K.
+- `x_qs`: 64 ints (= 2*WARP_SIZE) per row, 16 AR16 blocks × 4 ints/block. Each int = 4 sign-recentered int8 weights at 4 consecutive K positions.
+- `x_df`: 16 floats per row (one per AR16 block).
 
-New macro required:
+`QI_AR16 = QK_AR16/(4*QR_AR16) = 16/8 = 2` remains the source-side packing constant (2 ints per AR16 block in raw byte storage). For x_qs layout we use `QI_AR16_LINEAR = 4` (4 ints per block after unpack).
+
 ```cpp
-#define MMQ_DP4A_TXS_Q4_0_AR16 tile_x_sizes{mmq_y*WARP_SIZE + mmq_y, mmq_y*WARP_SIZE/QI_AR16 + mmq_y/QI_AR16, 0}
-// expands to: tile_x_sizes{mmq_y*32 + mmq_y, mmq_y*16 + mmq_y/2, 0}
+// DP4A path: 64 ints + 1 pad per row of qs. 16 scales + small pad per row of df.
+#define MMQ_DP4A_TXS_Q4_0_AR16 tile_x_sizes{mmq_y*(2*WARP_SIZE) + mmq_y, mmq_y*16 + mmq_y/4, 0}
+// expands to: tile_x_sizes{mmq_y*64 + mmq_y, mmq_y*16 + mmq_y/4, 0}
+
+// MMA path: same layout. Per-row stride MUST match the Q8_0-style pattern Q8_0 uses
+// (so vec_dot_q8_0_q8_1_mma can be reused if desired):
+#define MMQ_MMA_TILE_X_K_Q4_0_AR16 (2*WARP_SIZE + 2*WARP_SIZE/QI_AR16_LINEAR + 4)
+// = 64 + 16 + 4 = 84. % 8 == 4: passes the existing static_assert pattern.
 ```
 
-For the MMA tile: `MMQ_MMA_TILE_X_K_Q8_0 = 2*WARP_SIZE + 2*WARP_SIZE/QI8_0 + 4 = 76`. For AR16's MMA tile:
-```cpp
-#define MMQ_MMA_TILE_X_K_Q4_0_AR16 (2*WARP_SIZE + 2*WARP_SIZE/QI_AR16 + 4)
-// = 64 + 32 + 4 = 100. % 8 == 4: passes the existing static_assert pattern.
-```
+Note: previous (pre-§2.5) macro `MMQ_MMA_TILE_X_K_Q4_0_AR16 = 100` (with `2*WARP_SIZE/QI_AR16=32`) is **superseded** — it allocated 32 scale slots/row but only 16 are needed under the unified layout. Reducing to 84 saves SMEM.
 
 ### 2.2 Q8_1 quantization is activation-only (weight-type-independent)
 
@@ -77,6 +81,36 @@ where `s_a_half0 = sum(qs[0..15])` and `s_a_half1 = sum(qs[16..31])`.
 `block_q8_1_mmq` only stores `s_a` (the full 32-element sum). Computing half-sums requires summing the int8 qs values inline in the AR16 MMQ kernel. Cost: ~16 int8 additions per 32-element K-chunk per per-warp output tile = negligible vs the dot-product itself.
 
 So the existing DS4 layout works without storage change. The kernel does the extra half-sum reduction inline.
+
+### 2.5 SMEM storage layout — LOCKED to Q8_0-style linear-K-per-int (2026-05-15 finding)
+
+**Root issue discovered while writing A.4**: AR16's source-byte nibble convention is `qs[i].low = K=2i (even), qs[i].high = K=2i+1 (odd)` (per `dequantize_block_q4_0_ar16` at convert.cu:115). Q4_0's source convention is different: `qs[i].low = K=i (linear), qs[i].high = K=i+16 (block-half-stride)` (per `dequantize_block_q4_0` at convert.cu:78). Storing AR16's raw bytes into x_qs without re-arrangement produces ints whose nibbles map to non-contiguous K positions — making byte-wise `dp4a(v, u)` with linear `y_qs` invalid (lanes cross-multiply mismatched K's).
+
+**Decision (LOCKED)**: AR16's MMQ x_qs storage uses the **Q8_0-style unpacked sign-recentered layout** for BOTH MMA and DP4A paths. After load:
+
+- Per AR16 block (16 K positions): 4 ints in x_qs row.
+- Slot `kbx*4 + s` (s ∈ 0..3): byte `b` holds the sign-recentered int8 for K position `4s+b` of the block. Linear K within each int.
+- Per warp tile row: 16 blocks × 4 ints/block = **64 ints** = `2*WARP_SIZE` (same total as MMA path).
+- x_df: 16 floats per row (one scale per AR16 block).
+
+This **unifies** the DP4A and MMA storage layouts (one `load_tiles` produces correct data for both vec_dot paths). The DP4A vec_dot becomes a trivial `dp4a(v[i], u[i])` accumulator (no inline nibble extraction, no -8 correction — sign recentering is done at load time). The MMA path reuses the existing Q8_0-style fragment loader.
+
+**Tradeoff**: AR16's DP4A x_qs occupies 64 ints/row instead of Q4_0's 32 ints/row (raw-nibble layout). For mmq_y=64, that's 16 KiB x_qs (vs Q4_0's 8 KiB). Within Turing 48 KiB SMEM budget. Q4_0's existing layouts are unchanged.
+
+**Implication for §2.1 macros**:
+- `MMQ_DP4A_TXS_Q4_0_AR16` updated to `tile_x_sizes{mmq_y*2*WARP_SIZE + mmq_y, mmq_y*16 + mmq_y/4, 0}` (64 ints + 1 pad per row of qs; 16 scales + small pad per row of df).
+- `MMQ_MMA_TILE_X_K_Q4_0_AR16` stays at 100 (64 qs + 32 df + 4 pad — same as before).
+
+**Implication for §2.3**: Half-sum correction is **NOT NEEDED** in the new design. Weights are sign-recentered at load time. Each AR16 block's contribution is `d_w * d_a * dp4a_sum_over_block` directly. The "split into half-sums" complication evaporates.
+
+**Implication for A.3**: Existing committed `load_tiles_q4_0_ar16` (which stored AR16's raw even/odd K layout) MUST be rewritten to produce the unified layout. The existing A.3 test passed against the buggy layout; both the impl and the test must be redone.
+
+**Migration plan** (mid-Phase A reset):
+1. Update §A.3 spec to lock unified layout.
+2. Revert in-flight A.4 impl (mmq.cuh `vec_dot_q4_0_ar16_q8_1_dp4a` + vecdotq.cuh `vec_dot_q4_0_ar16_q8_1_impl`) — uses wrong layout assumption.
+3. Re-implement load_tiles_q4_0_ar16 per unified layout. Re-run A.3 test (new oracle for linear K).
+4. Implement new A.4 DP4A vec_dot. Run A.4 test.
+5. Implement new A.5 MMA vec_dot (likely reusable `vec_dot_q8_0_q8_1_mma` with scale-stride adapter).
 
 ### 2.4 Multi-GPU peer-access already has events but non-deterministic in practice
 
@@ -129,47 +163,95 @@ To avoid this intermediate-state regression, A.1 is deferred to be the LAST muta
 
 Verification: build passes.
 
-### A.3 — Implement `load_tiles_q4_0_ar16<mmq_y, nwarps, need_check>`
+### A.3 — Implement `load_tiles_q4_0_ar16<mmq_y, nwarps, need_check>` (per §2.5 unified layout)
 
-Clone `load_tiles_q4_0` (mmq.cuh:316). Adjust:
-- `QI_AR16 = 2` replaces `QI4_0 = 4` in `kbx`/`kqsx` decomposition.
-- Source struct is `block_q4_0_ar16` (10 bytes) not `block_q4_0` (18 bytes).
-- Each thread reads 1 byte (= 2 nibbles = 2 quants) into one int32 by `get_int_b2(bxi->qs, kqsx)`.
-- Sign-subtract is same (`__vsubss4(... & 0x0F0F0F0F, 0x08080808)`).
-- SMEM layout: x_qs uses same `MMQ_MMA_TILE_X_K_Q4_0_AR16` (= 100) row stride for INT8_MMA; x_df uses 2x stride for AR16's 2x more scales.
+Output storage (BOTH DP4A and MMA paths):
+- x_qs: 64 ints per row, slot `kbx*4 + s` (s=0..3) holds 4 sign-recentered int8 weights at K positions `[4s, 4s+1, 4s+2, 4s+3]` of block `kbx`. Linear K per int.
+- x_df: 16 floats per row, one per AR16 block.
 
-Verification: new test `tests/dflash-speculative/test-mmq-q4-0-ar16-load-tiles.cpp`:
+Source-byte unpacking math (per lane, with `kqsx ∈ {0, 1}`):
+```cpp
+// Each lane reads ONE int (4 bytes = 8 raw AR16 K's via even/odd nibbles).
+const int qs = get_int_b2(bxi->qs, kqsx);  // qs[kqsx*4..kqsx*4+3]
+// AR16 byte i has K=2i (low) and K=2i+1 (high).
+const int qs_evens = qs & 0x0F0F0F0F;          // bytes: [K=2*0, K=2*1, K=2*2, K=2*3] = [K=0..6 even]
+const int qs_odds  = (qs >> 4) & 0x0F0F0F0F;   // bytes: [K=2*0+1, ...] = [K=1..7 odd]
+// Interleave even/odd → linear K=0..7 packed in 2 ints, 4 K's per int.
+const int lin_low  = __byte_perm(qs_evens, qs_odds, 0x5140);  // [K=0, K=1, K=2, K=3]
+const int lin_high = __byte_perm(qs_evens, qs_odds, 0x7362);  // [K=4, K=5, K=6, K=7]
+// Sign-recenter (each byte: 0..15 → -8..7).
+const int lin_low_s  = __vsubss4(lin_low,  0x08080808);
+const int lin_high_s = __vsubss4(lin_high, 0x08080808);
+// Store linearly: kqsx=0 → slots {0, 1}; kqsx=1 → slots {2, 3}.
+x_qs[i*MMQ_MMA_TILE_X_K_Q4_0_AR16 + kbx*4 + kqsx*2 + 0] = lin_low_s;   // K = kqsx*8 + {0..3}
+x_qs[i*MMQ_MMA_TILE_X_K_Q4_0_AR16 + kbx*4 + kqsx*2 + 1] = lin_high_s;  // K = kqsx*8 + {4..7}
+```
+
+For DP4A path (no INT8_MMA): same per-row layout but using `MMQ_DP4A_TXS_Q4_0_AR16.qs / mmq_y` stride (= `2*WARP_SIZE + 1`).
+
+Verification: `tests/dflash-speculative/test-mmq-q4-0-ar16-load-tiles.cu`:
 - Generate random `block_q4_0_ar16` rows.
-- Dispatch a kernel that calls `load_tiles_q4_0_ar16`, then dumps `x_qs` and `x_df` to global memory.
-- Compute the expected `x_qs` and `x_df` from `dequantize_block_q4_0_ar16` (convert.cu:115) which IS the validated unpacker.
-- Byte-equivalent across (mmq_y, nwarps, need_check) sweep.
+- Dispatch kernel; dump x_qs and x_df to global memory.
+- CPU oracle: dequantize via `dequantize_block_q4_0_ar16` math (low=K=2i, high=K=2i+1), regroup to linear K per int, sign-recenter. **Both kernel output and oracle MUST match byte-for-byte** across (mmq_y, nwarps, need_check) sweep.
 
-### A.4 — Implement `vec_dot_q4_0_ar16_q8_1_dp4a<mmq_x, mmq_y, nwarps>`
+### A.4 — Implement `vec_dot_q4_0_ar16_q8_1_dp4a<mmq_x, mmq_y, nwarps>` (per §2.5)
 
-Clone `vec_dot_q4_0_q8_1_dp4a` (mmq.cuh:443). Adjust per §2.3:
-- For each K-chunk of 32 vals, compute the dot product as TWO half-dot-products with separate weight scales.
-- Inside the inner accumulation: `sum += d_w0 * d_a * sum(int8(qx_half0) * int8(qy_half0)) - 8 * d_w0 * d_a * sum(qy_half0) + d_w1 * d_a * sum(qy_half1) ... -8 * d_w1 * d_a * sum(qy_half1)`.
-- The half-sums of `qy` are computed inline from `qy[0..15]` and `qy[16..31]` (16 int8 additions each per half-sum). One DP4A instruction takes 4 bytes; sum across 4 DP4As per half.
+With unified linear-K storage, the impl is a trivial dp4a accumulator (no nibble extraction, no -8 correction):
 
-Verification: new test `tests/dflash-speculative/test-mmq-q4-0-ar16-dp4a.cpp`:
-- Random Q4_0_AR16 weight matrix.
-- Random Q8_1 activation (run quantize_mmq_q8_1 with DS4 layout).
-- DP4A kernel produces output `dst`.
-- Scalar CPU reference: dequantize Q4_0_AR16 to F32 + dequantize Q8_1 to F32 + fp32 dot-product.
-- Cosine ≥ 0.9999, NMSE ≤ 1e-4. Per row sweep over (mmq_x, mmq_y, K).
+```cpp
+template <int mmq_x, int mmq_y, int nwarps>
+static __device__ __forceinline__ void vec_dot_q4_0_ar16_q8_1_dp4a(
+    const int * x, const int * y, float * sum, const int & k00)
+{
+    constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_Q4_0_AR16, mmq_y);
+    constexpr int x_qs_stride = 2*WARP_SIZE + 1;     // ints/row for unified layout
+    const int   * x_qs = (const int   *) x;
+    const float * x_df = (const float *) x_qs + txs.qs;
+    const int   * y_qs = (const int   *) y + 4;
+    const half2 * y_ds = (const half2 *) y;
+    // 16 iters cover one block_q8_1_mmq (128 K's). Step VDR=4 (one AR16 block per iter).
+    for (int k01 = 0; k01 < 2*WARP_SIZE; k01 += 4) {
+        const int k0 = k00*2 + k01;  // k0 indexes x_qs in linear K-int units (64 per row).
+        for (int j0 = 0; j0 < mmq_x; j0 += nwarps) {
+            const int j = j0 + threadIdx.y;
+            for (int i0 = 0; i0 < mmq_y; i0 += WARP_SIZE) {
+                const int i = i0 + threadIdx.x;
+                int sumi = 0;
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    sumi = ggml_cuda_dp4a(
+                        x_qs[i*x_qs_stride + k0 + l],
+                        y_qs[j*MMQ_TILE_Y_K + k01/2 + l],  // y_qs uses K-stride 4 per int
+                        sumi);
+                }
+                const float d_w = x_df[i*16 + (i+15)/16 + (k0/4)];
+                const float d_a = __low2float(y_ds[j*MMQ_TILE_Y_K + (k01/2)/QI8_1]);
+                sum[j0/nwarps*mmq_y/WARP_SIZE + i0/WARP_SIZE] += d_w * d_a * (float)sumi;
+            }
+        }
+    }
+}
+```
 
-### A.5 — Implement `vec_dot_q4_0_ar16_q8_1_mma<mmq_x, mmq_y, nwarps>`
+(Final indices subject to tuning; the structure is the SoTA: per-block scale, no per-call -8 correction.)
 
-Clone `vec_dot_q8_0_q8_1_mma<...,DS4>` (mmq.cuh:area). The MMA path uses `mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32` (int8 MMA on sm_75). Same -8 correction with per-half scaling.
+Verification: `tests/dflash-speculative/test-mmq-q4-0-ar16-dp4a.cu`:
+- Random Q4_0_AR16 weight `[N_rows, K_cols]` and F32 activation `[K_cols, M_cols]`.
+- Quantize activation via `quantize_mmq_q8_1_cuda` with DS4 layout (after A.7 lands, OR a manual Q8_1 packer in the test driver).
+- Kernel produces output rows.
+- CPU oracle: dequantize Q4_0_AR16 + dequantize Q8_1 + fp32 dot product.
+- Cosine ≥ 0.9999, NMSE ≤ 1e-4 across sweep over (mmq_x, mmq_y, K_cols).
 
-Implementation strategy:
-- MMA produces int32 accumulator from int8 × int8.
-- After MMA, apply the per-K-chunk scale: `(d_w0, d_w1) * d_a * mma_int32_result`.
-- Sum-correction: `-8 * (d_w0 * d_a * s_a_half0 + d_w1 * d_a * s_a_half1)`. The half-sums come from the MMA input fragment summed inline.
+### A.5 — Implement `vec_dot_q4_0_ar16_q8_1_mma<mmq_x, mmq_y, nwarps>` (per §2.5)
 
-Verification: new test `tests/dflash-speculative/test-mmq-q4-0-ar16-mma.cpp`:
+With unified linear-K storage, the MMA path's structure mirrors `vec_dot_q8_0_q8_1_mma<...,DS4>` (mmq.cuh:987). The differences from Q8_0:
+- Scale stride: 16 floats per row (vs Q8_0's 8), since AR16 has 16 blocks/warp_tile vs Q8_0's 8.
+- Scale lookup: `x_df[i*MMQ_MMA_TILE_X_K_Q4_0_AR16 + k0/QI_AR16_LINEAR]` where `QI_AR16_LINEAR = 4` (ints per scale).
+- Sign-recentering already applied at load → no per-call correction.
+
+Verification: `tests/dflash-speculative/test-mmq-q4-0-ar16-mma.cu`:
 - Same setup as A.4.
-- MMA kernel output bit-identical to DP4A kernel output (the underlying math is the same; this verifies the MMA path).
+- MMA kernel output byte-identical to DP4A kernel output AND within cos ≥ 0.9999 / NMSE ≤ 1e-4 of scalar fp32 reference.
 
 ### A.6 — Add `mmq_type_traits<...,GGML_TYPE_Q4_0_AR16>`
 
