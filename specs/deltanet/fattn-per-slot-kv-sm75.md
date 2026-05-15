@@ -533,3 +533,69 @@ This spec is the design realization of:
 - `MMQ_FaithfulPropagation` (MMQ is NOT replaced; FA fix suffices)
 - `RepDeterminismAtSameNP` (preserved by no-atomics, no-cross-block-reduction within kernel)
 - `LayerForwardIsPerSlotDeterministic` (the contract in batch-invariance.allium)
+
+---
+
+## 15. Lifecycle reconciliation (2026-05-15)
+
+Spec drift catalog: what was specified vs what was empirically built, with rationale for each deviation. Per CLAUDE.md §5 these should have been separate spec commits BEFORE the code commits — they weren't. This section is the post-hoc record.
+
+### 15.1 Drift table
+
+| Spec says | Built | Why |
+|---|---|---|
+| §1 "Approach C multi-head pack — locked" | **ABANDONED** — Approach A single-head | Approach C measured 12× slower than wmma_f16 at long-ctx (`nsys-per-slot-kv-vanilla-np1-q4_0-hadamard.nsys-rep`). Per-row softmax × 6 heads + heavier SMEM staging overhead. Approach A reduces per-CTA work; single-row state. |
+| §9 KVB primary = 16 | **KVB = 32** | At Dv=256, no V SMEM staging, KVB=32 halves K-block barrier count while keeping K_smem at 16 KiB. |
+| §9 V SMEM-staged | **V NOT staged** — direct `__ldg` reads | Each V element read exactly once per V-accum. SMEM staging adds a load→store→load round-trip with zero amortization. Eliminates 16 KiB SMEM per CTA, drops one cooperative-load barrier per K-block. |
+| §9 Per-CTA SMEM ~25 KiB → 2 blocks/SM | **17 KiB → 3 blocks/SM** | After V-staging removal + D_partials trim (row 0 only at decode) + Q_smem to 1 row. Occupancy 12.5% → 37.5%. |
+| §4 nwarps=4 | **Uncommitted: 2 warps proposed**; committed: 4 warps | 2-warp variant halves barrier population, matches wmma_f16's blockDim. Uncommitted at the time of this reconciliation; stashed pending decision. |
+| §3 USE_SOFTCAP template param | Runtime bool arg | Templating not implemented; runtime arg works for production target which has softcap=0 most layers. |
+| §3 `slot_seq_lens[n_seqs]` (per-sequence bound) | **STRUCTURALLY BROKEN AT NP>1** | At batched decode NP=N, ggml flattens N tokens into `Q->ne[1]=N` with `Q->ne[3]=1`. The per-seq slot_seq_lens has only ONE entry for what is conceptually N slots. Per-slot K bound at NP>1 requires per-row indexing (length = `n_tok`), not per-seq. Build-graph plumbing was never updated for this case. The original spec was implicitly NP=1-only without saying so. |
+| §10.c production binding GREEN at NP={2,4,8} | Validity passes; **determinism contract is structurally non-applicable at NP>1** with current `slot_seq_lens` design (see above). The unit test scenario C proves byte-invariance at the algorithmic level but the production NP>1 path never gets the actual per-slot bound. |
+
+### 15.2 Empirical performance ladder
+
+Captures in `data/deltanet/perf/replacement/`. All at long-ctx (n_kv ~1500), NP=1, Q4_0 KV + Hadamard, same harness:
+
+| Kernel variant | µs/call | Ratio vs wmma_f16 |
+|---|---:|---:|
+| Approach C (multi-head pack, original spec) | 408 | 12.1× |
+| Single-head split-K (Approach A pivot) | 339 | 10.1× |
+| Decode-specific 1-row state | 296 | 8.8× |
+| SoTA SMEM redesign (V dropped, KVB=32, D_partials trim) | 183 | 5.4× |
+| (Stashed) 2-warp + MAX_PB=8 | TBD | TBD |
+| wmma_f16 reference | 33.7 | 1.0× |
+
+The SoTA redesign closed 55% of the original gap (408 → 183). Marginal returns from further within-design tweaks. Remaining 5× gap to wmma_f16 is structural at this design philosophy (per-row CTA + SMEM-staged K + Turing m=16 mma with 15 wasted rows at decode).
+
+### 15.3 Production state
+
+- **Default routing**: WMMA_F16 (the new op auto-routing was flipped to opt-IN via `LLAMA_FATTN_PER_SLOT_KV_ENABLE=1` to avoid production perf regression). Determinism contract NOT delivered in production.
+- **Opt-in routing**: New op available via env. NP=1 decode works correctly with per-slot bound. NP>1 falls back to legacy stage22a (no per-slot bound, equivalent to wmma_f16 non-determinism).
+- **Unit test 464/464 GREEN** at NP ∈ {1, 2, 4, 8} via algorithmic batch-invariance (per-row CTA + warp-shuffle reductions + no atomics). This is correctness at the kernel level but doesn't translate to NP>1 production determinism because the production graph still routes those through stage22a.
+
+### 15.4 Open scope decisions (re-opened for discussion)
+
+The original spec assumed (Approach C, all-shape support, full perf parity, full NP>1 fix). Empirical reality:
+
+- Approach C empirically inferior — ABANDONED, won't return.
+- Perf parity with wmma_f16 — NOT ACHIEVED; the new kernel is structurally 5× slower at the SoTA-redesign optimum.
+- NP>1 determinism — NOT DELIVERED in production; would require per-row slot_seq_lens plumbing (Option A from in-flight discussion).
+
+The viable forward paths from here:
+
+**Path P1 — Accept the perf gap, ship determinism via opt-in.** Production stays on wmma_f16 by default. Users wanting np>1 determinism opt in via env, accept the 5× FA-call slowdown. Requires Option A plumbing to actually deliver NP>1 determinism. Documentation update.
+
+**Path P2 — Abandon this kernel, modify wmma_f16 in-place.** Add `slot_seq_lens` as a kernel arg to the existing wmma_f16, modify the K-loop bound. ~5 LOC kernel change + plumbing for per-row bounds. Preserves wmma_f16's perf tuning. The kernel work to date becomes a reference / cautionary tale.
+
+**Path P3 — Defer determinism work indefinitely.** Accept production np>1 non-determinism for now. Revisit when a stronger product reason appears.
+
+A choice between P1/P2/P3 should be made before any further kernel code is committed.
+
+### 15.5 What NOT to do without spec update
+
+Per CLAUDE.md §5: spec edits commit + push BEFORE code. The drift in this section was empirical (driven by measurement-then-decision), but the lifecycle discipline still requires:
+
+- Any further kernel iteration → spec change first describing the new design intent and the empirical basis
+- Any path P1/P2/P3 choice → PLAN.md Pickup update first
+- No more "redesign the kernel mid-debate" cycles without explicit spec ack
