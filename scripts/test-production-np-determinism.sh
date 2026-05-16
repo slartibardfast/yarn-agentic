@@ -180,11 +180,58 @@ for NP in $NP_LIST; do
 done
 
 echo ""
-if [ "$DIVERGED" = "0" ]; then
-    echo "RESULT: PASS — all slots at NP in {$NP_LIST} byte-identical to NP=1"
+# Phase CY.F.7: cross-NP slot comparisons. The above loop compared each slot
+# to the NP=1 baseline. Now compare NP=N slot 0 against NP=M slot 0 for all
+# (N, M) pairs in NP_LIST with N < M. This gives a production-graph cross-NP
+# matrix without cb_eval distortion, addressing the d1-vs-cy capture-mechanism
+# discrepancy.
+echo "=== cross-NP slot-0 comparison matrix (production graph, no cb_eval) ==="
+NPS=($NP_LIST)
+CROSS_DIVERGED=0
+declare -A CROSS_HITS=()
+for i in "${!NPS[@]}"; do
+    for j in "${!NPS[@]}"; do
+        N1=${NPS[$i]}
+        N2=${NPS[$j]}
+        # Only compare pairs with N1 < N2 to avoid redundancy.
+        if [ "$N1" -ge "$N2" ]; then continue; fi
+        # Slot 0 always exists at any NP. Use slot-0 .txt files.
+        if [ "$N1" = "1" ]; then
+            FILE1="$RUN_DIR/np1.txt"
+        else
+            FILE1="$RUN_DIR/np${N1}-slot0.txt"
+        fi
+        FILE2="$RUN_DIR/np${N2}-slot0.txt"
+        if [ ! -s "$FILE1" ] || [ ! -s "$FILE2" ]; then
+            echo "  np$N1 vs np$N2 slot 0: MISSING ($FILE1 or $FILE2)"
+            continue
+        fi
+        if cmp -s "$FILE1" "$FILE2"; then
+            echo "  np$N1 vs np$N2 slot 0: BYTE-IDENTICAL"
+            CROSS_HITS["${N1}_${N2}"]=ok
+        else
+            BYTES1=$(wc -c < "$FILE1")
+            BYTES2=$(wc -c < "$FILE2")
+            echo "  np$N1 vs np$N2 slot 0: DIFFERS ($BYTES1 vs $BYTES2 bytes)"
+            CROSS_HITS["${N1}_${N2}"]=diff
+            diff -u "$FILE1" "$FILE2" > "$RUN_DIR/cross-np${N1}-vs-np${N2}-slot0.diff" 2>&1 || true
+            CROSS_DIVERGED=1
+        fi
+    done
+done
+
+echo ""
+if [ "$DIVERGED" = "0" ] && [ "$CROSS_DIVERGED" = "0" ]; then
+    echo "RESULT: PASS — all slots at NP in {$NP_LIST} byte-identical to NP=1, and all cross-NP slot-0 byte-identical"
     exit 0
 else
-    echo "RESULT: FAIL — divergence at NP in {${DIVERGED_NPS[*]}}"
-    echo "  divergence signatures: $RUN_DIR/divergence-np*-slot*.diff"
+    if [ "$DIVERGED" = "1" ]; then
+        echo "RESULT: FAIL — divergence vs NP=1 at NP in {${DIVERGED_NPS[*]}}"
+        echo "  divergence signatures: $RUN_DIR/divergence-np*-slot*.diff"
+    fi
+    if [ "$CROSS_DIVERGED" = "1" ]; then
+        echo "RESULT: FAIL — cross-NP slot-0 divergence detected"
+        echo "  cross-NP signatures: $RUN_DIR/cross-np*-vs-np*-slot0.diff"
+    fi
     exit 1
 fi
