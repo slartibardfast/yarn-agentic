@@ -1,0 +1,141 @@
+// cy-async-reduce.allium
+//
+// Phase CY-Async-Reduce — Allium specification for the SoTA permanent fix
+// to multi-GPU split-mode-graph cross-device reduce determinism.
+//
+// Replaces the F32→F16 cast (Option A: forced F32 sync reduce) with an
+// async F32 reduce on a dedicated comm stream, with explicit CUDA event
+// coordination at consumers. Achieves byte-determinism while hiding the
+// 2× bandwidth cost behind compute via stream overlap.
+
+entity CYAsyncReduce {
+    description: "Async F32 cross-device reduce with stream-overlap, replacing the F32->F16 cast that broke batch-shape invariance"
+
+    fields {
+        n_device:                int
+        per_device_input:        tensor[n_device]    // F32 [n_embd, n_tokens, ...]
+        reduced_output:          tensor              // F32 same shape as input
+        compute_stream:          cuda_stream[n_device]
+        comm_stream:             cuda_stream[n_device]  // dedicated for peer-copy
+        evt_input_ready:         cuda_event[n_device]   // signals when per-device input is ready
+        evt_reduce_done:         cuda_event[n_device]   // signals when reduce completes on this device
+    }
+
+    invariants {
+
+        // === Correctness ===
+
+        @F32Throughout
+            "no precision-losing cast on any path"
+            // No ggml_cast to a non-F32 type appears between per_device_input
+            // and reduced_output along the async-reduce path.
+
+        @DeterministicAcrossSchedule
+            "reduced_output is bit-identical regardless of which stream's
+             kernels happen to run first"
+            // For same per_device_input across runs, reduced_output is
+            // byte-identical. Verified by bit-comparison across 10 runs
+            // under different GPU load conditions.
+
+        @BitIdenticalToSyncF32Baseline
+            "async reduce output is bit-identical to the synchronous F32
+             reduce (Option A baseline)"
+            // The reduce sum is associative for finite-precision F32 only
+            // when the order is fixed. Both sync and async must use the
+            // SAME accumulation order (device 0 + device 1, never the
+            // reverse). The async path keeps the same per-element addition
+            // sequence — only the kernel launch site differs.
+
+        // === Ordering & synchronization ===
+
+        @EventOrderingHoldsBeforeRead
+            "every downstream consumer of reduced_output calls
+             cudaStreamWaitEvent on evt_reduce_done before reading"
+            // No code path may read reduced_output without first waiting
+            // on evt_reduce_done. Compiler/scheduler must enforce.
+
+        @NoDataRaceOnReducedTensor
+            "peer-copy writes to reduced_output complete before
+             evt_reduce_done is signaled"
+            // The CUDA event records on the same stream that performs
+            // the peer-copy + reduce kernel, so the event is signaled
+            // only AFTER the writes complete. No reader sees partial state.
+
+        @InputReadyBeforePeerCopy
+            "comm stream waits on evt_input_ready before issuing peer-copy"
+            // Without this, peer-copy may transfer stale (pre-FFN-output)
+            // bytes. The wait edge is comm_stream <- compute_stream's
+            // evt_input_ready.
+
+        // === Stream isolation ===
+
+        @StreamIsolation
+            "operations on comm_stream do not implicitly reorder operations
+             on compute_stream"
+            // Only explicit cudaStreamWaitEvent edges cross stream
+            // boundaries. No implicit cudaDeviceSynchronize on the hot path.
+
+        @NoCrossStreamGlobalSync
+            "no cudaDeviceSynchronize or cudaStreamSynchronize is called
+             inside the async-reduce hot path"
+            // A device-wide sync would serialize compute+comm and defeat
+            // the overlap. Only fine-grained event waits are permitted.
+
+        // === Liveness ===
+
+        @TerminationUnderFairScheduler
+            "every issued reduce eventually completes and signals
+             evt_reduce_done"
+            // Under a fair CUDA scheduler, the reduce kernel makes
+            // progress and its event is signaled in finite time. No
+            // starvation or indefinite blocking.
+
+        @DeadlockFreedom
+            "no cycle of cudaStreamWaitEvent dependencies exists between
+             compute and comm streams"
+            // Acyclic event-edge graph. Verified by TLA+ model checking
+            // and by the layered structure: compute -> evt_input_ready ->
+            // comm -> evt_reduce_done -> compute, no back-edges.
+
+        // === Performance (non-correctness invariants) ===
+
+        @OverlapComputeWithComm
+            "when downstream waits on evt_reduce_done occur AFTER non-
+             dependent compute kernels in the consumer stream, the
+             compute and peer-copy execute concurrently"
+            // Validated by nsys timeline. The peer-copy of layer N's
+            // reduce overlaps with layer N+1's matmul (which doesn't
+            // depend on the reduce until its RMSNorm). Witness: nsys
+            // shows comm-stream activity overlapping compute-stream
+            // activity in the per-layer window.
+
+        @NoPerfRegressionVsCastPath
+            "at NP=8 prefill, async F32 reduce matches or beats the
+             pre-Option-A F16-cast path within 5%"
+            // The cast saved cross-device bandwidth by halving payload.
+            // Async overlap recovers the time by hiding the larger F32
+            // transfer behind compute. Net: tokens/sec parity or better.
+
+        // === Fallback ===
+
+        @FallbackToSync
+            "when comm_stream allocation fails or hardware does not
+             support cross-device peer access, fall back to the
+             synchronous F32 reduce (Option A behavior)"
+            // No silent degradation to F16 cast. Either async or
+             sync, never lossy.
+
+        @FallbackIsBitIdentical
+            "the sync fallback produces bit-identical output to the
+             async path"
+            // No precision difference between the two modes — only
+            // scheduling differs.
+    }
+
+    @witnesses:
+        tests/test-ggml-reduce-async-correctness.cpp:           @F32Throughout, @DeterministicAcrossSchedule, @BitIdenticalToSyncF32Baseline, @EventOrderingHoldsBeforeRead
+        tests/test-ggml-reduce-async-overlap.cpp:               @OverlapComputeWithComm, @NoPerfRegressionVsCastPath
+        tests/test-ggml-reduce-async-deadlock.cpp:              @DeadlockFreedom, @TerminationUnderFairScheduler, @StreamIsolation, @NoCrossStreamGlobalSync
+        tests/test-ggml-reduce-async-fallback.cpp:              @FallbackToSync, @FallbackIsBitIdentical
+        scripts/test-production-np-determinism.sh:              @DeterministicAcrossSchedule, @BitIdenticalToSyncF32Baseline (end-to-end)
+}
