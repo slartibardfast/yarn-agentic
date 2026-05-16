@@ -361,24 +361,24 @@ Single-GPU probe (`/tmp/single-gpu-np-probe`) confirms: even with `--device CUDA
 
 **Slot-pattern shifting across runs** (NP=4 went 0/4→3/4→2/4 across iterations with the same code) strongly indicates RUN-TO-RUN non-determinism, not deterministic shape-dependence. The spec at `specs/deltanet/fattn-per-slot-kv-sm75.md §15.17` documents prior identification of this as "**CUDA-side timing / kernel-internal non-determinism (atomic order, scheduler interleaving, possibly cuda graph cache eviction)**". §15.16 cb_eval probe established that all 60+ model layers are byte-identical when processing is single-prompt — so the broken contract is purely at concurrent-batching boundaries.
 
-### CX.A — FATTN per-slot-kv at ne[1] > 1 (HIGHEST PRIORITY)
+### CX.A — FATTN per-slot-kv at ne[1] > 1 — CLOSED (test bug, kernel was already correct)
 
-`test-fattn-per-slot-kv-ncols-invariance.cpp` (added 2026-05-15) proves the spec's §15.13 claim empirically. Fixed row-0 Q, K, V, mask-row-0; varied n_tok ∈ {1, 2, 4, 8} with random non-zero content in rows 1..n_tok-1; bit-compared row 0 output. Result: **5888/6144 floats differ, max |Δ| ≈ 9.6e-2**. The wmma_f16 kernel's row-0 output is NOT invariant to other rows' Q/mask content.
+**RETRACTION 2026-05-16.** The CX.A diagnosis was based on a broken test, not a broken kernel.
 
-Significance: this is the residual contributor for continuous batched-decode at NP > 1. With cont-batching, multiple slots' decode tokens land in one ubatch (`ne[1]>1` to FA). Each slot's output gets contaminated by its batch-mates.
+Original signal (2026-05-15): `test-fattn-per-slot-kv-ncols-invariance.cpp` reported 5888/6144 row-0 floats differing across `n_tok ∈ {1, 2, 4, 8}` with max |Δ| ≈ 9.6e-2. We attributed this to fp16 `frag_c_VKQ` inter-row contamination per spec §15.13, designed and implemented a fp32-VKQ promotion in `fattn-wmma-f16.cuh` (gated `ncols ≤ 16` to fit 48 KiB static-SMEM on sm_75).
 
-Hypotheses for the kernel mechanism (in order of spec-suggested likelihood):
-1. **WMMA fp16 `frag_c_VKQ` accumulator** (`fattn-wmma-f16.cuh:81`). The mma instruction computes the full 32x8 VKQ fragment in one HMMA op with fp16 accumulator. Per-cell math should be independent but hardware may share rounding resources across cells.
-2. **`warp_reduce_max` / `warp_reduce_sum` in softmax** (`fattn-wmma-f16.cuh:282+`). If reductions cross rows that share a warp's thread space (e.g., when ncols/nwarps > 1), max/sum leak across rows. **Should NOT apply at ncols=8 nwarps=8 (ncols/nwarps=1 = one row per warp), but verify.**
-3. **Shared SMEM buffer reuse**. `KQ`/`VKQ` buffers serve multi-row staging — if write/read ordering races between threads handling different rows, fp16 cells could pick up wrong neighbors.
+**Empirical falsification** (2026-05-16 — Opus 4.7 session): Sentinel-bias debugging confirmed the fp32-VKQ branch was executing as designed, yet diff count was unchanged (5888/6144) and the bit-pattern of which cells differed was identical pre/post-fix. Forcing Q tile rows 1..7 to zero inside the kernel (regardless of `ne01`) ALSO left the diff count unchanged — meaning Q rows >0 weren't even consumed by the result the test was reading.
 
-**Fix candidates** (need design choice, then implement):
-1. **fp32 frag_c_VKQ + parallel fp32 SMEM staging**. Change `frag_c_VKQ` from `half` accumulator to `float`. Adapt the `store_matrix_sync` target from `__shared__ half KQ[]` to a separate `__shared__ float VKQ_fp32[]` buffer. Adapt the cross-warp reduction at line 383-388 to fp32. SMEM budget impact: doubles the VKQ staging area (was ~16 KiB at ncols=8 / Dv=256, becomes 32 KiB — still under Turing's 64 KiB/CTA limit).
-2. **Restructure to per-row CTA without scrapping the kernel**. Use a new wmma template with cols_per_block=1, single-warp per query row. Each CTA owns one Q row. Forces row-independence by structure.
+**Root cause**: the test extracted row-0 with the wrong tensor stride. `ggml_flash_attn_ext_per_slot_kv` produces output shape `[Dv, N_HEADS_Q, n_tok, N_SEQS]` (per `ggml.c:10284`: `int64_t ne[4] = { v->ne[0], q->ne[2], q->ne[1], q->ne[3] }`). The test computed `full_idx = d + h*Dv*n_tok + s*Dv*n_tok*N_HEADS_Q` (head stride `Dv*n_tok`), which assumes `[Dv, n_tok, N_HEADS_Q, N_SEQS]`. For `n_tok=1` the wrong and correct strides coincide; for `n_tok>1` the test reads memory cells that the kernel populated with DIFFERENT head's data. That's why exactly 1 head's data (head 0, where `h*stride == 0` regardless of stride) always matched and 23 heads always "diverged" — pure layout misread, not kernel non-determinism.
 
-Approach 1 is the more surgical change; approach 2 is the safer guarantee.
+**Verification 2026-05-16**: with the test corrected (`full_idx = d + h*Dv + s*Dv*N_HEADS_Q*n_tok`), the stock kernel (no fp32 VKQ promotion, exactly upstream code) is **byte-identical across `n_tok ∈ {1, 2, 4, 8}`**. The fp32 VKQ promotion was reverted (working tree clean against HEAD `f40e3ee2` for `fattn-wmma-f16.cuh`).
 
-**Closure binding**: `test-fattn-per-slot-kv-ncols-invariance` goes from RED to GREEN. Then production NP-determinism harness re-runs and slot-pass count improves.
+**Implications**:
+- Spec `fattn-per-slot-kv-sm75.md §15.13` is FALSIFIED. The wmma_f16-pb1<256,256,8,float> route does NOT have inter-row fp16 rounding contamination. The fp32 `KQ_acc_t` softmax + fp16 `frag_c_VKQ` configuration is already NP-invariant for batched decode.
+- The residual 10/14 production NP-determinism gap is NOT in fattn-per-slot-kv. Hunt continues elsewhere: cb_eval residual capture (l_out_F16 path), RMSNorm batch sweep (CX.B), RoPE batch sweep (CX.C), or scheduler/atomic-order effects.
+- Lesson reinforced (per `feedback_verify_test_mechanism_before_trusting`): before designing a fix from a test signal, verify the test mechanism reports what it claims to.
+
+**Test side-effect**: fixed the row-0 extraction stride in `tests/dflash-speculative/test-fattn-per-slot-kv-ncols-invariance.cpp` (commits separately). The test now binds correctly on per-slot-kv FA NP-invariance and is GREEN against stock upstream code.
 
 ### CX.1 — DeltaNet shape-conditional dispatch (DONE)
 
