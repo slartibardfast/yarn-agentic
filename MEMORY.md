@@ -5780,3 +5780,41 @@ Option B (async F32 reduce with stream overlap) is the SoTA follow-up — hides 
 Process insight: layer-level cb_eval captures are unreliable for residual-stream tags due to in-place op aliasing distortion. The d1-capture mechanism (`llama_set_dflash_extract_layers`) with dtype branching is the authoritative measurement; raw `cparams.cb_eval` gives different values for the same logical tensor. CY.F.7 showed the cy-trace-view "NP=1 vs NP≥2 layer-6 gap" was an instrumentation artifact — production NP=1 slot 0 == NP=4 slot 0 bit-identical without cb_eval.
 
 Data: data/deltanet/cy-trace-view/SERIAL_VS_BATCHED_2026-05-16.md, data/deltanet/cy-trace-view/PRODUCTION_GRAPH_2026-05-16.md.
+
+## 2026-05-16 — Phase CY.F.17 root cause: MMQ stream_K, NOT singlewarp FA
+
+CY.F.17's initial framing (singlewarp NP=2 multi-step decode race) was misdirected.
+Trace + comparison revealed:
+- slot 0 == slot 1 byte-identical at NP=2 (no slot race)
+- BOTH slots diverge from NP=1 baseline starting at decode step 2
+- With LLAMA_TEST_SERIAL_PREFILL=1, NP=2 == NP=1 byte-identical (slot 0, 3/3)
+
+The bug is in BATCHED PREFILL, not batched decode. Specifically:
+- NP=1 prefill: MMQ at M=215
+- NP=2 batched prefill: MMQ at M=430
+
+CY.F.1 verified MMQ shape-invariance at M ∈ {1,4,8,12,16,32,96}. M ≥ 215
+(prefill regime) was MISSED. Extended test (commit 0a2cee40 in ik_llama.cpp):
+- M ∈ {1,2,4,8,12,16,32,96} → byte-identical
+- M=215 → 3774/5120 differ from M=1 (delta ~1.4e-6)
+- M=430 → 4348/5120 differ
+- M=860 → 4624/5120 differ
+- M=1720 → 4753/5120 differ
+- M=430 vs M=215 → 1930/5120 differ (different prefill shapes NOT identical)
+
+Root cause in `ggml/src/ggml-cuda/mmq.cuh` at line 4389: stream_K dispatch.
+At cc>=Volta, MMQ uses stream_K (cooperative split-K with nsm CTAs +
+mul_mat_q_stream_k_fixup combine kernel). The fixup's accumulation order
+depends on `ntiles_x = ceil(M/mmq_x)`, making float output M-dependent.
+
+Fix (commit 147b300b in ik_llama.cpp): env-gate `GGML_CUDA_MMQ_DISABLE_STREAM_K=1`
+forces vanilla blocked GEMM. Each output tile computed by exactly one CTA,
+no fixup needed. Verification:
+- MMQ shape-invariance test: ALL M ∈ {1..1720} byte-identical (was M>96 broken)
+- NP=2 multi-step decode test: slot 0 matches NP=1 3/3 runs (was 0/3)
+- Slot 1 still intermittent 1/3 (separate workstream — see CY.F.18)
+
+Perf cost (estimated): 5-15% prefill throughput on long-context (decode unaffected).
+
+Tracked: task #204 (CY.F.17 closed), #207 (CY.F.18 slot-1 intermittent open).
+Files: ik_llama.cpp/ggml/src/ggml-cuda/mmq.cuh, tests/dflash-speculative/test-mmq-q4-0-ar16-shape-invariance-prod-dim.cpp.
