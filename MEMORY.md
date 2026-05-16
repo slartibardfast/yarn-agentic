@@ -5695,3 +5695,28 @@ Fix candidates:
 Production NP-determinism harness result with current state (Phase A+B+C+CX.1 done): 5/14 slots byte-identical, pattern shifting across runs. The shifting pattern + the new ncols-invariance test together establish the residual is FA inter-row, NOT scheduler-level jitter.
 
 Tracked: Phase CX.A in PHASE_MMQ_Q4_0_AR16.md §6b.
+
+## 2026-05-16 — Phase CX.A RETRACTED — 5888/6144 signal was a test bug, not a kernel bug
+
+The 2026-05-15 MEMORY entry above is FALSIFIED. The Phase CX.A "FA inter-row fp16 contamination" diagnosis was wrong; the kernel was already correct.
+
+Root cause of the false signal: `test-fattn-per-slot-kv-ncols-invariance.cpp` extracted row-0 with stride `Dv*n_tok` per head, asserting the FA output is `[Dv, n_tok, N_HEADS_Q]`. But `ggml_flash_attn_ext_per_slot_kv` (ggml.c:10284) builds `ne = {v->ne[0], q->ne[2], q->ne[1], q->ne[3]}`, i.e. `[Dv, N_HEADS_Q, n_tok]` — head stride is `Dv`, token stride is `Dv*N_HEADS_Q`. For n_tok=1 the strides coincide; for n_tok>1 the test read different heads' data than it thought it was reading.
+
+That fully explains the 5888/6144 signature: head 0 (h*stride = 0 for any stride) always matched (256 cells); the other 23 heads always "diverged" (23*256 = 5888 cells). It looked like row-leakage but it was layout misread.
+
+Empirical falsification path (2026-05-16):
+- Stripped sentinel/printf debug code added during fp32-VKQ-promotion investigation
+- Forced Q rows 1..7 = 0 inside the kernel (regardless of ne01) → diff count UNCHANGED at 5888/6144. Q rows >0 weren't even contributing to what the test was reading.
+- Inspected `ggml_flash_attn_ext_per_slot_kv` output shape → discovered layout transposition vs Q (Q is `[Dq, n_tok, N_HEADS_Q]`, FA is `[Dv, N_HEADS_Q, n_tok]`)
+- Corrected test stride → PASS byte-identical across n_tok ∈ {1, 2, 4, 8} with STOCK upstream kernel (no fp32 VKQ promotion)
+
+Resolution:
+- Test stride fixed (ik_llama.cpp 395496d4).
+- fp32 frag_c_VKQ promotion in fattn-wmma-f16.cuh reverted to HEAD f40e3ee2 (was working-tree only; never landed).
+- Spec `fattn-per-slot-kv-sm75.md §15.13` claim (inter-row fp16 contamination) FALSIFIED. The wmma_f16-pb1<256,256,8,float> path is already NP-invariant for batched decode.
+
+Implications for production 10/14 NP-determinism gap:
+- FA per-slot-kv is NOT the residual contributor. Hunt continues at cb_eval residual capture (l_out_F16 path), RMSNorm batch sweep (CX.B), RoPE batch sweep (CX.C), or scheduler/atomic-order effects.
+- Lesson reinforced (feedback_verify_test_mechanism_before_trusting): before designing a fix from a test signal, verify the test mechanism measures what it claims. A test that prints the right output bytes for one configuration can still be misreading the output buffer in another configuration.
+
+Tracked: Phase CX.A in PHASE_MMQ_Q4_0_AR16.md §6b (retraction in place).
