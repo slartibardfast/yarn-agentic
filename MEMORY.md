@@ -5747,3 +5747,20 @@ Closure binding sequence V1-V6 (RESEARCH_2026-05-16.md §9d). Open empirical que
 Lesson reinforced: web-research the field standard before designing a new kernel from scratch. Often the kernel already exists in the codebase you're working in.
 
 Tracked: PHASE_MMQ_Q4_0_AR16.md §6b CX.D.
+
+## 2026-05-16 — Phase CY trace view: NP isoclusters identified
+
+Comprehensive per-layer NP-cross byte-identity sweep at NP ∈ {1,2,4,8} with current env stack (singlewarp + shape_invariant_dispatch + cublas pin) reveals THREE isoclusters:
+- **NP=1** (uses all_same_seq=true fast path in DeltaNet)
+- **NP={2, 4}** (all_same_seq=false slow path, byte-identical to each other through ALL 64 layers ✓)
+- **NP=8** (slow path, diverges from NP=2/4 at layer 20)
+
+Cross-NP boundaries:
+- NP=1 vs NP=N≥2: first drift at layer 6 (DeltaNet), max|Δ|=3.815e-06 — FFN sees ne[1]=1 (NP=1) vs ne[1]=N (NP≥2 after concat).
+- NP=2/4 vs NP=8: first drift at layer 20 (FA), max|Δ|=1.335e-04 — FFN sees ne[1]=4 vs ne[1]=8.
+
+CY.B.1 confirmed layer 0 DeltaNet internals (q_in/k_in/v_in/q_fused/delta_net_fused_raw/new_state) are byte-identical NP=1↔NP=4 slot 0 — so the kernel itself is innocent.
+
+The MMQ shape-invariance test at K=512/N=64 dims passes M ∈ {1,2,4,8,16,32} byte-identical. But production dims are K=5120/N=27648; the kernel selection or internal reduction order may differ. Layer 6 is the first DeltaNet output that consumes the post-FFN residual from layer 5 — and FFN at layer 5 IS byte-identical, so the divergence enters AT layer 6's DeltaNet kernel call or its inputs at that specific layer.
+
+Data: data/deltanet/cy-trace-view/TRACE_VIEW_2026-05-16.md. Tracked: PHASE_MMQ_Q4_0_AR16.md §6c Phase CY.
