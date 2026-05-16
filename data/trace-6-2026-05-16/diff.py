@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+# TRACE-6 — slot 0 vs slot 1 diff across the full FA + output-proj +
+# residual chain at layer 3, to localize where slot-parity first enters.
+
+import os, json, struct
+
+ROOT = "/home/llm/yarn-agentic/data/trace-6-2026-05-16"
+N = 2
+
+def load(name):
+    with open(f"{ROOT}/t2-np{N}-{name}.bin.json") as f:
+        meta = json.load(f)
+    with open(f"{ROOT}/t2-np{N}-{name}.bin", "rb") as f:
+        data = f.read()
+    return meta, data
+
+def diff_floats(name, slot_dim_hint=None):
+    """Tries to identify slot dim and compare slot 0 vs slot 1 as F32."""
+    meta, data = load(name)
+    ne = meta["ne"]
+    if meta["type"] != "f32":
+        return None
+    floats = struct.unpack(f"<{len(data)//4}f", data)
+    # Slot dim is ne[i] where i is the FIRST dim (counting from inside) that equals N.
+    slot_dim = -1
+    if slot_dim_hint is not None and ne[slot_dim_hint] == N:
+        slot_dim = slot_dim_hint
+    else:
+        # ne[1] check first, then ne[2]
+        if ne[1] == N:
+            slot_dim = 1
+        elif ne[2] == N:
+            slot_dim = 2
+        elif ne[3] == N:
+            slot_dim = 3
+        else:
+            return ("no slot dim", ne, None, None)
+    slice_n = 1
+    for i in range(slot_dim):
+        slice_n *= ne[i]
+    s0 = floats[0:slice_n]
+    s1 = floats[slice_n:2*slice_n]
+    n_diff = 0
+    max_abs = 0.0
+    for a, b in zip(s0, s1):
+        ba = struct.pack("<f", a)
+        bb = struct.pack("<f", b)
+        if ba != bb:
+            n_diff += 1
+            d = abs(a - b)
+            if d > max_abs:
+                max_abs = d
+    return (ne, slot_dim, slice_n, n_diff, max_abs)
+
+names_in_order = [
+    "l_out-2",
+    # FA inputs (pre-FA)
+    "Qcur-1003", "Qcur-2003",
+    "Kcur-1003", "Kcur-2003",
+    "Qcur_hadamard-1003", "Qcur_hadamard-2003",
+    "Kcur_hadamard-1003", "Kcur_hadamard-2003",
+    "Vcur_hadamard-1003", "Vcur_hadamard-2003",
+    "q-1003", "q-2003",
+    # FA output (post-FA, pre-Hadamard-on-V*KQ)
+    "flash_attn_per_slot_kv-1003", "flash_attn_per_slot_kv-2003",
+    # After post-FA V-Hadamard
+    "flash_attn_h-1003", "flash_attn_h-2003",
+    # Reshaped
+    "flash_attn_reshaped-1003", "flash_attn_reshaped-2003",
+    # Output projection per device
+    "kqv_wo-1003", "kqv_wo-2003",
+    # Combined across devices + residual added
+    "attn_combined-3",
+    "attn_out_with_input-3",
+    # Final layer-3 output
+    "l_out-3",
+]
+
+print(f"{'name':36s}  {'ne':25s}  {'sd':2s}  {'slice':>6s}  {'n_diff':>8s}  {'max|Δ|':>10s}")
+print("-" * 96)
+for name in names_in_order:
+    p = f"{ROOT}/t2-np{N}-{name}.bin"
+    if not os.path.exists(p):
+        print(f"{name:36s}  MISSING")
+        continue
+    res = diff_floats(name)
+    if res is None or len(res) == 4:
+        print(f"{name:36s}  (no slot dim or non-f32)")
+        continue
+    ne, sd, sn, nd, mad = res
+    ne_str = f"[{ne[0]},{ne[1]},{ne[2]},{ne[3]}]"
+    flag = "" if nd == 0 else "  ← DIVERGE"
+    print(f"{name:36s}  {ne_str:25s}  {sd:2d}  {sn:6d}  {nd:8d}  {mad:10.3e}{flag}")
