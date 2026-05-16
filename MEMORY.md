@@ -5720,3 +5720,30 @@ Implications for production 10/14 NP-determinism gap:
 - Lesson reinforced (feedback_verify_test_mechanism_before_trusting): before designing a fix from a test signal, verify the test mechanism measures what it claims. A test that prints the right output bytes for one configuration can still be misreading the output buffer in another configuration.
 
 Tracked: Phase CX.A in PHASE_MMQ_Q4_0_AR16.md §6b (retraction in place).
+
+## 2026-05-16 — TRACE-1..6 + research dive: root cause is WMMA k-chunk decomp; FIX-C v4 lands
+
+After CX.A retraction (test-stride bug, kernel was correct), the production NP-determinism harness still showed slot-position-dependent output. A six-trace dive narrowed the actual bug:
+
+- TRACE-1: SLOT-PARITY at layer 3 (first FA layer). Even slots match slot 0; odd slots diverge. Max |Δ| ~9.5 at NP={2,4}, ~2.1 at NP=8. Full-magnitude drift.
+- TRACE-2: pre-FA tensors (Qcur, Kcur, Vcur, post-Hadamard) byte-identical slot 0 vs slot 1. FA output (flash_attn_per_slot_kv-1003/2003) is first divergence. Max |Δ| at FA output = 8.4e-04.
+- TRACE-3: Q4_0 KV cache bytes at slot 0 region ≡ slot 1 region (same-prompt → byte-identical projections). CPY+quantize innocent.
+- TRACE-4 (focused CUDA unit test): warp_reduce_sum XOR-shuffle is commutative-stable on same-value-set at different lane positions. INITIAL hypothesis falsified.
+- TRACE-6: confirmed FA op is the divergence source by cb-tagged intermediate chain.
+
+**Corrected diagnosis**: WMMA k-loop's 16-K-chunk decomposition of V × softmax(KQ) distributes each row's nonzero softmax × V products into different chunks per row's mask shape. WMMA matrix-A (V) is shared across matrix-B's 8 cols within one mma_sync, so we can't have per-row k-iteration with cross-row WMMA batching. Each chunk's mma_sync produces an fp32 partial sum; chunk-by-chunk accumulation in fp32 is non-associative. Same algebraic total, different fp32 path. Structural to WMMA cross-row K-sharing.
+
+**Research dive** (RESEARCH_2026-05-16.md, sources: TML 2025-09, SGLang 2025-09 deterministic, llama.cpp PR #16016 draft, ssiu/flash-attention-turing, Turing Tuning Guide):
+Field standard recipe is per-row CTA + canonical k-loop + online streaming softmax + fp32 accumulator + no Split-K. Independently arrived at this from first principles.
+
+**LOCAL DISCOVERY**: ggml/src/ggml-cuda/fattn-vec-f32.cuh's `flash_attn_vec_ext_f32<Dk=256, Dv=256, ncols=1, F16, F16>` IS that architecture exactly. Already compiled (fattn-vec-f32-instance-hs256-f16-f16.cu). Per-row CTA when ncols=1 (always on NVIDIA per dispatcher line 377). Online Welford softmax line 257. F32 throughout. Mask-bounded K-loop. No Split-K when launch_fattn's parallel_blocks=1.
+
+**FIX-C v4**: in `ggml_cuda_flash_attn_ext_per_slot_kv_sm75` change `ggml_cuda_flash_attn_ext_wmma_f16_case_pb1<256,256,8,float>` to `ggml_cuda_flash_attn_ext_vec_f32_case<256,256,GGML_TYPE_F16,GGML_TYPE_F16>`. launch_fattn pre-dequants Q4_0 K/V to F16 via need_f16_K/V=true (already wired). ~1-line dispatcher change. Engineering cost: ~1 session vs ~3-4 for writing a new bespoke kernel.
+
+Field alignment: matches llama.cpp PR #16016's deterministic dispatcher recipe (which uses the same fattn-vec family). TML/SGLang prescribe equivalent per-row CTA pattern.
+
+Closure binding sequence V1-V6 (RESEARCH_2026-05-16.md §9d). Open empirical question: vec_f32 perf cost vs wmma_f16 at our shape. Spec §15.13 cited "~12×" but that's unverified for this binary + shape; V6 will measure.
+
+Lesson reinforced: web-research the field standard before designing a new kernel from scratch. Often the kernel already exists in the codebase you're working in.
+
+Tracked: PHASE_MMQ_Q4_0_AR16.md §6b CX.D.

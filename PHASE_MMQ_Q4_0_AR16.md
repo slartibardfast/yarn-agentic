@@ -380,6 +380,45 @@ Original signal (2026-05-15): `test-fattn-per-slot-kv-ncols-invariance.cpp` repo
 
 **Test side-effect**: fixed the row-0 extraction stride in `tests/dflash-speculative/test-fattn-per-slot-kv-ncols-invariance.cpp` (commits separately). The test now binds correctly on per-slot-kv FA NP-invariance and is GREEN against stock upstream code.
 
+### CX.D — FATTN per-slot-kv ROOT CAUSE found via TRACE-1..6; FIX-C v4 lands (IN PROGRESS)
+
+**2026-05-16.** Even with CX.A retracted, production NP-determinism harness still showed slot-position-dependent output. A four-trace dive (`data/trace-{1,2,3,6}-2026-05-16/findings.md`) localized the real bug:
+
+- **TRACE-1** captured per-slot per-layer residuals at NP ∈ {1, 2, 4, 8} with same-prompt across all slots. Found a SLOT-PARITY pattern: even-indexed slots (0, 2, 4, 6) byte-identical to slot 0; odd-indexed slots (1, 3, 5, 7) all diverge from slot 0 starting at **layer 3** (the first full-attention layer per the d2 finding's `fa_layer_indices = [3, 7, 11, ..., 63]`). Max |Δ| = 9.5 at NP={2,4}, 2.1 at NP=8. Full-magnitude drift, not fp32-ε noise.
+- **TRACE-2** drilled into layer 3: all FA inputs (`Qcur`, `Kcur`, `Qcur_hadamard`, `Kcur_hadamard`, `Vcur_hadamard`) are byte-identical between slot 0 and slot 1; the divergence enters at `flash_attn_per_slot_kv-1003`/`-2003` (the FA op output itself). Max |Δ| at FA output = 8.4e-04 (per device).
+- **TRACE-3** verified the Q4_0 K and V cache content is byte-identical at slot 0's vs slot 1's regions of the global-packed cache (same prompt → byte-identical K/V projections + Hadamard). So CPY+quantize is innocent.
+- **TRACE-4/5/7** initially hypothesised `warp_reduce_sum` mask-shape non-associativity, but the focused CUDA unit test (`tests/dflash-speculative/test-trace-4-warp-reduce-mask-shape.cu`) DISPROVED this: warp XOR-shuffle is commutative-stable on the same nonzero-value set at different lane positions. fp32 commutativity holds for the shuffle pattern. Hypothesis falsified.
+- **TRACE-6** added captures of every cb-tagged intermediate around the layer-3 FA block. Confirmed FA op output is the first divergent stage. The corrected diagnosis: the **WMMA k-loop's 16-K-chunk decomposition of the V × softmax(KQ) matmul** distributes each row's nonzero softmax × V products into different chunks based on the row's mask shape. WMMA matrix-A (V) is shared across matrix-B's 8 cols (slots); fp32 accumulation across chunks is non-associative. Same algebraic total, different fp32 partial-sum decomposition per slot. Structural to WMMA cross-row K-sharing.
+
+**Web research dive** (`RESEARCH_2026-05-16.md`, sources include [TML 2025-09 "Defeating Nondeterminism"](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/), [SGLang deterministic inference](https://www.lmsys.org/blog/2025-09-22-sglang-deterministic/), [llama.cpp PR #16016](https://github.com/ggml-org/llama.cpp/pull/16016) draft, [ssiu/flash-attention-turing](https://github.com/ssiu/flash-attention-turing), [Turing Tuning Guide](https://docs.nvidia.com/cuda/turing-tuning-guide/index.html)) confirms the field-standard recipe is **per-row CTA + canonical k-loop + online streaming softmax + fp32 accumulator + no Split-K**.
+
+**LOCAL DISCOVERY**: `ggml/src/ggml-cuda/fattn-vec-f32.cuh:17` `flash_attn_vec_ext_f32<Dk=256, Dv=256, ncols=1, F16, F16>` is exactly that architecture and is already compiled for sm_75. Per-row CTA when ncols=1 (always on NVIDIA per the dispatcher at line 377). F32 throughout. Online Welford softmax (line 257). Mask-bounded K-loop. No Split-K when launch_fattn's `parallel_blocks=1`.
+
+**FIX-C v4** (chosen): in `ggml_cuda_flash_attn_ext_per_slot_kv_sm75` (`fattn-per-slot-kv-sm75.cu`), change the dispatcher from
+```cpp
+ggml_cuda_flash_attn_ext_wmma_f16_case_pb1<256, 256, 8, float>(ctx, dst);
+```
+to
+```cpp
+ggml_cuda_flash_attn_ext_vec_f32_case<256, 256, GGML_TYPE_F16, GGML_TYPE_F16>(ctx, dst);
+```
+`launch_fattn` (with `need_f16_K=true, need_f16_V=true`) pre-dequants Q4_0 K/V to F16 before the kernel. The per-row CTA vec_f32 kernel then iterates each row's K in canonical order with online softmax in fp32. Same algebraic answer regardless of slot position. Byte-identical across slots for same-prompt input.
+
+**Closure binding (V1-V6)** per `RESEARCH_2026-05-16.md` §9d:
+- V1: scalar fp32 oracle (`fattn-vec-f32-reference.h`) + unit test → kernel byte-identical to oracle.
+- V2: TRACE-6 re-run with new dispatcher → `flash_attn_per_slot_kv-*` slot 0 ≡ slot 1.
+- V3: TRACE-1 re-run at NP={1,2,4,8} → all slots byte-identical at every layer.
+- V4: production NP-determinism harness → 14/14 byte-identical.
+- V5: NP=1 regression (token sequence preserved within tight tolerance).
+- V6: perf measurement → quantify vec_f32 vs wmma_f16 end-to-end decode delta.
+
+**Spec impact**: `specs/deltanet/fattn-per-slot-kv-sm75.md` §15.13 retracted in CX.A; §15.18 (to be written) documents FIX-C v4 as the production path. §15.7's KQ_acc_t=float fix is no longer applied because we're switching to vec_f32 entirely.
+
+**Open empirical questions**:
+1. Real perf delta of vec_f32 vs wmma_f16 at our shape. Spec §15.13 cited "~12× slower" but that measurement is unverified for our binary + production shape. V6 measures.
+2. Does `launch_fattn` for vec_f32 default `parallel_blocks=1`? Must verify; the per-row CTA only delivers determinism with no Split-K.
+3. The Q4_0 dequant kernel itself — is it batch-shape-invariant? Likely yes (per-cell transformation), but worth a probe.
+
 ### CX.1 — DeltaNet shape-conditional dispatch (DONE)
 
 `ggml/src/ggml-cuda/delta-net.cu`, lines 219 and 228:
