@@ -1,0 +1,27 @@
+==============================================================================
+A) intra-NP slot uniformity (slot s vs slot 0 at same NP)
+==============================================================================
+
+--- NP=2 ---
+  slot1 vs slot0: first divergent layer = 3; max |Δ| = 9.525e+00 at layer 63
+
+--- NP=4 ---
+  slot1 vs slot0: first divergent layer = 3; max |Δ| = 9.525e+00 at layer 63
+  slot2 vs slot0: ALL 64 LAYERS BYTE-IDENTICAL
+  slot3 vs slot0: first divergent layer = 3; max |Δ| = 9.525e+00 at layer 63
+
+--- NP=8 ---
+  slot1 vs slot0: first divergent layer = 3; max |Δ| = 2.090e+00 at layer 63
+  slot2 vs slot0: ALL 64 LAYERS BYTE-IDENTICAL
+  slot3 vs slot0: first divergent layer = 3; max |Δ| = 2.090e+00 at layer 63
+  slot4 vs slot0: ALL 64 LAYERS BYTE-IDENTICAL
+  slot5 vs slot0: first divergent layer = 3; max |Δ| = 2.107e+00 at layer 63
+  slot6 vs slot0: ALL 64 LAYERS BYTE-IDENTICAL
+  slot7 vs slot0: first divergent layer = 3; max |Δ| = 2.107e+00 at layer 63
+
+==============================================================================
+B) cross-NP slot-0 invariance (slot 0 at NP=1 vs slot 0 at NP={2,4,8})
+==============================================================================
+  NP=1 slot0 vs NP=2 slot0: first divergent layer = 0; max |Δ| = 5.432e+00 at layer 63
+  NP=1 slot0 vs NP=4 slot0: first divergent layer = 0; max |Δ| = 5.432e+00 at layer 63
+  NP=1 slot0 vs NP=8 slot0: first divergent layer = 0; max |Δ| = 3.978e+00 at layer 63
