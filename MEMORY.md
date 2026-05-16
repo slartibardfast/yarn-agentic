@@ -5867,3 +5867,49 @@ Files at this commit:
   ik_llama.cpp/ggml/src/ggml-cuda/mmq.cuh — env-gate stream_K disable
   ik_llama.cpp/tests/dflash-speculative/test-mmq-q4-0-ar16-shape-invariance-prod-dim.cpp — extended sweep
   ik_llama.cpp/tests/dflash-speculative/test-cy-np2-multi-step-decode.cpp — slot-1 token visibility
+
+## 2026-05-16 — Phase CY.F.18 localization: slot-1 race is GRAPH-SCHEDULING sync, not a compute bug
+
+Built `test-cy-f18-layer-bisect` to capture decode-step-1 logits and per-layer
+residuals across two NP=2 runs. Findings:
+
+```
+WITHOUT extract markers (pure decode):
+  PREFILL slot 0/1 last-tok logits cross-run: 0/248320 differ (deterministic)
+  DECODE-step1 slot 0 logits cross-run:       0/248320 differ
+  DECODE-step1 slot 1 logits cross-run:       ~246k/248320 differ, max|Δ|=0.44
+
+WITH extract markers at ALL 64 layers (set_output → host sync per layer):
+  All captures cross-run:                     0/N differ
+  DECODE-step1 logits both slots:             0/248320 differ
+
+WITH extract marker at JUST ONE LAYER (any of 0, 31, or 63):
+  DECODE-step1 logits both slots:             0/248320 differ
+```
+
+**Conclusion**: The slot-1 race is NOT a layer-specific compute bug. Adding ANY
+single graph synchronization point (via set_output → host buffer copy)
+suppresses the race. The bug is a **timing race in graph scheduling** where
+some op's read crosses with another op's write across CUDA streams or graph
+nodes.
+
+Most likely causes (need further instrumentation):
+1. graph_reuse interaction with multi-device split-graph reduce
+2. Async copy timing in DeltaNet per-slot state buffer
+3. Cross-stream sync missing at multi-GPU reduce barrier (CY.F.16 Option A
+   forced F32 reduce type, but may not have added stream sync barriers)
+
+Prefill is fully cross-run deterministic. Slot 0 decode is fully deterministic.
+Only slot 1 decode races. Same input → racing output → slot-position-asymmetric.
+
+This was a critical methodological learning: probes that add markers can
+SUPPRESS the bug they're trying to find. The dflash_extract set_output
+mechanism doesn't just capture values — it forces sync that hides the race.
+Pure decode (LLAMA_TEST_NO_EXTRACT=1) is required to see the racy state.
+
+Next: instrument the actual decode-step-1 graph at the reduce/state-copy
+nodes to identify which producer-consumer pair lacks sync.
+
+Files: ik_llama.cpp/tests/dflash-speculative/test-cy-f18-layer-bisect.cpp
+       LLAMA_TEST_BISECT_LAYER=N → extract only layer N
+       LLAMA_TEST_NO_EXTRACT=1 → no markers, pure decode
