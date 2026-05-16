@@ -57,9 +57,13 @@ start_server() {
     #   LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 — forces MMQ for AR16 at all batch sizes
     #                                            and pins cuBLAS algo (partial)
     #   CUBLAS_WORKSPACE_CONFIG=:4096:8        — required for cuBLAS reproducibility
+    # CY.F.17: GGML_CUDA_MMQ_DISABLE_STREAM_K=1 disables stream_K accumulation
+    # in MMQ, which has tile-count-dependent reduction order at prefill M (>96).
+    # See MEMORY.md 2026-05-16 entry; closes NP=2 slot 0 cross-NP determinism.
+    GGML_CUDA_MMQ_DISABLE_STREAM_K=${GGML_CUDA_MMQ_DISABLE_STREAM_K:-1} \
     LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
     LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 \
-    LLAMA_PSKV_MODE=${LLAMA_PSKV_MODE:-wmma} \
+    LLAMA_PSKV_MODE=${LLAMA_PSKV_MODE:-singlewarp} \
     CUBLAS_WORKSPACE_CONFIG=:4096:8 \
     "$BIN" -m "$GGUF" \
         --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
