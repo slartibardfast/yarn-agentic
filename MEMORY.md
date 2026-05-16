@@ -5764,3 +5764,19 @@ CY.B.1 confirmed layer 0 DeltaNet internals (q_in/k_in/v_in/q_fused/delta_net_fu
 The MMQ shape-invariance test at K=512/N=64 dims passes M ∈ {1,2,4,8,16,32} byte-identical. But production dims are K=5120/N=27648; the kernel selection or internal reduction order may differ. Layer 6 is the first DeltaNet output that consumes the post-FFN residual from layer 5 — and FFN at layer 5 IS byte-identical, so the divergence enters AT layer 6's DeltaNet kernel call or its inputs at that specific layer.
 
 Data: data/deltanet/cy-trace-view/TRACE_VIEW_2026-05-16.md. Tracked: PHASE_MMQ_Q4_0_AR16.md §6c Phase CY.
+
+## 2026-05-16 — Phase CY.F.16 Option A: arch-force F32 reduce closes NP={4,8} determinism
+
+Multi-day Phase CY narrowing (CY.F.1 through CY.F.16) found the root cause of cross-NP non-determinism: F32→F16 cast at `cur->ne[1] > 32` in `llama-delta-net.cpp:586`, `llama-build-context.cpp:789, 1387, 1505, 2805`. Cast introduces ~1e-3 precision loss per layer, amplifies through 64 layers, flips argmax. Threshold `>32` was a pure prefill perf optimization (commit 0b76f233 "This results in faster PP") with NO precision rationale.
+
+Option A fix shipped: arch-init force `cparams.reduce_type = GGML_TYPE_F32` for QWEN35 / QWEN35MOE + split_mode=GRAPH (mirrors GPT-OSS precedent at llama.cpp:7159). After fix:
+- NP=1, 4, 8: byte-deterministic across 5+ runs ✓
+- NP=2: ~60% pass rate; one slot's completion diverges on failure (separate concurrency race — not the cast)
+
+Cost: ~2× cross-device reduce bandwidth at prefill (no decode impact). Decode at NP≤8 has ne[1]≤8 < 32, never cast even pre-fix.
+
+Option B (async F32 reduce with stream overlap) is the SoTA follow-up — hides the bandwidth cost behind compute. Pending full Allium + TLA+ spec.
+
+Process insight: layer-level cb_eval captures are unreliable for residual-stream tags due to in-place op aliasing distortion. The d1-capture mechanism (`llama_set_dflash_extract_layers`) with dtype branching is the authoritative measurement; raw `cparams.cb_eval` gives different values for the same logical tensor. CY.F.7 showed the cy-trace-view "NP=1 vs NP≥2 layer-6 gap" was an instrumentation artifact — production NP=1 slot 0 == NP=4 slot 0 bit-identical without cb_eval.
+
+Data: data/deltanet/cy-trace-view/SERIAL_VS_BATCHED_2026-05-16.md, data/deltanet/cy-trace-view/PRODUCTION_GRAPH_2026-05-16.md.
