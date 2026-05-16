@@ -485,6 +485,65 @@ If still FAIL after CX.1-CX.6: instrument per-op output capture (cb_eval callbac
 
 ---
 
+## 6c. Phase CY — Cross-NP build-graph determinism (the F32-vs-F16 storage path)
+
+**Inserted 2026-05-16 after FIX-C v5 (singlewarp) closed the intra-NP FA gap.** Per `FIX_C_V5_FINAL_REPORT.md` and `data/fixc-v5-prod-harness-2026-05-16/findings.md`, the cross-NP harness still shows 12/14 slots diverging from NP=1 baseline — not because of FA (FIX-C v5 makes FA byte-deterministic), but because the build graph has batch-shape-dependent conditionals that pick different ops for different `cur->ne[1]` values.
+
+### CY.A — Audit batch-shape conditionals in src/llama-build-context.cpp
+
+Active conditionals identified (2026-05-16 grep):
+
+| Line | Conditional | Active? | What it gates |
+|---|---|---|---|
+| 789 | `cur->ne[1] > 32` | YES | cast residual to reduce_type (fp16) for prefill (>32 tokens) |
+| 1375 | `gate->ne[1] == 1` | YES | MoE shexp gate: ne[1]==1 uses `ggml_fused_mul_unary`; else split sigmoid+mul |
+| 1387 | `shared_out->ne[1] > 32` | YES | cast to reduce_type — same as 789 |
+| 1407 | `shared_gate->ne[1] == 1` | YES | similar fused vs split — for shared-expert path |
+| 1491 | `gate->ne[1] == 1` | YES | similar fused vs split |
+| 1505 | `cur->ne[1] > 32` | YES | cast to reduce_type — same as 789 |
+| 2779 | `if (false && cur->ne[1] == 1)` | NO (disabled) | placeholder for future fused op |
+| 2805 | `cur->ne[1] > 32` | YES | cast to reduce_type — same as 789 |
+| 2902 | `if (false && cur->ne[1] == 1)` | NO (disabled) | placeholder |
+
+**Two classes of batch-shape-dependent behaviour**:
+
+1. **fp16 cast cluster (lines 789, 1387, 1505, 2805)**: `if (ne[1] > 32 && reduce_type != F32) cast to reduce_type`. Active only for prefill (>32 tokens). For decode at NP={1,2,4,8} (all ≤8), this DOESN'T trigger. So NOT the cause of NP=1 vs NP=4 decode-only divergence.
+   - HOWEVER: prefill ne[1]=N_PROMPT > 32 (e.g., 12 tokens × NP=4 batched would be 48 if batched in one ubatch, triggers >32). Actually our test prefills slots sequentially so each slot's prefill is ne[1]=12 < 32 → also doesn't trigger.
+   - The fp16 cast cluster only differs between PREFILL-ONE-LONG-PROMPT and PREFILL-MANY-SHORT-PROMPTS, not between NP=1 and NP=N decode.
+
+2. **MoE shared-expert gate cluster (lines 1375, 1407, 1491)**: `if (gate->ne[1] == 1) fused_mul_unary(gate, shared_out, SIGMOID); else split sigmoid+mul`. Active for any MoE block. For NP=1 decode (ne[1]=1) uses fused; for NP=N decode (ne[1]=N>1) uses split. **THIS IS the primary cross-NP source.**
+
+### CY.B — Verify CY.A hypothesis: capture residuals across MoE block at NP=1 vs NP>1
+
+Adapt `test-trace-2-intra-layer-capture.cpp` to capture both code paths' shared-expert gate output:
+- `ffn_shexp_out-<il_cb>` (post-FFN, pre-gate)
+- `ffn_shexp_gated-<il_cb>` (post-gate)
+- `ffn_out-<il>` (final MoE output)
+
+Compare NP=1 vs NP=4 at slot 0 for these tags. If `ffn_shexp_gated` differs but `ffn_shexp_out` matches, the gate fusion is confirmed as the source.
+
+### CY.C — Fix candidates
+
+**CY.C.1 (preferred)**: remove the `gate->ne[1] == 1` branch entirely. Always use the split sigmoid+mul path. The fused op was added for perf optimization at single-token decode; we trade ~1% perf for batch-invariance. Compose with FIX-C v5 (also ~1-4% perf cost) → ~2-5% total perf cost for full batch-invariance.
+
+**CY.C.2 (alternative)**: make `ggml_fused_mul_unary(gate, x, SIGMOID)` byte-identical to `sigmoid(gate) * x`. Investigate the fused kernel to find the numerical difference; may be solvable with fp32 intermediate precision.
+
+**CY.C.3 (most invasive)**: refactor the build graph to never have ne[1]-dependent branches. Standardize on the multi-token path everywhere.
+
+Recommend CY.C.1 (simplest, smallest perf cost).
+
+### CY.D — Closure binding for Phase CY
+
+- Production NP-determinism harness: 14/14 byte-identical at NP ∈ {1, 2, 4, 8}.
+- `scripts/test-production-np-determinism.sh` PASS with `LLAMA_PSKV_MODE=singlewarp` (FIX-C v5) + CY fix applied.
+- Multi-run stability: 5 runs of the harness, all PASS at 14/14.
+
+### CY.E — Reference path comparison
+
+Verify that the gate-fusion fix doesn't break the existing tests (`test-fattn-*`, `test-rmsnorm-*`, `test-rope-*`). All should still pass.
+
+---
+
 ## 7. Phase D — Multi-GPU PCIe peer-access deterministic ordering
 
 Goal: with `--device CUDA0,CUDA1 --tensor-split 1,1`, the output is byte-identical to single-GPU output. Currently non-deterministic due to peer-access timing.
