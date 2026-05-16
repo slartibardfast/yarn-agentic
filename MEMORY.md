@@ -5818,3 +5818,52 @@ Perf cost (estimated): 5-15% prefill throughput on long-context (decode unaffect
 
 Tracked: task #204 (CY.F.17 closed), #207 (CY.F.18 slot-1 intermittent open).
 Files: ik_llama.cpp/ggml/src/ggml-cuda/mmq.cuh, tests/dflash-speculative/test-mmq-q4-0-ar16-shape-invariance-prod-dim.cpp.
+
+## 2026-05-16 — Phase CY.F.17 progress update: slot-0 fixed, slot-1 race characterized
+
+Multi-run characterization of test-cy-np2-multi-step-decode after stream_K disable:
+
+```
+N=10 runs, env: GGML_CUDA_MMQ_DISABLE_STREAM_K=1, prompt 215 tokens, n_predict=20.
+  slot 0 matches NP=1: 10/10  (was 0/3 before fix)
+  slot 1 matches NP=1: 2/10   (intermittent race)
+```
+
+Slot-1 divergence is DISCRETE across runs (not random per-step ULP noise):
+
+```
+run 0: diverges at step 2, tokens [11, 321, 599, 978, 8977]
+run 1: diverges at step 4, tokens [2002, 9257, 310, 36336, 17958]
+run 2: diverges at step 12, tokens [23037, 23606, 3808, 18527, 11]
+run 3: diverges at step 12, SAME tokens as run 2
+run 4: PASS
+```
+
+3 distinct "race outcomes" across 10 runs. Pattern suggests a small finite race
+outcome space (e.g., a few atomic-add contenders with deterministic per-outcome
+trajectories), not generalized floating-point chaos.
+
+Diagnostic: with Hadamard DISABLED (k/v_cache_hadamard=false in both NP=1
+baseline and NP=2 contexts), slot 0 and slot 1 are deterministic 5/5 but BOTH
+diverge from NP=1 at step 2. So Hadamard mitigates a second shape-dep bug for
+slot 0 (and the slot-1 race is something Hadamard introduces or exposes —
+likely the slot-position-dependent K/V Hadamard rotation).
+
+Production decision: keep Hadamard ON (production setting); slot 0 reliable.
+Slot 1 ~20% pass rate is worse than V4's pre-fix ~60% intra-NP rate but
+represents true cross-NP determinism. Open as CY.F.18 (task #207).
+
+Suspects for CY.F.18 slot-1 race (in order of plausibility):
+1. Hadamard K/V cache write — per-slot rotation kernel may have a race at the
+   slot-1 region (slot 0 region might be cleaner due to alignment).
+2. DeltaNet per-slot recurrent state buffer — slot-1's buffer may have
+   uninitialized memory read at first decode step.
+3. K-cpy at batched n_tokens=2 — order of slot-0 vs slot-1 K writes may race
+   with downstream FA read.
+4. Multi-GPU stream synchronization — slot 1's reduce output may not be ready
+   when next op consumes it.
+
+Files at this commit:
+  ik_llama.cpp/ggml/src/ggml-cuda/mmq.cuh — env-gate stream_K disable
+  ik_llama.cpp/tests/dflash-speculative/test-mmq-q4-0-ar16-shape-invariance-prod-dim.cpp — extended sweep
+  ik_llama.cpp/tests/dflash-speculative/test-cy-np2-multi-step-decode.cpp — slot-1 token visibility
