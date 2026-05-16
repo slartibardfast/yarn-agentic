@@ -1,0 +1,7 @@
+--- /home/llm/yarn-agentic/data/fixc-v5-prod-harness-2026-05-16/run-20260516T121823/np1.txt	2026-05-16 12:18:40.746508268 +0000
++++ /home/llm/yarn-agentic/data/fixc-v5-prod-harness-2026-05-16/run-20260516T121823/np4-slot3.txt	2026-05-16 12:19:33.563236954 +0000
+@@ -1 +1 @@
+- Alan Turing, who in 1950 published a paper titled "Computing Machinery and Intelligence. " This paper laid the groundwork for the field, and in 1956, the term "artificial intelligence" was coined at the Dartmouth Conference, marking the official birth of AI as a field of
+\ No newline at end of file
++ Alan Turing, who in 1950 published a paper titled "Computing Machinery and Intelligence. " This paper laid the groundwork for the field, and in 1956, the term "artificial intelligence" was coined at the Dartmouth Conference, marking the official birth of AI as a scientific discipline
+\ No newline at end of file

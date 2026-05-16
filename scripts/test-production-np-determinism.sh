@@ -59,6 +59,7 @@ start_server() {
     #   CUBLAS_WORKSPACE_CONFIG=:4096:8        — required for cuBLAS reproducibility
     LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
     LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 \
+    LLAMA_PSKV_MODE=${LLAMA_PSKV_MODE:-wmma} \
     CUBLAS_WORKSPACE_CONFIG=:4096:8 \
     "$BIN" -m "$GGUF" \
         --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
