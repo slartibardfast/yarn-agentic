@@ -1,0 +1,68 @@
+
+========== device suffix 1003 ==========
+
+=== k-1003 ===
+ne = [256, 256, 2, 1], type = q4_0, bytes = 73872
+bytes_per_row=144, n_rows=513, expected_rows=512
+nonzero rows: 52 of 513
+  first 30 indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+  last 10 indices: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  head_kv 0: slot0 region [0,13) == positions [13,26)? False
+  head_kv 1: slot0 region [0,13) == positions [13,26)? True
+
+=== v-1003 ===
+ne = [256, 256, 2, 1], type = q4_0, bytes = 73872
+bytes_per_row=144, n_rows=513, expected_rows=512
+nonzero rows: 52 of 513
+  first 30 indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+  last 10 indices: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  head_kv 0: slot0 region [0,13) == positions [13,26)? False
+  head_kv 1: slot0 region [0,13) == positions [13,26)? True
+
+========== device suffix 2003 ==========
+
+=== k-2003 ===
+ne = [256, 256, 2, 1], type = q4_0, bytes = 73872
+bytes_per_row=144, n_rows=513, expected_rows=512
+nonzero rows: 52 of 513
+  first 30 indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+  last 10 indices: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  head_kv 0: slot0 region [0,13) == positions [13,26)? False
+  head_kv 1: slot0 region [0,13) == positions [13,26)? True
+
+=== v-2003 ===
+ne = [256, 256, 2, 1], type = q4_0, bytes = 73872
+bytes_per_row=144, n_rows=513, expected_rows=512
+nonzero rows: 52 of 513
+  first 30 indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+  last 10 indices: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  head_kv 0: slot0 region [0,13) == positions [13,26)? False
+  head_kv 1: slot0 region [0,13) == positions [13,26)? True
+
+=== q-1003 slot comparison ===
+q-1003 ne = [256, 2, 12, 1]
+q-1003 slot 0 vs slot 1: n_diff=3072, max|Δ|=3.878e+00
+
+=== k-1003  ne=[256, 256, 2, 1] ===
+  head_kv 0: prefill positions slot0 vs slot1: BYTE-IDENTICAL
+  head_kv 1: prefill positions slot0 vs slot1: BYTE-IDENTICAL
+  head_kv 0: decode-step pos 24 (slot0) vs pos 25 (slot1): BYTE-IDENTICAL
+  head_kv 1: decode-step pos 24 (slot0) vs pos 25 (slot1): BYTE-IDENTICAL
+
+=== v-1003  ne=[256, 256, 2, 1] ===
+  head_kv 0: prefill positions slot0 vs slot1: BYTE-IDENTICAL
+  head_kv 1: prefill positions slot0 vs slot1: BYTE-IDENTICAL
+  head_kv 0: decode-step pos 24 (slot0) vs pos 25 (slot1): BYTE-IDENTICAL
+  head_kv 1: decode-step pos 24 (slot0) vs pos 25 (slot1): BYTE-IDENTICAL
+
+=== k-2003  ne=[256, 256, 2, 1] ===
+  head_kv 0: prefill positions slot0 vs slot1: BYTE-IDENTICAL
+  head_kv 1: prefill positions slot0 vs slot1: BYTE-IDENTICAL
+  head_kv 0: decode-step pos 24 (slot0) vs pos 25 (slot1): BYTE-IDENTICAL
+  head_kv 1: decode-step pos 24 (slot0) vs pos 25 (slot1): BYTE-IDENTICAL
+
+=== v-2003  ne=[256, 256, 2, 1] ===
+  head_kv 0: prefill positions slot0 vs slot1: BYTE-IDENTICAL
+  head_kv 1: prefill positions slot0 vs slot1: BYTE-IDENTICAL
+  head_kv 0: decode-step pos 24 (slot0) vs pos 25 (slot1): BYTE-IDENTICAL
+  head_kv 1: decode-step pos 24 (slot0) vs pos 25 (slot1): BYTE-IDENTICAL
