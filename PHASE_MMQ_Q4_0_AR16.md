@@ -560,6 +560,33 @@ This ordering inverts the typical "trace first, fix second" approach by leveragi
 
 Verify that the CY fix doesn't break existing tests (`test-fattn-*`, `test-rmsnorm-*`, `test-rope-*`). All should still pass.
 
+### CY trace-view findings (2026-05-16)
+
+Full NP={1,2,4,8} sweep with current env stack (`singlewarp` + `shape_invariant_dispatch` + `cublas_pin`) reveals:
+
+| NP pair | First divergent layer | max\|Δ\| |
+|---|---|---|
+| NP=1 vs NP=2 | layer 6 (DeltaNet) | 3.815e-06 |
+| NP=1 vs NP=4 | layer 6 (DeltaNet) | 3.815e-06 |
+| NP=1 vs NP=8 | layer 6 (DeltaNet) | 3.815e-06 |
+| **NP=2 vs NP=4** | **none (byte-identical through 64 layers ✓)** | 0 |
+| NP=2 vs NP=8 | layer 20 | 1.335e-04 |
+| NP=4 vs NP=8 | layer 20 | 1.335e-04 |
+
+Three NP isoclusters: **{NP=1}**, **{NP=2, NP=4}** (byte-identical pair), **{NP=8}**.
+
+CY.B.1 confirmed layer 0 DeltaNet internals byte-identical NP=1↔NP=4 slot 0 — the DeltaNet kernel itself is innocent.
+
+`LLAMA_DELTA_FORCE_SLOW=1` test (force NP=1 through the per-block slow path) still shows layer-6 divergence at 3.815e-06 — so the `all_same_seq` fast/slow bifurcation in `build_layer_attn_linear` is NOT the source. The source must be in the FFN's ne[1]=1 vs ne[1]=N sensitivity (post-DeltaNet concat).
+
+Production-dim MMQ (K=5120, N=27648) needs auditing. The existing `test-mmq-q4-0-ar16-shape-invariance` at K=512, N=64 PASSES for M ∈ {1, 4, 8, 16, 32} — but production dims may pick a different mmq_x_best or trigger different internal reduction paths.
+
+### CY.F — Next subprobes (provability-ranked)
+
+1. **CY.F.1** — extend `test-mmq-q4-0-ar16-shape-invariance` to production dims (K=5120, N=27648 for ffn_up; K=27648, N=5120 for ffn_down) and re-run at M ∈ {1, 2, 4, 8}. If FAIL: MMQ at production dims has ne11-dependent reduction. If PASS: source is in `ggml_fused_up_gate` or `ggml_reduce` (cross-device sum).
+2. **CY.F.2** — intra-layer-6 cb_eval capture: tags `ffn_up_gate-6000`, `ffn_down-6000`, `ffn_with_inp-6`, `ffn_combined-6` at NP=1 vs NP=4 slot 0. First-divergent tag pinpoints op.
+3. **CY.F.3** — disable cross-device tensor reduce (test single-device only) to isolate `ggml_reduce` shape-sensitivity.
+
 ---
 
 ## 7. Phase D — Multi-GPU PCIe peer-access deterministic ordering
