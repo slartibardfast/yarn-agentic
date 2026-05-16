@@ -1,0 +1,26 @@
+mode        tensor                             slice    n_diff      max|Δ|
+--------------------------------------------------------------------------------
+wmma        flash_attn_per_slot_kv-1003         3072      1042   8.444e-04  ← DIVERGE
+wmma        flash_attn_per_slot_kv-2003         3072      1515   1.605e-03  ← DIVERGE
+wmma        kqv_wo-1003                         5120      5120   1.041e-03  ← DIVERGE
+wmma        kqv_wo-2003                         5120      5120   8.157e-04  ← DIVERGE
+wmma        attn_combined-3                     5120      5120   8.292e-04  ← DIVERGE
+wmma        attn_out_with_input-3               5120      5120   8.157e-04  ← DIVERGE
+wmma        l_out-3                             5120      5120   5.860e-03  ← DIVERGE
+
+vec_f32     flash_attn_per_slot_kv-1003         3072       748   1.788e-07  ← DIVERGE
+vec_f32     flash_attn_per_slot_kv-2003         3072       745   2.384e-07  ← DIVERGE
+vec_f32     kqv_wo-1003                         5120         0   0.000e+00
+vec_f32     kqv_wo-2003                         5120         0   0.000e+00
+vec_f32     attn_combined-3                     5120         0   0.000e+00
+vec_f32     attn_out_with_input-3               5120         0   0.000e+00
+vec_f32     l_out-3                             5120         0   0.000e+00
+
+vec_f16     flash_attn_per_slot_kv-1003         3072       535   9.766e-04  ← DIVERGE
+vec_f16     flash_attn_per_slot_kv-2003         3072       601   9.766e-04  ← DIVERGE
+vec_f16     kqv_wo-1003                         5120      5120   5.612e-04  ← DIVERGE
+vec_f16     kqv_wo-2003                         5120      5120   9.193e-04  ← DIVERGE
+vec_f16     attn_combined-3                     5120      5120   3.567e-04  ← DIVERGE
+vec_f16     attn_out_with_input-3               5120      5119   9.193e-04  ← DIVERGE
+vec_f16     l_out-3                             5120      5120   3.594e-03  ← DIVERGE
+
