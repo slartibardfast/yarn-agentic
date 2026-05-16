@@ -5913,3 +5913,69 @@ nodes to identify which producer-consumer pair lacks sync.
 Files: ik_llama.cpp/tests/dflash-speculative/test-cy-f18-layer-bisect.cpp
        LLAMA_TEST_BISECT_LAYER=N → extract only layer N
        LLAMA_TEST_NO_EXTRACT=1 → no markers, pure decode
+
+## 2026-05-16 — Phase CY.F.18 ROOT CAUSE + FIX — scheduler sync lifecycle race CLOSED
+
+The slot-1 race surviving CY.F.17 stream_K fix is a sync lifecycle bug in
+`ggml_backend_sched`:
+
+```c
+// ggml-backend.cpp, ggml_backend_sched_copy_inputs:
+constexpr bool k_set_sync = false;  // <-- the bug
+...
+if (needs_sync[split_backend_id]) {
+    ggml_backend_synchronize(split_backend);     // sync the backend
+    needs_sync[split_backend_id] = k_set_sync;   // clear flag to false
+}
+```
+
+After one sync, `needs_sync[X] = false` ⇒ subsequent reads from backend X
+skip the sync. The optimization assumes "sync covers all reads in this pass."
+
+**The optimization is unsafe with cross-device peer P2P writes.** The reduce
+op's k_reduce_add_T kernel does direct peer writes from device 0 to device 1's
+memory (and vice versa). These writes are queued on the SOURCE device's stream.
+`ggml_backend_cuda_synchronize` uses `cudaStreamSynchronize(own_stream)` which
+syncs only its OWN stream — it does NOT drain incoming peer writes from the
+other device's stream.
+
+Sequence that races:
+1. Reduce broadcasts slot 1's data to device 0's memory via peer write
+   (initiated by device 1's stream, queued there)
+2. Scheduler clears needs_sync[0] = false after device 0's sync
+3. Next split reads slot 1's region in device 0's memory
+4. needs_sync[0] = false ⇒ no sync triggered
+5. The peer write from device 1's stream hasn't fully landed ⇒ stale read
+6. Slot 1's output racy ~80% of runs
+
+Why slot 0 deterministic: slot 0's data is in device 0's chunk of the reduce
+(written LOCALLY by device 0's kernel). Local writes are properly stream-ordered.
+Only the peer-written slot (slot 1's region) races.
+
+**FIX**: env-gate `GGML_SCHED_FORCE_SYNC_INPUTS=1` keeps `k_set_sync = true`.
+Every input read re-syncs. Heavier but safe. Test result:
+- pure decode without fix: 1-2/5 pass (race ~80%)
+- pure decode with fix:    5/5 pass
+- test-cy-np2-multi-step-decode (20 steps × 5 runs): slot0/slot1 both match NP=1 5/5
+
+**Combined production env for NP=2 cross-NP determinism:**
+```
+GGML_CUDA_MMQ_DISABLE_STREAM_K=1   # CY.F.17 — MMQ stream_K shape-dep
+GGML_SCHED_FORCE_SYNC_INPUTS=1     # CY.F.18 — scheduler sync lifecycle
+```
+
+Probes ruled OUT during investigation:
+- Reduce P2P kernel path (forced fallback, still raced)
+- graph_reuse (disabled, still raced)
+- Prefill→decode async leak (sync_between, still raced)
+- Post-reduce needs_sync clearing (kept true, still raced)
+- `__threadfence_system()` in reduce kernel (still raced)
+- `cudaDeviceSynchronize` in backend_synchronize (still raced)
+
+The proper fix would be to mark needs_sync[X] = true after any async write
+QUEUED ON BACKEND Y's STREAM TARGETING BACKEND X's MEMORY (peer writes). The
+current force-sync env-gate is a safe-but-heavy fallback. Perf cost not yet
+characterized; estimate ~5-15% decode throughput on multi-GPU configs.
+
+Tracked: tasks #204 (CY.F.17 closed), #207 (CY.F.18 closed).
+Files: ik_llama.cpp/ggml/src/ggml-backend.cpp (env-gate), ik_llama.cpp/ggml/src/ggml-cuda.cu (probe env), scripts/test-production-np-determinism.sh (defaults).
