@@ -583,9 +583,24 @@ Production-dim MMQ (K=5120, N=27648) needs auditing. The existing `test-mmq-q4-0
 
 ### CY.F — Next subprobes (provability-ranked)
 
-1. **CY.F.1** — extend `test-mmq-q4-0-ar16-shape-invariance` to production dims (K=5120, N=27648 for ffn_up; K=27648, N=5120 for ffn_down) and re-run at M ∈ {1, 2, 4, 8}. If FAIL: MMQ at production dims has ne11-dependent reduction. If PASS: source is in `ggml_fused_up_gate` or `ggml_reduce` (cross-device sum).
-2. **CY.F.2** — intra-layer-6 cb_eval capture: tags `ffn_up_gate-6000`, `ffn_down-6000`, `ffn_with_inp-6`, `ffn_combined-6` at NP=1 vs NP=4 slot 0. First-divergent tag pinpoints op.
+1. **CY.F.1** — extend `test-mmq-q4-0-ar16-shape-invariance` to production dims (K=5120, N=27648 for ffn_up; K=27648, N=5120 for ffn_down) and re-run at M ∈ {1, 2, 4, 8}. **DONE 2026-05-16: PASS** — MMQ at production dims is byte-identical row-0 across M ∈ {1, 4, 8, 16, 32}. Excludes MMQ as the layer-6 source.
+2. **CY.F.2** — intra-layer-6 cb_eval capture: tags `ffn_up_gate-6000`, `ffn_down-6000`, `ffn_with_inp-6`, `ffn_combined-6` at NP=1 vs NP=4 slot 0. **PARTIAL 2026-05-16**: A direct `cparams.cb_eval` matched-name approach (test-cy-layer0-capture) reports ALL intermediates AND l_out-6 BYTE-IDENTICAL. But the d1-capture mechanism (`llama_set_dflash_extract_layers` + `llama_get_dflash_extract_data`) shows l_out-6 DIFFERS by 3.815e-06.
+   - **The two mechanisms produce different values for the same tensor**: cy-layer0 NP=1 l_out-6 first val = -0.0757, d1-capture NP=1 l_out-6 first val = -0.0938. Both at the same decode step on the same model with same prompt.
+   - **The d1-capture mechanism is authoritative** — its capture matches what the model actually outputs (production V4 token-output harness shows cross-NP divergences that align with d1's residual measurements). A direct `cparams.cb_eval` may capture the tensor at a different graph-evaluation point (e.g., pre-in-place modification) or may miss a dtype branch.
+   - Per `feedback_cb_eval_dtype_split`: l_out-<il> is F32 for single-token decodes but F16 for multi-token (prefill) ubatches; `nbytes/sizeof(float)` row counting silently halves rows for F16. The d1 mechanism handles this; raw `cparams.cb_eval` does not.
 3. **CY.F.3** — disable cross-device tensor reduce (test single-device only) to isolate `ggml_reduce` shape-sensitivity.
+4. **CY.F.4** — extend d1-capture to also dump intra-layer tags via the SAME extract-layers mechanism (with dtype branching). This gives authoritative intra-layer-6 captures. The raw `cparams.cb_eval` approach in `test-cy-layer0-capture` is unreliable for residual comparison.
+
+### CY.G — Open question (2026-05-16)
+
+What does the d1-capture `llama_get_dflash_extract_data` see at layer 6 that `cparams.cb_eval` doesn't?
+
+Hypotheses:
+- d1's cb_eval fires LATER in graph execution, after `lctx.cvec.apply_to` runs in-place.
+- d1's buffer captures the post-conversion fp32, my raw cb_eval captures pre-conversion bytes.
+- Aliasing / in-place op causes different snapshots at different cb_eval registration points.
+
+Resolution: read `llama_set_dflash_extract_layers` implementation in libllama to understand its capture point + dtype handling. Match in CY.B.1 to confirm.
 
 ---
 
