@@ -485,7 +485,7 @@ If still FAIL after CX.1-CX.6: instrument per-op output capture (cb_eval callbac
 
 ---
 
-## 6c. Phase CY — Cross-NP build-graph determinism (the F32-vs-F16 storage path)
+## 6c. Phase CY — Cross-NP build-graph determinism (layer-0 fp32-ULP divergence)
 
 **Inserted 2026-05-16 after FIX-C v5 (singlewarp) closed the intra-NP FA gap.** Per `FIX_C_V5_FINAL_REPORT.md` and `data/fixc-v5-prod-harness-2026-05-16/findings.md`, the cross-NP harness still shows 12/14 slots diverging from NP=1 baseline — not because of FA (FIX-C v5 makes FA byte-deterministic), but because the build graph has batch-shape-dependent conditionals that pick different ops for different `cur->ne[1]` values.
 
@@ -496,41 +496,39 @@ Active conditionals identified (2026-05-16 grep):
 | Line | Conditional | Active? | What it gates |
 |---|---|---|---|
 | 789 | `cur->ne[1] > 32` | YES | cast residual to reduce_type (fp16) for prefill (>32 tokens) |
-| 1375 | `gate->ne[1] == 1` | YES | MoE shexp gate: ne[1]==1 uses `ggml_fused_mul_unary`; else split sigmoid+mul |
-| 1387 | `shared_out->ne[1] > 32` | YES | cast to reduce_type — same as 789 |
-| 1407 | `shared_gate->ne[1] == 1` | YES | similar fused vs split — for shared-expert path |
-| 1491 | `gate->ne[1] == 1` | YES | similar fused vs split |
+| 1375 | `gate->ne[1] == 1` | YES (only on MoE path) | MoE shexp gate: ne[1]==1 uses `ggml_fused_mul_unary`; else split sigmoid+mul |
+| 1387 | `shared_out->ne[1] > 32` | YES (only on MoE path) | cast to reduce_type — same as 789 |
+| 1407 | `shared_gate->ne[1] == 1` | YES (only on MoE path) | similar fused vs split — for shared-expert path |
+| 1491 | `gate->ne[1] == 1` | YES (only on MoE path) | similar fused vs split |
 | 1505 | `cur->ne[1] > 32` | YES | cast to reduce_type — same as 789 |
 | 2779 | `if (false && cur->ne[1] == 1)` | NO (disabled) | placeholder for future fused op |
 | 2805 | `cur->ne[1] > 32` | YES | cast to reduce_type — same as 789 |
 | 2902 | `if (false && cur->ne[1] == 1)` | NO (disabled) | placeholder |
 
-**Two classes of batch-shape-dependent behaviour**:
+**RETRACTED MoE shared-expert hypothesis (2026-05-16)**: production GGUF inspection of `qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf` shows `general.architecture = qwen35` (not `qwen35moe`). No `*_exps`, `*_shexp`, or `gate_inp` tensors. The model uses `build_qwen35()` (`src/graphs/build_qwen35.cpp:160`), not `build_qwen35moe()`. The MoE shared-expert gate fusion at lines 1375/1407/1491 NEVER fires for Qwen 3.6 27B. The MoE hypothesis is dead.
 
-1. **fp16 cast cluster (lines 789, 1387, 1505, 2805)**: `if (ne[1] > 32 && reduce_type != F32) cast to reduce_type`. Active only for prefill (>32 tokens). For decode at NP={1,2,4,8} (all ≤8), this DOESN'T trigger. So NOT the cause of NP=1 vs NP=4 decode-only divergence.
-   - HOWEVER: prefill ne[1]=N_PROMPT > 32 (e.g., 12 tokens × NP=4 batched would be 48 if batched in one ubatch, triggers >32). Actually our test prefills slots sequentially so each slot's prefill is ne[1]=12 < 32 → also doesn't trigger.
-   - The fp16 cast cluster only differs between PREFILL-ONE-LONG-PROMPT and PREFILL-MANY-SHORT-PROMPTS, not between NP=1 and NP=N decode.
+**Two classes of batch-shape-dependent behaviour that DO apply to `build_qwen35()`**:
 
-2. **MoE shared-expert gate cluster (lines 1375, 1407, 1491)**: `if (gate->ne[1] == 1) fused_mul_unary(gate, shared_out, SIGMOID); else split sigmoid+mul`. Active for any MoE block. For NP=1 decode (ne[1]=1) uses fused; for NP=N decode (ne[1]=N>1) uses split. **THIS IS the primary cross-NP source.**
+1. **fp16 cast cluster (lines 789, 1505, 2805)**: `if (ne[1] > 32 && reduce_type != F32) cast to reduce_type`. Active only for prefill (>32 tokens). For decode at NP={1,2,4,8} (all ≤8), this DOESN'T trigger. Excluded as cause.
 
-### CY.B — Verify CY.A hypothesis: capture residuals across MoE block at NP=1 vs NP>1
+2. **DeltaNet (recurrent) at layer 0** + **FFN (line 776-790 in `llm_build_ffn`)**: layer 0 of Qwen 3.6 is a DeltaNet/linear-attention layer (`hparams.is_recurrent(0)==true`). Inside `delta_net::build_layer_attn_linear` and `llm_build_ffn`, there are MMQ/cuBLAS dispatches where the algorithm picked depends on `ne[1]`. Even with Phase A MMQ lockdown and Phase C cuBLAS pinning, sub-paths inside DeltaNet may not be covered.
 
-Adapt `test-trace-2-intra-layer-capture.cpp` to capture both code paths' shared-expert gate output:
-- `ffn_shexp_out-<il_cb>` (post-FFN, pre-gate)
-- `ffn_shexp_gated-<il_cb>` (post-gate)
-- `ffn_out-<il>` (final MoE output)
+### CY.B — Layer-localized capture: where does the fp32-ULP gap first appear?
 
-Compare NP=1 vs NP=4 at slot 0 for these tags. If `ffn_shexp_gated` differs but `ffn_shexp_out` matches, the gate fusion is confirmed as the source.
+Empirical (`data/deltanet/d1-capture` from 2026-05-16): NP=1 vs NP=4 at slot 0 in `l_out-0` (layer 0 residual output) differ at max|Δ| = **1.118e-07** (single fp32 ULP at exponent 0), with 5119/5120 cells differing. Amplification through 64 layers: layer 1 → 1.047e-03, layer 2 → 6.194e-02, etc. By final layer the logit gap flips argmax → different token sequences.
 
-### CY.C — Fix candidates
+**Subprobes to run (CY.B.1 .. CY.B.4)**:
 
-**CY.C.1 (preferred)**: remove the `gate->ne[1] == 1` branch entirely. Always use the split sigmoid+mul path. The fused op was added for perf optimization at single-token decode; we trade ~1% perf for batch-invariance. Compose with FIX-C v5 (also ~1-4% perf cost) → ~2-5% total perf cost for full batch-invariance.
+- **CY.B.1**: capture `inp_embd` (post embedding lookup, pre layer 0) at NP=1 vs NP=4. Expectation: byte-identical (embedding is index-lookup, no math).
+- **CY.B.2**: capture intra-layer-0 tags: `norm-0` (pre-DeltaNet RMSNorm output), `ssm_in-0`, `ssm_out-0` (DeltaNet kernel internals if tagged), `ffn_norm-0` output, `ffn_up-0`, `ffn_gate-0`, `ffn_silu-0`, `ffn_down-0`. First tag with non-zero diff identifies the source op.
+- **CY.B.3**: if DeltaNet is the source: re-examine `ggml/src/ggml-cuda/delta-net.cu` for batch-shape-dependent reductions or kernel dispatch.
+- **CY.B.4**: if FFN is the source: examine the mul_mat call for `ffn_up` / `ffn_gate` / `ffn_down` at ne[1]=1 vs ne[1]=4. MMQ vs MMV vs cuBLAS dispatch may differ.
 
-**CY.C.2 (alternative)**: make `ggml_fused_mul_unary(gate, x, SIGMOID)` byte-identical to `sigmoid(gate) * x`. Investigate the fused kernel to find the numerical difference; may be solvable with fp32 intermediate precision.
+### CY.C — Fix candidates (depend on which CY.B subprobe lands)
 
-**CY.C.3 (most invasive)**: refactor the build graph to never have ne[1]-dependent branches. Standardize on the multi-token path everywhere.
-
-Recommend CY.C.1 (simplest, smallest perf cost).
+- If DeltaNet kernel has batch-shape dispatch: pin threads_per_block AND any internal reduction-tile that depends on n_tokens (extends CX.1 work).
+- If MMV (single-token) vs MMQ (multi-token) is picked for ffn_*: force MMQ for all decode batch sizes, or pin the MMV path to use the same reduction order as MMQ.
+- If RMSNorm at ne[1]=1 vs ne[1]=4 picks different block geometry: pin block dim like CX.B did.
 
 ### CY.D — Closure binding for Phase CY
 
@@ -540,7 +538,7 @@ Recommend CY.C.1 (simplest, smallest perf cost).
 
 ### CY.E — Reference path comparison
 
-Verify that the gate-fusion fix doesn't break the existing tests (`test-fattn-*`, `test-rmsnorm-*`, `test-rope-*`). All should still pass.
+Verify that the CY fix doesn't break existing tests (`test-fattn-*`, `test-rmsnorm-*`, `test-rope-*`). All should still pass.
 
 ---
 
