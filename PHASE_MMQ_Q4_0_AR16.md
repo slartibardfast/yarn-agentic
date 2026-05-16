@@ -524,11 +524,31 @@ Empirical (`data/deltanet/d1-capture` from 2026-05-16): NP=1 vs NP=4 at slot 0 i
 - **CY.B.3**: if DeltaNet is the source: re-examine `ggml/src/ggml-cuda/delta-net.cu` for batch-shape-dependent reductions or kernel dispatch.
 - **CY.B.4**: if FFN is the source: examine the mul_mat call for `ffn_up` / `ffn_gate` / `ffn_down` at ne[1]=1 vs ne[1]=4. MMQ vs MMV vs cuBLAS dispatch may differ.
 
-### CY.C — Fix candidates (depend on which CY.B subprobe lands)
+### CY.C — Fix candidates grounded in performance impact AND data-provability
 
-- If DeltaNet kernel has batch-shape dispatch: pin threads_per_block AND any internal reduction-tile that depends on n_tokens (extends CX.1 work).
-- If MMV (single-token) vs MMQ (multi-token) is picked for ffn_*: force MMQ for all decode batch sizes, or pin the MMV path to use the same reduction order as MMQ.
-- If RMSNorm at ne[1]=1 vs ne[1]=4 picks different block geometry: pin block dim like CX.B did.
+Each fix is evaluated for: (a) likelihood it's the actual source, (b) **decode-rate cost** at NP=1, (c) **provability with data** — what binding test demonstrates both source identification AND fix closure, and (d) does the test require the full 27B production model or runs in unit-test fixtures.
+
+| # | Candidate source | Likelihood | Decode-rate cost @ NP=1 | Binding test for source ID | Binding test for fix closure | Fixture vs full-model |
+|---|---|---|---|---|---|---|
+| 1 | **DeltaNet kernel batch-shape dispatch** (layer 0 is recurrent) | HIGH (layer 0 is DeltaNet; CX.1 pinned threads_per_block but not all internal reductions) | 0-3% (DeltaNet single-token specialization is minor; bandwidth-bound) | Intra-layer-0 cb_eval capture: tag `delta_net_out-0` differs at NP=1 vs NP=4 with max\|Δ\|≈1e-7 → confirms source | New `tests/test-delta-net-np-invariance.cpp` driving `delta_net::build_layer_attn_linear` at n_tokens ∈ {1,2,4,8} with identical-content slots → sha256 match all-slots-all-shapes | Both: unit test for kernel; full-model only for end-to-end binding |
+| 2a | **MMVQ vs MMQ dispatch** for ffn_up/ffn_gate/ffn_down (Option: force MMQ at ne[1]=1) | HIGH — TML/SGLang identify as canonical NP-invariance breaker | **30-50% UNACCEPTABLE** | `test-mul-mat-q-vs-vec-q-byte-identity.cpp`: random Q4_0/Q4_0_AR16 weights × random fp32 input row; drive both MMQ (ne[1]=2 with dummy) and MMVQ (ne[1]=1); diff outputs. Single 50-line test, no model needed. | Same test after fix → bytes match | Fixture only — fastest closure |
+| 2b | **MMVQ rewrite to match MMQ reduction order** | HIGH | **0%** target | Same as 2a | Same as 2a after rewrite | Fixture |
+| 2c | **MMQ shimmed for ne[1]=1 with dummy row** | HIGH | **10-30%** | Same as 2a | Same as 2a after shim | Fixture |
+| 3 | RMSNorm batch-shape dispatch | LOW — CX.B already excluded via test-rmsnorm-batch-shape-invariance | n/a | n/a | n/a | n/a |
+| 4 | Token embedding lookup (`inp_embd`) | VERY LOW | n/a | Single-line test: get `inp_embd` for same token at NP=1 vs NP=4, diff. Same input → same output trivially. | n/a | Fixture |
+| 5 | Elementwise SiLU / mul at different ne[1] | LOW | 0% if needed | Unit-test elementwise op at varying ne[1] | Same test after pin | Fixture |
+
+**Most likely candidates by ULP signature** (1.118e-07 = single fp32 ULP at exp 0, affecting 5119/5120 cells):
+
+- **Candidate #2** (MMVQ vs MMQ) is BOTH most likely AND most provable. The unit-test binding is ~50 LOC, runs in <1s, and conclusively answers "do MMVQ and MMQ produce byte-identical output for the same row?" One test, no model load, no NP harness.
+- **Candidate #1** (DeltaNet) is harder to bind because the kernel is custom and there's no scalar reference yet. But the d1-capture data already shows layer-0 divergence at the residual level — if we capture intra-layer-0 tags and DeltaNet output is byte-identical (meaning the divergence is in the FFN AFTER DeltaNet), it falsifies #1 and confirms #2.
+
+**Provability-first resolution path** (next subprobe order):
+
+1. **CY.B.0** — write `test-mul-mat-q-vs-vec-q-byte-identity.cpp` first. ~50 LOC. If FAIL (bytes differ): candidate #2 confirmed, no need for further model-level capture. Move to fix 2b.
+2. **CY.B.1** — only if CY.B.0 PASSES (bytes match → MMVQ and MMQ ARE byte-identical, candidate #2 falsified): then capture intra-layer-0 tags `norm`, `delta_net_out`, `ffn_norm`, `ffn_up`, `ffn_up_gate`, `ffn_down`, `ffn_combined` at NP=1 vs NP=4 to find the first divergent intra-layer-0 op.
+
+This ordering inverts the typical "trace first, fix second" approach by leveraging that the MMVQ-vs-MMQ question has a much cheaper binding test (unit test) than the DeltaNet question (intra-kernel capture).
 
 ### CY.D — Closure binding for Phase CY
 
