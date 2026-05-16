@@ -1,8 +1,8 @@
-------------------------------- MODULE CYAsyncReduce -------------------------------
-(* Phase CY-Async-Reduce: TLA+ specification of the async F32 cross-device
-   reduce protocol. Models per-device compute and comm streams, CUDA events,
-   and consumer waits. Verifies deadlock-freedom, safety (no read-before-
-   write of the reduced tensor), and termination under fair scheduling.
+------------------------------- MODULE AsyncReduce -------------------------------
+(* AsyncReduce: TLA+ specification of the async F32 cross-device reduce
+   protocol. Models per-device compute and comm streams, CUDA events, and
+   consumer waits. Verifies deadlock-freedom, safety (no read-before-write
+   of the reduced tensor), and termination under fair scheduling.
 
    The model abstracts to a 2-device system (matches our TU102 pair).
    The reduce is layer-iterated; layers process in sequence and each layer

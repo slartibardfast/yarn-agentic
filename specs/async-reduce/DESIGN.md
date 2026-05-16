@@ -1,4 +1,4 @@
-# Phase CY-Async-Reduce — design (Option B)
+# Phase AsyncReduce — design (Option B)
 
 ## Context
 
@@ -61,7 +61,7 @@ Device 0:                                        Device 1:
 
 ## Allium contracts
 
-`specs/cy-async-reduce/cy-async-reduce.allium`:
+`specs/async-reduce/async-reduce.allium`:
 
 - `@DeterministicAcrossSchedule` — output bit-identical regardless of which CUDA stream runs first
 - `@F32Throughout` — no precision-losing cast anywhere in the reduce path
@@ -73,7 +73,7 @@ Device 0:                                        Device 1:
 
 ## TLA+ properties
 
-`specs/cy-async-reduce/CYAsyncReduce.tla`:
+`specs/async-reduce/AsyncReduce.tla`:
 
 - **DeadlockFreedom**: scheduler can always make progress; comm stream waiting on compute does not block compute stream waiting on comm in a cycle
 - **SafetyConsistency**: any read after `WaitEvent` returns the reduced F32 value (no partial / stale)

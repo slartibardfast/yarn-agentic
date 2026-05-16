@@ -1,15 +1,17 @@
-// cy-async-reduce.allium
+// async-reduce.allium
 //
-// Phase CY-Async-Reduce — Allium specification for the SoTA permanent fix
-// to multi-GPU split-mode-graph cross-device reduce determinism.
+// AsyncReduce — Allium specification for an async F32 cross-device reduce
+// with stream-overlap: bit-deterministic multi-GPU reduction that hides
+// its bandwidth cost behind compute by riding in the async-reduce of the
+// per-device compute kernel.
 //
-// Replaces the F32→F16 cast (Option A: forced F32 sync reduce) with an
-// async F32 reduce on a dedicated comm stream, with explicit CUDA event
-// coordination at consumers. Achieves byte-determinism while hiding the
-// 2× bandwidth cost behind compute via stream overlap.
+// Replaces the F32→F16 cast (the precision-losing perf optimization that
+// broke batch-shape invariance) with full F32 throughout, scheduled on a
+// dedicated communication CUDA stream. Consumers wait on explicit events
+// before reading the reduced tensor.
 
-entity CYAsyncReduce {
-    description: "Async F32 cross-device reduce with stream-overlap, replacing the F32->F16 cast that broke batch-shape invariance"
+entity AsyncReduce {
+    description: "Async F32 cross-device reduce with stream-overlap; bit-deterministic with latency hidden behind compute"
 
     fields {
         n_device:                int

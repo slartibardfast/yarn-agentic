@@ -1,4 +1,4 @@
-# PHASE CY-Async-Reduce — Option B implementation plan
+# PHASE AsyncReduce — Option B implementation plan
 
 **Status**: planning. Pre-implementation. Triggered by user direction "B will be a great success, worthy of a full allium / tla+ spec and plan."
 
@@ -12,22 +12,22 @@ Arch-init force `cparams.reduce_type = GGML_TYPE_F32` for Qwen 3.5 / 3.6 split-m
 
 Replace the synchronous F32 cross-device reduce with an **async F32 reduce on a dedicated comm CUDA stream + explicit event-based consumer wait**. Achieves the same determinism, hides the bandwidth cost behind compute via stream overlap.
 
-Per `specs/cy-async-reduce/DESIGN.md` §Architecture, the per-layer transfer of 1.96 MiB at NP=8 prefill takes ~160 µs at PCIe 3.0 x16 peer bandwidth. Per-layer compute is 10–20 ms. **Transfer fits in <2% of compute window** — easily hidden via stream overlap.
+Per `specs/async-reduce/DESIGN.md` §Architecture, the per-layer transfer of 1.96 MiB at NP=8 prefill takes ~160 µs at PCIe 3.0 x16 peer bandwidth. Per-layer compute is 10–20 ms. **Transfer fits in <2% of compute window** — easily hidden via stream overlap.
 
 ## Specs (committed, locked before implementation)
 
-- [ ] **Allium spec**: `specs/cy-async-reduce/cy-async-reduce.allium`. Defines 12 invariants (correctness, ordering, isolation, liveness, perf, fallback). Locks the public contract.
-- [ ] **TLA+ spec**: `specs/cy-async-reduce/CYAsyncReduce.tla`. Models 2-device per-layer compute + comm streams with CUDA events. Verifies safety (no read-before-write, event ordering), liveness (all layers complete, all events signal), deadlock-freedom, and overlap-possibility.
-- [ ] **Design doc**: `specs/cy-async-reduce/DESIGN.md`. Architecture diagram, perf budget, fallback path, open questions.
+- [ ] **Allium spec**: `specs/async-reduce/async-reduce.allium`. Defines 12 invariants (correctness, ordering, isolation, liveness, perf, fallback). Locks the public contract.
+- [ ] **TLA+ spec**: `specs/async-reduce/AsyncReduce.tla`. Models 2-device per-layer compute + comm streams with CUDA events. Verifies safety (no read-before-write, event ordering), liveness (all layers complete, all events signal), deadlock-freedom, and overlap-possibility.
+- [ ] **Design doc**: `specs/async-reduce/DESIGN.md`. Architecture diagram, perf budget, fallback path, open questions.
 
 ## Tasks
 
 ### T1 — Spec lockdown
 
-- [ ] Author `specs/cy-async-reduce/cy-async-reduce.allium` (DONE — initial draft).
-- [ ] Author `specs/cy-async-reduce/CYAsyncReduce.tla` (DONE — initial draft).
-- [ ] Run `allium check specs/cy-async-reduce/`.
-- [ ] Run TLC on `CYAsyncReduce.tla` with N_LAYERS=4 (small but exhaustive). Verify all properties (SafetyConsumeAfterCompute, SafetyEventOrdering, LivenessAllLayersComplete, LivenessAllReducesSignal, DeadlockFreedom, OverlapPossible).
+- [ ] Author `specs/async-reduce/async-reduce.allium` (DONE — initial draft).
+- [ ] Author `specs/async-reduce/AsyncReduce.tla` (DONE — initial draft).
+- [ ] Run `allium check specs/async-reduce/`.
+- [ ] Run TLC on `AsyncReduce.tla` with N_LAYERS=4 (small but exhaustive). Verify all properties (SafetyConsumeAfterCompute, SafetyEventOrdering, LivenessAllLayersComplete, LivenessAllReducesSignal, DeadlockFreedom, OverlapPossible).
 - [ ] Lock invariants. Any later code that violates an invariant requires the spec to change FIRST in a separate commit.
 
 **Closure**: Allium drift checks GREEN; TLC verifies all properties on the 4-layer model with no violations.
