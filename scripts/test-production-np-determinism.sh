@@ -91,7 +91,7 @@ start_server() {
         --device "$_DEVICE" $_SPLIT_FLAGS \
         -ngl 999 -fa on \
         --ctx-size "$total_ctx" --parallel "$np" \
-        --threads 16 --batch-size 2048 --ubatch-size 512 \
+        --threads 16 --batch-size "${BATCH_SIZE:-2048}" --ubatch-size "${UBATCH_SIZE:-512}" \
         --cache-type-k "$_CACHE_K_TYPE" --cache-type-v "$_CACHE_V_TYPE" \
         $_HADAMARD_FLAG \
         --no-context-shift \
