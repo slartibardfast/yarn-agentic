@@ -6,15 +6,12 @@
 # Determinism — Qwen 3.6 27B on dual sm_75
 
 - [Plan: production NP-determinism audit](PLAN_DETERMINISM_AUDIT.md)
-- [Master phase tracker (A,B,C,CX,CY,D,E,F)](PHASE_MMQ_Q4_0_AR16.md)
-
-History (closed / superseded — kept for traceability):
-
-- [CY.F.18 proper fix — scheduler needs_sync (closed)](PHASE_CY_F18_PROPER_FIX.md)
-- [Phase D plan (superseded — race not multi-GPU specific)](PHASE_D_PLAN.md)
-- [FIX-C v5 final report — singlewarp FA](FIX_C_V5_FINAL_REPORT.md)
-- [CX.A aftermath audit (2026-05-16)](AUDIT_2026-05-16_CX_A_AFTERMATH.md)
-- [Research log (2026-05-16)](RESEARCH_2026-05-16.md)
+- [Master phase tracker (A, B, C, CX, CY, D, E, F)](PHASE_MMQ_Q4_0_AR16.md)
+- [Closed: CY.F.18 proper fix (scheduler needs_sync)](PHASE_CY_F18_PROPER_FIX.md)
+- [Superseded: Phase D plan (race not multi-GPU specific)](PHASE_D_PLAN.md)
+- [Reference: FIX-C v5 final report (singlewarp FA)](FIX_C_V5_FINAL_REPORT.md)
+- [Reference: CX.A aftermath audit (2026-05-16)](AUDIT_2026-05-16_CX_A_AFTERMATH.md)
+- [Reference: Research log (2026-05-16)](RESEARCH_2026-05-16.md)
 
 # DFlash speculative decoding
 
