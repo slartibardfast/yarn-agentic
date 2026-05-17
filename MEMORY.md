@@ -6646,3 +6646,56 @@ fix the divergence or document the constraint. Not in this commit.
 LM-head fix landed in the same commit (per-slot cuBLAS loop) — it's
 required for proper shape invariance even if it didn't close this
 particular production gap.
+
+## 2026-05-17 — NPC.4 FULL CLOSURE: ctx-checkpoint tolerance was splitting prefill
+
+CTX_CHECKPOINTS side-effect localized and fixed. The bug was NOT in
+`llama_state_seq_get_data` (the save itself) — that path is genuinely
+read-only. The bug was in `batch_pending_prompt` at
+`server-context.cpp:3923`:
+
+```cpp
+if (params_base.do_checkpoint && slot.n_prompt_tokens - slot.n_past_prompt
+        == params_base.ctx_checkpoints_tolerance) {
+    slot.do_checkpoint = true;
+    break;   // <-- exits prefill fill-loop with `tolerance` tokens still to process
+}
+```
+
+With `ctx_checkpoints_tolerance=5` (default), this break splits prefill
+into two batches: (n_prompt - 5) and (5). The intent was to insert a
+"rollback safety" checkpoint before the final tokens, so retries
+wouldn't have to re-prefill from scratch.
+
+But the second tiny (5-token) batch is an incremental-prefill against
+an already-filled KV cache, dispatching through a different FA kernel
+tile than the single-batch prefill. The two paths produce slightly
+different slot-0 KV state. At NP=1 (1 active slot) and NP>=2 (multiple
+active slots), the shape arithmetic interacts with FA tile selection
+differently and the slot-0 output diverges in the generation tail.
+
+Empirical proof (with the fix):
+
+```
+DEVICE=CUDA0 bash scripts/test-production-np-determinism.sh
+→ RESULT: PASS — all slots at NP in {1 2 4 8} byte-identical to NP=1
+```
+
+Trade-off: no mid-prefill rollback checkpoint. The interval-based
+checkpoint (every ctx_checkpoints_interval tokens during generation)
+still works. For a 210-token prompt, the first checkpoint now lands at
+pos≈272 (mid-generation) instead of pos=204 (last 5 of prefill). A
+retry from a generation-time checkpoint can replay a tail of decode
+steps; a retry from the mid-prefill checkpoint would have re-prefilled
+only the last 5 tokens. Given deterministic decode is the binding
+requirement and retries are now rare, dropping the prefill split is
+the correct call.
+
+PROBE finding that ruled OUT `llama_state_seq_get_data`: stubbing the
+get_size+get_data calls (leaving only the checkpoint vector emplace_back)
+did NOT fix the divergence. So the side-effect was elsewhere on the
+do_checkpoint=true gated paths — the mid-prefill break was that path.
+
+Submodule commit: `<latest>` on production/2026-q2-next. NPC.4 is now
+fully closed at every level: kernel-level, autoregressive, AND
+production-harness with default CTX_CHECKPOINTS=3.
