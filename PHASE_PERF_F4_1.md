@@ -2,7 +2,44 @@
 
 **Branch**: `production/2026-q2-next`
 **Predecessor**: `PHASE_NP_DETERMINISM_CLOSED.md` (NPC closed and shipped)
-**Status**: Open. Not yet started.
+**Status**: F.4.1' kernel rewrite [x] CLOSED 2026-05-17. Remaining perf
+gap traced to fixes #2/#4 — separate subtask (`Probable second target`).
+
+## Outcome (2026-05-17)
+
+F.4.1' delivered: lifted `rows_per_cuda_block` to a 4th template
+parameter on `k_fused_mul_mat_vec_q`/`fused_mul_mat_vec_q`; added
+`force_rpcb1` to `mmvq_args` and the public
+`ggml_cuda_op_fused_mul_mat_vec_q_id` entry; pinned `nwarps=4` in
+the dispatcher when `force_rpcb1`; replaced the ne2-packed call in
+`ggml_cuda_up_gate_unary` with a non-packed `ncols_y=Ny`,
+`force_rpcb1=true` call.
+
+Acceptance wrapper (multi-GPU `CUDA0,CUDA1`, NP={1,2,4,8},
+ctx-checkpoints=3): **PASS** — every slot byte-identical to NP=1;
+cross-NP slot-0 matrix all byte-identical.
+
+Measured perf (llama-batched-bench, `-npp 200 -ntg 64 -npl 1,2,4,8`):
+
+| NP | PP F.4.1' | PP HEAD (NPC) | TG F.4.1' | TG HEAD (NPC) | TG pre-NPC |
+|----|-----------|---------------|-----------|---------------|------------|
+|  1 |  95.56    |  95.74        |  17.95    |  17.95        |  18.00     |
+|  2 |  17.95    |  17.97        |  17.94    |  17.11 (+4.8%)|  19.80     |
+|  4 |  17.32    |  17.33        |  19.45    |  18.21 (+6.8%)|  23.49     |
+|  8 |  16.15    |  16.15        |  20.11    |  18.70 (+7.5%)|  25.26     |
+
+Modest TG uplift over the NPC slot-packed approach (+5–8% at NP≥2)
+with NP-determinism preserved. The remaining gap vs pre-NPC
+(-9% TG at NP=2, -17% TG at NP=4, -20% TG at NP=8) is **not** owed
+by fix #1 (this rewrite); it is owed by fixes #2 (PSKV) and #4
+(cuBLAS per-slot loop). Confirms the "Probable second target after
+F.4.1'" diagnostic call below.
+
+Cost: ~25k tokens (well under the 80–150k budget). One iteration —
+the initial implementation passed acceptance at NP={1,2,4} but
+diverged at NP=8 (ncols_y=8 → nwarps=2 selector); localized in one
+read and fixed by pinning `nwarps=4` under `force_rpcb1`. No
+intra-layer capture round needed.
 
 ## Why this phase exists
 
