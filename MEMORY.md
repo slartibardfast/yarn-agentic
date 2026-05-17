@@ -6834,3 +6834,36 @@ F.4.1' kernel rewrite estimated 80–150k tokens. NP=1 PP -45% is a
 separate diagnostic (fixes #2 or #4) after F.4.1' lands. Acceptance
 wrapper `scripts/verify-production-determinism.sh` must keep PASSing
 through the perf phase — any breakage breaks live serving.
+
+## 2026-05-17 — F.4.1' CLOSED — non-packed up_gate launch + force_rpcb1
+
+F.4.1' kernel rewrite landed and verified byte-identical at NP={1,2,4,8}
+multi-GPU (`scripts/verify-production-determinism.sh` PASS).
+
+Implementation: `force_rpcb1` flag on `mmvq_args` and the public
+`ggml_cuda_op_fused_mul_mat_vec_q_id` entry. Lifts `rows_per_cuda_block`
+to a 4th template parameter on `k_fused_mul_mat_vec_q` /
+`fused_mul_mat_vec_q`. The fused dispatcher pins rpcb=1 + nwarps=4
+across all `ncols_y` when `force_rpcb1`, preserving the NP-invariant
+reduction tree. `ggml_cuda_up_gate_unary` now calls non-packed
+(`ncols_y=Ny`, `grid.y=1`) — one weight read per row, fanned across
+Ny output columns.
+
+Came in well under budget (~25k tokens vs 80–150k estimate). One
+iteration: NP={1,2,4} byte-identical first try, NP=8 diverged due to
+`ncols_y<=4 ? 4 : 2` nwarps selector dropping at ncols_y=8. Fixed by
+pinning nwarps=4 under force_rpcb1.
+
+Measured TG uplift over NPC HEAD: +4.8% NP=2, +6.8% NP=4, +7.5% NP=8.
+NP=1 PP and TG unchanged.
+
+Remaining ~10–20% TG gap vs pre-NPC at NP≥2 is **not** owed by fix #1
+(this rewrite). The "Probable second target" in `PHASE_PERF_F4_1.md`
+was correct: fixes #2 (PSKV) and #4 (cuBLAS per-slot loop) own the
+remainder. That bisection is a separate subtask.
+
+Diagnostic rule that paid off: `NP={1,2,4}≡` mutually identical,
+`NP=8` differs → an `ncols_y`-derived dispatch decision (here the
+nwarps selector branch). Same partition shape as F.4.1's ne2-derived
+divergence — different dimension variable, identical diagnostic
+signature. Reinforces the methodology recorded in the prior session.
