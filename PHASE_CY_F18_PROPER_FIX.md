@@ -2,6 +2,57 @@
 
 **Branch**: `production/2026-q2-next`
 
+## CLOSURE 2026-05-17 — proper fix landed
+
+Replaced the `GGML_SCHED_FORCE_SYNC_INPUTS=1` stopgap with in-source conditional
+persistence gated on `sched->has_reduce` (a static graph property already
+tracked by the scheduler). When the graph contains a reduce op, `needs_sync`
+stays sticky-true across cross-backend input reads; when it doesn't, the
+original single-sync optimization is preserved.
+
+**Verification** (test-cy-np2-multi-step-decode, no env-gates beyond CY.F.17):
+
+| Config | slot0 → NP=1 | slot1 → NP=1 | slot0 == slot1 |
+|---|---|---|---|
+| 5 runs × 32 tokens | 5/5 | 5/5 | 5/5 |
+| 10 runs × 64 tokens | 10/10 | 10/10 | 10/10 |
+
+**Probe history that led to the fix**:
+
+| Probe | slot0 | slot1 | Verdict |
+|---|---|---|---|
+| baseline (CY.F.17 only) | 5/5 | 0/5 | Race reproduces |
+| `KEEP_SYNC_AFTER_REDUCE=1` | 1/5 | (failed) | Target-of-sync wrong |
+| `SOURCE_SYNC=1` (non-persistent) | 1/5 | 2/5 | Perturbs without fixing |
+| `SOURCE_SYNC + KEEP_SYNC` | 1/5 | 1/5 | Combined targeting no help |
+| **`SOURCE_SYNC + PERSIST`** | **5/5** | **5/5** | Persistence is the variable |
+| `FORCE_SYNC_INPUTS=1` (stopgap) | 5/5 | 5/5 | Different target, same persistence |
+
+Two completely different sync targets (source backend vs reading backend) BOTH
+fixed the race once persistent. Two different single-shot syncs (KEEP, SOURCE
+clear-after) both failed. The dominant variable is the **persistence of the
+sync action**, not which backend it targets. Mechanism: peer-write residual
+accumulates across the 64-layer cycle; a single drain isn't enough.
+
+**Final fix** (`ggml/src/ggml-backend.cpp`):
+- `copy_inputs`: `const bool k_set_sync = sched->has_reduce;` — replaces the
+  env-gate. needs_sync stays sticky-true when graph has reduce.
+- Post-reduce (OMP + std::barrier paths): mark `needs_sync[j] = true` for all
+  reduce-src backends, replacing the prior wrong `= false` clear.
+- All probe env-gates removed (FORCE_SYNC_INPUTS, KEEP_SYNC_AFTER_REDUCE,
+  SOURCE_SYNC_INPUTS, SOURCE_SYNC_PERSIST).
+
+**Production script** (`scripts/test-production-np-determinism.sh`): dropped
+the `GGML_SCHED_FORCE_SYNC_INPUTS=1` default; the in-source fix is automatic
+when has_reduce is set.
+
+**Perf**: identical to the stopgap (same persistent-sync behavior), but only
+when reduces are in the graph. Single-GPU configs (no reduce) pay zero cost.
+
+---
+
+## Below — original pickup plan (historical)
+
 ## State at this checkpoint
 
 NP=2 cross-NP byte-determinism is **achieved** with two env-gates:
