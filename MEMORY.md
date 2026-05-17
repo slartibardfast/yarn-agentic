@@ -6714,3 +6714,36 @@ six fixes deliver byte-identity but at unacceptable perf cost; NPC.6
 ship is BLOCKED on F.4.1 (find NP-invariant codepaths that don't
 serialize hot kernels). See `PHASE_NPC4_FIX_AUDIT.md` §9.F.4 for
 detailed table and candidate paths.
+
+## 2026-05-17 — F.4.1 ne2-packed collapsed-launch attempt FAILED
+
+Tried to remove the per-slot-loop overhead in `ggml_cuda_up_gate_unary`
+by packing Ny slots into the kernel's existing `blockIdx.y`/`args.ne2`
+slot dimension: one launch with grid.y=Ny, nb02=0 (shared weights),
+nb12=nb10_padded, nb2=dst->nb[1], ncols_y=1. Hypothesis: each block in
+y handles one slot with the SAME ncols_y=1 reduction tree as a
+standalone NP=1 call → bit-identical, no launch serialization.
+
+Build + harness test showed NP=1 still passed but NP>=2 vs NP=1
+DIVERGED (slot byte-identity broken). NP=4 and NP=8 mutually agreed,
+which suggests the divergence is ne2>1-conditioned, not random.
+
+Did not localize the root cause; reverted to working state and
+re-verified production harness still PASSes at HEAD. The investigation
+candidates are:
+- `nrows_dst` interaction — line 24 of mmvq.cu sets `nrows_dst =
+  id==ctx.device ? ne0 : row_diff`, which the kernel uses at write
+  time (`dst[j*nrows_dst + row0 + tid]`). With ne2>1 and multi-GPU,
+  this MAY behave differently on the non-main device's slots vs the
+  per-slot-loop case (which always entered with ne2=1).
+- src1 quantization layout assumptions — `quantize_row_q8_1_cuda`
+  packs N rows starting at offset 0 with stride nb10_padded. The
+  packed-call interprets these as N slots in ne2; the per-slot loop
+  walked them one at a time. Possibly a subtle stride/padding
+  mismatch.
+- src0 nb02=0 weight-sharing assumption — the kernel's i02 indexing
+  may have a dependence I missed.
+
+Net effect on F.4: collapsed-launch path is not a drop-in optimization.
+Need either deeper kernel work or a different angle for the F.4 perf
+recovery. NPC.6 ship still blocked on F.4 budget.
