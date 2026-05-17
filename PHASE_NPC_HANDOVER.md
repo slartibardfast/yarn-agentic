@@ -1,128 +1,180 @@
-# PHASE_NPC_HANDOVER — pick up at NPC.4 fix (ffn_up_gate MoE GEMM)
+# PHASE_NPC_HANDOVER — NPC.4 CLOSED (single-GPU), NPC.5 next
 
 **Branch**: `production/2026-q2-next`
-**Plan**: `PLAN_NP_CLOSURE.md`
-**Status**: NPC.4 LOCALIZED. The diverging op is named. Next: fix it.
+**Plan**: `PLAN_NP_CLOSURE.md`, `PHASE_NPC4_FIX_AUDIT.md`
+**Status**: NPC.4 fully closed on single-GPU. NPC.5 (multi-GPU) is the
+next binding gate; NPC.6 is ship. Latency bench unmeasured.
 
-## TL;DR — layer 2 divergence is in the MoE expert GEMM, not DeltaNet
+## TL;DR
 
-Walked every named intra-layer-2 tensor in fire order with the extended
-`llama-state-capture` tool. Layer 2 decode-step 0 NP=1 vs NP=2:
+Production harness `scripts/test-production-np-determinism.sh` PASSes at
+default `CTX_CHECKPOINTS=3` on `DEVICE=CUDA0` for the Qwen 3.5/3.6 27B
+production GGUF — NP={1,2,4,8} slot-0 byte-identical at the server
+level. Reproduced empirically multiple times.
 
-| order | name | sz1 | szk | verdict | first | max\|Δ\| |
-|---|---|---|---|---|---|---|
-| 0–32 | DeltaNet attention path | … | … | **IDENTICAL** | — | — |
-| 33 | `ffn_norm-2` | 20480 | 40960 | **IDENTICAL** | — | — |
-| 34 | `ffn_up_gate-2` | 69632 | 139264 | **DIFFERS** | 1 | 1.490e-08 |
-| 35 | `l_out-2` | 20480 | 40960 | **DIFFERS** | 0 | 6.855e-06 |
+What's NOT yet done:
+1. **Latency bench** — F.4 in `PHASE_NPC4_FIX_AUDIT.md`. The six fixes
+   add launches; budget says ≤3% decode regression.
+2. **NPC.5 multi-GPU** — production runs `DEVICE=CUDA0,CUDA1`; we
+   verified only `CUDA0`.
+3. **NPC.6 ship** — wire the harness into `profiles/active.sh`, write
+   the closure MEMORY entry.
 
-DeltaNet (incl. ssm_conv, conv_states, q/k/v_fused, delta_net_fused_raw,
-new_state, attn_output) is byte-identical slot-0 for NP=1 vs NP=2 — fully
-exonerated. The MoE input (`ffn_norm-2`) is identical. The first
-diverging tensor is `ffn_up_gate-2` at element index 1 with a 1-ULP fp32
-drift; that drift then amplifies to 6.855e-06 by `l_out-2` after gate/
-down/expert-reduce.
+## The six baked fixes (all default-on, no env knobs)
 
-## What `ffn_up_gate-2` actually is
+All on `production/2026-q2-next` submodule.
 
-In `src/llama-build-context.cpp` →  `llm_build_std_moe_ffn` →
-`build_qwen35moe`. It is the fused up+gate projection on each selected
-expert MLP:
+| # | File:line | What |
+|---|---|---|
+| 1 | `ggml/src/ggml-cuda.cu:3715` (`ggml_cuda_up_gate_unary`) | Per-slot loop over fused single-token kernel for n_tokens≤8. Dense FFN. |
+| 2 | `src/llama-build-context.cpp:1593` (`llm_build_kqv`, FA branch) | Route single-device FA to PSKV op under predicate `q->ne[0]==256 ∧ v->ne[0]==256 ∧ gqa≤16 ∧ no sinks`. |
+| 3 | `ggml/src/ggml-cuda.cu:2756` (`ggml_cuda_mul_mat`) | Force MMQ for all quantized weights regardless of M. `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH` env knob removed. |
+| 4 | `ggml/src/ggml-cuda.cu:2856` (cuBLAS fallback) | Per-slot loop for non-quantized M>1 (LM head shape-invariance). |
+| 5 | `ggml/src/ggml-backend.cpp:1109` | `GGML_SCHED_MAX_SPLIT_INPUTS` 10 → 32 (accommodates PSKV's `inp_per_row_k_bound` input). |
+| 6 | `examples/server/server-context.cpp:3923` (`batch_pending_prompt`) | Remove mid-prefill `tolerance` break. Prefill always runs as one continuous (ubatch-chunked) pass. |
 
-```cpp
-ggml_tensor * up_gate = ggml_mul_mat_id(ctx, expert_up_gate_weights,
-                                         ffn_norm_out, expert_ids);
-cb(up_gate, "ffn_up_gate", il);
+## Verification (single-GPU, all PASS)
+
+```bash
+# Production harness, default CTX_CHECKPOINTS=3:
+DEVICE=CUDA0 bash scripts/test-production-np-determinism.sh
+→ RESULT: PASS — all slots at NP in {1 2 4 8} byte-identical to NP=1
+
+# Kernel layer (all 64 layers, decode-step 0 + 1):
+/tmp/run-npc4-lout.sh 1 /opt/models/yarn-audit-data/npc4-fixD-lout-np1
+/tmp/run-npc4-lout.sh 8 /opt/models/yarn-audit-data/npc4-fixD-lout-np8
+python3 scripts/compare-intra-layer.py \
+  /opt/models/yarn-audit-data/npc4-fixD-lout-np1 \
+  /opt/models/yarn-audit-data/npc4-fixD-lout-np8 --phase decode-0
+→ All shared tensors are slot-0 byte-identical.
+
+# Real autoregressive feedback loop (64 steps):
+/tmp/run-npc4-auto.sh 1 /opt/models/yarn-audit-data/npc4-auto-np1 64
+/tmp/run-npc4-auto.sh 8 /opt/models/yarn-audit-data/npc4-auto-np8 64
+python3 scripts/find-first-autoregress-divergence.py \
+  /opt/models/yarn-audit-data/npc4-auto-np1 \
+  /opt/models/yarn-audit-data/npc4-auto-np8 --np-k 8
+→ No divergence across 64 autoregressive steps.
 ```
 
-Per-expert weight tensor: `model.layers[il].ffn_up_gate_exps`. Dispatch
-goes through `ggml_mul_mat_id` (the "experts" batched matmul), which on
-the CUDA backend may pick:
-- MMQ (with stream_K, baked deterministic via CY.F.17), or
-- cuBLAS GEMM (shape-dependent algo selection).
+## Tooling landed this iteration (all on submodule HEAD)
 
-Hypothesis: the expert-MLP MMM path either (a) falls back to cuBLAS
-for the batched-id case despite stream_K being baked, or (b) uses an MMQ
-variant whose tile-shape choice still depends on n_tokens.
+- **`examples/llama-state-capture/llama-state-capture.cpp`** —
+  - `--all-in-layer` flag (capture every named tensor at listed layers)
+  - `--decode-only` flag (skip prefill ubatches)
+  - `--autoregress N` flag (real greedy generation, not synthetic decode)
+  - Phase-tagged outputs: `{OUT_DIR}/{phase}/layer{LL}/{name}.ub{N}.bin`
+  - Manifest carries `phase` + `order` fields
+  - Per-slot text dump to `gen-slot{N}.txt`
 
-## What to do on resume — NPC.4 fix
+- **`scripts/compare-intra-layer.py`** (parent repo) — walks the NP=1
+  manifest in fire order, joins on (phase, name) with NPK, compares
+  slot-0, prints first divergence.
 
-1. Source-walk the CUDA dispatch for `ggml_mul_mat_id` to confirm which
-   kernel actually runs for n_tokens=1 vs n_tokens=2 on a quantized
-   weight tensor. Files of interest:
-   - `ggml/src/ggml-cuda/mmq.cu`
-   - `ggml/src/ggml-cuda/mmid.cu` (or equivalent for expert/batched-id)
-   - `ggml/src/ggml-cuda/ggml-cuda.cu` dispatch entrypoint
-2. If cuBLAS fires for the expert GEMM, find a way to either:
-   - Force MMQ stream_K for `mul_mat_id` regardless of M.
-   - Pin a cublasGemmEx algo that doesn't change with M.
-3. Re-run the layer-2 intra-layer capture and confirm `ffn_up_gate-2` is
-   IDENTICAL slot-0 NP=1 vs NP=2.
-4. Re-run the full per-layer capture (l_out only, all 64 layers) and
-   confirm layer 2..63 collapse to IDENTICAL.
-5. Re-run the production NP-determinism harness; expect byte-identity
-   close.
+- **`scripts/find-first-autoregress-divergence.py`** (parent repo) —
+  walks auto-0..auto-N phases, reports first (step, layer) divergence.
 
-## Tools landed this session
+- `/tmp/run-npc4-{capture,lout,auto,layer}.sh` are session-local repro
+  scripts; rebuild from the handover commands above on resume.
 
-- `ik_llama.cpp/examples/llama-state-capture/llama-state-capture.cpp`
-  (submodule commit `eb93b39f`) — new flags:
-  - `--all-in-layer` — capture every named non-quantized tensor at the
-    listed layers (no prefix filter).
-  - `--decode-only` — skip prefill ubatches.
-  - Phase-tagged output paths: `{OUT_DIR}/{phase}/layer{LL}/{name}.ub{N}.bin`
-    where phase is `prefill` or `decode-{step}`.
-  - Manifest now carries `phase` and `order` (cb_eval fire order).
-- `scripts/compare-intra-layer.py` — walks the NP=1 manifest in order,
-  joins on (phase, name, ubatch_idx) with the NP=K manifest, compares
-  slot-0 floats per tensor, prints first divergence.
+## What to do on resume
+
+### Step 1 — NPC.5 multi-GPU (the actual production binding)
+
+```bash
+cd /home/llm/yarn-agentic
+DEVICE=CUDA0,CUDA1 bash scripts/test-production-np-determinism.sh
+```
+
+Expected outcome: PASS. If it fails, the gap is in the multi-device
+split path. Fix #2 (PSKV) went into `llm_build_kqv` (single-device
+FA). The multi-device branch at `llama-build-context.cpp:2697`
+already used PSKV — it's where the predicate originally lived, copied
+into `llm_build_kqv` per fix #2. So multi-device should be covered.
+But this is empirical — verify before claiming closure.
+
+If multi-device fails, the new capture tool's `--autoregress` mode
+won't reproduce it (capture tool is single-context). Will need to
+either (a) extend the harness to dump per-step per-slot KV state for
+multi-device, or (b) run captures with `--device CUDA0,CUDA1 -ts 1,1`
+and rebuild the comparator to handle split-buffer layouts.
+
+### Step 2 — Latency bench (F.4)
+
+```bash
+# baseline (need a way to disable all 6 fixes — they're baked, so
+# baseline means a commit-revert build. Cheapest path: tag the parent
+# of the latest cluster of fix commits and bench HEAD vs that tag.)
+cd ik_llama.cpp/build
+./bin/llama-bench -m /opt/models/recast-out/qwen3.6-27b-...gguf \
+    -ngl 999 --device CUDA0 -fa 1 -p 0 -n 64 \
+    -ctk q4_0 -ctv q4_0 -t 16 -b 2048 -ub 512 \
+    --parallel 1 --parallel 2 --parallel 4 --parallel 8
+```
+
+Acceptance: ≤3% decode-throughput regression at each NP per
+`feedback_determinism_must_co_optimize_perf.md`. Bold guess: NP=1
+takes the largest hit (lost MMVQ fast path → MMQ + extra single-token
+launches). NP=8 might actually improve (the per-slot loop replaces
+some redundant work).
+
+### Step 3 — NPC.6 ship
+
+- Add the harness call to `profiles/active.sh`'s acceptance step OR
+  create `profiles/active-deterministic.sh`.
+- Decide policy on `ctx_checkpoints` in production: keep at 3 (now
+  safe), reduce to 0 (no rollback overhead), or `0` for deterministic-
+  serving profile and `3` otherwise.
+- Write the MEMORY closure entry per
+  `feedback_claudemd_no_followup_and_checkbox_semantics_provisional.md`
+  — what was delivered and what's binding it.
+
+### Cleanup (low priority)
+
+- clangd flagged unused `#include <mtmd-helper.h>` in
+  `server-context.cpp` and a few unused includes in
+  `llama-build-context.cpp` from this iteration. Tidy commit when
+  convenient.
+- `/opt/models/yarn-audit-data/npc4-*` evidence dirs (~50 GB) can be
+  pruned once the MEMORY entry preserves the salient signatures.
 
 ## What NOT to redo
 
-- Don't relocalize DeltaNet — empirically exonerated tensor-by-tensor.
-- Don't relocalize ssm_conv — order 9 (`conv_output_raw-2`) is
-  byte-identical.
-- Don't retest `only_active_experts` — NPC.2 ruled it out; the bug is
-  in the GEMM kernel inside the expert, not the gating that picks the
-  expert.
-- Don't trust prefill-only captures — decode-only.
-
-## Reproduce
-
-```bash
-# NP=1 capture (intra-layer-2, decode-only)
-LLAMA_CAPTURE_DECODE_STEPS=2 \
-  ik_llama.cpp/build/bin/llama-state-capture \
-  -m /opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf \
-  --prompt-file data/audit-prompts/long/prompt-00.txt --prompt-id long-p00 \
-  --all-in-layer --decode-only --layers 2 --np 1 \
-  --out-dir /opt/models/yarn-audit-data/npc4-intra-np1 \
-  --device CUDA0 -ngl 999 -fa on --ctx-size 8192 \
-  --batch-size 2048 --ubatch-size 512 \
-  --cache-type-k q4_0 --cache-type-v q4_0 \
-  --k-cache-hadamard --v-cache-hadamard --no-context-shift
-
-# NP=2: swap --np 2, --ctx-size $((8192 * 2)),
-# --out-dir /opt/models/yarn-audit-data/npc4-intra-np2
-
-# Compare:
-python3 scripts/compare-intra-layer.py \
-  /opt/models/yarn-audit-data/npc4-intra-np1 \
-  /opt/models/yarn-audit-data/npc4-intra-np2 \
-  --phase decode-0 --layer 2
-```
-
-## In-flight commits (session 2026-05-17 part 3)
-
-- `eb93b39f` (submodule) — llama-state-capture: --all-in-layer +
-  --decode-only + phase-tagged outputs.
-- new parent commit — NPC.4 localized; MEMORY + comparator + submodule
-  bump.
-- pending: this handover rewrite.
+- All six fixes are baked, verified, no env knobs. Don't add a toggle
+  back. (see `feedback_bake_measurement_env_gates.md`)
+- Don't reopen the kernel localization — the captures prove every
+  layer × every autoregressive step is byte-identical. The remaining
+  work is multi-GPU plumbing + ship, not more kernel hunting.
+- Don't try to re-introduce the mid-prefill `tolerance` checkpoint
+  break (fix #6) without a kernel-level fix for incremental-prefill
+  FA shape-invariance first. The break was correctly identified as
+  the source of the production-harness gap; restoring it without
+  that kernel fix will re-open NP=1 vs NP>=2.
+- Don't trust `--ctx-checkpoints 0` as the "fix" — it's a workaround.
+  Our fix #6 makes `CTX_CHECKPOINTS=3` (the default) safe.
 
 ## Evidence preserved
 
-- `/opt/models/yarn-audit-data/npc4-intra-np{1,2}/` — intra-layer-2
-  captures with the new phase-tagged layout. 36 NP=1 records, 71 NP=2
-  records. Comparator output included in MEMORY entry.
-- Older `npc{1,2,3,4}-*` dirs from prior NPC steps kept for context.
+```
+/opt/models/yarn-audit-data/
+  npc4-fixD-lout-np{1,2,4,8}/         # all-layer l_out kernel verify (PASS)
+  npc4-auto-np{1,8}/                  # 64-step autoregressive (PASS, no div)
+  npc4-textauto-np{1,8}/              # 64-step + gen text dump
+  npc4-out2-np{1,8}/                  # post LM-head-fix result_output verify
+  npc4-fixD-harness/run-*/            # production harness PASS (CTX=0)
+  npc4-fixF-harness/run-*/            # production harness PASS (CTX=3)
+```
+
+## Commits this iteration (most recent first)
+
+- `NPC.4 FULL CLOSURE — production harness PASSes at default CTX_CHECKPOINTS=3`
+- `NPC.4: stop splitting prefill mid-prompt for "tolerance" checkpoint`
+- `NPC.4: cuBLAS per-slot loop + capture gen-text dump`
+- `NPC.4 production harness CLOSED at CTX_CHECKPOINTS=0; ctx-checkpoint side-effect is the residual`
+- `NPC.4 kernel-level CLOSED, prod harness narrowed to NP=1 vs NP>=2 tail`
+- `NPC.4 closure (kernel-level): bake shape-invariant FA + mul_mat + FUSED_UP_GATE`
+- `scripts: comparator for autoregressive cross-NP captures + submodule bump`
+- `llama-state-capture: add --autoregress N for real greedy generation`
+- `PHASE_NPC4_FIX_AUDIT: deep audit of ggml_cuda_up_gate_unary + fix plan`
+- `NPC.4 LOCALIZED — ffn_up_gate MoE GEMM is the layer-2 divergence`
+- `llama-state-capture: add --all-in-layer + --decode-only, phase-tagged outputs`
