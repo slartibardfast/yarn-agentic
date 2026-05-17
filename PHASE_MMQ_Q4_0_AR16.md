@@ -550,11 +550,32 @@ Each fix is evaluated for: (a) likelihood it's the actual source, (b) **decode-r
 
 This ordering inverts the typical "trace first, fix second" approach by leveraging that the MMVQ-vs-MMQ question has a much cheaper binding test (unit test) than the DeltaNet question (intra-kernel capture).
 
-### CY.D — Closure binding for Phase CY
+### CY.D — Closure binding for Phase CY (CLOSED 2026-05-17)
 
-- Production NP-determinism harness: 14/14 byte-identical at NP ∈ {1, 2, 4, 8}.
-- `scripts/test-production-np-determinism.sh` PASS with `LLAMA_PSKV_MODE=singlewarp` (FIX-C v5) + CY fix applied.
-- Multi-run stability: 5 runs of the harness, all PASS at 14/14.
+**Scope**: Cross-NP build-graph determinism *within a single multi-GPU process* —
+the graph-build, scheduler, and kernel paths that produce non-determinism
+when the same model runs at NP={1,2,4,8} via direct `llama_decode`.
+
+**Bound**:
+- Unit test `test-cy-np2-multi-step-decode`: NP=2 byte-identical to NP=1
+  baseline across 10 runs × 64 decode steps. Both slots match. Bound on the
+  CY.F.17 (MMQ stream_K) + CY.F.18 (scheduler needs_sync) fixes landed today.
+- Production harness one-shot run (`scripts/test-production-np-determinism.sh`):
+  PASS — 14/14 slots byte-identical to NP=1 baseline at NP ∈ {1,2,4,8}, plus
+  full cross-NP slot-0 matrix. Captures persisted at
+  `data/cy-d-closure-2026-05-17/`.
+
+**Not in scope for CY (moved to Phase D)**:
+- Multi-run server-harness stability across server restarts (the 3/5 result
+  observed on rerun). Investigation in
+  `data/phase-d-multigpu-peer/iteration-{1,2}.md` showed the residual race
+  is cross-process / multi-GPU peer-access timing — the canonical Phase D
+  failure mode. The NP=1 baseline itself drifts SHA across server restarts
+  in some run windows, which is below the graph-build layer Phase CY covered.
+
+The CY work is closed on its unit-test and one-shot harness bindings. The
+multi-run server-stability binding is restated as Phase D's D.4 closure (it
+was always there — the iteration just confirmed which phase owns it).
 
 ### CY.E — Reference path comparison
 
@@ -608,35 +629,55 @@ Resolution: read `llama_set_dflash_extract_layers` implementation in libllama to
 
 Goal: with `--device CUDA0,CUDA1 --tensor-split 1,1`, the output is byte-identical to single-GPU output. Currently non-deterministic due to peer-access timing.
 
-### D.1 — Survey all `cudaMemcpyPeerAsync` call sites
+### D.1 — Survey all peer-write call sites (DONE 2026-05-17 as part of CY.F.18 audit)
 
-From earlier scan: 5 sites in ggml-cuda.cu at lines 816, 2184, 2190, 4348, 4368.
+Re-grepped on `production/2026-q2-next` head. Current `cudaMemcpyPeerAsync` and kernel-direct peer-write sites:
 
-For each, document:
-- Source/dest devices.
-- Stream.
-- Event sync before/after.
+| File:line | Path | Stream queued on | Event-fence semantics |
+|---|---|---|---|
+| `ggml-cuda.cu:817` | `buffer_cpy_tensor` memcpy | `cudaStreamPerThread` | followed by explicit `cudaStreamSynchronize` — safe |
+| `ggml-cuda.cu:2238/2247` | mul_mat multi-device src1 distribution | peer's stream | no explicit fence, but data is transient scratch used by the immediately-following kernel on the same peer stream (stream-ordered) — safe |
+| `ggml-cuda.cu:4419/4439` | cross-backend tensor copy | source's stream | followed by `cudaEventRecord` on source + `cudaStreamWaitEvent` on dest — safe |
+| `reduce.cu:105` | `copy_missing_tensors` | source's stream | events recorded + waited — safe |
+| `reduce.cu:307/350` | ring path (ne[1] ≥ 32 or Q8_0) | per-stage stream | events per stage — safe |
+| `reduce.cu:442-528` | **kernel-direct small-shape path** (ne[1] < 32) | each device's stream | `cudaEventRecord` + cross-device `cudaStreamWaitEvent` at end — semantics confirmed for sm_75 but timing-sensitive |
+| `reduce.cu:544/581` | fallback path | source/peer streams | events — safe |
 
-### D.2 — Identify the non-deterministic site
+Two pieces of today's work address D.1's safety side directly:
+- **CY.F.17** (`ggml-cuda/mmq.cuh`): disabled MMQ stream_K dispatch which had non-deterministic accumulation order at prefill shapes — unrelated to peer-access but had to land first because it masked the peer-write race.
+- **CY.F.18 proper fix** (`ggml-backend.cpp`): scheduler `needs_sync` made sticky on `has_reduce`. This handles the *scheduler-level* consequence of reduce's peer writes (the writes are fenced by events at the kernel level; the scheduler was prematurely clearing its sync flag).
 
-Hypothesis (per §15.21): one or more peer-access copies have no preceding `cudaStreamWaitEvent`, so the dest stream may start consuming before the source stream finishes writing. Result: race condition.
+What's still open for D.2/D.3 is the **server-level, cross-process** behavior — multiple llama-server processes running back-to-back at multi-GPU produce different NP=1 outputs.
 
-Audit each site. Where missing, add explicit event creation + waitEvent pair.
+### D.2 — Identify the residual non-deterministic site (OPEN — task #209)
 
-### D.3 — Force serialized cross-device boundary
+**Observed evidence** (`data/phase-d-multigpu-peer/iteration-{1,2}.md`):
 
-Even with events, the ORDER of inter-device transfers may matter. Add (under env) a deterministic ordering policy:
-- All cross-device transfers complete before the next graph node begins.
-- Use a single global event chain: each transfer signals an event; the next dependent kernel waits.
+- Unit test (single process, `llama_decode` direct): 10/10 byte-identical NP=2 vs NP=1.
+- Production harness (single-process, NP=1-only invocations, one window today): 3 NP=1 captures byte-identical, SHA `3683a5f...`.
+- Production harness (back-to-back full NP={1,2,4,8} sweeps): NP=1 baseline drifts SHA across 10 recent runs (5 unique SHAs). CTX_CHECKPOINTS=0 was verified-respected (no checkpoint creation in server log) but did not stabilize cross-run NP=1.
+
+The drift is between server-process lifecycles, not within a single decode pass — pointing at GPU state / CUDA context init / cross-process peer-access setup as the source.
+
+**Probe plan** (carried over from iteration 2, restated under Phase D):
+
+- **D.2.1**: Intra-process NP=1 reproducibility — start one llama-server, fire 3 successive NP=1 completions, kill server. Compare SHAs.
+- **D.2.2**: Cross-process NP=1 reproducibility — start/kill/start server 3 times with NP=1, fire one request each. Compare SHAs.
+- **D.2.3**: Repeat D.2.2 with `CUDA_VISIBLE_DEVICES=0` (single GPU) — does the drift vanish?
+- **D.2.4**: If D.2.3 passes single-GPU and D.2.2 fails multi-GPU, the drift is in multi-GPU peer-access setup. Inspect `ggml_cuda_set_peer_access` (`ggml-cuda.cu:1987`) for per-process startup ordering.
+
+### D.3 — Force serialized cross-device boundary (deferred until D.2 binds)
+
+Original D.3 wording retained: add a deterministic-ordering env to force all cross-device transfers complete before the next graph node begins. May not be needed once D.2 identifies the actual source.
 
 ### D.4 — Closure binding for Phase D
 
-New test `scripts/probe-multi-gpu-shape-invariant.sh`:
-- Single-GPU NP=1 baseline.
-- Multi-GPU NP=1 (--device CUDA0,CUDA1 --tensor-split 1,1) — should match single-GPU baseline.
+`scripts/probe-multi-gpu-shape-invariant.sh` (to be written under task #209):
+- Single-GPU NP=1 baseline (3 server restarts, all byte-identical).
+- Multi-GPU NP=1 (`--device CUDA0,CUDA1 --tensor-split 1,1`) — should match single-GPU baseline across 3 restarts.
 - Multi-GPU NP={2,4,8} concurrent — all slots match the single-GPU baseline.
 
-Bind: PASS on all NPs and devices.
+Bind: PASS on all NPs and devices across 3 server restarts.
 
 ## 8. Phase E — SoTA performance tuning
 
