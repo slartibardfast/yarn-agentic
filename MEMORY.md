@@ -6469,3 +6469,70 @@ The existing `llama-state-capture` framework supports `--tensors` lists
 and `--layers all`; need to wire it to capture intermediate (non-l_out)
 nodes within a layer.
 
+
+## 2026-05-17 — NPC.4 LOCALIZED — `ffn_up_gate` (MoE expert up+gate GEMM) is the divergence
+
+After extending llama-state-capture with `--all-in-layer` + `--decode-only`
++ phase-tagged outputs (submodule commit eb93b39f) and walking every
+named intra-layer-2 tensor in fire order with
+`scripts/compare-intra-layer.py`:
+
+Result for layer 2, decode-step 0, NP=1 vs NP=2:
+
+```
+order  name                       sz1     szk      verdict     first   max|Δ|
+0–32   qkv_mixed..linear_attn_out  …       …       IDENTICAL   —       —
+33     ffn_norm-2                 20480   40960    IDENTICAL   —       —
+34     ffn_up_gate-2              69632  139264    DIFFERS     1       1.490e-08
+35     l_out-2                    20480   40960    DIFFERS     0       6.855e-06
+```
+
+**Root cause is NOT the DeltaNet attention path.** Every tensor produced
+by `delta.build_layer_attn_linear` (ssm_conv, conv_states, q_fused,
+k_fused, delta_net_fused_raw, new_state, attn_output, linear_attn_out)
+is **slot-0 byte-identical** between NP=1 and NP=2. NPC.4 candidate (c)
+was correctly reverted; NPC.2's ssm_conv localization was a phantom.
+
+**Actual root cause:** the MoE block's `ffn_up_gate` GEMM — the fused
+up+gate projection over selected experts. cb() emits this as
+`ffn_up_gate-{il}` (see `llm_build_std_moe_ffn` in
+src/llama-build-context.cpp). NP=1 has n_tokens=1, NP=2 has n_tokens=2,
+so cuBLAS picks shape-dependent GEMM algorithm with different reduction
+order → 1-ULP fp32 drift in element 1 → amplified to 6.855e-06 at l_out
+by the gate/down/reduce chain.
+
+`ffn_norm-2` immediately preceding is identical — input to the MoE block
+matches. The divergence is born inside the expert MLP matmul.
+
+Why this wasn't caught earlier:
+- NPC.2 ruled out `only_active_experts` (the expert scheduling
+  optimization). That was correct — the scheduling is fine. The bug is in
+  the **GEMM cuBLAS calls** inside the expert MLP, not in expert
+  selection.
+- L_out captures alone showed layer 2 as the first diverging layer but
+  couldn't distinguish "DeltaNet attention" vs "MoE FFN" inside the
+  layer. Intra-layer capture was needed.
+
+Evidence dirs:
+- `/opt/models/yarn-audit-data/npc4-intra-np{1,2}/` — captures with the
+  new `--all-in-layer --decode-only --layers 2` arguments. 36 tensors
+  NP=1, 71 NP=2. Manifest has `phase` + `order` fields.
+
+Next step (NPC.4 fix):
+- Force the same GEMM algo for `ffn_up_gate` (and `ffn_down_exps`,
+  `ffn_gate_exps`, `ffn_up_exps`) across NP. Suspect candidates:
+  - Set CUBLAS_PEDANTIC_MATH or pin a specific cublasGemmAlgo_t.
+  - Bake an n_tokens-independent reduction (e.g. always force the same
+    cublasGemmEx algo regardless of M=1 vs M=2).
+  - Use the same MMQ kernel that CY.F.17 stream_K bake-in covers — if the
+    expert path falls back to cuBLAS instead of MMQ, that's the leak.
+
+Hypothesis: production has `MMQ stream_K` baked in via CY.F.17 for the
+main attention GEMMs, but the per-expert MoE GEMMs may still be running
+through cuBLAS, which is shape-sensitive. Look for the ggml_mul_mat
+dispatch path inside the expert MLP and confirm whether MMQ or cuBLAS
+fires for n_tokens=1 vs n_tokens=2.
+
+Submodule commit: `eb93b39f llama-state-capture: add --all-in-layer +
+--decode-only, phase-tagged outputs`
+Comparator: `scripts/compare-intra-layer.py` (parent repo).
