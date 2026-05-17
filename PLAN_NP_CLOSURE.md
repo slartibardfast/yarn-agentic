@@ -317,3 +317,51 @@ contradicts):
 3. Start NPC.1: single-GPU reproduction. ~10k tokens to confirm the bug
    surface before any new code.
 4. Branch into NPC.2 and NPC.3 in parallel once single-GPU is confirmed.
+
+---
+
+## Closure (2026-05-17)
+
+**Status**: NPC.1–NPC.6 all closed.
+
+| Phase | State | Evidence |
+|---|---|---|
+| NPC.1 single-GPU baseline | CLOSED | reproduced D-α / D-β |
+| NPC.2 D-α localization | CLOSED | ssm_conv ruled out; ffn_up_gate-2 localized |
+| NPC.3 D-β localization | CLOSED | subsumed by F.3 fixes |
+| NPC.4 fix + bake | CLOSED | six default-on fixes; `PHASE_NPC4_FIX_AUDIT.md` |
+| NPC.5 multi-GPU closure | CLOSED | `DEVICE=CUDA0,CUDA1` harness PASS |
+| NPC.6 ship | CLOSED | `profiles/qwen36-27b-x8-deterministic.sh` + `scripts/verify-production-determinism.sh` |
+
+**Closure binding satisfied**: `scripts/test-production-np-determinism.sh`
+at `DEVICE=CUDA0,CUDA1`, default `CTX_CHECKPOINTS=3`, NP={1,2,4,8} —
+all slots byte-identical to NP=1 baseline, all cross-NP slot-0 pairs
+byte-identical. No env stack required (six fixes baked default-on).
+
+**Canonical writeup**: `PHASE_NP_DETERMINISM_CLOSED.md`.
+
+**R1 outcome (perf regression)**: realized.
+
+  | NP | PP HEAD | PP pre-NPC | TG HEAD | TG pre-NPC |
+  |---|---|---|---|---|
+  | 1 | 95.74   | 176.98     | 17.95   | 18.00      |
+  | 2 | 17.97   | 17.97      | 17.11   | 19.80      |
+  | 4 | 17.33   | 17.32      | 18.21   | 23.49      |
+  | 8 | 16.15   | 16.10      | 18.70   | 25.26      |
+
+The ≤3% budget set in `feedback_determinism_must_co_optimize_perf.md`
+is overrun (-45% NP=1 PP, -26% NP=8 aggregate TG). User accepted
+2026-05-17 given the volume of work required to land F.4.1' (a new
+`ncols_y>=2`, `rows_per_cuda_block=1` kernel that combines bandwidth
+amortization with NP-invariance). F.4.1' is tracked in
+`PHASE_NPC4_FIX_AUDIT.md` as non-blocking future work.
+
+**What's still open (non-blocking)**:
+
+- F.4.1' kernel rewrite to close the perf gap.
+- Evidence-dir prune: `/opt/models/yarn-audit-data/npc4-*` (~50 GB)
+  and `/tmp/npc4-f41-*` (~130 MB). Salient signatures captured in
+  MEMORY; the byte dumps are reproducible from harness if needed.
+- Clangd-flagged unused includes from this iteration
+  (`mtmd-helper.h` in `server-context.cpp`; `llama-delta-net.h` +
+  `unordered_set` in `llama-build-context.cpp`).

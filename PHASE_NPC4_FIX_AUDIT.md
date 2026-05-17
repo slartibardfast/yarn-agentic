@@ -367,7 +367,8 @@ After implementing the fix:
   Final intra-layer state: all 64 layers slot-0 byte-identical at
   NP={1,2,4,8} for decode-step 0 AND decode-step 1.
 
-- [ ] **F.4** Latency bench. **MEASURED 2026-05-17 — fails ≤3% budget**.
+- [~] **F.4** Latency bench. **MEASURED 2026-05-17 — fails ≤3% budget;
+  cost accepted by user given F.4.1' rewrite volume**.
 
   Tool: `llama-batched-bench`, multi-GPU (`-sm graph -ts 1,1 -dev CUDA0,CUDA1`),
   production env stack (PER_SLOT_KV=1, SHAPE_INVARIANT_DISPATCH=1,
@@ -451,22 +452,14 @@ After implementing the fix:
     impact on NP=1 PP at long prompts vs short prompts. The -45%
     NP=1 PP regression doesn't obviously map to a per-decode fix.
 
-- [~] **F.5** Production harness verify. NP={2,4,8} now MUTUALLY
-  byte-identical at server level (huge improvement); NP=1 still
-  diverges from NP>=2 in the generation tail. The static capture
-  tool only exercises 2 synthetic decode steps; the production
-  harness runs 64-token autoregressive generation under continuous
-  batching. The remaining gap is a server-scheduling code path the
-  capture tool doesn't cover. Subtasks to localize:
-
-  - F.5a Capture `result_output-(-1)` (LM head) cross-NP. If the
-    output_weight isn't quantized, our baked MMQ path doesn't catch
-    it — cuBLAS GEMM at M=1 vs M=N may shape-drift.
-  - F.5b Run the production harness with `--no-cont-batching` to
-    isolate whether continuous batching is the residual source.
-  - F.5c If continuous batching is implicated, audit the
-    `n_seq_max==1` vs `n_seq_max>1` branches in the server prefill/
-    decode interleaver.
+- [x] **F.5** Production harness verify. **CLOSED 2026-05-17.**
+  NP={1,2,4,8} all mutually byte-identical at server level on both
+  single-GPU (`CUDA0`) and multi-GPU (`CUDA0,CUDA1`), all cross-NP
+  slot-0 pairs byte-identical. The residual NP=1 vs NP>=2 tail was
+  localized to the server's mid-prefill "tolerance" checkpoint
+  break and closed by fix #6 (`server-context.cpp:3923` —
+  removed the early break). F.5a/b/c subtasks are obsolete (root
+  cause was not in the LM head or `n_seq_max` branches).
 
 - [x] **F.6** Submodule + parent commit. **DONE.** MEMORY entry
   appended with full closure-status writeup.
