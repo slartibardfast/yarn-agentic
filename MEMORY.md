@@ -6699,3 +6699,18 @@ do_checkpoint=true gated paths — the mid-prefill break was that path.
 Submodule commit: `<latest>` on production/2026-q2-next. NPC.4 is now
 fully closed at every level: kernel-level, autoregressive, AND
 production-harness with default CTX_CHECKPOINTS=3.
+
+## 2026-05-17 — NPC.5 multi-GPU CLOSED; F.4 latency bench fails ≤3% budget
+
+Production harness with `DEVICE=CUDA0,CUDA1` PASSes — NP={1,2,4,8} slot
+byte-identical, cross-NP slot-0 byte-identical. Evidence at
+`/tmp/production-np-determinism/run-20260517T211228/`. Single-GPU NPC.4
+closure from 2bc5dde now extends to multi-GPU production binding.
+
+F.4 latency bench measured separately (HEAD vs pre-NPC.4 baseline
+eb93b39f): -45% NP=1 prefill, -13/-23/-26% NP={2,4,8} decode aggregate.
+Budget is ≤3% per `feedback_determinism_must_co_optimize_perf.md`. The
+six fixes deliver byte-identity but at unacceptable perf cost; NPC.6
+ship is BLOCKED on F.4.1 (find NP-invariant codepaths that don't
+serialize hot kernels). See `PHASE_NPC4_FIX_AUDIT.md` §9.F.4 for
+detailed table and candidate paths.
