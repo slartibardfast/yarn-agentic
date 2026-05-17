@@ -6346,3 +6346,66 @@ Evidence dirs (all single-GPU):
 - `/opt/models/yarn-audit-data/npc3-ub2048/run-20260517T164721/`
 - `/opt/models/yarn-audit-data/npc3-ub1024/run-20260517T165010/`
 - `/opt/models/yarn-audit-data/npc3-ub200/run-20260517T165249/`
+
+## 2026-05-17 — NPC.2 ROOT CAUSE — ssm_conv NP-divergence
+
+Used llama-state-capture (F.1) at NP=1 and NP=2, same prompt + seed,
+captured l_out per layer per ubatch single-GPU. Extended capture tool
+with `LLAMA_CAPTURE_DECODE_STEPS=N` env to fire N additional 1-token
+decode batches after prefill (commit local; rebuild required).
+
+Findings:
+
+1. **Prefill l_out at all 64 layers IDENTICAL** at slot-0 NP=1 vs NP=2.
+   The A.1' bake-in works. Prefill state is byte-identical between NPs.
+2. **Decode step 0 l_out: layers 0–1 IDENTICAL, layer 2 first DIFFERS**
+   with max|Δ|=6.85e-6 (sub-ULP for fp32). Layer 3 (first full-attn)
+   amplifies to max|Δ|=2.89e-3 (FA's known ill-conditioning on bound
+   inputs). Argmax of the final logits flips at decode step ~10.
+3. **Root cause: `ssm_conv` op (ggml/src/ggml-cuda/ssm-conv.cu)**
+   has a branch at line 639:
+   ```c
+   if (n_kv == 1 && src3->ne[0] == 1) {
+       // single_seq fast path; return early
+   }
+   ```
+   At NP=1, n_kv==1, takes `ssm_conv_single_seq_f32` kernel + returns.
+   At NP=2, n_kv==2, falls through to `ssm_conv_multi_seq_unique_f32_kernel`
+   (different kernel, different reduction order inside the conv).
+   Slot-0's mathematical result should match but fp32 bits diverge by
+   sub-ULP per step. The drift compounds across DeltaNet layers (since
+   the new state at layer N drives layer N+1's input) until it bit-flips
+   downstream.
+
+D-α and D-β are the SAME bug. Both are "NP=X takes one ssm_conv kernel
+path, NP=Y takes another". NPC.3's UBATCH_SIZE result is consistent:
+when prefill produces identical ubatch shapes across NPs (e.g.,
+UBATCH_SIZE=2048 forcing 1 ubatch per NP), the conv path is the same.
+
+Verified NOT only_active_experts (disabling via `-no-ooae` didn't
+close the divergence — same layer-2-onwards bit-mismatch).
+
+NPC.4 fix candidates (none implemented yet):
+- (a) route NP=1 single-seq case through the multi-seq kernel (lose
+  the perf optimization but gain NP-invariance);
+- (b) make multi-seq kernel produce bit-identical slot-0 output to
+  single-seq kernel (refactor reduction order to match);
+- (c) the `ssm_conv_runtime_single_seq` fast path at line 762 INSIDE
+  the multi-seq branch could be the harmonization point — if it fires
+  and produces identical bytes to the n_kv==1 fast path, the bug
+  closes. Verify whether `single_ok` detection currently rejects at
+  NP=2 decode.
+
+Evidence dirs:
+- `/opt/models/yarn-audit-data/npc2-np{1,2}/` — prefill-only captures
+  (all layers IDENTICAL).
+- `/opt/models/yarn-audit-data/npc2-decode-np{1,2}/` — prefill+2 decode
+  steps (layer 2+ DIFFERS at decode step 0).
+- `/opt/models/yarn-audit-data/npc2-decode-no-ooae-np{1,2}/` — same
+  with only_active_experts OFF (no change, still diverges).
+
+Critical files:
+- `ik_llama.cpp/ggml/src/ggml-cuda/ssm-conv.cu:639` — the NP-divergent
+  branch.
+- `ik_llama.cpp/examples/llama-state-capture/llama-state-capture.cpp` —
+  extended with `LLAMA_CAPTURE_DECODE_STEPS` env var; not committed yet.
