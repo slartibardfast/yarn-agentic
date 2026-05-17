@@ -6022,3 +6022,48 @@ isolated the actual mechanism.
 
 Tracked: task #208 (CY.F.18 PROPER FIX closed).
 Files: ik_llama.cpp/ggml/src/ggml-backend.cpp (proper fix), scripts/test-production-np-determinism.sh (env-gate removed), PHASE_CY_F18_PROPER_FIX.md (closure section).
+
+---
+
+## 2026-05-17 — Phase CY CLOSED + open work rescoped to Phase D
+
+Phase CY (Cross-NP build-graph determinism) is closed on its in-scope
+bindings:
+- Unit test test-cy-np2-multi-step-decode: 10/10 NP=2 byte-identical to NP=1.
+- One-shot production harness: 14/14 byte-identical at NP={1,2,4,8} + full
+  cross-NP slot-0 matrix. Captures persisted at data/cy-d-closure-2026-05-17/.
+
+Multi-run server-stability does NOT close at the Phase CY level. The race
+that remains — NP=1 baseline drifts SHA across llama-server restarts (5
+unique SHAs / 10 recent runs) — is at the multi-GPU peer-access /
+per-process CUDA-init layer, not the build-graph layer. That's Phase D
+territory by design (D.4 binding is literally "single-GPU NP=1 baseline =
+multi-GPU NP=1 = multi-GPU NP={2,4,8} concurrent across 3 server
+restarts").
+
+What was iteration 1/2 of CY.F.19 (cont-batching investigation) is now
+Phase D.2. The data dir moved data/cy-f-19-server-race/ →
+data/phase-d-multigpu-peer/.
+
+Honest correction on iteration 1's false signal: the "CTX_CHECKPOINTS=0
+fixes the race 3/3" finding was sample variance — re-running 5x produced
+0/5. Per feedback_verify_test_mechanism_before_trusting, should have run
+5-10 before reporting. The PHASE doc has been corrected.
+
+Phase D.1 (peer-write site audit) was completed today as part of the CY.F.18
+audit. The table is now in PHASE_MMQ_Q4_0_AR16.md §7. All currently-audited
+peer-write sites have explicit event fences; the residual race is somewhere
+above the kernel layer, in per-process CUDA setup.
+
+Probe plan for D.2 (in task #209):
+1. Intra-process NP=1 reproducibility across N requests on one server.
+2. Cross-process NP=1 reproducibility (start/kill server 3×).
+3. Single-GPU repeat of (2) to isolate multi-GPU vs single-GPU drift.
+4. Inspect ggml_cuda_set_peer_access for per-process init ordering.
+
+Tracked: tasks #187 (Phase CY closed), #205 (CY-Spec deleted — Option B
+async F32 reduce not pursued; the simpler has_reduce gate sufficed), #209
+(re-scoped from CY.F.19 → Phase D.2), #154 (Phase D → in_progress).
+Files: PHASE_MMQ_Q4_0_AR16.md (CY.D closure section + Phase D update),
+data/phase-d-multigpu-peer/iteration-{1,2}.md (probe logs),
+data/cy-d-closure-2026-05-17/ (CY.D evidence).
