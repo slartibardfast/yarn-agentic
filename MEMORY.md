@@ -5979,3 +5979,46 @@ characterized; estimate ~5-15% decode throughput on multi-GPU configs.
 
 Tracked: tasks #204 (CY.F.17 closed), #207 (CY.F.18 closed).
 Files: ik_llama.cpp/ggml/src/ggml-backend.cpp (env-gate), ik_llama.cpp/ggml/src/ggml-cuda.cu (probe env), scripts/test-production-np-determinism.sh (defaults).
+
+---
+
+## 2026-05-17 — CY.F.18 PROPER FIX landed: has_reduce-gated persistence
+
+The FORCE_SYNC_INPUTS env-gate stopgap (2026-05-16) has been replaced with an
+in-source conditional. Root analysis: probe-by-probe testing showed the race
+is NOT about which backend is synced, but about how MANY syncs occur. Two
+probes that synced different targets (FORCE_SYNC = reading-side, SOURCE_SYNC +
+PERSIST = writing-side) both fixed the race once persistent; their non-
+persistent variants both failed. Mechanism: peer-write residuals accumulate
+across the per-layer cycle; one stream-sync drains them, the next reduce
+adds more, repeat.
+
+Probe matrix (test-cy-np2-multi-step-decode, 5 runs × 32 tokens, slot0/slot1):
+- baseline (CY.F.17 only): 5/5, 0/5 — race reproduces
+- KEEP_SYNC_AFTER_REDUCE=1 alone: 1/5, ~ — single-shot wrong
+- SOURCE_SYNC (non-persistent): 1/5, 2/5 — perturbs
+- SOURCE_SYNC + KEEP_SYNC: 1/5, 1/5 — no help
+- SOURCE_SYNC + PERSIST: 5/5, 5/5 — persistence wins
+- FORCE_SYNC_INPUTS (stopgap): 5/5, 5/5 — also persistent
+
+**FIX**: `ggml/src/ggml-backend.cpp` `copy_inputs` uses
+`const bool k_set_sync = sched->has_reduce;` to keep needs_sync persistent
+when the graph contains a reduce op. Post-reduce code in both scheduler
+variants (OMP + std::barrier) marks `needs_sync[j] = true` for all reduce-src
+backends, replacing the prior wrong-clear-to-false. Single-GPU configs (no
+reduces in graph) pay zero cost; multi-GPU is identical perf to the stopgap.
+
+**Verification**: 10 runs × 64 tokens — 10/10, 10/10, 10/10 slot0/slot1/equal.
+
+All probe env-gates removed (FORCE_SYNC_INPUTS, KEEP_SYNC_AFTER_REDUCE,
+SOURCE_SYNC_INPUTS, SOURCE_SYNC_PERSIST). Production script
+`scripts/test-production-np-determinism.sh` updated to drop the FORCE_SYNC
+env default (in-source fix is automatic).
+
+Note on prior investigation: the 2026-05-16 "Post-reduce needs_sync clearing
+(kept true, still raced)" finding was correct in fact — KEEP alone fails —
+but stopped short of testing persistence. Today's SOURCE_SYNC+PERSIST probe
+isolated the actual mechanism.
+
+Tracked: task #208 (CY.F.18 PROPER FIX closed).
+Files: ik_llama.cpp/ggml/src/ggml-backend.cpp (proper fix), scripts/test-production-np-determinism.sh (env-gate removed), PHASE_CY_F18_PROPER_FIX.md (closure section).
