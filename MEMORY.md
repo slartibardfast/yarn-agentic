@@ -6820,3 +6820,17 @@ Diagnostic methodology to preserve: NP=K patterns where
 signal a ne2-derived dispatch decision (e.g., the nwarps
 dispatcher in mmvq-templates.cuh:445), not random drift.
 Single-GPU all-tensors-in-layer capture localizes cheaply.
+
+## 2026-05-17 — active.sh flipped to multi-slot deterministic; perf phase queued
+
+`/home/llm/profiles/active.sh -> qwen36-27b-x8-deterministic.sh`
+(was `qwen36-27b-x1-mtp.sh`). `systemctl --user start llama-server`
+→ active, 8 idle slots, `/health=ok`, `/completion` returns 24 tokens
+at T=0 cleanly. End-to-end multi-slot deterministic serving is now
+production-live. Rollback: re-flip the symlink, restart.
+
+Next session: perf-recovery phase, entry doc `PHASE_PERF_F4_1.md`.
+F.4.1' kernel rewrite estimated 80–150k tokens. NP=1 PP -45% is a
+separate diagnostic (fixes #2 or #4) after F.4.1' lands. Acceptance
+wrapper `scripts/verify-production-determinism.sh` must keep PASSing
+through the perf phase — any breakage breaks live serving.
