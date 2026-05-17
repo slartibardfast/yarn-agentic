@@ -1,9 +1,11 @@
-# PHASE_NPC_HANDOVER — NPC.4 + NPC.5 CLOSED, NPC.6 ship + F.4 latency next
+# PHASE_NPC_HANDOVER — NPC.4 / NPC.5 / NPC.6 CLOSED; F.4.1' open
 
 **Branch**: `production/2026-q2-next`
 **Plan**: `PLAN_NP_CLOSURE.md`, `PHASE_NPC4_FIX_AUDIT.md`
-**Status**: NPC.4 (single-GPU) and NPC.5 (multi-GPU) both closed.
-NPC.6 (ship) and F.4 (latency bench) are the remaining items.
+**Status**: NPC.4 (single-GPU), NPC.5 (multi-GPU), and NPC.6 (ship)
+all closed. F.4 latency is closed with documented cost (perf
+regression accepted vs the ≤3% budget given the volume of work to
+close F.4.1' — a new `ncols_y>=2`, `rows_per_cuda_block=1` kernel).
 
 ## TL;DR
 
@@ -102,16 +104,22 @@ takes the largest hit (lost MMVQ fast path → MMQ + extra single-token
 launches). NP=8 might actually improve (the per-slot loop replaces
 some redundant work).
 
-### Step 2 — NPC.6 ship
+### Step 2 — NPC.6 ship — CLOSED 2026-05-17
 
-- Add the harness call to `profiles/active.sh`'s acceptance step OR
-  create `profiles/active-deterministic.sh`.
-- Decide policy on `ctx_checkpoints` in production: keep at 3 (now
-  safe), reduce to 0 (no rollback overhead), or `0` for deterministic-
-  serving profile and `3` otherwise.
-- Write the MEMORY closure entry per
-  `feedback_claudemd_no_followup_and_checkbox_semantics_provisional.md`
-  — what was delivered and what's binding it.
+- **Profile**: `/home/llm/profiles/qwen36-27b-x8-deterministic.sh`
+  — `--parallel 8 --ctx-checkpoints 3 --device CUDA0,CUDA1
+  --split-mode graph --tensor-split 1,1`, with all six NPC.4 fixes
+  baked default-on in the binary. The current
+  `profiles/active.sh -> qwen36-27b-x1-mtp.sh` is intentionally
+  left alone (single-slot + MTP is the live serving profile);
+  flip the symlink to the deterministic profile when multi-slot
+  concurrency is wanted.
+- **Acceptance**: `scripts/verify-production-determinism.sh`
+  wraps `test-production-np-determinism.sh` with the deterministic
+  profile's settings. Run before any flip; PASS → safe to flip.
+  Verified PASS 2026-05-17.
+- **`ctx_checkpoints` policy**: keep at default 3. Safe after
+  fix #6 (no mid-prefill tolerance break); no need to set 0.
 
 ### Cleanup (low priority)
 
