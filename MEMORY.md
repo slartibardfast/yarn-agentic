@@ -6299,3 +6299,50 @@ Handover doc: `PHASE_NP_CLOSURE.md`. Next phase should start there.
 Anti-pattern flag: do not trust DATA-1's "production harness PASS"
 memory entry — either ran on different state or different harness;
 does not hold for this build.
+
+## 2026-05-17 — NPC.1/NPC.3 localize: prefill is shape-dep on n_tokens-per-ubatch
+
+Single-GPU baseline (`--device CUDA0`) reproduces the same NP-cross
+signature as multi-GPU. D-α (NP=1 differs from NP>1) and D-β (NP=4
+PASSES vs NP=8 FAILS at default ub=512) are both single-GPU bugs.
+Multi-GPU peer-write is NOT the cause — confirms PLAN_NP_CLOSURE
+premise.
+
+Sweeping `--ubatch-size`:
+
+| UBATCH_SIZE | NP=2 1-ub composition | NP=4 ubatch count | NP=8 ubatch count | result |
+|---|---|---|---|---|
+| 200 | 2 ubs of 200 | 4 ubs of 200 | 8 ubs of 200 | NP=1≡NP=2≡NP=8 slot-0 (some slots), NP=4 differs slightly |
+| 512 (default) | 1 ub of ~400 | 2 ubs (512+288) | 4 ubs (512+512+512+64) | NP=1≠NP=2≡NP=4≠NP=8 |
+| 1024 | 1 ub of ~400 | 1 ub of ~800 | 2 ubs (1024+576) | NP=4≡NP=8 byte-identical, both differ from NP=1 |
+| 2048 | 1 ub of ~400 | 1 ub of ~800 | 1 ub of ~1600 | NP=4≡NP=8 byte-identical, both differ from NP=1 |
+
+Conclusion: prefill output is shape-dependent on per-ubatch n_tokens
+(or n_kv-total across ubatches). When NP=4 and NP=8 produce
+identical ubatch decomposition shapes, they produce identical slot-0
+output. The bug is NOT inherent to n_parallel; it's prefill
+shape-dep firing on different ubatch-shape patterns.
+
+D-α (NP=1 vs NP>1 at default ub=512) is the SAME class: NP=1 is one
+ubatch of ~200 tok; NP=2 is one ubatch of ~400 tok. Same number of
+ubatches (1), but different n_tokens-per-ubatch → different output.
+
+The per-slot-kv FA route is shape-invariant for `n_tokens-of-Q`
+(A.1' fix), but the failure persists. So the divergent op is either:
+- cross-ubatch FA over already-written KV cache (n_kv differs by NP)
+- a non-FA op upstream of slot-0 attention that's shape-dep on
+  total batch tokens (k_proj, v_proj, hadamard, q4_0 quant, MMQ at
+  varying M, RMSNorm reduction over batch)
+- the per-slot-kv kernel itself has residual shape-dep on n_kv-total
+  (per-row bound mask doesn't fully zero out the accumulation order)
+
+NPC.2 (per-layer slot-0 state capture at NP=1 vs NP=2 same prompt)
+will localize the first divergent op. F.1 capture tool already
+supports prefill-state dump; the bug fires at prefill, no decode-step
+extension needed (downgrade NPC.2 budget).
+
+Evidence dirs (all single-GPU):
+- `/opt/models/yarn-audit-data/npc1-default/run-20260517T164308/`
+- `/opt/models/yarn-audit-data/npc3-ub2048/run-20260517T164721/`
+- `/opt/models/yarn-audit-data/npc3-ub1024/run-20260517T165010/`
+- `/opt/models/yarn-audit-data/npc3-ub200/run-20260517T165249/`
