@@ -550,7 +550,29 @@ Each fix is evaluated for: (a) likelihood it's the actual source, (b) **decode-r
 
 This ordering inverts the typical "trace first, fix second" approach by leveraging that the MMVQ-vs-MMQ question has a much cheaper binding test (unit test) than the DeltaNet question (intra-kernel capture).
 
-### CY.D — Closure binding for Phase CY (CLOSED 2026-05-17)
+### CY.D — Closure binding for Phase CY (REOPENED 2026-05-17 — realistic-prompt bind unmet)
+
+**Correction note**: This section previously claimed Phase CY closed on a
+single one-shot harness run + 5/5 short-prompt re-bind. The short prompt
+(~15 tokens) understates the production workload. Re-tested today with a
+realistic ~200-token prompt, the same harness FAILS 0/5 at NP>1 on both
+single-GPU and multi-GPU. The fixes shipped today (CY.F.17, CY.F.18) close
+part of the race but not all of it. Phase CY is reopened pending realistic-
+prompt binding. Tracking under task #210.
+
+What IS bound (and still valid):
+- Unit test test-cy-np2-multi-step-decode 10/10 NP=2 byte-identical at the
+  llama_decode C API level.
+- Short-prompt (~15 token) production harness 5/5 multi-run at NP={1,2,4,8}
+  on both single-GPU and multi-GPU.
+- CY.F.17 + CY.F.18 fixes are correct and committed; just not sufficient
+  for realistic prompts.
+
+What is NOT bound:
+- Long-prompt (~200 token) production harness at NP>1 (0/5 deterministic
+  fail, single-GPU and multi-GPU identical signature).
+
+### CY.D (superseded) — original closure claim, retained for traceability
 
 **Scope**: Cross-NP build-graph determinism *within a single multi-GPU process* —
 the graph-build, scheduler, and kernel paths that produce non-determinism

@@ -28,7 +28,12 @@ PORT=${PORT:-18292}
 N_PREDICT=${N_PREDICT:-64}
 NP_LIST=${NP_LIST:-"1 2 4 8"}
 
-PROMPT="${PROMPT:-The history of artificial intelligence began in earnest with the work of}"
+# Default: realistic production-scale prompt (~200 tokens). Override with
+# PROMPT=... for smoke-test cases. The short-prompt default that lived here
+# previously turned out to give a false-pass signal — fixes that close NP>1
+# at <16 tokens may still fail at long prompts (see task #210 / iteration log
+# data/phase-d-multigpu-peer/).
+PROMPT="${PROMPT:-The history of artificial intelligence began in earnest with the work of Alan Turing, who in 1950 published the influential paper Computing Machinery and Intelligence, introducing the imitation game now widely known as the Turing test. Following Turings pioneering ideas, the field saw rapid growth during the 1956 Dartmouth workshop organized by John McCarthy, Marvin Minsky, Nathaniel Rochester, and Claude Shannon. McCarthy coined the term artificial intelligence for the workshop. Through the 1960s and 1970s, researchers developed expert systems, theorem provers, and natural language interfaces, though hardware limitations of the era constrained the scale at which these systems could operate. Funding cycles produced two notable AI winters before deep learning, building on three decades of neural network research, transformed the field starting in the 2010s. The transformer architecture, introduced in 2017 by Vaswani et al., became the foundation for modern large language models. These models demonstrate emergent capabilities including reasoning, summarization, and}"
 
 RESULTS_DIR=${RESULTS_DIR:-/tmp/production-np-determinism}
 RUN_ID="run-$(date +%Y%m%dT%H%M%S)"
