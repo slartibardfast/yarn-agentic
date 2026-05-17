@@ -6536,3 +6536,71 @@ fires for n_tokens=1 vs n_tokens=2.
 Submodule commit: `eb93b39f llama-state-capture: add --all-in-layer +
 --decode-only, phase-tagged outputs`
 Comparator: `scripts/compare-intra-layer.py` (parent repo).
+
+## 2026-05-17 — NPC.4 KERNEL-LEVEL CLOSED, production harness still FAIL
+
+Three fixes baked (submodule commit on production/2026-q2-next):
+
+1. `ggml_cuda_up_gate_unary` — per-slot loop over fused single-token
+   kernel for n_tokens<=8. Cures dense FFN ffn_up_gate drift at NP=2,4,8.
+
+2. `llm_build_kqv` — route to `ggml_flash_attn_ext_per_slot_kv` on the
+   SINGLE-DEVICE FA path (previously only multi-device split used PSKV).
+   Predicate identical to multi-device branch (q->ne[0]==256,
+   v->ne[0]==256, gqa<=16, no sinks). Cures FA drift at every full-attn
+   layer.
+
+3. `ggml_cuda_mul_mat` — force MMQ for all quantized weights regardless
+   of n_tokens. The `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH` env knob is
+   removed; baked always-on. Cures sub-ULP ffn_down GEMM drift at NP=8
+   (MMVQ template at ncols_y=8 vs ncols_y=1 produces different bits via
+   `rows_per_cuda_block=2` path).
+
+4. `GGML_SCHED_MAX_SPLIT_INPUTS` bumped 10 → 32 — single-device PSKV
+   adds inp_per_row_k_bound which pushed past the prior cap.
+
+Verification (intra-layer capture decode-step 0 AND decode-step 1):
+
+```
+NP=1 vs NP=2: All 64 layers slot-0 IDENTICAL ✓
+NP=1 vs NP=4: All 64 layers slot-0 IDENTICAL ✓
+NP=1 vs NP=8: All 64 layers slot-0 IDENTICAL ✓
+```
+
+**Production harness STILL FAILS** at server level:
+```
+np1 vs np2 slot 0: DIFFERS (359 vs 352 bytes)
+np1 vs np4 slot 0: DIFFERS (359 vs 352 bytes)
+np1 vs np8 slot 0: DIFFERS (359 vs 352 bytes)
+np2 vs np4 slot 0: BYTE-IDENTICAL  ← all NP>=2 now mutually identical
+np2 vs np8 slot 0: BYTE-IDENTICAL
+np4 vs np8 slot 0: BYTE-IDENTICAL
+```
+
+NP={2,4,8} now mutually byte-identical at server level (huge step from
+the prior state where they each differed). Only NP=1 still differs.
+First 80 chars of generation match across all NPs — divergence is in
+the tail (NP=1 produces 359 bytes, NP>=2 produces 352 bytes).
+
+The static capture tool only exercises 2 synthetic decode steps with
+fixed input token; the production harness runs 64-token autoregressive
+generation under continuous-batching scheduling. The remaining
+NP=1-vs-NP>=2 gap is a SERVER-SCHEDULING code path the capture tool
+doesn't cover. Suspect candidates:
+- Continuous-batching prefill/decode interleave at NP=1 (n_seq_max=1)
+  takes a different code path than NP>=2 (n_seq_max>1).
+- LM head (output_norm + result_output) matmul may not be quantized,
+  bypassing the MMQ bake; cuBLAS could be shape-dependent. Worth
+  capturing `result_output-(-1)` cross-NP.
+- KV cache writeback layout at n_seq_max=1 vs n_seq_max>1.
+
+Knob removed: `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH`. Baked always-on
+per CLAUDE.md §3 + feedback_bake_measurement_env_gates.
+
+Evidence dirs:
+- `/opt/models/yarn-audit-data/npc4-fixD-lout-np{1,2,4,8}/` — kernel
+  byte-identity captures (PASS).
+- `/opt/models/yarn-audit-data/npc4-fixD-harness/run-*/` — production
+  harness divergence signatures (FAIL).
+
+Submodule commit: ik_llama.cpp@<latest>. Parent submodule pointer bumped.

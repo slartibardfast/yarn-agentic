@@ -339,25 +339,55 @@ After implementing the fix:
 
 ## Section 9 — Step plan
 
-- [ ] **F.1** Implement Option A in
-  `ggml/src/ggml-cuda.cu:3692-3763`. Single edit: replace the
-  `if (src1->ne[1] == 1 …)` branch with a per-slot loop calling
-  `ggml_cuda_op_fused_mul_mat_vec_q_id` `Ny` times. Build.
+- [x] **F.1** Implement Option A in
+  `ggml/src/ggml-cuda.cu:3692-3763`. Per-slot loop over the fused
+  single-token kernel for all n_tokens<=8. **DONE.**
 
-- [ ] **F.2** Run the verify in §8.1. Expect `ffn_up_gate-2` and
-  `l_out-2` to flip to `IDENTICAL`.
+- [x] **F.2** Verify intra-layer-2 (§8.1). `ffn_up_gate-2` and
+  `l_out-2` both flipped to `IDENTICAL` at NP=1 vs NP=2. **DONE.**
 
-- [ ] **F.3** Run the verify in §8.2. Find any remaining diverging
-  layer/op. If clean, proceed to F.4. If not, identify the next
-  divergence-producing op and add its fix to this PHASE doc as F.3a.
+- [x] **F.3** All-layer per-`l_out` verify (§8.2). Found two more
+  divergence sources during this step:
 
-- [ ] **F.4** Latency bench (§8.5). Cap regression ≤ 3%.
+  - **F.3a** layer-3+ FA drift: single-device `llm_build_kqv` was
+    using plain `ggml_flash_attn_ext`, not the PSKV op. Added the
+    same PSKV predicate as the multi-device branch.
+    `src/llama-build-context.cpp:llm_build_kqv`. **DONE.**
 
-- [ ] **F.5** Production harness verify (§8.4). Expect cross-NP
-  byte-identity at server level.
+  - **F.3b** layer-0 NP=8 sub-ULP drift: `ggml_cuda_mul_mat`
+    MMVQ ncols_y=8 template produced slightly different bits than
+    ncols_y=1. Force MMQ for all quantized weights regardless of
+    batch size (was opt-in via `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH`,
+    now baked always-on; env knob deleted). **DONE.**
 
-- [ ] **F.6** Bake the fix into a permanent submodule commit; bump
-  parent submodule pointer; update `MEMORY.md` with closure entry.
+  - **F.3c** scheduler split-inputs cap (10) exceeded after the
+    PSKV input joined the single-device split graph. Bumped to 32.
+    **DONE.**
+
+  Final intra-layer state: all 64 layers slot-0 byte-identical at
+  NP={1,2,4,8} for decode-step 0 AND decode-step 1.
+
+- [ ] **F.4** Latency bench. Not yet measured.
+
+- [~] **F.5** Production harness verify. NP={2,4,8} now MUTUALLY
+  byte-identical at server level (huge improvement); NP=1 still
+  diverges from NP>=2 in the generation tail. The static capture
+  tool only exercises 2 synthetic decode steps; the production
+  harness runs 64-token autoregressive generation under continuous
+  batching. The remaining gap is a server-scheduling code path the
+  capture tool doesn't cover. Subtasks to localize:
+
+  - F.5a Capture `result_output-(-1)` (LM head) cross-NP. If the
+    output_weight isn't quantized, our baked MMQ path doesn't catch
+    it — cuBLAS GEMM at M=1 vs M=N may shape-drift.
+  - F.5b Run the production harness with `--no-cont-batching` to
+    isolate whether continuous batching is the residual source.
+  - F.5c If continuous batching is implicated, audit the
+    `n_seq_max==1` vs `n_seq_max>1` branches in the server prefill/
+    decode interleaver.
+
+- [x] **F.6** Submodule + parent commit. **DONE.** MEMORY entry
+  appended with full closure-status writeup.
 
 ## Section 10 — Out of scope (don't pull in)
 
