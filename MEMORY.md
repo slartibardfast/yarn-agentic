@@ -6409,3 +6409,63 @@ Critical files:
   branch.
 - `ik_llama.cpp/examples/llama-state-capture/llama-state-capture.cpp` —
   extended with `LLAMA_CAPTURE_DECODE_STEPS` env var; not committed yet.
+
+2026-05-17 — NPC.4 candidate (c) attempted: NOT the fix, ssm_conv is
+NOT the divergence source (correction to 2026-05-17 NPC.2 entry above)
+
+Experiment:
+- Modified `ik_llama.cpp/ggml/src/ggml-cuda/ssm-conv.cu` to remove the
+  `n_kv == 1 && src3->ne[0] == 1` early-return at line 639. Forced all
+  n_kv values through the multi-seq path. Also forced `single_ok=0` to
+  no-op the runtime_single_seq fast path. Effect: NP=1 and NP>1 decode
+  both dispatch `ssm_conv_multi_seq_unique_f32_kernel` (same kernel).
+- Built; ran 2-decode-step captures (`LLAMA_CAPTURE_DECODE_STEPS=2`) at
+  NP=1 and NP=2 single-GPU CUDA0.
+
+Result:
+- NP=1 captures (post-fix) BYTE-IDENTICAL to NP=1 captures (pre-fix) at
+  EVERY layer's slot-0 ub2/ub3. → confirms the two ssm_conv kernels
+  (`single_seq_f32` and `multi_seq_unique`) produce bit-identical output
+  for slot 0 with NP=1's input.
+- NP=2 captures (post-fix) differ from NP=2 (pre-fix) at every layer,
+  but NP=2 slot-0 still DIFFERS from NP=1 slot-0 at layer 2 with the
+  SAME magnitude (max|Δ|=6.855e-06 first diff at ub2 idx=0).
+- The divergence pattern is unchanged. The fix is functional but does
+  not close the binding.
+
+Conclusion (correcting 2026-05-17 NPC.2):
+- The NPC.2 "root cause = ssm_conv" claim was wrong. The captures show
+  layer-2 first divergence at decode, but layers 0 and 1 (both DeltaNet)
+  are slot-0 byte-identical between NP=1 and NP=2. So layer 2's INPUT
+  is the same, yet layer 2's OUTPUT diverges. The divergence is
+  produced WITHIN a single layer's compute, not by ssm_conv kernel
+  dispatch shape.
+- Suspect set narrows to ops inside one layer that have shape-dependent
+  dispatch even when input bytes are identical:
+  (i) cuBLAS GEMM for Q/K/V/G linear projections (shape-dep algorithm
+      selection inside cuBLAS — even with workspace + TF32-off baked,
+      cuBLAS may pick different cublasGemmAlgo for n_tokens=1 vs
+      n_tokens=2);
+  (ii) delta-net `chunk_delta_rule` kernel (already baked use_256 but
+       could still vary in other ways);
+  (iii) MoE gate / expert routing (only_active_experts was ruled out
+        at NPC.2 — disabled it, still diverges);
+  (iv) some unbaked norm or rope kernel.
+- Why does the first divergence appear at LAYER 2 and not 0/1?
+  Unknown. Possibly: state accumulated in recurrent state across layers
+  reaches a precision threshold that flips a rounding bit only after
+  3 layers of recurrent updates. Worth instrumenting per-op within a
+  single layer.
+
+Revert: ssm-conv.cu was reverted to baseline. The single-line LIFO bug
+in the multi-seq pool_alloc order (which my fix had also touched) is
+left for a future surgical change — it's not blocking NP-determinism.
+The dirty-bit ck `tests/dflash-speculative/test-trace-2-intra-layer-capture.cpp`
+in the submodule remains pre-existing.
+
+Next: finer-grained per-op intra-layer-2 capture (cb_eval per node, not
+per layer boundary) to localize WHICH op inside layer 2 first diverges.
+The existing `llama-state-capture` framework supports `--tensors` lists
+and `--layers all`; need to wire it to capture intermediate (non-l_out)
+nodes within a layer.
+
