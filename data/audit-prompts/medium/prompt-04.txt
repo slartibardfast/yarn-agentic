@@ -1,0 +1,1 @@
+Reviewer: I think the manuscript would benefit from a section on limitations. Author: We considered that but felt the conclusion already covered the main points. Reviewer: A dedicated section gives readers an explicit checklist. Author: Fair, we can add one. Reviewer: It should also acknowledge that the benchmark dataset has known biases that may affect the reported metrics.

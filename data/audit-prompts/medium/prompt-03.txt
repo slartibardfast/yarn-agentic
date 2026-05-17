@@ -1,0 +1,1 @@
+Write a Python class that implements a thread-safe LRU cache with a configurable capacity, expose a `get(key)` and `put(key, value)` API, and ensure both operate in O(1) amortized time. Use a doubly-linked list for recency ordering plus a hash map keyed by the cache key. Include a brief docstring documenting the eviction policy.

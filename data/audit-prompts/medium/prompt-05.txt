@@ -1,0 +1,1 @@
+Trace through the proof of correctness for Dijkstra's shortest-path algorithm on graphs with non-negative edge weights. Argue by induction on the number of finalised vertices that when a vertex is removed from the priority queue, its tentative distance equals the true shortest-path distance from the source. State precisely where the non-negativity assumption is used.

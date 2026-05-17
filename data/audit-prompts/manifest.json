@@ -1,0 +1,198 @@
+[
+  {
+    "bucket": "tiny",
+    "id": "tiny-00",
+    "file": "tiny/prompt-00.txt",
+    "char_count": 24,
+    "est_tokens": 6
+  },
+  {
+    "bucket": "tiny",
+    "id": "tiny-01",
+    "file": "tiny/prompt-01.txt",
+    "char_count": 19,
+    "est_tokens": 4
+  },
+  {
+    "bucket": "tiny",
+    "id": "tiny-02",
+    "file": "tiny/prompt-02.txt",
+    "char_count": 17,
+    "est_tokens": 4
+  },
+  {
+    "bucket": "tiny",
+    "id": "tiny-03",
+    "file": "tiny/prompt-03.txt",
+    "char_count": 17,
+    "est_tokens": 4
+  },
+  {
+    "bucket": "tiny",
+    "id": "tiny-04",
+    "file": "tiny/prompt-04.txt",
+    "char_count": 22,
+    "est_tokens": 5
+  },
+  {
+    "bucket": "tiny",
+    "id": "tiny-05",
+    "file": "tiny/prompt-05.txt",
+    "char_count": 25,
+    "est_tokens": 6
+  },
+  {
+    "bucket": "short",
+    "id": "short-00",
+    "file": "short/prompt-00.txt",
+    "char_count": 105,
+    "est_tokens": 26
+  },
+  {
+    "bucket": "short",
+    "id": "short-01",
+    "file": "short/prompt-01.txt",
+    "char_count": 79,
+    "est_tokens": 19
+  },
+  {
+    "bucket": "short",
+    "id": "short-02",
+    "file": "short/prompt-02.txt",
+    "char_count": 107,
+    "est_tokens": 26
+  },
+  {
+    "bucket": "short",
+    "id": "short-03",
+    "file": "short/prompt-03.txt",
+    "char_count": 99,
+    "est_tokens": 24
+  },
+  {
+    "bucket": "short",
+    "id": "short-04",
+    "file": "short/prompt-04.txt",
+    "char_count": 93,
+    "est_tokens": 23
+  },
+  {
+    "bucket": "short",
+    "id": "short-05",
+    "file": "short/prompt-05.txt",
+    "char_count": 95,
+    "est_tokens": 23
+  },
+  {
+    "bucket": "medium",
+    "id": "medium-00",
+    "file": "medium/prompt-00.txt",
+    "char_count": 397,
+    "est_tokens": 99
+  },
+  {
+    "bucket": "medium",
+    "id": "medium-01",
+    "file": "medium/prompt-01.txt",
+    "char_count": 366,
+    "est_tokens": 91
+  },
+  {
+    "bucket": "medium",
+    "id": "medium-02",
+    "file": "medium/prompt-02.txt",
+    "char_count": 358,
+    "est_tokens": 89
+  },
+  {
+    "bucket": "medium",
+    "id": "medium-03",
+    "file": "medium/prompt-03.txt",
+    "char_count": 330,
+    "est_tokens": 82
+  },
+  {
+    "bucket": "medium",
+    "id": "medium-04",
+    "file": "medium/prompt-04.txt",
+    "char_count": 377,
+    "est_tokens": 94
+  },
+  {
+    "bucket": "medium",
+    "id": "medium-05",
+    "file": "medium/prompt-05.txt",
+    "char_count": 369,
+    "est_tokens": 92
+  },
+  {
+    "bucket": "long",
+    "id": "long-00",
+    "file": "long/prompt-00.txt",
+    "char_count": 1079,
+    "est_tokens": 269
+  },
+  {
+    "bucket": "long",
+    "id": "long-01",
+    "file": "long/prompt-01.txt",
+    "char_count": 844,
+    "est_tokens": 211
+  },
+  {
+    "bucket": "long",
+    "id": "long-02",
+    "file": "long/prompt-02.txt",
+    "char_count": 834,
+    "est_tokens": 208
+  },
+  {
+    "bucket": "long",
+    "id": "long-03",
+    "file": "long/prompt-03.txt",
+    "char_count": 623,
+    "est_tokens": 155
+  },
+  {
+    "bucket": "long",
+    "id": "long-04",
+    "file": "long/prompt-04.txt",
+    "char_count": 931,
+    "est_tokens": 232
+  },
+  {
+    "bucket": "long",
+    "id": "long-05",
+    "file": "long/prompt-05.txt",
+    "char_count": 743,
+    "est_tokens": 185
+  },
+  {
+    "bucket": "vlong",
+    "id": "vlong-00",
+    "file": "vlong/prompt-00.txt",
+    "char_count": 2821,
+    "est_tokens": 705
+  },
+  {
+    "bucket": "vlong",
+    "id": "vlong-01",
+    "file": "vlong/prompt-01.txt",
+    "char_count": 2203,
+    "est_tokens": 550
+  },
+  {
+    "bucket": "vlong",
+    "id": "vlong-02",
+    "file": "vlong/prompt-02.txt",
+    "char_count": 2064,
+    "est_tokens": 516
+  },
+  {
+    "bucket": "multi",
+    "id": "multi-00",
+    "file": "multi/prompt-00.txt",
+    "char_count": 5633,
+    "est_tokens": 1408
+  }
+]

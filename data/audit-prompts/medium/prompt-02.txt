@@ -1,0 +1,1 @@
+Compare and contrast strict consistency, eventual consistency, and causal consistency in distributed systems. Describe two real-world systems that exemplify each model and explain why their designers chose that consistency level given their workload characteristics, latency budgets, and partition tolerance requirements during normal and degraded operation.
