@@ -79,12 +79,14 @@ start_server() {
     #   CUBLAS_WORKSPACE_CONFIG=:4096:8        — required for cuBLAS reproducibility
     # CY.F.17: GGML_CUDA_MMQ_DISABLE_STREAM_K=1 disables stream_K shape-dep.
     # CY.F.18: now fixed in-source via sched->has_reduce — no env-gate.
-    GGML_CUDA_MMQ_DISABLE_STREAM_K=${GGML_CUDA_MMQ_DISABLE_STREAM_K:-1} \
-    LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
-    LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 \
-    LLAMA_PSKV_MODE=${LLAMA_PSKV_MODE:-singlewarp} \
-    CUBLAS_WORKSPACE_CONFIG=:4096:8 \
-    ${LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE:+LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=${LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE}} \
+    # Build env-var prefix via env(1) so conditional expansion is uniform.
+    env \
+        GGML_CUDA_MMQ_DISABLE_STREAM_K=${GGML_CUDA_MMQ_DISABLE_STREAM_K:-1} \
+        LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
+        LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 \
+        LLAMA_PSKV_MODE=${LLAMA_PSKV_MODE:-singlewarp} \
+        CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+        ${LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE:+LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=${LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE}} \
     "$BIN" -m "$GGUF" \
         --device "$_DEVICE" $_SPLIT_FLAGS \
         -ngl 999 -fa on \
