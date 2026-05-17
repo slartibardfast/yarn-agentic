@@ -6224,3 +6224,51 @@ The proper fix (shape-invariant stream_K fixup) remains open.
 
 Bug #2 (token-256 boundary at vlong+ prompts, FA prefill kernel
 suspected) is untouched by this bake-in — task #216.
+
+## 2026-05-17 — Audit A.1' CLOSED: FA prefill 256-tok shape-dep baked out
+
+Bug #2 from Audit A.0 (vlong NP=2 vs NP=1 diverges at l_out-3 token
+256) localized + fixed.
+
+### Localization
+
+Intra-layer-3 capture at vlong NP=1 vs NP=2 with the default FA path:
+- Qcur_cont-3, Qcur_normed-3, Kcur-3, Kcur_normed-3, Vcur-3 (per-device
+  shards ub=2,3) all BYTE-IDENTICAL at slot-0.
+- attn_out_with_input-3 (combined ub=1) FIRST DIVERGENT tag: 38.2%
+  floats differ, first_idx=1310720 = 5120×256 (token 256 boundary),
+  max|Δ|=3.79e-3.
+- l_out-3 follows: same first_idx, max|Δ|=2.77e-3.
+
+Re-ran the same capture with LLAMA_FATTN_PER_SLOT_KV_ENABLE=1: every
+intra-layer-3 tensor including attn_out_with_input-3 and l_out-3
+byte-IDENTICAL. Bug isolated to the default `wmma_f16_case<256,256,32,
+half>` prefill kernel (cols_per_block=32, fp16 KQ accumulator). The
+per-slot-kv route forces `wmma_f16_case_pb1<256,256,8,float>` (cols=8,
+fp32 KQ acc, compile-time parallel_blocks=1) which is shape-invariant.
+
+### Fix
+
+Submodule commit `2660cecd` removes the `LLAMA_FATTN_PER_SLOT_KV_ENABLE`
+env-gate entirely in `src/llama-build-context.cpp`. The per-slot-kv
+route is now always-on for Qwen 3.5/3.6 shape (Dq=Dv=256, gqa≤16, no
+attn_sinks). Parent submodule bump at `eea07b1`.
+
+### Verification
+
+Full-layer l_out capture at vlong NP=1 vs NP=2 slot-0:
+`bake-pskv-vlong-np{1,2}/` → 63/63 transformer layers IDENTICAL.
+
+### Production gap closed
+
+Combined with the CY.F.17 stream_K bake-in (commit aa0f7e9b), both
+Bug #1 (MMQ stream_K) and Bug #2 (FA prefill cols=32 fp16 KQ acc) are
+now baked out as default deterministic. Production `profiles/active.sh`
+no longer depends on any env-var for NP-invariance.
+
+The original "shape-dependence above 256 tokens" hypothesis was right
+about the token-256 boundary but wrong about the mechanism: it isn't
+the FA K-chunk count (3 vs 4 chunks under SAME parallel_blocks=1).
+It's the cols_per_block=32 + fp16 KQ acc shipped under
+GGML_PREC_DEFAULT for Q->ne[1] > 32 at head_dim=256, which has
+M-dependent rounding inside the WMMA m16n16k16 fragment reduction.
