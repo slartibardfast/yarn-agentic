@@ -1,81 +1,76 @@
-# Project status — Qwen 3.6 27B determinism + perf on dual sm_75
+# Project status — Qwen 3.6 27B determinism on dual sm_75
 
 Last updated: 2026-05-17
 
-## What this project is
+## The goal
 
-Produce a fully byte-deterministic multi-slot inference server for Qwen 3.6 27B on dual Quadro RTX 6000 (TU102 / sm_75), via a fork of llama.cpp (`ik_llama.cpp`). The deliverable: production llama-server returns byte-identical output at NP={1,2,4,8} across diverse realistic-size prompts.
+Get a production multi-slot inference server that returns **byte-identical output at NP={1,2,4,8}** across the prompts a real user would type. The hardware is two Quadro RTX 6000s (TU102, sm_75); the software is a fork of llama.cpp called `ik_llama.cpp`.
 
-The host runs the same engine for several downstream workstreams (DFlash speculative decoding, MTP, Qwen 3.5 tool-calling). Those have their own track records and are not described here — see workstream-specific docs.
+Byte-identity matters because the alternative is "deterministic up to fp32-ULP noise" — which means argmax can flip, tokens can diverge, and an experiment that returns one answer at NP=1 returns a different answer at NP=2. For research reproducibility, regression debugging, and any system that stores or compares model responses, that's unacceptable.
 
-## Where we are right now
+We started this work thinking it was a kernel-level math problem.
 
-**Active workstream**: determinism audit. `PLAN_DETERMINISM_AUDIT.md` is the live working plan.
+## What we've built (and what works)
 
-**Branch state**: `main` and `production/2026-q2-next` are aligned (main is fast-forward equivalent). All today's work pushed to `production/2026-q2-next`; main has the same commits awaiting a push of `origin/main`.
+Four named fixes have shipped on `ik_llama.cpp`:
 
-**What's shipped and bound**:
-- Phase A, B, C — Q4_0_AR16 MMQ kernels, MMVQ kernels, cuBLAS algo pinning.
-- CY.F.17 — MMQ stream_K shape-dependence fix (env-gated, applied in production env).
-- CY.F.18 — scheduler `needs_sync` lifecycle race fix (in-source, gated on `sched->has_reduce`).
-- Production harness 5/5 multi-run at NP={1,2,4,8} for **short** prompts (~15 tokens).
-- Unit test `test-cy-np2-multi-step-decode` 10/10 NP=2 byte-identical at the C API direct-decode level.
+- **Phase A + B** — custom Q4_0_AR16 MMQ and MMVQ kernels. INT4 matmul paths that don't suffer from cuBLAS's per-shape algo selection.
+- **Phase C** — cuBLAS algorithm pinning for F16/BF16/F32 weights. Algo is locked regardless of M; same shape always uses the same code path.
+- **CY.F.17** — disabled MMQ's stream_K dispatch, which had a shape-dependent reduction order at prefill M ≥ 215.
+- **CY.F.18** — fixed a scheduler `needs_sync` lifecycle race for multi-GPU peer writes. The bug let the scheduler clear its sync flag while peer-stream writes were still pending.
 
-**What's not bound** (the actual ship gap):
-- Multi-slot byte-identity at realistic prompt sizes (>~50 tokens). The bisection in task #210 showed the failure is content-dependent at the kernel level, not at the build-graph conditional. Same race fires on single-GPU and multi-GPU. Hadamard compensates Q4_0 quantization noise so it's sub-threshold for most prompts, but specific prompts cross the argmax-flip line.
+At the C API level, the unit test `test-cy-np2-multi-step-decode` runs 10/10 byte-identical comparing NP=2 against NP=1. At the server level, the production harness `scripts/test-production-np-determinism.sh` passes 5/5 multi-run with the default short prompt at NP={1,2,4,8}.
 
-## Why several phase docs are stale
+These are real, valid, shipped fixes.
 
-Today's bisection invalidated several "closures" and framings:
-- **Phase D** (multi-GPU peer-access determinism) — was based on a misdiagnosis. Race exists identically on single-GPU. Closed by supersession.
-- **Phase CX** (non-MMQ shape-dependent op audit) — folded into the broader determinism audit at production state. CX.B/C bindings at random tensors are insufficient; need re-bind at production K/V cache distributions.
-- **Phase CY** — narrow binding (unit test 10/10, short-prompt harness 5/5) is real. Realistic-prompt binding moved to the audit.
-- **`PHASE_D_PLAN.md`** — superseded by `PLAN_DETERMINISM_AUDIT.md`.
-- **`PHASE_CY_F18_PROPER_FIX.md`** — closure section is accurate for CY.F.18 the bug, but framed as Phase D pickup; that framing is dead.
+## The catch
 
-These docs are kept for traceability (PR review, post-mortem). The active plan is `PLAN_DETERMINISM_AUDIT.md`. New work should not extend the older phase docs.
+The "default short prompt" is fifteen tokens.
 
-## What "real determinism" means here, and why it's hard
+The production harness's hardcoded default prompt was *"The history of artificial intelligence began in earnest with the work of"* — short enough that prefill barely exercises the model's batched code paths. When we re-tested today with a realistic ~200-token prompt, the same harness fails 0/5 multi-run at NP>1. Specific prompts at specific sizes deterministically produce different output across slots.
 
-The bisection result reframed the problem:
-- The race is **kernel-level**, not build-graph-level. The `ne[1]>32` cast conditional that the CY.A audit named is dead code in our production config (`reduce_type=F32` is forced). `mla_attn=3` from the unit test is overridden to 0 for Qwen 3.6.
-- The race is **content-dependent**. A prompt's tokens influence intermediate activations, which influence the magnitude of accumulated drift. Some prompts have argmax margins large enough to absorb sub-ULP drift; others don't.
-- **Hadamard isn't masking** the race — it's keeping Q4_0 cache quantization error small enough that downstream computation tolerates the drift.
+We hadn't been catching this because the test fixture was overfit to a toy case.
 
-So "fix" = find every kernel/op whose output differs across slot positions at production state, and pin each to be byte-identical. Tests at random tensors (CX.B for RMSNorm, CX.C for RoPE, CY.F.1 for MMQ) gave PASS but were not at the real distribution. The audit replaces those random-tensor bindings with production-state bindings.
+## Today's bisection, and what it told us
 
-## The active plan in one paragraph
+The natural reflex was to assume the failure was somewhere in the kernel work we'd been doing — maybe CY.F.17 didn't extend to all M values, or CY.F.18 had a corner case at long context. So we built a bisection: start from the unit-test config (which passes 10/10) and step it toward the server config, one variable at a time. Five configs × six prompt sizes = thirty cells. We expected to find a single variable whose change flips PASS→FAIL.
 
-`PLAN_DETERMINISM_AUDIT.md` lays out: build foundation (F.1 state-capture harness, F.2 per-kernel binder, F.3 diverse prompts, F.4 orchestration), then audit per-kernel byte-identity at production state for ~16 kernels in priority order (singlewarp FA first, then cache write/read paths, MMQ at production weights, DeltaNet, residual, fused MLP, cuBLAS quantized routes, RoPE/RMSNorm re-bind, Q/K/V/output projections, softmax, LM head, etc.). Closure: 100 prompts × 4 NP × 3 sweeps, zero divergences.
+The result was not what we expected.
 
-**Time-box**: Option 3 — ~150k tokens of investment on foundation + first audit cycle (A.0 + A.1 + A.7). At that point, fork in the road:
-- If a meaningful fix lands → continue audit.
-- If no clean culprit identified → pivot to ship-NP=1-deterministic, document the NP>1 gap, move on to Phase E (perf).
+**Several variables turned out to have no effect.** The unit test sets `mla_attn=3`, which we'd treated as a meaningful Qwen-specific knob. But `llama.cpp:7156` force-resets `mla_attn=0` for any model not in {DeepSeek2, GLM_DSA, Mistral4}. Qwen 3.6 never runs mla_attn=3 regardless of what the unit test asks for. The bisection cell was testing the same thing on both sides.
+
+**The CY.A audit's named suspect was dead code.** The `cur->ne[1] > 32` conditional that casts the residual stream to fp16 for prefill — long flagged as the prime determinism risk — doesn't fire in our config. `reduce_type` is forced to F32 for Qwen 3.5/3.6 (shipped under CY.F.16). The cast condition `ne[1] > 32 && reduce_type != GGML_TYPE_F32` evaluates to false on the right side, always.
+
+**The matrix is non-monotonic.** We see PASS-FAIL-PASS-FAIL across prompt sizes. ~200 tokens fails; ~350 tokens passes; ~1100 tokens fails. Same model, same config, same harness. Whatever's wrong isn't "prompts above some size threshold."
+
+**And then the punchline: Hadamard isn't masking the race.** Turning Hadamard rotation off doesn't relax the determinism constraint — it dramatically tightens it. Without Hadamard, even the three-token "tiny" prompt fails. With Hadamard, only specific prompts fail. The reframe: Hadamard's stated purpose is precision optimization for Q4_0 KV cache quantization, but it has a second effect we hadn't recognized — it keeps cache values uniform enough that the upstream drift stays below the argmax-flip margin. The drift exists everywhere; Hadamard happens to keep most prompts safely above the line.
+
+The race is at the **kernel level**, not the build-graph level. It's **content-dependent**: specific token sequences trigger it, others don't. It fires **identically on single-GPU and multi-GPU**. None of the fixes named in earlier phases address it directly — the kernels' shape-dependent paths run below the conditionals the audit was looking at.
+
+## What this changes
+
+Phase D was framed as multi-GPU peer-access determinism. That framing is dead — the race fires single-GPU. Phase CX was the non-MMQ shape-dependent op audit, but its bindings tested random tensors at unit-test shapes; production-state bindings at the same ops would not pass. Phase CY had been "closed" at narrow scope; the real binding doesn't hold.
+
+We considered three paths:
+
+- **A. Strict determinism-first**: block all forward work until the audit closes.
+- **B. Ship NP=1 deterministic, document the NP>1 gap**: move on to perf tuning and other workstreams while the determinism work continues in the background.
+- **C. Time-box the audit (~150k tokens of foundation + first audit cycle), then re-evaluate**: if a meaningful fix lands, continue; if not, fall back to B.
+
+We chose C. The plan is `PLAN_DETERMINISM_AUDIT.md`: build a state-capture harness, build a per-kernel byte-identity binder, gather 100 diverse prompts, then audit the most likely culprits in priority order — singlewarp FA at production K/V cache first, then cache write/read paths, then MMQ at production weight distributions. The audit closure binding is 100 diverse prompts × 4 NP values × 3 sweeps, zero divergences. That's deliberately strict; today's bisection convinced us that anything narrower is overfit-able.
 
 ## Where to start the next session
 
-1. Read `STATUS.md` (this file).
-2. Read `PLAN_DETERMINISM_AUDIT.md`.
-3. Read `MEMORY.md` recent entries (2026-05-17).
-4. Task #211: start F.1 (production-state capture harness).
+1. Read `STATUS.md` (this file) and `PLAN_DETERMINISM_AUDIT.md`.
+2. Read MEMORY.md entries from 2026-05-17 onward — they record the falsified facts (mla_attn force-reset, ne[1]>32 cast dead, harness bash bug that masked all probes for half a session) and the corrected understanding.
+3. Begin task #211 — Audit F.1, the production-state capture harness.
 
-## Tracked tasks
+## Other live workstreams
 
-Active (audit foundation + first cycle):
-- #211 — Audit F.1 production-state capture harness
-- #212 — Audit F.2 per-kernel byte-identity binder
-- #213 — Audit F.3 diverse-prompt corpus
-- #214 — Audit A.1 singlewarp FA at production K/V distribution
+These are independent of the determinism audit and not blocked by it:
 
-Pending (gated on Option 3 fork verdict):
-- #155 — Phase E perf tuning + nsys/ncu data
-- #156 — Phase F closure binding
-- #178 — RESEARCH-5 reference oracle gathering
+- **DFlash speculative decoding** — Qwen3.6-27B with bespoke sm_75 kernels. Kernel-pipeline closed at T1-T9.
+- **MTP production** — Multi-token prediction for Qwen 3.6 27B, shipped Q2 2026.
+- **Vulkan multi-GPU split-mode graph** — RDNA2 + Vega multi-GPU production stack, 22 phases of work landed.
 
-## Other live workstreams (independent of determinism audit)
-
-- **DFlash speculative decoding** — kernel-pipeline closure on T1-T9 (see PHASE_DFLASH.md). Independent of determinism audit; tracks its own bindings.
-- **MTP production** — shipped Q2 2026; see project_production_2026q2_landing memory.
-- **Vulkan multi-GPU** — production Vulkan stack work, see phases 0-22 in PHASE_VULKAN_MULTIGPU_PLAN.md.
-
-These are not blocked by the determinism audit; the audit only blocks Phase E and F on the CUDA production engine.
+See the workstream-specific docs in the mdBook nav.
