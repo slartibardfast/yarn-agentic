@@ -1,23 +1,23 @@
-# PHASE_NPC_HANDOVER — NPC.4 CLOSED (single-GPU), NPC.5 next
+# PHASE_NPC_HANDOVER — NPC.4 + NPC.5 CLOSED, NPC.6 ship + F.4 latency next
 
 **Branch**: `production/2026-q2-next`
 **Plan**: `PLAN_NP_CLOSURE.md`, `PHASE_NPC4_FIX_AUDIT.md`
-**Status**: NPC.4 fully closed on single-GPU. NPC.5 (multi-GPU) is the
-next binding gate; NPC.6 is ship. Latency bench unmeasured.
+**Status**: NPC.4 (single-GPU) and NPC.5 (multi-GPU) both closed.
+NPC.6 (ship) and F.4 (latency bench) are the remaining items.
 
 ## TL;DR
 
 Production harness `scripts/test-production-np-determinism.sh` PASSes at
-default `CTX_CHECKPOINTS=3` on `DEVICE=CUDA0` for the Qwen 3.5/3.6 27B
-production GGUF — NP={1,2,4,8} slot-0 byte-identical at the server
-level. Reproduced empirically multiple times.
+default `CTX_CHECKPOINTS=3` on both `DEVICE=CUDA0` (NPC.4) and
+`DEVICE=CUDA0,CUDA1` (NPC.5) for the Qwen 3.5/3.6 27B production GGUF —
+NP={1,2,4,8} slot-0 byte-identical at the server level, all cross-NP
+slot-0 pairs byte-identical. Multi-GPU evidence:
+`/tmp/production-np-determinism/run-20260517T211228/`.
 
 What's NOT yet done:
-1. **Latency bench** — F.4 in `PHASE_NPC4_FIX_AUDIT.md`. The six fixes
-   add launches; budget says ≤3% decode regression.
-2. **NPC.5 multi-GPU** — production runs `DEVICE=CUDA0,CUDA1`; we
-   verified only `CUDA0`.
-3. **NPC.6 ship** — wire the harness into `profiles/active.sh`, write
+1. **F.4 latency bench** — the six fixes add launches; budget says ≤3%
+   decode regression. Unmeasured.
+2. **NPC.6 ship** — wire the harness into `profiles/active.sh`, write
    the closure MEMORY entry.
 
 ## The six baked fixes (all default-on, no env knobs)
@@ -33,12 +33,16 @@ All on `production/2026-q2-next` submodule.
 | 5 | `ggml/src/ggml-backend.cpp:1109` | `GGML_SCHED_MAX_SPLIT_INPUTS` 10 → 32 (accommodates PSKV's `inp_per_row_k_bound` input). |
 | 6 | `examples/server/server-context.cpp:3923` (`batch_pending_prompt`) | Remove mid-prefill `tolerance` break. Prefill always runs as one continuous (ubatch-chunked) pass. |
 
-## Verification (single-GPU, all PASS)
+## Verification (single- and multi-GPU, all PASS)
 
 ```bash
-# Production harness, default CTX_CHECKPOINTS=3:
+# Production harness, default CTX_CHECKPOINTS=3, single-GPU:
 DEVICE=CUDA0 bash scripts/test-production-np-determinism.sh
 → RESULT: PASS — all slots at NP in {1 2 4 8} byte-identical to NP=1
+
+# Production harness, default CTX_CHECKPOINTS=3, multi-GPU (NPC.5):
+DEVICE=CUDA0,CUDA1 bash scripts/test-production-np-determinism.sh
+→ RESULT: PASS — slot byte-identity + cross-NP slot-0 byte-identity
 
 # Kernel layer (all 64 layers, decode-step 0 + 1):
 /tmp/run-npc4-lout.sh 1 /opt/models/yarn-audit-data/npc4-fixD-lout-np1
@@ -79,27 +83,7 @@ python3 scripts/find-first-autoregress-divergence.py \
 
 ## What to do on resume
 
-### Step 1 — NPC.5 multi-GPU (the actual production binding)
-
-```bash
-cd /home/llm/yarn-agentic
-DEVICE=CUDA0,CUDA1 bash scripts/test-production-np-determinism.sh
-```
-
-Expected outcome: PASS. If it fails, the gap is in the multi-device
-split path. Fix #2 (PSKV) went into `llm_build_kqv` (single-device
-FA). The multi-device branch at `llama-build-context.cpp:2697`
-already used PSKV — it's where the predicate originally lived, copied
-into `llm_build_kqv` per fix #2. So multi-device should be covered.
-But this is empirical — verify before claiming closure.
-
-If multi-device fails, the new capture tool's `--autoregress` mode
-won't reproduce it (capture tool is single-context). Will need to
-either (a) extend the harness to dump per-step per-slot KV state for
-multi-device, or (b) run captures with `--device CUDA0,CUDA1 -ts 1,1`
-and rebuild the comparator to handle split-buffer layouts.
-
-### Step 2 — Latency bench (F.4)
+### Step 1 — Latency bench (F.4)
 
 ```bash
 # baseline (need a way to disable all 6 fixes — they're baked, so
@@ -118,7 +102,7 @@ takes the largest hit (lost MMVQ fast path → MMQ + extra single-token
 launches). NP=8 might actually improve (the per-slot loop replaces
 some redundant work).
 
-### Step 3 — NPC.6 ship
+### Step 2 — NPC.6 ship
 
 - Add the harness call to `profiles/active.sh`'s acceptance step OR
   create `profiles/active-deterministic.sh`.
