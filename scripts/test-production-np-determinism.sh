@@ -54,40 +54,39 @@ start_server() {
     local total_ctx=$((CTX_PER_SLOT * np))
     pkill -x llama-server 2>/dev/null || true
     sleep 3
+    # Resolve overridable configuration (must be on their own statements,
+    # not in the env-var preamble — bash treats the `\`-continued block as
+    # one command, breaking if interrupted by free-standing assignments).
+    local _DEVICE="${DEVICE:-CUDA0,CUDA1}"
+    local _CACHE_K_TYPE="${CACHE_K_TYPE:-q4_0}"
+    local _CACHE_V_TYPE="${CACHE_V_TYPE:-q4_0}"
+    local _HADAMARD_FLAG=""
+    if [ "${HADAMARD:-1}" = "1" ]; then
+        _HADAMARD_FLAG="--k-cache-hadamard --v-cache-hadamard"
+    fi
+    local _SPLIT_FLAGS=""
+    if [[ "$_DEVICE" == *","* ]]; then
+        _SPLIT_FLAGS="--split-mode graph --tensor-split ${TENSOR_SPLIT:-1,1}"
+    fi
     # Full production env stack:
     #   LLAMA_FATTN_PER_SLOT_KV_ENABLE=1       — per-slot KV dispatch
     #   LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 — forces MMQ for AR16 at all batch sizes
-    #                                            and pins cuBLAS algo (partial)
     #   CUBLAS_WORKSPACE_CONFIG=:4096:8        — required for cuBLAS reproducibility
-    # CY.F.17: GGML_CUDA_MMQ_DISABLE_STREAM_K=1 disables stream_K accumulation
-    # in MMQ, which has tile-count-dependent reduction order at prefill M (>96).
-    # CY.F.18: scheduler needs_sync lifecycle race is now fixed in-source by
-    # gating sync-persistence on sched->has_reduce — no env-gate required.
-    # See MEMORY.md 2026-05-17 closure entry.
+    # CY.F.17: GGML_CUDA_MMQ_DISABLE_STREAM_K=1 disables stream_K shape-dep.
+    # CY.F.18: now fixed in-source via sched->has_reduce — no env-gate.
     GGML_CUDA_MMQ_DISABLE_STREAM_K=${GGML_CUDA_MMQ_DISABLE_STREAM_K:-1} \
     LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
     LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 \
     LLAMA_PSKV_MODE=${LLAMA_PSKV_MODE:-singlewarp} \
     CUBLAS_WORKSPACE_CONFIG=:4096:8 \
     ${LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE:+LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=${LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE}} \
-    DEVICE="${DEVICE:-CUDA0,CUDA1}"
-    CACHE_K_TYPE="${CACHE_K_TYPE:-q4_0}"
-    CACHE_V_TYPE="${CACHE_V_TYPE:-q4_0}"
-    HADAMARD_FLAG=""
-    if [ "${HADAMARD:-1}" = "1" ]; then
-        HADAMARD_FLAG="--k-cache-hadamard --v-cache-hadamard"
-    fi
-    SPLIT_FLAGS=""
-    if [[ "$DEVICE" == *","* ]]; then
-        SPLIT_FLAGS="--split-mode graph --tensor-split ${TENSOR_SPLIT:-1,1}"
-    fi
     "$BIN" -m "$GGUF" \
-        --device "$DEVICE" $SPLIT_FLAGS \
+        --device "$_DEVICE" $_SPLIT_FLAGS \
         -ngl 999 -fa on \
         --ctx-size "$total_ctx" --parallel "$np" \
         --threads 16 --batch-size 2048 --ubatch-size 512 \
-        --cache-type-k "$CACHE_K_TYPE" --cache-type-v "$CACHE_V_TYPE" \
-        $HADAMARD_FLAG \
+        --cache-type-k "$_CACHE_K_TYPE" --cache-type-v "$_CACHE_V_TYPE" \
+        $_HADAMARD_FLAG \
         --no-context-shift \
         --ctx-checkpoints ${CTX_CHECKPOINTS:-3} \
         --port "$PORT" --host 127.0.0.1 \
