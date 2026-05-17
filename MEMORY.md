@@ -6194,3 +6194,33 @@ was at 100% so moved off /home). Key dirs:
 - `matrix-{long,vlong,multi}-streamkoff-np{1,2,4,8}/` (single layer 62)
 - `vlong-streamkoff-allayers-np{1,2}/` (all layers, vlong)
 - `audit-mgpu-streamkoff-np{1,2,4}/` (all layers, long, multi-GPU)
+
+## 2026-05-17 — CY.F.17 baked into source
+
+Submodule commit aa0f7e9b inverts the env-gate in
+`ggml/src/ggml-cuda/mmq.cuh`:
+
+- Before: `static const bool stream_k_disabled = std::getenv("GGML_CUDA_MMQ_DISABLE_STREAM_K") != nullptr;`
+  Stream_K was the default; needed env-var to disable. Production
+  `profiles/active.sh` didn't set it; harness defaulted to setting it.
+- After: `static const bool stream_k_enabled = std::getenv("GGML_CUDA_MMQ_ENABLE_STREAM_K") != nullptr;`
+  Deterministic by default. Opt-in to stream_K via the new env-var name.
+
+Verified:
+- No env-var set → 63/63 transformer layers byte-identical at NP=1 vs
+  NP=2 on Qwen 3.6 27B long-bucket prompt-00.
+- `GGML_CUDA_MMQ_ENABLE_STREAM_K=1` → layer 0 differs max|Δ|=6.5e-4
+  (old behavior preserved as opt-in).
+
+Old env-var name `GGML_CUDA_MMQ_DISABLE_STREAM_K` is now a no-op. Scripts
+that still set it (test-production-np-determinism.sh, task-210-bisect.sh,
+test-cy-f18-layer-bisect.cpp comments) are forward-compatible (no-op) and
+backward-compatible (works on old builds where the var did something).
+
+This is a STOPGAP fix: it disables stream_K entirely rather than making
+the kernel itself shape-invariant. Perf cost not measured; if/when the
+production engine moves to multi-slot, perf needs to be re-evaluated.
+The proper fix (shape-invariant stream_K fixup) remains open.
+
+Bug #2 (token-256 boundary at vlong+ prompts, FA prefill kernel
+suspected) is untouched by this bake-in — task #216.
