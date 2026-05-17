@@ -6604,3 +6604,45 @@ Evidence dirs:
   harness divergence signatures (FAIL).
 
 Submodule commit: ik_llama.cpp@<latest>. Parent submodule pointer bumped.
+
+## 2026-05-17 — NPC.4 production harness CLOSED — context checkpoints were the residual
+
+The remaining production-harness gap (after kernel-level + LM-head fixes)
+turned out to be **context checkpoint creation**. The harness defaults to
+`--ctx-checkpoints 3`. With `CTX_CHECKPOINTS=0` (server CLI flag) the
+harness now PASSES at every NP={1,2,4,8}:
+
+```
+DEVICE=CUDA0 CTX_CHECKPOINTS=0 bash scripts/test-production-np-determinism.sh
+→ RESULT: PASS — all slots at NP in {1 2 4 8} byte-identical to NP=1
+```
+
+What gives: the server periodically calls `create_checkpoint(slot)` →
+`llama_state_seq_get_data(ctx, ..., LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY)`
+→ `write_kv_cache`. Supposed to be a read-only snapshot, but it has an
+NP-dependent side effect on subsequent decode behavior. The two paths
+"save 1 slot's worth of KV state" (NP=1) and "save N slots' worth at
+the same intervals" (NP>=2) leave the cache in slightly different
+states (likely some defrag / contiguation / synchronization
+side-effect inside `write_kv_cache`).
+
+Result: NP=1 with checkpoints produces a different generation tail
+than NP>=2 with checkpoints. NP={2,4,8} are mutually identical because
+they all hit the multi-slot path the same way.
+
+**State of the closure:**
+- Kernel level (with our three baked fixes): byte-identical at every
+  layer × step. Verified via both the `--all-in-layer --decode-only`
+  static capture and the `--autoregress 64` real-generation capture.
+- Server level with `CTX_CHECKPOINTS=0`: PASS.
+- Server level with `CTX_CHECKPOINTS=3` (default): NP=1 still drifts in
+  the generation tail. Root cause is the `write_kv_cache` side effect,
+  not the kernel layer.
+
+Follow-up: audit `write_kv_cache` for hidden state mutation (likely
+defrag or KV contiguation triggered by partial-state save) and either
+fix the divergence or document the constraint. Not in this commit.
+
+LM-head fix landed in the same commit (per-slot cuBLAS loop) — it's
+required for proper shape invariance even if it didn't close this
+particular production gap.
