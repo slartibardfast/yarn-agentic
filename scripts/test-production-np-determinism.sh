@@ -59,11 +59,10 @@ start_server() {
     #   CUBLAS_WORKSPACE_CONFIG=:4096:8        — required for cuBLAS reproducibility
     # CY.F.17: GGML_CUDA_MMQ_DISABLE_STREAM_K=1 disables stream_K accumulation
     # in MMQ, which has tile-count-dependent reduction order at prefill M (>96).
-    # CY.F.18: GGML_SCHED_FORCE_SYNC_INPUTS=1 keeps backend sync flag true to
-    # cover async cross-device peer writes that arrive after stream-sync.
-    # Combined enable full NP=2 cross-NP determinism. See MEMORY.md 2026-05-16.
+    # CY.F.18: scheduler needs_sync lifecycle race is now fixed in-source by
+    # gating sync-persistence on sched->has_reduce — no env-gate required.
+    # See MEMORY.md 2026-05-17 closure entry.
     GGML_CUDA_MMQ_DISABLE_STREAM_K=${GGML_CUDA_MMQ_DISABLE_STREAM_K:-1} \
-    GGML_SCHED_FORCE_SYNC_INPUTS=${GGML_SCHED_FORCE_SYNC_INPUTS:-1} \
     LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
     LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 \
     LLAMA_PSKV_MODE=${LLAMA_PSKV_MODE:-singlewarp} \
