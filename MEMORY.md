@@ -6067,3 +6067,58 @@ async F32 reduce not pursued; the simpler has_reduce gate sufficed), #209
 Files: PHASE_MMQ_Q4_0_AR16.md (CY.D closure section + Phase D update),
 data/phase-d-multigpu-peer/iteration-{1,2}.md (probe logs),
 data/cy-d-closure-2026-05-17/ (CY.D evidence).
+
+---
+
+## 2026-05-17 — Realistic-prompt correction: CY closures overstated
+
+Reopening Phase CY (was closed earlier today). The fixes CY.F.17 + CY.F.18
+are real and valid, but the closure binding only held at SHORT prompt
+(~15 tokens). With a realistic ~200-token prompt, the same harness fails
+0/5 at NP>1 on BOTH single-GPU and multi-GPU. The Phase D framing was also
+wrong — the race is NOT multi-GPU specific.
+
+Sequence of script bugs that produced false signal earlier today:
+
+1. My DEVICE/CACHE override edit to scripts/test-production-np-determinism.sh
+   broke the env-var preamble's backslash continuation. The shell errored
+   silently ("DEVICE=CUDA0,CUDA1: command not found") and ran the server
+   WITHOUT GGML_CUDA_MMQ_DISABLE_STREAM_K, LLAMA_FATTN_PER_SLOT_KV_ENABLE,
+   LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH, LLAMA_PSKV_MODE, CUBLAS_WORKSPACE
+   set. All subsequent probe data was on pre-fix code.
+
+2. Fixed the env preamble. Re-running probes with the fixed harness:
+   - P1 single-GPU NP={1,2,4,8} × 5: 0/5 FAIL (long prompt baked into
+     phase-d-evidence-probes.sh)
+   - P2 multi-GPU NP=1-only × 5: 5/5 PASS (NP=1 is fully deterministic)
+   - P5 multi-GPU NP={1,2,4,8} × 5: 0/5 FAIL (same long prompt)
+   - P6 SEED=42 variant: 0/5 (seed-irrelevant at temp=0)
+   - Short-prompt re-bind × 5 (script default at time): 5/5 PASS
+
+3. Compared single-GPU NP=1 SHA `037be180...` vs multi-GPU NP=1 SHA
+   `3683a5f8...`: different (kernel paths differ between configs), but
+   each internally stable across server restarts.
+
+The race is therefore:
+- DETERMINISTIC (same input → same wrong output 5/5)
+- PROMPT-LENGTH dependent (short PASS, long FAIL)
+- NP>1 ONLY (NP=1 byte-identical across restarts)
+- NOT multi-GPU specific (single-GPU fails identically)
+
+Today's fixes work for short-prompt; long-prompt has a residual race that
+suspect candidates from CY.A audit point to: `cur->ne[1] > 32` conditionals
+in llama-build-context.cpp lines 789, 1505, 2805 (cast residual to
+reduce_type for prefill). Long-prompt prefill exercises that path; short
+doesn't.
+
+Task hygiene:
+- Updated harness default PROMPT to realistic ~200 tokens (was ~15).
+- Reopened Phase CY (#187 → in_progress, but use #210 for active tracking).
+- Deleted #209 (Phase D.2 misdiagnosis).
+- Phase D (#154) → pending; D.4 binding will close automatically when
+  long-prompt is fixed.
+- New task #210 — long-prompt NP>1 byte-identity — tracks the actual work.
+
+Files: scripts/test-production-np-determinism.sh (env preamble fix +
+realistic default prompt), PHASE_MMQ_Q4_0_AR16.md (CY.D correction note),
+data/phase-d-evidence/ (probe v2 outputs, valid).
