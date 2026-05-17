@@ -6272,3 +6272,30 @@ the FA K-chunk count (3 vs 4 chunks under SAME parallel_blocks=1).
 It's the cols_per_block=32 + fp16 KQ acc shipped under
 GGML_PREC_DEFAULT for Q->ne[1] > 32 at head_dim=256, which has
 M-dependent rounding inside the WMMA m16n16k16 fragment reduction.
+
+## 2026-05-17 — NP-determinism NOT closed; PHASE_NP_CLOSURE handover
+
+After A.1' bake-in + singlewarp default + delta-net `use_256` + cuBLAS
+TF32 off + CUBLAS_WORKSPACE_CONFIG via setenv, ran the production
+harness `scripts/test-production-np-determinism.sh` with NO env
+overrides on default and vlong prompts. **Both FAILED.**
+
+Signature on default (~200 tok) prompt:
+- NP=1 vs NP={2,4,8} slot-0: all DIFFER (340 vs 380/380/356 bytes)
+- NP=2 vs NP=4 slot-0: IDENTICAL (380 bytes)
+- NP=8 differs from both NP=2/4 (356 bytes)
+
+Means the multi-slot path diverges from NP=1 and clusters by N. This
+is a real production-stack bug NOT covered by A.1' (which only bound
+slot-0 prefill output) or by capture-path CY.F.7 (which bound the V4
+capture, not the real server).
+
+The session's bakings stand on their own as cleanups (no env-vars
+required for the deterministic settings), but full NP-determinism is
+NOT closed.
+
+Handover doc: `PHASE_NP_CLOSURE.md`. Next phase should start there.
+
+Anti-pattern flag: do not trust DATA-1's "production harness PASS"
+memory entry — either ran on different state or different harness;
+does not hold for this build.
