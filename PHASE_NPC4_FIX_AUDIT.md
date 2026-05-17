@@ -396,8 +396,20 @@ After implementing the fix:
   Worst measured: -45% PP, -26% TG aggregate. **Order-of-magnitude
   over budget; not ship state.**
 
-  **Open subtask F.4.1**: Find a NP-invariant codepath that doesn't
-  serialize the hot kernels. Candidates:
+  **F.4.1 attempted 2026-05-17 — FAILED**: tried to remove the
+  per-slot-loop in `ggml_cuda_up_gate_unary` by packing Ny slots into
+  the kernel's existing `blockIdx.y`/`args.ne2` slot dimension
+  (single launch, grid.y=Ny, nb02=0, ncols_y=1). Reintroduced NP=1
+  vs NP>=2 divergence (NP=4≡NP=8 mutually byte-identical, both
+  differ from NP=1). Reverted; harness re-PASSed at HEAD. Root cause
+  not localized; candidate areas: `nrows_dst` multi-GPU branch
+  (`id==ctx.device ? ne0 : row_diff`), src1 quantization layout
+  assumptions when read as ne2-packed, or nb02=0 weight-sharing on
+  the non-id path. See MEMORY entry "F.4.1 ne2-packed collapsed-
+  launch attempt FAILED".
+
+  **Open subtask F.4.1' (next attempt)**: Find a NP-invariant
+  codepath that doesn't serialize the hot kernels. Candidates:
   - For fix #1: batched fused up_gate that statically tiles by
     n_tokens (NP-invariant by construction, no per-slot loop).
   - For fix #3: re-introduce MMVQ fast path at M=1 ONLY when the
