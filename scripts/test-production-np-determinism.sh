@@ -28,7 +28,7 @@ PORT=${PORT:-18292}
 N_PREDICT=${N_PREDICT:-64}
 NP_LIST=${NP_LIST:-"1 2 4 8"}
 
-PROMPT="The history of artificial intelligence began in earnest with the work of"
+PROMPT="${PROMPT:-The history of artificial intelligence began in earnest with the work of}"
 
 RESULTS_DIR=${RESULTS_DIR:-/tmp/production-np-determinism}
 RUN_ID="run-$(date +%Y%m%dT%H%M%S)"
@@ -36,7 +36,9 @@ RUN_DIR="$RESULTS_DIR/$RUN_ID"
 mkdir -p "$RUN_DIR"
 
 unset LLAMA_LAYER_TRACE LLAMA_BATCH_INVARIANT LLAMA_DELTA_FORCE_BLOCKS
-unset LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE
+# Note: LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE intentionally NOT unset — caller
+# may set it to serialize prefill (CY.F.19 probe). Default behavior unchanged
+# when the env var is not set.
 
 if [ ! -f "$GGUF" ]; then
     echo "FAIL: model not found at $GGUF" >&2
@@ -67,14 +69,27 @@ start_server() {
     LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 \
     LLAMA_PSKV_MODE=${LLAMA_PSKV_MODE:-singlewarp} \
     CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+    ${LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE:+LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=${LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE}} \
+    DEVICE="${DEVICE:-CUDA0,CUDA1}"
+    CACHE_K_TYPE="${CACHE_K_TYPE:-q4_0}"
+    CACHE_V_TYPE="${CACHE_V_TYPE:-q4_0}"
+    HADAMARD_FLAG=""
+    if [ "${HADAMARD:-1}" = "1" ]; then
+        HADAMARD_FLAG="--k-cache-hadamard --v-cache-hadamard"
+    fi
+    SPLIT_FLAGS=""
+    if [[ "$DEVICE" == *","* ]]; then
+        SPLIT_FLAGS="--split-mode graph --tensor-split ${TENSOR_SPLIT:-1,1}"
+    fi
     "$BIN" -m "$GGUF" \
-        --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
+        --device "$DEVICE" $SPLIT_FLAGS \
         -ngl 999 -fa on \
         --ctx-size "$total_ctx" --parallel "$np" \
         --threads 16 --batch-size 2048 --ubatch-size 512 \
-        --cache-type-k q4_0 --cache-type-v q4_0 \
-        --k-cache-hadamard --v-cache-hadamard \
+        --cache-type-k "$CACHE_K_TYPE" --cache-type-v "$CACHE_V_TYPE" \
+        $HADAMARD_FLAG \
         --no-context-shift \
+        --ctx-checkpoints ${CTX_CHECKPOINTS:-3} \
         --port "$PORT" --host 127.0.0.1 \
         > "$RUN_DIR/server-np$np.log" 2>&1 &
     SRV=$!
