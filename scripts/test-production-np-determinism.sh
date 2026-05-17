@@ -119,8 +119,9 @@ trap 'stop_server' EXIT
 
 do_completion() {
     local out=$1
+    local seed="${SEED:-1}"
     curl -fsS -m 120 -H 'Content-Type: application/json' \
-        -d "{\"prompt\":\"$PROMPT\",\"n_predict\":$N_PREDICT,\"temperature\":0.0,\"top_p\":1.0,\"top_k\":0,\"min_p\":0.0,\"repeat_penalty\":1.0,\"seed\":1,\"stream\":false,\"cache_prompt\":false}" \
+        -d "{\"prompt\":\"$PROMPT\",\"n_predict\":$N_PREDICT,\"temperature\":0.0,\"top_p\":1.0,\"top_k\":0,\"min_p\":0.0,\"repeat_penalty\":1.0,\"seed\":$seed,\"stream\":false,\"cache_prompt\":false}" \
         "http://127.0.0.1:$PORT/completion" > "$out"
 }
 

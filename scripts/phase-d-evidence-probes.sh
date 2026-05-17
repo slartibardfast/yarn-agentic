@@ -75,6 +75,15 @@ run_probe "p4-multigpu-np1-nohada" "HADAMARD=0" "1" 3
 echo "=== P5: Multi-GPU full sweep × 5 (re-bind) ==="
 run_probe "p5-multigpu-fullsweep" "" "1 2 4 8" 5
 
+# Probe P6: Multi-GPU full sweep × 5 with DIFFERENT seed (margin-sensitivity test)
+# At temp=0 the seed should be irrelevant for sampling; if SEED=42 produces a
+# different failure rate than P5's SEED=1, the server has seed-dependent
+# behavior even at temp=0 (which would be a bug separate from the race).
+# If P5 and P6 fail at SAME positions for same NP, that's consistent with a
+# computation-path race (not margin sensitivity).
+echo "=== P6: Multi-GPU full sweep × 5 (SEED=42, margin-sensitivity) ==="
+run_probe "p6-multigpu-fullsweep-seed42" "SEED=42" "1 2 4 8" 5
+
 echo ""
 echo "=== ALL PROBES COMPLETE ==="
 echo "Summaries: $OUT_DIR/"
