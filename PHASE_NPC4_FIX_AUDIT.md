@@ -452,6 +452,26 @@ After implementing the fix:
     impact on NP=1 PP at long prompts vs short prompts. The -45%
     NP=1 PP regression doesn't obviously map to a per-decode fix.
 
+  **CLOSED 2026-05-17**: F.4.1' for fix #1 landed via the first
+  candidate above. Lifted `rows_per_cuda_block` to a 4th template
+  parameter on `k_fused_mul_mat_vec_q` / `fused_mul_mat_vec_q`,
+  added a `force_rpcb1` flag on `mmvq_args` + the public
+  `ggml_cuda_op_fused_mul_mat_vec_q_id` entry, and switched
+  `ggml_cuda_up_gate_unary` to call non-packed (`ncols_y=Ny`,
+  `grid.y=1`) with `force_rpcb1=true`. Dispatcher pins
+  `nwarps=4` under that flag. See `PHASE_PERF_F4_1.md` for the
+  measurement of record.
+
+  Acceptance: NP={1,2,4,8} multi-GPU byte-identical (PASS).
+  Perf: TG +4.8% / +6.8% / +7.5% over the NPC HEAD slot-packed
+  path at NP=2/4/8. NP=1 unchanged.
+
+  **F.4.1' did NOT close the full perf gap** vs pre-NPC. The
+  remaining -9% / -17% / -20% TG gap at NP=2/4/8 is therefore
+  **not** owed by fix #1 — it is owed by the other two candidates
+  (#3/#4 in the list above) and/or fix #6. A separate bisection
+  task is the next step in `PHASE_PERF_F4_1.md`.
+
 - [x] **F.5** Production harness verify. **CLOSED 2026-05-17.**
   NP={1,2,4,8} all mutually byte-identical at server level on both
   single-GPU (`CUDA0`) and multi-GPU (`CUDA0,CUDA1`), all cross-NP

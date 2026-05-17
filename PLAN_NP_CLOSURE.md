@@ -358,7 +358,11 @@ amortization with NP-invariance). F.4.1' is tracked in
 
 **What's still open (non-blocking)**:
 
-- F.4.1' kernel rewrite to close the perf gap.
+- ~~F.4.1' kernel rewrite to close the perf gap.~~ **CLOSED 2026-05-17**
+  — see `PHASE_PERF_F4_1.md`. Delivered TG +5–8% over HEAD at NP≥2 with
+  NP-determinism preserved; remaining ~10–20% TG gap vs pre-NPC is
+  owed by fixes #2 (PSKV) / #4 (cuBLAS per-slot loop), now the
+  next named subtask.
 - Evidence-dir prune: `/opt/models/yarn-audit-data/npc4-*` (~50 GB)
   and `/tmp/npc4-f41-*` (~130 MB). Salient signatures captured in
   MEMORY; the byte dumps are reproducible from harness if needed.

@@ -85,14 +85,14 @@ the deterministic profile's preamble as the known trade.
 
 ## What's still open (non-blocking)
 
-- **F.4.1'** — write a new MMVQ kernel template instance with
-  `ncols_y>=2` AND `rows_per_cuda_block=1`. The existing
-  `ncols_y>=4` templates use `rows_per_cuda_block=2`, a different
-  reduction tree that's NP-divergent. A `ncols_y=2/4/8` ×
-  `rows_per_cuda_block=1` kernel would combine in-block weight
-  amortization (the source of pre-NPC.4 throughput) with the
-  per-output independent reduction (the source of NP-invariance).
-  Tracked in `PHASE_NPC4_FIX_AUDIT.md` §9.F.4.1'.
+- ~~**F.4.1'** — write a new MMVQ kernel template instance with
+  `ncols_y>=2` AND `rows_per_cuda_block=1`.~~ **CLOSED 2026-05-17**
+  via template-param lift + `force_rpcb1` flag on `mmvq_args`. NP
+  byte-identical across {1,2,4,8} multi-GPU preserved; TG +5–8% over
+  HEAD at NP≥2. See `PHASE_PERF_F4_1.md`. The remaining ~10–20% TG
+  gap vs pre-NPC at NP≥2 is not owed by fix #1; the bisection of
+  fixes #2 (PSKV) / #4 (cuBLAS per-slot loop) is the next subtask
+  in `PHASE_PERF_F4_1.md`.
 - **Evidence-dir prune** — `/opt/models/yarn-audit-data/npc4-*`
   (~50 GB) and `/tmp/npc4-f41-*` (~130 MB). Salient signatures
   captured in MEMORY; raw bytes reproducible from harness.
