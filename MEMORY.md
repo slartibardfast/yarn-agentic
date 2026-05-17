@@ -6747,3 +6747,38 @@ candidates are:
 Net effect on F.4: collapsed-launch path is not a drop-in optimization.
 Need either deeper kernel work or a different angle for the F.4 perf
 recovery. NPC.6 ship still blocked on F.4 budget.
+
+## 2026-05-17 — F.4.1 root cause LOCALIZED + FIXED, but F.4 perf gap remains
+
+Root cause of the ne2-packed divergence (the "collapsed launch
+FAILED" entry above): `mul_mat_vec_q_cuda` in
+`mmvq-templates.cuh:445` picks `nwarps=4` for single-slot
+(`args.ne2 < 2`) and `nwarps=1` for multi-slot (designed for MoE
+expert parallelism where ne2 = num_experts and grid.y already
+saturates). My packed launch had `ne2=Ny>=2` and `ids=nullptr`
+(no MoE), so it got `nwarps=1` → different block thread count
+(32 vs 128) → different cross-warp shared-memory reduction order
+→ ~1 ULP/element drift on slot-0, compounding across layers,
+eventually flipping an argmax.
+
+Fix: keep `nwarps=4` whenever `ids_data==nullptr` (single matmul
+or slot-packed fused path with shared weights), regardless of
+ne2. Now intra-layer all-64-layers NP=1 vs NP=2 decode-0 is
+fully slot-0 byte-identical; DEVICE=CUDA0,CUDA1 production
+harness PASSes; ne2-packed launch is correct.
+
+**However**: launch overhead was NOT the dominant cost of the F.4
+regression. Packed launch perf ≈ per-slot loop perf at every NP.
+Pre-NPC.4 baseline used the `ncols_y=8` kernel template
+(`rows_per_cuda_block=2`, different reduction tree, NP-divergent
+by construction). Our NP-invariant path is stuck at ncols_y=1.
+L2 sibling-block amortization doesn't recover the in-block
+amortization of ncols_y>=2. Closing F.4 needs a new kernel that
+combines ncols_y>=2 with rows_per_cuda_block=1.
+
+Diagnostic methodology that worked: when slot-0 differs but the
+test produces NP=4≡NP=8 mutually identical, the bug is conditioned
+on a ne2-derived dispatch decision, not random drift. Single-GPU
+all-tensors-in-layer capture localized the first divergent tensor
+(ffn_up_gate at layer 4, index 1, 1 ULP) and pointed straight at
+the kernel's reduction structure.
