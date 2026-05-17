@@ -6122,3 +6122,75 @@ Task hygiene:
 Files: scripts/test-production-np-determinism.sh (env preamble fix +
 realistic default prompt), PHASE_MMQ_Q4_0_AR16.md (CY.D correction note),
 data/phase-d-evidence/ (probe v2 outputs, valid).
+
+## 2026-05-17 — Audit A.0 graph-level NP localization (post-compact resume)
+
+Built on F.1 (capture) + F.2 (binder) + F.3 (corpus) landed earlier today.
+Hypothesis: cheaper than 8 sequential per-kernel audits to first localize
+which layer/op the NP-divergence enters at, then drill there.
+
+### Bug #1 confirmed (CY.F.17 stream_K) — env-gate sufficient at long bucket
+
+Long-bucket prompt-00 (210 tokens), production env (--device CUDA0,CUDA1
+--split-mode graph --tensor-split 1,1, -ngl 999, -fa on, q4_0 K/V cache,
+Hadamard K/V):
+
+- Without `GGML_CUDA_MMQ_DISABLE_STREAM_K=1`: layer-0 l_out diverges
+  immediately, max|Δ|=8.6e-6 at slot-0 (head boundary at idx=128, then
+  amplifies through 63 layers to max|Δ|=14.9 by layer 58).
+- Same divergence magnitude on single-GPU (max|Δ|=7.8e-6 at layer 0) —
+  rules out multi-GPU peer-write as primary cause.
+- With `GGML_CUDA_MMQ_DISABLE_STREAM_K=1` set: 63/63 transformer layers
+  byte-identical at NP={2,4,8} vs NP=1 on long-bucket prompt-00.
+  Confirmed both single-GPU and multi-GPU.
+
+This validates CY.F.17's CLOSED finding from the perspective of long-bucket
+prompts on the realistic prompt corpus.
+
+### Bug #2 newly localized — vlong+ prompts diverge despite stream_K off
+
+With `GGML_CUDA_MMQ_DISABLE_STREAM_K=1` set:
+
+- vlong (502 tok) NP=1 vs NP={2,4}: l_out-62 max|Δ|=4.1-5.7, 49% floats
+  differ. Layers 0,1,2 IDENTICAL; layer 3+ DIVERGE starting at idx=1310720
+  = **token 256 boundary** (5120 × 256).
+- multi (946 tok) NP=1 vs NP=2: l_out-62 max|Δ|=10.75, 62% differ.
+
+Layer 3 is the FIRST FULL-ATTENTION layer in qwen3.6 27B's hybrid
+schedule (`hparams.recurrent_layer_arr[i] = ((i + 1) % 4 != 0)` →
+layers 3, 7, 11, ... are full-attn; rest are DeltaNet).
+
+The token-256 boundary is highly suggestive of an FA prefill kernel
+tile-size shape-dependence: at n_tokens=502 vs 1004 vs 2008 (NP=1/2/4),
+the kernel picks different tile counts; the reduction across tiles
+produces shape-dependent fp summation order; tokens 0..255 (first tile)
+deterministic, tokens 256+ accumulate drift.
+
+### Production gap
+
+`profiles/active.sh` exports only LLAMA_MTP_INLINE_KV=1, NOT
+GGML_CUDA_MMQ_DISABLE_STREAM_K. Production currently runs --parallel 1
+so NP-determinism is a non-issue at runtime. But:
+
+- The user's harness `scripts/test-production-np-determinism.sh` sets the
+  env-gate by default (line 84). Hence harness was passing.
+- If/when production switches to multi-slot, the env-gate must move into
+  `profiles/active.sh` (or be baked into source). AND the FA prefill
+  shape-dep must be fixed for vlong+ prompts.
+
+### Implications for next steps
+
+- Bug #1 has a clean env-gate fix; source-level bake-in is a follow-up
+  cleanup (no diagnostic work needed).
+- Bug #2 is the work — need to drill into FA prefill kernel selection
+  at production K/V distribution. Per audit plan: this is closer to A.1
+  (singlewarp FA) territory, but applies to PREFILL FA, not the per-slot
+  decode FA. Likely a different kernel.
+
+### Data location
+
+All captures live under `/opt/models/yarn-audit-data/` (root partition
+was at 100% so moved off /home). Key dirs:
+- `matrix-{long,vlong,multi}-streamkoff-np{1,2,4,8}/` (single layer 62)
+- `vlong-streamkoff-allayers-np{1,2}/` (all layers, vlong)
+- `audit-mgpu-streamkoff-np{1,2,4}/` (all layers, long, multi-GPU)
