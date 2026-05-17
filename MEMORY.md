@@ -6782,3 +6782,41 @@ on a ne2-derived dispatch decision, not random drift. Single-GPU
 all-tensors-in-layer capture localized the first divergent tensor
 (ffn_up_gate at layer 4, index 1, 1 ULP) and pointed straight at
 the kernel's reduction structure.
+
+## 2026-05-17 — NPC.6 CLOSED: full NP-determinism shipped
+
+The full NP-determinism workstream (NPC.4 / NPC.5 / NPC.6) is closed.
+Production binary at `production/2026-q2-next` HEAD produces
+byte-identical slot output across NP={1,2,4,8} on multi-GPU
+`DEVICE=CUDA0,CUDA1` for the Qwen 3.5/3.6 27B production GGUF at
+default `CTX_CHECKPOINTS=3`.
+
+**What shipped**:
+- Six default-on fixes in the binary (PHASE_NPC4_FIX_AUDIT.md table).
+  No env knobs required.
+- `/home/llm/profiles/qwen36-27b-x8-deterministic.sh` — opt-in
+  multi-slot profile (--parallel 8). Not made `active.sh` yet
+  because single-slot MTP serving is current production; deterministic
+  profile is one symlink flip away.
+- `scripts/verify-production-determinism.sh` — pre-deploy
+  acceptance wrapper around the harness. Run before flipping the
+  symlink. Returns 0 on PASS, 1 on FAIL.
+
+**What did NOT ship (accepted regression)**:
+- F.4 decode-throughput budget (≤3% per
+  `feedback_determinism_must_co_optimize_perf.md`) is overrun:
+  -45% NP=1 PP, -26% NP=8 aggregate TG vs pre-NPC.4 baseline.
+  User accepted 2026-05-17 given the volume of work to close
+  F.4.1' (a new `ncols_y>=2` + `rows_per_cuda_block=1` kernel
+  that combines bandwidth amortization with NP-invariance).
+
+**What remains open as future work**:
+- F.4.1' kernel write. Documented in PHASE_NPC4_FIX_AUDIT.md.
+  Not blocking ship; closes the perf gap when prioritized.
+- Evidence-dir prune (`/opt/models/yarn-audit-data/npc4-*` ~50 GB).
+
+Diagnostic methodology to preserve: NP=K patterns where
+`NP=4≡NP=8` mutually identical but both differ from NP=1
+signal a ne2-derived dispatch decision (e.g., the nwarps
+dispatcher in mmvq-templates.cuh:445), not random drift.
+Single-GPU all-tensors-in-layer capture localizes cheaply.
