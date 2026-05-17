@@ -1,5 +1,11 @@
 # Phase D — Multi-GPU peer-access deterministic ordering
 
+> **SUPERSEDED 2026-05-17.** Phase D was based on a misdiagnosis — the race
+> exists identically on single-GPU, so multi-GPU peer-access isn't the source.
+> The actual work is now under [`PLAN_DETERMINISM_AUDIT.md`](PLAN_DETERMINISM_AUDIT.md).
+> See [`STATUS.md`](STATUS.md) for the current narrative. This file is kept
+> for traceability (the D.1 audit table content remains useful).
+
 **Branch**: `production/2026-q2-next`
 
 **Pre-state (2026-05-17)**:

@@ -1,5 +1,11 @@
 # Phase CY.F.18 — proper fix for scheduler needs_sync lifecycle race
 
+> **Closed: the CY.F.18 bug is fixed and shipped** (see closure section
+> below). What this doc framed as "Phase D pickup" is superseded — see
+> [`PLAN_DETERMINISM_AUDIT.md`](PLAN_DETERMINISM_AUDIT.md) and
+> [`STATUS.md`](STATUS.md). Kept for the closure record and probe-history
+> table.
+
 **Branch**: `production/2026-q2-next`
 
 ## CLOSURE 2026-05-17 — proper fix landed
