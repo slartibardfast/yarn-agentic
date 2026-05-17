@@ -2,7 +2,25 @@
 
 Date: 2026-05-15
 Branch: production/2026-q2-next
-Status: **Phase A + Phase B + Phase C CLOSED 2026-05-15** — all unit-test sub-steps GREEN. Production NP-token-determinism PARTIAL (Phase F open).
+Status: **Phase A + B + C CLOSED. Phases CX, CY (narrow), D — closed via supersession (see Reordering 2026-05-17). Phases E + F — gated on audit fork verdict.**
+
+## Reordering 2026-05-17 — Option 3 (time-boxed audit)
+
+Today's bisection (task #210) revealed:
+- The race that we'd been chasing under Phase CY / Phase D is **content-dependent at the kernel level**, NOT a build-graph conditional and NOT multi-GPU peer-access.
+- Multiple "facts" the audit had relied on were falsified: `ne[1]>32` cast doesn't fire (`reduce_type` forced to F32), `mla_attn` is force-reset to 0 for Qwen 3.6, the harness was running pre-fix code due to a bash bug.
+- Hadamard isn't masking the race — it's compensating Q4_0 cache quantization error so upstream drift stays sub-threshold for most prompts. The drift exists everywhere; only specific prompt content crosses the argmax flip line.
+
+Implications for phase order:
+
+- **Phase CX** — closed by supersession. The non-MMQ/non-cuBLAS shape-dependent audit work that CX scoped is folded into `PLAN_DETERMINISM_AUDIT.md` (broader scope, production-state binding rather than random-tensor binding).
+- **Phase CY** — narrow binding (unit test 10/10 NP=2 + short-prompt harness 5/5) holds. Realistic-prompt binding is in the audit.
+- **Phase D** — closed by supersession. The "multi-GPU peer-access" framing was a misdiagnosis; the race fires identically on single-GPU and multi-GPU. D.1's audit table is still useful evidence (kept in §7 below).
+- **Active work** — `PLAN_DETERMINISM_AUDIT.md` foundation (F.1-F.4) + first audit cycle (A.0 baseline, A.1 singlewarp FA, A.7 cache write/read) under Option 3: time-boxed to ~150k tokens. If the cycle yields a meaningful fix → continue. If not → pivot to ship-NP=1-deterministic posture.
+- **Phase E (perf)** — gated on Option 3 fork verdict. Can proceed in parallel for measurement-only work (no code changes that would step on audit fixes).
+- **Phase F (closure)** — gated on whichever ship posture comes out of the fork.
+
+Tasks #154 (Phase D) and #157 (Phase CX) deleted as superseded.
 
 ## Progress log
 
