@@ -367,7 +367,48 @@ After implementing the fix:
   Final intra-layer state: all 64 layers slot-0 byte-identical at
   NP={1,2,4,8} for decode-step 0 AND decode-step 1.
 
-- [ ] **F.4** Latency bench. Not yet measured.
+- [ ] **F.4** Latency bench. **MEASURED 2026-05-17 — fails ≤3% budget**.
+
+  Tool: `llama-batched-bench`, multi-GPU (`-sm graph -ts 1,1 -dev CUDA0,CUDA1`),
+  production env stack (PER_SLOT_KV=1, SHAPE_INVARIANT_DISPATCH=1,
+  MMQ_DISABLE_STREAM_K=1, CUBLAS_WORKSPACE_CONFIG=:4096:8), npp=200,
+  ntg=64, npl={1,2,4,8}, ctk=ctv=q4_0, fa=on. Baseline = submodule
+  `eb93b39f` (parent of the NPC.4 cluster). HEAD = `2e60a8e9`.
+
+  Logs: `data/npc-latency/head-multigpu.log`, `data/npc-latency/prefix-multigpu.log`.
+
+  | NP | PP HEAD | PP pre | Δ PP   | TG HEAD | TG pre | Δ TG    |
+  |----|---------|--------|--------|---------|--------|---------|
+  | 1  | 96.82   | 176.98 | -45.3% | 18.10   | 18.00  | +0.6%   |
+  | 2  | 18.07   | 17.97  | +0.6%  | 17.19   | 19.80  | -13.2%  |
+  | 4  | 17.35   | 17.32  | +0.2%  | 18.18   | 23.49  | -22.6%  |
+  | 8  | 16.15   | 16.10  | +0.3%  | 18.66   | 25.26  | -26.1%  |
+
+  - **NP=1 prefill regresses -45%** (likely fix #3: force MMQ at all
+    M, lost fast paths for small-M; or fix #4: cuBLAS per-slot loop
+    serializing what was previously batched).
+  - **NP≥2 decode regresses 13–26%** (likely fix #1: per-slot loop
+    over fused up_gate single-token kernel at n_tokens≤8 serializes
+    N kernel launches that were previously one batched call).
+  - NP≥2 prefill and NP=1 decode are within noise.
+
+  Budget per `feedback_determinism_must_co_optimize_perf.md`: ≤3%.
+  Worst measured: -45% PP, -26% TG aggregate. **Order-of-magnitude
+  over budget; not ship state.**
+
+  **Open subtask F.4.1**: Find a NP-invariant codepath that doesn't
+  serialize the hot kernels. Candidates:
+  - For fix #1: batched fused up_gate that statically tiles by
+    n_tokens (NP-invariant by construction, no per-slot loop).
+  - For fix #3: re-introduce MMVQ fast path at M=1 ONLY when the
+    NP-invariance harness shows the kernel is bit-identical to MMQ
+    at M=1 (it should be, since M=1 has no batching dimension).
+  - For fix #4: cuBLAS workspace-pinned GEMM at M>1 — verify if
+    workspace=:4096:8 already makes the M>1 path NP-invariant
+    without serializing.
+  - Independent path: profile fix #6 (mid-prefill break removal)
+    impact on NP=1 PP at long prompts vs short prompts. The -45%
+    NP=1 PP regression doesn't obviously map to a per-decode fix.
 
 - [~] **F.5** Production harness verify. NP={2,4,8} now MUTUALLY
   byte-identical at server level (huge improvement); NP=1 still
