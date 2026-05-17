@@ -396,20 +396,49 @@ After implementing the fix:
   Worst measured: -45% PP, -26% TG aggregate. **Order-of-magnitude
   over budget; not ship state.**
 
-  **F.4.1 attempted 2026-05-17 — FAILED**: tried to remove the
-  per-slot-loop in `ggml_cuda_up_gate_unary` by packing Ny slots into
-  the kernel's existing `blockIdx.y`/`args.ne2` slot dimension
-  (single launch, grid.y=Ny, nb02=0, ncols_y=1). Reintroduced NP=1
-  vs NP>=2 divergence (NP=4≡NP=8 mutually byte-identical, both
-  differ from NP=1). Reverted; harness re-PASSed at HEAD. Root cause
-  not localized; candidate areas: `nrows_dst` multi-GPU branch
-  (`id==ctx.device ? ne0 : row_diff`), src1 quantization layout
-  assumptions when read as ne2-packed, or nb02=0 weight-sharing on
-  the non-id path. See MEMORY entry "F.4.1 ne2-packed collapsed-
-  launch attempt FAILED".
+  **F.4.1 ROOT CAUSE LOCALIZED + FIXED 2026-05-17**: the ne2-packed
+  attempt initially reintroduced ~1 ULP/element drift (NP=4≡NP=8
+  identical, both differ from NP=1). Localized via single-GPU
+  intra-layer capture (NP=1 vs NP=2 decode-0, all-tensors in layer
+  4): the first divergent tensor is `ffn_up_gate-4` at index 1 with
+  max|Δ|=5.96e-08 (1 ULP). Layers 0-3 remained identical;
+  cumulative ULP drift across layers eventually flips an argmax.
 
-  **Open subtask F.4.1' (next attempt)**: Find a NP-invariant
-  codepath that doesn't serialize the hot kernels. Candidates:
+  Cause: `mul_mat_vec_q_cuda` in `mmvq-templates.cuh:445` set
+  `nwarps=4` when `args.ne2 < 2` and `nwarps=1` otherwise (designed
+  for MoE expert parallelism where ne2 = num_experts and grid.y
+  already saturates). Switching nwarps changes block thread count
+  (32 vs 128) and the cross-warp shared-memory reduction order
+  → bit-identity breaks. Fix: keep `nwarps=4` whenever
+  `ids_data==nullptr` (no MoE indirection), even at ne2>=2.
+
+  Verification with the nwarps fix:
+  - Intra-layer NP=1 vs NP=2 all 64 layers decode-0:
+    "All shared tensors are slot-0 byte-identical".
+  - DEVICE=CUDA0,CUDA1 production harness: PASS.
+
+  **Perf result (F.4 STILL fails budget)**: HEAD-fix vs old per-slot
+  loop, multi-GPU (`data/npc-latency/head-fix-multigpu.log`):
+
+  | NP | PP per-slot | PP packed | TG per-slot | TG packed |
+  |----|-------------|-----------|-------------|-----------|
+  | 1  | 96.82       | 95.74     | 18.10       | 17.95     |
+  | 2  | 18.07       | 17.97     | 17.19       | 17.11     |
+  | 4  | 17.35       | 17.33     | 18.18       | 18.21     |
+  | 8  | 16.15       | 16.15     | 18.66       | 18.70     |
+
+  Packed launch is essentially same as per-slot loop. Launch
+  overhead WASN'T the dominant regression cost. The pre-NPC.4
+  baseline (TG=25.26 at NP=8) used the `ncols_y=8` kernel which
+  amortizes weight reads across 8 output columns within ONE
+  block. Our NP-invariant path forces `ncols_y=1`
+  (because `ncols_y >= 4` triggers `rows_per_cuda_block=2` which
+  is a different reduction tree). L2 amortization across sibling
+  `blockIdx.y` blocks doesn't fully recover the bandwidth
+  efficiency of the original ncols_y=8 in-block amortization.
+
+  **Open subtask F.4.1'**: Find a NP-invariant codepath that
+  recovers the ncols_y>1 bandwidth advantage. Candidates:
   - For fix #1: batched fused up_gate that statically tiles by
     n_tokens (NP-invariant by construction, no per-slot loop).
   - For fix #3: re-introduce MMVQ fast path at M=1 ONLY when the
