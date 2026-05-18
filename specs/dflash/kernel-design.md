@@ -278,12 +278,13 @@ template<int BLOCK_SIZE>                   // {4, 5, 6, 8}
 __global__ __launch_bounds__(256, 2)
 void dflash_drafter_forward(
     const half * __restrict__ input_tokens_emb,   // [N_slots, 1+BLOCK_SIZE, D_emb=5120]
-    const half * __restrict__ k_cache,            // [L_d=5, N_slots, SeqLen, 8, 128]
-    const half * __restrict__ v_cache,            // [L_d=5, N_slots, SeqLen, 8, 128]
+    const half * __restrict__ k_cache,            // [L_d=5, n_slots_cap, SeqLen, 8, 128]
+    const half * __restrict__ v_cache,            // [L_d=5, n_slots_cap, SeqLen, 8, 128]
     const int * __restrict__ slot_positions,      // [N_slots] — anchor_pos
     const drafter_weights_t weights,              // packed pointer-of-pointers (5 layers)
     half * __restrict__ out_hidden,               // [N_slots, BLOCK_SIZE, D_emb=5120]
-    int N_slots
+    int N_slots,                                  // dispatch count: slots actually computed (≤ n_slots_cap)
+    int n_slots_cap                               // storage stride: bind-time slot capacity used for per-layer K/V cache base offset
 );
 
 void launch_dflash_drafter_forward(
@@ -319,6 +320,19 @@ void launch_dflash_drafter_forward(
    in a small embedding-gather kernel BEFORE the cooperative drafter
    forward — it is not a step of the cooperative kernel itself. This
    simplifies the cooperative grid (no embed-lookup divergence at layer 0).
+
+4. **`N_slots` and `n_slots_cap` are separate.** `N_slots` is the
+   dispatch count — how many slots have valid staged data and will
+   actually be computed this call. `n_slots_cap` is the storage stride
+   baked at bind time (from `cparams.n_seq_max`); the K/V cache is
+   allocated as `[L_d, n_slots_cap, SeqLen, H_kv, D_h]` regardless of
+   how many slots a given dispatch wants. The kernel uses `N_slots` to
+   bound its grid iteration (slot = 0..N_slots-1) and `n_slots_cap` to
+   compute the per-layer K/V cache base offset (`layer * n_slots_cap *
+   SeqLen * H_kv * D_h`). Conflating the two — using `N_slots` for both
+   — would produce wrong layer-base bytes whenever `N_slots <
+   n_slots_cap`, which can happen any time a multi-cap context dispatches
+   a draft for fewer slots than its capacity.
 
 **Cooperative launch**: `cudaLaunchCooperativeKernel`. Grid sized to fit `max_active_blocks_per_SM × 72 SMs` per the cooperative-launch constraint.
 
