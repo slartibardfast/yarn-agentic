@@ -7445,3 +7445,127 @@ Next directions for user to choose:
 
 Plan file `/home/llm/.claude/plans/cached-crunching-tiger.md` and PHASE_NP_CLOSURE.md
 need the new signature (NP=4-only, NOT NP=1≠all) recorded.
+
+## 2026-05-19 — compute-sanitizer initcheck localises bug class to MMQ I=8 process_tile
+
+User direction: try the elegant superset of Z2 (source audit) and Z3
+(non-perturbing capture) — compute-sanitizer initcheck. Ran on llama-server
+with the NP=4 harness shape under `--tool initcheck`. Sanitizer fired
+DURING WARMUP DECODE (before any test request) with the diagnostic:
+
+  ========= Uninitialized __global__ memory read of size 4 bytes
+  =========     at void mul_mat_q_process_tile_i8<(ggml_type)2, (int)8,
+                    (int)16, (int)2, (bool)0>(...)+0x11b0 in mmq.cuh:4358
+  =========     by thread (0..N, 1, 0) in block (218, 0, 3)
+  =========     Device Frame: void mul_mat_q_split_k_i8<...>+0x1f0 in mmq.cuh:4434
+  =========         Host Frame: llama_decode_internal → llama_init_from_gpt_params
+
+Line 4358 is the activation tile load:
+  `tile_y[l] = by0[l]` inside process_tile_i8's K-iter inner loop.
+
+Bug class: when mmq_x=8 and ne11<mmq_x, the load loop reads `by0[l]` for
+`l ∈ [256, 319]` at iter `l0=256, threadIdx.y=1`. With mmq_x*MMQ_TILE_Y_K=288
+and nwarps*WARP_SIZE=64, the loop overshoots its own tile_y bound by 32
+ints because 288 is not a multiple of 64. Warp 1's contribution at the
+final iter reads past the activation tensor's allocation.
+
+Block (218, 0, 3): blockIdx.z=3 is the LAST k_slice — its kb0 range starts
+deepest into the K dim, so its by0 base lands furthest past the y tensor's
+end. Earlier k_slices (z=0,1,2) hit allocator-recycled memory that happens
+to be "initialized" from a sanitizer POV, so sanitizer flags only z=3.
+
+Static audit (mmq.cuh:4267 write_back, 4441 fixup reduce) shows the
+i-mask + j-mask in both the write and read paths SHOULD filter the
+garbage out before it reaches dst. Same OOB overshoot pattern exists in
+the I=16 path (mmq_x=8, mmq_y=128, nwarps=4 → 8*36=288 vs 4*32=128, also
+not a multiple). Yet only I=8 produces harness-visible divergence.
+
+Conclusion: bug class is identified but propagation mechanism isn't
+visible from code review. Likely candidates not yet ruled out:
+- shmem aliasing between tile_y padding [288..319] and tile_x reads
+- mma_K8 fragment cross-lane behavior under partial-tile inputs
+- CUDA graph caching of stale kernel args between batch shapes
+
+Sanitizer slowdown (~30+ min just for server startup, hours for the
+actual test) makes full-NP=4-harness sanitization expensive. The
+initcheck pass we ran was killed during warmup once the bug class was
+confirmed.
+
+Next decision-fork for user:
+- **Z1**: revert f8fa3928 (MMQ I=8 entirely). Loses some PP recovery,
+  closes NP=4 immediately. Fastest path to NPC harness green.
+- **Z2-narrow**: keep I=8, add a defensive guard at mmq.cuh:4358 to bound
+  the load by `min(mmq_x*MMQ_TILE_Y_K, ne11*MMQ_TILE_Y_K)`. Doesn't fix
+  the propagation mystery but eliminates the OOB.
+- **Z2-deeper**: instrument the I=8 path with non-sanitizer means
+  (zero-init tmp_fixup, zero-init the [288..319] shmem padding, etc.)
+  and rerun harness, isolate the propagating channel.
+- **Z3-residual**: run memcheck and racecheck (longer but they may find
+  the propagation channel — uninitialized shmem read, race in tile_y
+  cross-warp visibility, missed __syncthreads, etc.).
+
+Probe scripts kept: scripts/r5-sanitize.sh (env: TOOL=memcheck|racecheck
+|synccheck|initcheck), scripts/r5-capture-bisect.sh, scripts/r5-probe-np4.sh.
+
+## 2026-05-19 — compute-sanitizer initcheck localises bug class to MMQ I=8 process_tile
+
+User direction: try the elegant superset of Z2 (source audit) and Z3
+(non-perturbing capture) — compute-sanitizer initcheck. Ran on llama-server
+with the NP=4 harness shape under `--tool initcheck`. Sanitizer fired
+DURING WARMUP DECODE (before any test request) with the diagnostic:
+
+  Uninitialized __global__ memory read of size 4 bytes
+  at void mul_mat_q_process_tile_i8<(ggml_type)2, (int)8, (int)16, (int)2, (bool)0>(...)+0x11b0
+  in mmq.cuh:4358
+  by thread (0..N, 1, 0) in block (218, 0, 3)
+  Device Frame: void mul_mat_q_split_k_i8<...>+0x1f0 in mmq.cuh:4434
+  Host Frame: llama_decode_internal → llama_init_from_gpt_params
+
+Line 4358 is the activation tile load:
+  `tile_y[l] = by0[l]` inside process_tile_i8's K-iter inner loop.
+
+Bug class: when mmq_x=8 and ne11<mmq_x, the load loop reads `by0[l]` for
+`l ∈ [256, 319]` at iter `l0=256, threadIdx.y=1`. With
+mmq_x*MMQ_TILE_Y_K=288 and nwarps*WARP_SIZE=64, the loop overshoots its
+own tile_y bound by 32 ints because 288 is not a multiple of 64. Warp 1's
+contribution at the final iter reads past the activation tensor's
+allocation.
+
+Block (218, 0, 3): blockIdx.z=3 is the LAST k_slice — its kb0 range
+starts deepest into the K dim, so its by0 base lands furthest past the y
+tensor's end. Earlier k_slices (z=0,1,2) hit allocator-recycled memory
+that happens to be "initialized" from a sanitizer POV, so sanitizer flags
+only z=3.
+
+Static audit (mmq.cuh:4267 write_back, 4441 fixup reduce) shows the
+i-mask + j-mask in both write and read paths SHOULD filter the garbage
+out before it reaches dst. The same OOB overshoot pattern exists in the
+I=16 path (mmq_x=8, mmq_y=128, nwarps=4 → 8*36=288 vs 4*32=128, also not
+a multiple). Yet only I=8 produces harness-visible divergence.
+
+Conclusion: bug class is identified but propagation mechanism isn't
+visible from code review. Likely candidates not yet ruled out:
+- shmem aliasing between tile_y padding [288..319] and tile_x reads
+- mma_K8 fragment cross-lane behavior under partial-tile inputs
+- CUDA graph caching of stale kernel args between batch shapes
+
+Sanitizer slowdown (~30+ min just for server startup, hours for the
+actual test) makes full-NP=4-harness sanitization expensive. The
+initcheck pass we ran was killed during warmup once the bug class was
+confirmed.
+
+Next decision-fork for user:
+- **Z1**: revert f8fa3928 (MMQ I=8 entirely). Loses some PP recovery,
+  closes NP=4 immediately. Fastest path to NPC harness green.
+- **Z2-narrow**: keep I=8, add a defensive guard at mmq.cuh:4358 to
+  bound the load by `min(mmq_x*MMQ_TILE_Y_K, ne11*MMQ_TILE_Y_K)`.
+  Doesn't fix the propagation mystery but eliminates the OOB.
+- **Z2-deeper**: instrument the I=8 path with non-sanitizer means
+  (zero-init tmp_fixup, zero-init the [288..319] shmem padding) and
+  rerun harness, isolate the propagating channel.
+- **Z3-residual**: run memcheck and racecheck (longer, but they may
+  find the propagation channel — uninitialized shmem read, race in
+  tile_y cross-warp visibility, missed __syncthreads, etc.).
+
+Probe scripts kept: scripts/r5-sanitize.sh (env: TOOL=memcheck|racecheck|
+synccheck|initcheck), scripts/r5-capture-bisect.sh, scripts/r5-probe-np4.sh.
