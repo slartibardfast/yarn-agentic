@@ -17,8 +17,8 @@ TOOL=${TOOL:-initcheck}
 GGUF=/opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.gguf
 BIN=ik_llama.cpp/build/bin/llama-server
 PORT=18295
-N_PREDICT=4   # bug manifests at token 2 of slot 2 — 4 is more than enough
-NP=4
+N_PREDICT=${N_PREDICT:-4}  # bug manifests at token 2 of slot 2 — 4 is more than enough
+NP=${NP:-4}
 
 OUT_DIR=/tmp/r5-sanitize/$TOOL-$(date +%H%M%S)
 mkdir -p "$OUT_DIR"
