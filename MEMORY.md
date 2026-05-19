@@ -7034,3 +7034,37 @@ inadvertently dropped by earlier §6.1.A append was restored in the same
 commit.
 
 Submodule HEAD: 020eba3d. Parent will bump in the follow-up commit.
+
+## 2026-05-19 — Production GGUF switched to F16-lm_head recast target
+
+Switched all production paths from
+`qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf` (BF16 lm_head) to
+`qwen3.6-27b-V-F1.T1.lm_head-f16.gguf` (F16 lm_head). The two files are
+byte-equivalent except `output.weight`: BF16 → F16. Same 866 tensors,
+same 18.36 GB on disk. The F16 lm_head recast target was originally
+produced for DFlash Path A (T1 cast, Band-A absmax=0.36 validated).
+
+**Why.** sm_75 `ggml_cuda_op_mul_mat_cublas` has a BF16-native carve-out
+at `src1_ncols == 1` (`bf16_native_eligible`, ggml-cuda.cu:1733) that
+forces single-token decode lm_head calls to cuBLAS BF16 native. On
+Turing this falls back to magma_sgemmEx (FP32, no TC). nsys recorded
+4174 µs/call × 2105 calls = 8.8s = 5.3% of NP=8 decode GPU time
+(`PHASE_TU102_SPECIALIZATION.md` target #3). With F16 lm_head the BF16
+carve-out is bypassed entirely and the call routes through the F16
+HMMA path at ggml-cuda.cu:1818+ (cuBLAS HGEMM CUBLAS_R_16F, fp16 TC,
+130 TFLOPS ceiling).
+
+**Files updated.**
+- `profiles/qwen36-27b-x8-deterministic.sh` (production multi-slot)
+- `profiles/qwen36-27b-x1.sh`
+- `profiles/qwen36-27b-x1-mtp.sh`
+- `profiles/qwen36-27b-x3-mtp.sh`
+- `scripts/test-production-np-determinism.sh`
+
+NPC fixes baked into the binary still apply (six fixes per
+`PHASE_NPC4_FIX_AUDIT.md`); the lm_head recast is at the GGUF layer,
+not the dispatch layer.
+
+**Pending.** Verify-production-determinism.sh re-run + reprofile (same
+nsys bench shape) to confirm projected ~7s NP=8 collapse on the lm_head
+line and refresh the `PHASE_TU102_SPECIALIZATION.md` breakdown table.
