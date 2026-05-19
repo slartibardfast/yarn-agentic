@@ -7297,3 +7297,46 @@ Lesson reinforcing existing memories:
   shmem caps you; "0 spills" doesn't mean "occupancy delivered"
 - `feedback_oneshot_then_evaluate`: coherent bundle (~585 lines) + 3
   bench rounds gave empirical closure in one verify cycle
+
+---
+
+## 2026-05-19 — Server PP-serialization scheduler v1 REVERTED (NPC regression)
+
+User asked for server-side scheduler change to serialize concurrent
+multi-slot prefill (real workload: parallel-PP is 4.8× slower
+per-sequence than serial). v1 implementation: in `batch_pending_prompt`,
+gate on "any other slot mid-PP" — at most one slot in IDLE+LOAD_PROMPT
+with progress at any time. TG-phase slots run concurrently as before.
+
+Build green, scheduler test PASS (`scripts/test-pp-serialization.sh`):
+2 concurrent 710-token requests at 91/113 t/s PP, wall 17.1 s vs
+estimated 60 s with the broken parallel-prefill path (**3.5×
+speedup**).
+
+**But NPC harness FAILED with cluster signature:**
+  np1 vs np2 slot 0: DIFFERS (380 vs 352 bytes)
+  np1 vs np4 slot 0: DIFFERS (380 vs 372 bytes)
+  np1 vs np8 slot 0: BYTE-IDENTICAL
+
+Attempted surgical fix: added "no PP loading if any slot is in TG"
+to eliminate mixed PP+TG batches that hit different kernel branches
+than pure-TG batches. Still failed NPC at different NP combinations
+AND showed within-run non-determinism at NP=8 (different slots in the
+same run producing different outputs from identical prompts).
+
+Root cause diagnosis: kernel paths at "1-of-N slots active" diverge
+from "1-of-1 slots active" because `--parallel N` context allocation
+depth (KV cache strides, batch tensor shapes, n_seq_max-derived
+padding) differs from `--parallel 1`. The pre-existing NPC fixes only
+covered the "all-N-slots active simultaneously" parallel-PP
+composition that the OLD scheduler produced.
+
+Reverted at submodule 5b6605d8 / parent a2ffab9. Operators with
+sequential workloads can get the same win by setting `--parallel 1`
+at server startup. v2 redesign queued as task #78.
+
+Lesson: server-side scheduling changes can expose kernel-path
+divergence that isn't visible to verify-production-determinism.sh
+under the SHIPPED scheduler. Future scheduler work must include an
+NPC verification step against the same harness BEFORE landing — and
+the kernel fixes may need to come first.
