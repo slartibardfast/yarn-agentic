@@ -6867,3 +6867,31 @@ Diagnostic rule that paid off: `NP={1,2,4}≡` mutually identical,
 nwarps selector branch). Same partition shape as F.4.1's ne2-derived
 divergence — different dimension variable, identical diagnostic
 signature. Reinforces the methodology recorded in the prior session.
+
+## 2026-05-19 — DFlash Path A foundation: F16-recast target is the new default
+
+`qwen3.6-27b-V-F1.T1.lm_head-f16.gguf` is the canonical target for DFlash work
+going forward — `output.weight` recast BF16→F16 at T1 (Band-A absmax=0.36; FP16
+has 10 mantissa bits vs BF16's 7 at this magnitude, so the cast is precision-
+improving, not lossy). Three correctness gates green: closure 8/8 prompts × 4/4
+argmax vs vLLM (cos ≥ 0.9999 per prompt), production NPC harness PASS
+NP={1,2,4,8} multi-GPU, DFlash multi-slot NPC slot-0 byte-identical at
+NP={1,2,4,8}. Perf unchanged at 3132 ms/cycle N=1 — recast is a kernel-options
+unlocker for Turing/sm_75 (which has no BF16 tensor cores, only FP16 + INT8);
+the perf win lives in the next step — cuBLAS F16 GEMM dispatch replacing the
+scalar fp32 sub-kernels in `dflash-drafter-forward.cu` (and `dflash-drafter-
+lm-head.cu`).
+
+In the process: caught and fixed a silent bug in `scripts/recast_bf16_to_fp16.py`
+where F16 source tensors got their last dim halved during raw_passthrough.
+Root cause: writer's `add_tensor_info(shape, np.uint8, raw_dtype=F16)` calls
+`quant_shape_from_byte_shape` which divides last dim by 2 when
+`tensor_dtype==uint8` — correct for BF16/quantized data (gguf-py exposes uint8
+with byte-doubled last dim) but wrong for F16 (gguf-py exposes numpy.float16
+with element-shape already correct). Fix: pass `t.data.dtype` not hardcoded
+`np.uint8`. Bug invisible in the 0.8B canary (zero F16 source tensors); exposed
+by the 27B target's 98 F16 passthroughs that would have lost half their data
+silently if not caught. Production V-F1.T1 target was unaffected — produced
+via a different toolchain step that didn't go through this code path.
+
+Submodule HEAD: 37f28896. Parent HEAD: 88b92e7. Path A bench (cuBLAS) is next.
