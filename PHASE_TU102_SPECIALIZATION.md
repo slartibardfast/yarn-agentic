@@ -127,23 +127,40 @@ pre-NPC ceiling by exploiting sm_75 tensor cores for the same shapes.
   change in `ggml-cuda.cu` reduce dispatch. No new kernel.
 
 ### #3 — `cuBLAS_gemvx_bf16` lm_head → F16 + pinned-HMMA batched
-- **Aggregate cost.** 8.8 s NP=8 decode (5.3%) + 271 ms NP=1 prefill
-  (3.7%). Per-call **4174 µs** at NP=8 — by far the most expensive single
-  call on the system.
+
+**Status (2026-05-19): GGUF-side switch landed. Dispatch-side work pending
+re-profile to determine yield.**
+
+- **Aggregate cost (BF16 baseline).** 8.8 s NP=8 decode (5.3%) + 271 ms
+  NP=1 prefill (3.7%). Per-call **4174 µs** at NP=8 — by far the most
+  expensive single call on the system.
 - **TU102 hook.** sm_75 has **no BF16 tensor cores**. cuBLAS BF16 gemvx
-  runs on fp32 CUDA cores (16.3 TFLOPS) vs fp16 TC (130 TFLOPS). Recast
-  the lm_head BF16 → F16 (same tool used for DFlash Path A) and dispatch
-  through `ggml_cuda_mul_mat_f16_pinned` batched across slots.
+  runs on fp32 CUDA cores (16.3 TFLOPS) vs fp16 TC (130 TFLOPS). With
+  F16 lm_head, the `bf16_native_eligible` carve-out at `src1_ncols == 1`
+  in `ggml_cuda_op_mul_mat_cublas` (ggml-cuda.cu:1733) is bypassed
+  entirely; dispatch routes to the F16 HMMA path at line 1818+ (cuBLAS
+  HGEMM CUBLAS_R_16F).
+- **GGUF switch (landed 2026-05-19).** Production paths now point at
+  `qwen3.6-27b-V-F1.T1.lm_head-f16.gguf` (recast from
+  `qq-tool1lossless-vocab-fix.gguf`; only `output.weight` BF16 → F16,
+  all 865 other tensors byte-identical). Files updated:
+  `profiles/qwen36-27b-x{1,3,8}*.sh`,
+  `scripts/test-production-np-determinism.sh`.
+- **Dispatch-side (pending).** The cuBLAS HGEMM F16 path is the
+  first-order win; the pinned-HMMA path
+  (`ggml_cuda_mul_mat_f16_pinned`, NPC-by-construction across batch
+  composition) is the stretch target if cuBLAS HGEMM has residual
+  batch-shape sensitivity at the lm_head shape (V=248320, M=1 per slot).
+  Currently the pinned dispatch is gated on
+  `s_force_sid_cublas` (env `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`)
+  at ggml-cuda.cu:1902 — needs to be baked default-on if the reprofile
+  shows cuBLAS HGEMM is not landing the win cleanly.
 - **NPC contract.** Identical to DFlash's pinned-HMMA path
   (NPC-by-construction). Already proven across 5 gates in
   `PHASE_DFLASH_BATCHED_PINNED.md`.
-- **Effort.** **Low.** Recast tooling exists. The fix is two changes:
-  (a) recast tool emits an F16 lm_head into the production target GGUF,
-  (b) lm_head dispatch in the main path routes through `dflash_gemm_npc`
-  (or a sibling launcher in `ggml-cuda/`).
-- **Yield.** 2105 calls × ~3500 µs saving each = ~7 s recoverable at
-  NP=8 (assumes lm_head goes from 4174 → ~700 µs/call at the pinned
-  batched shape).
+- **Projected yield.** 2105 calls × ~3500 µs saving each = ~7 s
+  recoverable at NP=8 (assumes lm_head goes from 4174 → ~700 µs/call at
+  the pinned batched shape). To be measured.
 - **Lowest-effort high-yield target on the list.**
 
 ---
