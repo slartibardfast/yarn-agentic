@@ -29,8 +29,12 @@ import re
 import sys
 from dataclasses import dataclass
 
-# Use the in-tree gguf-py from llama.cpp.
+# Prefer ik_llama's gguf-py (knows IQK quant types like Q4_0_AR16 = 159 used in
+# V-F1.T1.qq-tool1lossless GGUFs). Fall back to upstream llama.cpp gguf-py for
+# environments without ik_llama checked out. Insertion order matters: later
+# sys.path.insert(0, ...) calls land at position 0, so put ik_llama LAST.
 sys.path.insert(0, "/home/llm/yarn-agentic/llama.cpp/gguf-py")
+sys.path.insert(0, "/home/llm/yarn-agentic/ik_llama.cpp/gguf-py")
 
 import numpy as np
 from gguf import GGMLQuantizationType, GGUFReader, GGUFValueType, GGUFWriter
@@ -604,8 +608,17 @@ def main() -> int:
             writer.add_tensor_info(name, numpy_shape, np.dtype(np.float32),
                                     n_elem * 4, raw_dtype=GGMLQuantizationType.F32)
         elif kind == "raw_passthrough":
-            # Source quantized data — pass its native byte shape.
-            writer.add_tensor_info(name, list(t.data.shape), np.dtype(np.uint8),
+            # gguf-py exposes BF16 / quantized data as uint8 with last-dim
+            # already adjusted to the byte width. F16 is exposed as numpy.float16
+            # with the LOGICAL element shape. We must pass the writer the dtype
+            # that matches t.data, otherwise the writer divides the shape by
+            # (raw_dtype_byte_width / passed_dtype_byte_width) to reconcile bytes
+            # vs the dtype it was told — losing half the rows for F16.
+            #
+            # Fix: branch on t.data.dtype. Discovered 2026-05-18 when the recast
+            # of V-F1.T1 (Qwen 3.6 27B target, 98 F16 source tensors) silently
+            # halved token_embd.weight from shape [5120, 248320] to [2560, 248320].
+            writer.add_tensor_info(name, list(t.data.shape), t.data.dtype,
                                     int(t.data.nbytes), raw_dtype=src_type)
 
     # ---- Write header + KV + tensor_info to the output file.
