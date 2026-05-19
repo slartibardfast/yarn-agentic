@@ -502,9 +502,16 @@ Asserted at drafter init time (boot-time check) — no padding shim required.
 
 ---
 
-
+### 6.2 `dflash_inject_kv_fused` — per-layer per-anchor fused KV projection
 
 **File**: `ggml-cuda/dflash-inject-kv.cu`
+
+> **Amendment 2026-05-19 — GEMM dispatch revised.** The K-proj and V-proj
+> sub-matmuls are now dispatched through `dflash_gemm_npc`
+> (`ggml_cuda_mul_mat_f16_pinned`, HMMA m16n8k16). The per-head K_norm,
+> RoPE on K, and cache-scatter remain as a small post-process sub-kernel.
+> See subsection §6.2.A below for the dispatch contract and layout
+> coincidence. cuBLAS HGEMM is forbidden in this TU.
 
 **Purpose**: Per (drafter layer, anchor, slot), project the anchor's `context_states` into the drafter layer's K and V cache, applying per-layer `k_norm` and RoPE to K (V is untouched), and writing to cache. Input `context_states` comes from `dflash_combine_features` upstream (post-FC, post-hidden_norm); this kernel does NOT compute FC or hidden_norm.
 
@@ -606,6 +613,41 @@ Host-side launcher loops `il = 0..L_d-1` and launches once per drafter layer, ad
 - `HeadShapeMatchesDraft` — kernel reads k_weight, v_weight, k_norm_weight at the drafter's declared head shape (8 heads × 128 dim).
 - `KAsymmetricallyNormedVNot` — K_norm + RoPE applied to K only; V projected and written, never normed or rotated.
 - `InjectedAnchorAlignment` — `anchor_positions[slot, anchor]` gives the seq_pos in cache for placement.
+
+---
+
+### 6.2.A Inject KV GEMM dispatch (revised 2026-05-19)
+
+**Status**: This subsection revises the matmul dispatch inside §6.2. The per-anchor scalar-fp32 K-loop GEMV (which ran ~14 ms/call, 70 ms/cycle across 5 layers — 33.6% of post-Path-A GPU time) is replaced with batched pinned-HMMA dispatch through `dflash_gemm_npc`. The per-head K_norm, RoPE on K, and cache scatter remain as a thin post-process sub-kernel.
+
+**Canonical dispatch per layer** (5 calls/cycle):
+
+```
+M = N_slots * MAL_anchors             // batched over all (slot, anchor) pairs
+dflash_gemm_npc(k_weight, context_states, k_proj_f32, K=5120, N_cols=1024, n_rows=M)
+dflash_gemm_npc(v_weight, context_states, v_proj_f32, K=5120, N_cols=1024, n_rows=M)
+inject_kv_postprocess_kernel<<<grid(M), block(128)>>>(
+    k_proj_f32, v_proj_f32, k_norm_weight, anchor_positions[slot * MAL + anchor],
+    k_cache_layer, v_cache_layer, ...);
+```
+
+**Layout coincidence**: `context_states[N_slots, MAL_anchors, D_d=5120]` row-major flattens directly to `[M, K]` activation expected by pinned. `k_weight` and `v_weight` are `[H_kv*D=1024, D_d=5120]` row-major, matching pinned's `weight[k + n*K]` convention. No transpose, no pack kernel.
+
+**F32 scratch**: per-layer `k_proj_f32` and `v_proj_f32` are `[M, 1024]` F32 ≈ 360 KB at M=88. Allocated once at launcher entry, reused across the 5 layers, freed at launcher exit.
+
+**Post-process sub-kernel** reads F32 K and V per-row, applies per-head RMSNorm + RoPE to K (fp64 transcendentals as before per `feedback_follow_published_spec`), writes F16 to K/V cache at `anchor_positions[slot, anchor]`. V is cast F32→F16 on store, untouched per `@KAsymmetricallyNormedVNot`.
+
+**Determinism contract**: pinned is byte-identity-by-construction across batch composition; post-process is per-row single-CTA single-writer with no atomics or cross-CTA reductions. K-norm reduction is intra-CTA over the D=128 elements of one head, identical scope to the prior fused kernel.
+
+**K-divisibility**: D_d=5120 ÷ 16 = 320 ✓.
+
+**Forbidden**: `cublasGemmEx`, `cublasHgemm`, any handle from `ctx.cublas_handle(...)` may NOT be invoked from `ggml/src/ggml-cuda/dflash/dflash-inject-kv.cu`. Enforced by the same convention as §6.1.A.
+
+**Per-call perf model** (TU102, 130 TFLOPS fp16 TC, ~672 GB/s):
+- K-proj at M=88: 0.92 GFLOP, ~360 KB weight read → memory roofline ~0.5 ms.
+- Two GEMMs + post-process per layer ≈ 1 ms × 5 layers = ~5 ms/cycle (vs current 70 ms = **14× collapse**).
+
+**Closure** (re-verified post-amendment): unchanged from §6.2 — closure 8/8 prompts argmax 4/4 vs vLLM, NMSE/cos preserved, full multi-GPU NPC verify still PASS.
 
 ---
 
@@ -795,6 +837,14 @@ void dflash_argmax_match(
 
 ### 6.6 `dflash_combine_features` — anchor-level FC + hidden_norm
 
+> **Amendment 2026-05-19 — GEMM dispatch revised.** The FC matmul is now
+> dispatched through `dflash_gemm_npc` (`ggml_cuda_mul_mat_f16_pinned`,
+> HMMA m16n8k16) batched across all (slot, anchor) pairs. The per-row
+> RMSNorm + hidden_norm-weight multiply remains as a thin sub-kernel
+> reading the F32 GEMM output and storing F16 `context_states`.
+> See subsection §6.6.A below. cuBLAS HGEMM is forbidden in this TU.
+
+
 **File**: `ggml-cuda/dflash-combine-features.cu`
 
 **Purpose**: Produce `context_states` consumed by `dflash_inject_kv_fused` (5 per-layer launches per anchor). The drafter forward never reads `context_states` directly — it consumes the injected K/V cache that inject writes, which satisfies `@InjectionConsumedAtEveryLayer` via the per-layer attention's cache read. Implements the upstream of vLLM's `precompute_and_store_context_kv` pipeline:
@@ -899,6 +949,39 @@ The RMSNorm sum_sq still uses a parallel warp-shuffle + SMEM-tree reduction; thi
 vLLM's `precompute_and_store_context_kv` (qwen3_dflash.py:441–448) does `rms_norm(context_states, hidden_norm_weight)` THEN a separate `F.linear(normed_context_states, fused_kv_weight)`. Our split here is FC first (no preceding RMSNorm) then hidden_norm. **This matches vLLM's mathematical pipeline if and only if `source_hiddens` is already raw (not pre-normed)** — which it is: the extract hook at `l_out-<il>` captures the post-residual-add hidden state in the target's residual stream, which is what vLLM's `combine_hidden_states` receives. Verification: T2 cross-stack cosine ≥ 0.99988 confirms the captured value matches vLLM's `combine_hidden_states` input.
 
 Cross-check: vLLM's `combine_hidden_states` (qwen3_dflash.py:656) does FC FIRST, then hands the result to `precompute_and_store_context_kv` which does hidden_norm. Same order as our kernel; our kernel just fuses the two into one launch.
+
+---
+
+### 6.6.A Combine features GEMM dispatch (revised 2026-05-19)
+
+**Status**: This subsection revises the matmul dispatch inside §6.6. The per-(slot, anchor) scalar-fp32 K-loop FC matmul (which ran ~108 ms/cycle — 51.6% of post-Path-A GPU time) is replaced with one batched pinned-HMMA dispatch. The per-row RMSNorm + hidden_norm-weight scale + F16 store remains as a thin sub-kernel.
+
+**Canonical dispatch** (one call/cycle):
+
+```
+M = N_slots * MAL_anchors
+dflash_gemm_npc(fc_weight, source_hiddens, fc_out_f32, K=25600, N_cols=5120, n_rows=M)
+combine_features_norm_kernel<<<grid(M), block(256)>>>(
+    fc_out_f32, hidden_norm_weight, norm_eps, context_states_f16);
+```
+
+**Layout coincidence**: `source_hiddens[N_slots, MAL_anchors, L_src=5, D_d=5120]` row-major is byte-identical to `[M, L_src*D_d=25600]` when (slot, anchor) collapse to M — the channel-wise concat of the 5 source-layer hiddens IS the contiguous K-axis (per the prior kernel's comment at `dflash-combine-features.cu:78-82`). `fc_weight[D_d=5120, L_src*D_d=25600]` row-major matches pinned's `weight[k + n*K]` convention with `n=col`, `k=k`. No transpose, no pack kernel.
+
+**F32 scratch**: `fc_out_f32[M, 5120]` ≈ 1.8 MB at M=88. Allocated via `cudaMallocAsync` inside the launcher, freed at exit.
+
+**Norm sub-kernel**: one CTA per row, threads stride D_d=5120, fp32 RMSNorm + hidden_norm_weight scale + F16 store. Block-wide reduction via warp-shuffle + SMEM tree (same pattern as the prior kernel's norm step).
+
+**Determinism contract**: pinned is byte-identity-by-construction across batch composition; norm sub-kernel is per-row single-CTA single-writer; no atomics or cross-CTA reductions. No batch-shape-dependent control flow.
+
+**K-divisibility**: K=25600 ÷ 16 = 1600 ✓.
+
+**Forbidden**: `cublasGemmEx`, `cublasHgemm`, any handle from `ctx.cublas_handle(...)` may NOT be invoked from `ggml/src/ggml-cuda/dflash/dflash-combine-features.cu`.
+
+**Per-call perf model** (TU102):
+- FC at M=88: 11.5 GFLOP, ~250 MB weight read → memory roofline ~375 µs.
+- One pinned call + norm sub-kernel ≈ 3 ms/cycle estimated (vs current 108 ms = **36× collapse**).
+
+**Closure**: unchanged from §6.6 — closure 8/8 prompts argmax 4/4 vs vLLM, full multi-GPU NPC verify still PASS.
 
 ---
 
