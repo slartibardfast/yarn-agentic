@@ -22,6 +22,8 @@
 
 - [Qwen3.6-27B DFlash on sm_75](phases/70-dflash/PHASE_DFLASH.md)
 - [Phase 46: speculative decoding port](phases/70-dflash/PHASE46.md)
+- [Multi-slot orchestrator (closed 2026-05-18)](PHASE_DFLASH_MULTISLOT.md)
+- [Batched-pinned dispatch — perf collapse (closed 2026-05-19)](PHASE_DFLASH_BATCHED_PINNED.md)
 
 # MTP production
 
