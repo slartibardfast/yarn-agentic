@@ -163,8 +163,22 @@ not registers. So Lever A didn't unlock more warps as projected; the
 shmem footprint of the load-tiles path is the new binding constraint.
 Measured +0.7–1.5% across np=1/np=2 bench lines — small consistent
 positive, kept. Final TG NP=2 × 256k = **22.44 t/s** (split-K + A).
-Future shmem-reduction on this kernel would let the reg cap actually
-unlock occupancy.
+
+**Lever C (shmem-reduction via `mmq_y=128 → 64`) attempted and reverted
+2026-05-19.** The 38 KB `shmem_x` buffer is the binding occupancy
+constraint. Halving `mmq_y` to 64 would drop shmem to ~19 KB and unlock
+2 blocks/SM = 50% occupancy. Blocked by a hard architectural invariant
+in `mmq.cuh:3805`:
+```cpp
+static_assert(nwarps*mma_C::I == mmq_y, "nwarps*mma_C::I != mmq_y");
+```
+The write-back maps `nwarps=8` warps × `mma_C::I=16` rows-per-warp = 128
+output rows = `mmq_y`. Lowering `mmq_y` to 64 requires either nwarps=4
+(half block; MMQ_NWARPS is a macro touched widely) or a smaller MMA
+fragment (`mma_int_C_I8J8`, restructuring `vec_dot_q4_0_q8_1_mma`).
+Both are kernel-rewrite scope, not surgical. **Target #1 stops at
+split-K + Lever A.** Shmem-reduction queued as a deeper MMQ rewrite
+when we revisit.
 
 **Reframed 2026-05-19 after ncu probe + source survey. Original framing
 (engage int8 IMMA TC) was wrong — kernel already uses int8 IMMA on
