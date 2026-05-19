@@ -176,6 +176,131 @@ vlong (502 tok) has the same pattern with worse intra-NP clustering.
 - #155 / #156 — Phase E/F perf + closure binding (gated on this
   phase landing).
 
+## Update 2026-05-19 — R5 session
+
+### R5.1 — Reproduce + characterise (CLOSED)
+
+Production harness re-run at HEAD (commit `5b6605d8`, post-MMQ-I=8,
+post-v1-revert). Failure reproduces matching the table above. Artifacts
+in `data/npc-r5-baseline/run-20260519T182906/`.
+
+### R5.2 / R5.3 — Bisect on first divergent decode tensor (CLOSED — kernel layer exonerated)
+
+`llama-state-capture --autoregress {prefill, auto-0, auto-1} --np {1,2}`
+across layers {0, 1, 2, 3, 30, 31, 32, 33, 60, 61, 62, 63} reports ALL
+captured tensors slot-0 byte-identical at NP=1 vs NP=2. Every kernel
+dispatched in the capture-tool path is NPC-clean.
+
+Caveat per `feedback_verify_test_mechanism_before_trusting`: the capture
+tool's own NP=1 generated text does NOT match the server's NP=1 text
+("code generation. The development of..." vs "code generation, though
+they remain..."). Same prefix to token 2 of the completion, then
+diverges. So the capture path is not bit-identical to the server's
+decode path. The "kernel-clean" conclusion holds STRONGLY for the
+capture-tool path, WEAKLY for the server's path until server-side
+instrumented capture confirms it.
+
+### R5.4* — Server-side bisection via cb_eval (CLOSED — bug C localised)
+
+Added cb_eval tensor-dump hook to `llama-server` (submodule `3ad8934e`)
+gated on `LLAMA_SERVER_CAPTURE_DIR` env. Used it to fire `N` identical
+concurrent requests against the production server at NP=N, capturing
+`{l_out, Vcur, Kcur_hadamard, Qcur, kqv_out, attn_out}` at slots `0`
+and per layer `{0, 1, 3, 31, 62, 63}`.
+
+Findings:
+- Single-request capture under the hook PASSES. The hook itself does a
+  synchronous device-to-host copy and a blob write, which perturbs
+  timing enough to hide concurrent races. Per
+  `feedback_verify_test_mechanism_before_trusting` the single PASS is
+  NOT proof of NPC.
+- Under concurrent multi-request fire, two distinct bug classes
+  separated by symptom:
+  - **Bug B — deterministic NP=4 failure.** OOB read at
+    `mmq.cuh:4358` (process_tile_i8 tile_y load) pinned by
+    `compute-sanitizer initcheck`. Closed by submodule `1f83f681`
+    (Z2-narrow: bound `l` to `tile_y_extent` so threadIdx.y=1 lanes
+    in the final `l0=256` iter cannot overshoot the allocation).
+    Production harness NP=4 is deterministic-clean post-fix.
+  - **Bug C — NP=2 stochastic ~10% drift.** Persists post-Z2-narrow.
+    Same prompt, identical seeds, same Z2-narrow build. Reproduces
+    ~1 in 10 runs of the harness. Probe `r5-probe-np4.sh PROBE=2`
+    (NP=8 fire 4) also fails ~20% — failure rate is NOT correlated
+    purely with slot-pool == in-flight count.
+
+### R5 kernel-coverage sweep (CLOSED — kernel layer exonerated at production dims)
+
+Every Qwen 3.6 27B production-shape kernel now has a shape-invariance
+test at production dims:
+
+| Kernel                     | Test                                              | Result |
+|----------------------------|---------------------------------------------------|--------|
+| MMQ Q4_0_AR16              | test-mmq-q4-0-ar16-shape-invariance-prod-dim      | PASS   |
+| MMVQ Q4_0_AR16             | test-mmvq-q4-0-ar16-shape-invariance-prod-dim     | PASS   |
+| FA per-slot KV (singlewarp)| test-fattn-per-slot-kv-dispatch-np-invariance     | PASS   |
+| RMSNorm                    | test-rmsnorm-batch-shape-invariance               | PASS   |
+| RoPE                       | test-rope-batch-shape-invariance                  | PASS   |
+| ggml_reduce                | test-ggml-reduce-shape-invariance                 | PASS   |
+| cuBLAS pinned-HMMA         | test-cublas-pinned-shape-invariant                | PASS   |
+| DeltaNet (linear-attn)     | test-deltanet-shape-invariance                    | PASS   |
+
+Each test instantiates the kernel via `ggml-backend` CUDA at the
+production geometry, fixes slot-0 inputs while leaving other-slot
+inputs reproducible-random per slot index (not per `n_seqs`), and
+asserts slot-0 output is byte-identical across `n_seqs ∈ {1, 2, 4, 8}`.
+The DeltaNet test additionally asserts byte-identity of slot-0 new-state.
+
+These tests are unit-test-cheap (each runs in seconds) and bind for
+future regressions.
+
+**Conclusion.** Bug C (NP=2 stochastic ~10%) is NOT a single-kernel
+shape-invariance bug at production geometry. The remaining candidate
+surface is integration-level: continuous-batching scheduler / slot
+allocator / batch composition / cb_eval dispatch ordering / multi-GPU
+cudaEvent timing on the inter-device shard boundary.
+
+### Subtasks remaining (Bug C is OPEN)
+
+Named as concrete subtasks per `feedback_no_risks_only_tasks` and
+`feedback_no_followup_cover` — Bug C is not "deferred follow-up", it
+is the unfinished part of this phase.
+
+- **C.1 Slot-allocator audit.** Read `llama_kv_cache_find_slot` and
+  the seq_id → slot mapping under concurrent fire. Specifically:
+  does the slot assigned to a given seq_id depend on the order in
+  which the two requests' tokens land in the scheduler queue? If
+  yes, that's the integration-level non-determinism.
+- **C.2 Batch composition under concurrent prefill.** When two
+  requests arrive within one tick, does the resulting ubatch's
+  token interleaving depend on completion order of the per-request
+  prefill kernels (which is timing-dependent)?
+- **C.3 cb_eval dispatch ordering.** Within a single forward, are
+  intra-batch tensor copies, the `transformer_kv` write-back, and
+  the per-slot KV gather always ordered the same way regardless of
+  arrival timing? If any of these uses a `cudaStreamWaitEvent` with
+  a timing-dependent event, that's the race.
+- **C.4 Multi-GPU shard timing.** Test bug C with single-GPU (no
+  inter-device split). If single-GPU reproduces the stochastic
+  failure, C.4 is closed (not the boundary); if single-GPU PASSes,
+  the bug lives in the cross-device cudaEvent path.
+
+C.4 is the cheapest probe and a strong signal in either direction —
+do it first.
+
+### Commits this session
+
+- Submodule `1f83f681` — `ggml-cuda/mmq`: bound I=8 tile_y load to
+  `tile_y_extent` (Bug B fix).
+- Submodule `3ad8934e` — `server`: tensor-dump cb_eval hook for R5
+  NPC bisection (diagnostic; delete after closure per
+  `feedback_bake_measurement_env_gates`).
+- Submodule `a6f8b198` — `tests`: production-dim MMVQ shape-invariance
+  test.
+- Submodule `b54a905c` — `tests`: DeltaNet shape-invariance at
+  production geometry.
+- Parent: submodule bumps + MEMORY appends + `scripts/r5-sanitize.sh` +
+  `scripts/r5-probe-np4.sh` + `scripts/r5-capture-bisect.sh`.
+
 ## Estimated token cost
 
 Per CLAUDE.md §8, in tokens not days:
