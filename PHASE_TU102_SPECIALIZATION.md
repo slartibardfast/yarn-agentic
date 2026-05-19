@@ -144,26 +144,92 @@ pre-NPC ceiling by exploiting sm_75 tensor cores for the same shapes.
 
 ## Top 3 — clear absolute wins
 
-### #1 — `mul_mat_q[Q4_0,*]` → int8 IMMA tensor-core dispatch
-- **Aggregate cost.** 50.7 s NP=8 decode (30.4%) + 1.75 s NP=1 prefill
-  (23.8%). With sibling `Q4_0_AR16` (target #5) bundled: **59.8 s NP=8**.
-- **TU102 hook.** sm_75 has 65 TOPS int8 tensor cores via
-  `mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32` (IMMA). Q4_0 dequants
-  naturally to int8 (its `vec_dot_type` is `Q8_K`, an 8-bit-int form).
-  Today's MMQ path goes Q4_0 → fp16 → HMMA m16n8k8; an int8-fused path
-  skips the fp16 conversion and doubles the effective TC throughput. The
-  per-kernel reduction stays in s32, deterministic per call.
-- **NPC contract.** Preserved by-construction as long as K-iteration order
-  is fixed. IMMA's m16n8k16 fragment is byte-identical to a software s32
-  fp-accumulator tree for our visit pattern.
-- **Why this beats pre-NPC.** Pre-NPC was hitting cutlass 75_wmma h161616
-  (fp16 TC, 130 TFLOPS ceiling); int8 IMMA on TU102 hits 65 TOPS but
-  doesn't pay the dequant-to-fp16 traffic, so memory-bound shapes go
-  faster. Effective ceiling is workload-shape dependent — needs ncu.
-- **Effort.** **High.** New MMQ kernel TU; need to template the IMMA tile;
-  cutlass 75 IMMA references exist (`cutlass_75_simt_imma_*`).
+### #1 — `mul_mat_q[Q4_0,*]` → occupancy + grid utilization
+
+**Reframed 2026-05-19 after ncu probe + source survey. Original framing
+(engage int8 IMMA TC) was wrong — kernel already uses int8 IMMA on
+Turing.**
+
+- **Aggregate cost.** 16.85 s NP=2 × 256k (38.8%) + 9.1 s sibling
+  `Q4_0_AR16` (6.2%) = **~45% of GPU time** with the bundle.
+- **What's actually true.** `INT8_MMA_AVAILABLE` is defined for sm_75+,
+  and `mul_mat_q` already uses `mma_int_A_I16K4` → `mma_K4` →
+  `mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32` (Turing's int8 TC
+  intrinsic). The kernel is on tensor cores. ncu confirms: 0 register
+  spills, IMMA fragments dispatching as expected.
+- **The actual bottleneck (ncu, prod-np2-ctx256k):**
+  - Grid size **4 CTAs** at decode shape (40 CTAs at bigger), **0.56
+    full waves across all SMs**. Most of TU102's 72 SMs idle.
+  - Theoretical occupancy **25%** capped by register + shared-memory
+    limits. `__launch_bounds__(WARP_SIZE*nwarps, 1)` (line 4187) sets
+    `minBlocksPerSM=1` on Volta+, forcing 1 block/SM ⇒ 8 warps/SM ⇒
+    25% of TU102's 32-warps/SM peak.
+  - DRAM throughput **4.95%**, SM Compute Throughput **2.23%** —
+    nowhere near any peak. Kernel is **latency-bound on grid + warp
+    under-utilization**, not bandwidth or TC compute.
+  - Effective compute: 0.56 waves × 0.25 occupancy ≈ **14% of peak**.
+- **Why grid is small.** Stream-K decomposition is **already
+  implemented** in `mmq.cuh` (line 4178) but **disabled by env-gate**
+  (line 4394): `GGML_CUDA_MMQ_ENABLE_STREAM_K` defaults off because
+  the stream-K fixup reduction order is M-dependent, which would
+  reproduce the same NP-cluster-partition NPC failure mode we just
+  fixed for cuBLAS (2026-05-19 ALGO0 audit). Without stream-K the
+  kernel uses xy-tiling with `block_nums(nty, ntx)` where `nty=ne01/mmq_y`
+  and `ntx=ne11/mmq_x`. At decode `ne11=1` ⇒ ntx=1; nty ≈ 40 in the
+  bigger case, ⇒ 40 CTAs total, ⇒ 0.56 waves on 72 SMs.
+
+#### Optimization vectors (both compatible)
+
+**Lever A — `launch_bounds(*, 1)` → `(*, 2)` on Turing.** Low-risk,
+small change. Lets the compiler target 2 blocks/SM ⇒ 50% theoretical
+occupancy (vs 25% today). `feedback_launch_bounds_non_monotonic`
+binds: bumping `minBlocksPerSM` may force register spills if the
+compiler can't keep working state in the smaller reg budget. Today's
+ncu shows **0 spills at `, 1)`**, so the compiler is using max regs.
+At `, 2)`, expect one of:
+  - Spill-free re-ILP'd kernel → ~1.3–1.8× speedup
+  - Spilling kernel → regression, revert
+Gate: ncu reg/thread + spill count + perf. Cheap measurement, ~1 hr to
+prototype + test both Turing settings.
+
+**Lever B — NPC-safe stream-K fixup.** Higher leverage, more design.
+Stream-K splits K across `nsm` (=72) CTAs unconditionally, then a
+fixup kernel reduces partial results. The current fixup's reduction
+order depends on the actual tile count (which depends on M=ne11) —
+that's the NPC-breaking dispatcher branch. Fix options:
+  - Pad partial-tile count to NSM regardless of M, so the reduction
+    order is M-independent. Pad-tiles contribute 0 — costs one extra
+    smem buffer but unlocks full-grid stream-K.
+  - Or: canonical reduction tree (associative within partials, no
+    dependence on tile count).
+Expected: 72-CTA grid → ~3–5× speedup on the decode shapes. Effort
+higher; needs spec amendment + verify-production-determinism.sh GREEN
+across NP={1,2,4,8} after the fixup change.
+
+**Combined ceiling.** A + B → 4–9× per-kernel speedup ceiling. Real
+gain bounded by other kernels (NCCL #2 catches up; eventually a
+different kernel becomes top).
+
+#### Spec template (per `feedback_kernel_replacements_must_be_sota_sm75`)
+
+A kernel rewrite spec lands before code:
+  - Register budget per thread (target ≤ 64 to allow 2 blocks/SM on
+    Turing).
+  - Shared memory per block (target ≤ 16 KB to allow 2 blocks/SM on
+    Turing — TU102 has 64 KB smem/SM).
+  - Occupancy target: 50% theoretical (2 blocks/SM × 8 warps/block =
+    16 warps/SM / 32 warps/SM peak).
+  - Grid target: ≥ NSM = 72 CTAs per launch (post-stream-K).
+  - % of TU102 peak: project against 65 TOPS int8 TC × occupancy ×
+    waves.
+  - NPC contract: K-iteration order fixed; if stream-K, fixup reduction
+    order canonical and M-independent.
+  - Committed ncu before/after on the prod-np2-ctx256k shape with
+    DRAM/SM throughput, occupancy, regs/thread, spill count.
+
 - **Bundles with target #5 (`Q4_0_AR16`)** since AR16 packing only
-  changes the dequant inner loop.
+  changes the dequant inner loop — both go through the same MMQ
+  kernel infrastructure.
 
 ### #2 — `NCCL_AllReduce_f32` → deterministic f16 reduce
 - **Aggregate cost.** 34.0 s NP=8 decode (20.4%) + 2.68 s NP=1 prefill
