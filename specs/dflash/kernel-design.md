@@ -271,6 +271,17 @@ Ping-pong: alternate `state_scratch[0]` and `state_scratch[1]` across cycles. St
 
 **File**: `ggml-cuda/dflash-drafter-forward.cu`
 
+> **Amendment 2026-05-19 — GEMM dispatch revised.** Phase A (scalar-fp32 sub-kernel
+> pipeline) shipped and continues to be the production structure (NO cooperative
+> mega-kernel, NO WMMA fragment plumbing). The original Phase B plan
+> (`cudaLaunchCooperativeKernel` + `m16n16k16` fp16 WMMA + intra-kernel
+> `cg::this_grid().sync()`) is **abandoned**. The replacement GEMM dispatch
+> is `ggml_cuda_mul_mat_f16_pinned` — see new subsection §6.1.A below.
+> cuBLAS HGEMM is explicitly forbidden in the drafter forward TU.
+> The lm_head BF16 statement below is also stale; target's `output.weight` is
+> now F16 post the T1-recast that landed 2026-05-18 (see "Kernel boundary —
+> lm_head" paragraph for the corrected dtype).
+
 **Signature** (revised at T4 implementation per the two clarifications below):
 
 ```cpp
@@ -357,13 +368,13 @@ for layer in 0..4:
 // lm_head dispatched as SEPARATE kernel (see kernel boundary note below)
 ```
 
-**Kernel boundary — lm_head**: The lm_head matmul (hidden=5120 → vocab=248320) is **NOT** part of the cooperative kernel. It lands as a separate launch (`dflash_drafter_lm_head`) after the cooperative kernel completes. Justification:
+**Kernel boundary — lm_head**: The lm_head matmul (hidden=5120 → vocab=248320) is a separate launch (`dflash_drafter_lm_head`) after the drafter forward sub-kernel chain completes. Dtypes (revised 2026-05-19):
 
-- Target's `output.weight` (= shared lm_head per `@SharedEmbedAndLMHead`) is stored as **BF16** in the production GGUF — not quantized. Drafter reads the same BF16 tensor.
+- Target's `output.weight` (= shared lm_head per `@SharedEmbedAndLMHead`) is stored as **F16** in the canonical DFlash target GGUF (`qwen3.6-27b-V-F1.T1.lm_head-f16.gguf`). It was BF16 prior to the T1-recast that landed 2026-05-18 (per-row absmax = 0.36, Band-A → BF16→F16 is mantissa-improving). Drafter and target read this same F16 tensor.
 - Target's `token_embd.weight` (= shared anchor-token embedding) is stored as **F16**.
-- Other target weights are AutoRound INT4 packed into `Q4_0` and `Q4_0_AR16` (the AutoRound 16-step variant) GGUF tensor types — but lm_head specifically is BF16.
+- Other target weights are AutoRound INT4 packed into `Q4_0` and `Q4_0_AR16` (the AutoRound 16-step variant) GGUF tensor types.
 
-The lm_head dispatch is therefore a BF16 GEMV against the target's `output.weight`, then per-position argmax — a clean separate kernel that doesn't need any quantized matmul inlining. Per-cycle launch overhead: ~5-10 µs (negligible against the 12 ms drafter budget). Separate-kernel boundary preserved.
+The lm_head dispatch is therefore an F16 GEMV against the target's `output.weight`, accumulating in fp32, then per-position argmax — a clean separate kernel that doesn't need any quantized matmul inlining. Per-cycle launch overhead: ~5-10 µs (negligible against the 12 ms drafter budget). Separate-kernel boundary preserved. The loader at `tests/dflash-speculative/dflash-target-shared-loader.h` and the production loader in `src/llama-dflash.cpp` both assert `output.weight->type == GGML_TYPE_F16` at bind time; pointing at a pre-recast BF16 target fails fast with a hint at `scripts/recast_bf16_to_fp16.py`.
 
 **SWA mask strategy**: K-loop iteration bounded by sliding window. For each query position `q_pos`, the attention K-loop iterates `[max(0, q_pos - swa_window + 1), q_pos]` only. No mask materialization in SMEM, no per-key branch divergence inside the K-loop. For 1+BLOCK_SIZE queries per CTA, that's 1+BLOCK_SIZE distinct K-loop bound pairs. Layer 4 (full attention) iterates `[0, q_pos]` instead.
 
@@ -431,7 +442,67 @@ Implementation cost: ~200–300 LOC of oracle CPU code. Risk: oracle bugs that "
 
 ---
 
-### 6.2 `dflash_inject_kv_fused` — per-layer per-anchor fused KV projection
+### 6.1.A Drafter forward GEMM dispatch (revised 2026-05-19)
+
+**Status**: This subsection supersedes the Phase B "cooperative WMMA mega-kernel" plan in §6.1 for the GEMM portion of the drafter forward pipeline. The sub-kernel structure of Phase A (one CUDA kernel per algorithmic step: rmsnorm → Q/K/V proj → q_norm+RoPE → k_norm+RoPE → cache_write → attention → O proj → residual → ffn_norm → gate/up proj → silu_mul → down proj → residual) is preserved. What changes is the matmul dispatch inside each projection step.
+
+**Canonical dispatch**: All seven projection matmuls per drafter layer (Q, K, V, O, Gate, Up, Down) — 7 × 5 layers = 35 GEMMs per cycle — dispatch through `ggml_cuda_mul_mat_f16_pinned` (declared in `ggml/src/ggml-cuda/mul-mat-f16-pinned.cuh`). The wrapper TU at `ggml/src/ggml-cuda/dflash/dflash-gemm.cu` exposes a single named entry point `dflash_gemm_npc(weight, act, dst_f32, K, N_cols, n_rows, stream)` that forwards to the pinned kernel with appropriate stride arguments.
+
+**Layout coincidence**: The drafter's scalar GEMM (`gemm_row_x_col_kernel`) and the pinned kernel store their inputs identically:
+
+- Activation `A[row, k] = data[row * K + k]` ≡ pinned `act[k + m*K]` with `m ≡ row`.
+- Weight `B[col, k] = data[col * K + k]` ≡ pinned `weight[k + n*K]` with `n ≡ col`.
+
+No layout shim, no transpose, no padding. The byte image of every input tensor is unchanged.
+
+**Output dtype**: `float *dst_f32` (F32), not F16. The pinned kernel accumulates in fp32 via HMMA m16n8k16 fragments and stores fp32. Downstream consumers (`q_norm_rope_kernel`, `k_norm_rope_kernel`, `silu_mul_kernel`, `residual_add_kernel`) are extended with F32-input overloads that load fp32, do the activation math in fp32, and cast to F16 on store at the consumer's natural store boundary. The net effect is **one F16 quantization point per layer per data path**, not seven (current state casts at every GEMM store). This is precision-improving.
+
+**Dtype map per layer** (post-amendment):
+| Buffer | Dtype | Producer | Consumer |
+|---|---|---|---|
+| `hidden_n` | F16 | `rmsnorm_kernel` | pinned (act side of Q, K, V, Gate, Up) |
+| `q_buf` | F32 | pinned (Q proj) | `q_norm_rope_kernel` (F32→F16) |
+| `k_buf` | F32 | pinned (K proj) | `k_norm_rope_kernel` (F32→F16) |
+| `v_buf` | F32 | pinned (V proj) | `cache_write_kv_kernel` (F32→F16) |
+| `q_for_attn` | F16 | `q_norm_rope_kernel` (cast) | `attention_kernel` |
+| `k_for_cache` | F16 | `k_norm_rope_kernel` (cast) | `cache_write_kv_kernel` |
+| `attn_out` | F16 | `attention_kernel` | pinned (act side of O) |
+| `o_proj` | F32 | pinned (O proj) | `residual_add_kernel` (F32+F16→F16) |
+| `gate_buf` | F32 | pinned (Gate proj) | `silu_mul_kernel` (F32→F16) |
+| `up_buf` | F32 | pinned (Up proj) | `silu_mul_kernel` (F32→F16) |
+| `act_buf` | F16 | `silu_mul_kernel` (cast) | pinned (act side of Down) |
+| `down_buf` | F32 | pinned (Down proj) | `residual_add_kernel` (F32+F16→F16) |
+
+**K-divisibility**: pinned requires `K % 16 == 0`. All seven shapes satisfy this:
+- D_emb = 5120 = 320 × 16 ✓
+- H_q · D_h = 4096 = 256 × 16 ✓
+- H_kv · D_h = 1024 = 64 × 16 ✓
+- intermediate = 17408 = 1088 × 16 ✓
+
+Asserted at drafter init time (boot-time check) — no padding shim required.
+
+**Determinism contract**: `ggml_cuda_mul_mat_f16_pinned` is byte-identical-by-construction across total M (per its docstring at `mul-mat-f16-pinned.cuh:6-23`): exactly one CTA per output cell, fixed compile-time K-loop, fp32 accumulator within HMMA fragments, no Split-K, no cross-CTA atomics, no shape-dependent algo selection. This satisfies the NPC invariant for the drafter forward GEMMs without per-dispatch validation. The PSKV NP-cluster partition-signature failure mode (memory `feedback_np_cluster_partition_signature`) cannot arise here because dispatcher branches on batch-shape vars are absent — the pinned grid is parameterized only by (K, N, M) which are layer-fixed, not batch-shape-derived.
+
+**Forbidden**: `cublasGemmEx`, `cublasHgemm`, `cublasSgemm`, any handle from `ctx.cublas_handle(...)` may NOT be invoked from `ggml/src/ggml-cuda/dflash/*.cu`. A grep-based guard test (task #54, parked as exploratory) is the long-term enforcement; in the meantime, the boot-time assertion that all seven GEMM call sites dispatch through `dflash_gemm_npc` is the contract.
+
+**Retirement**: The scalar `gemm_row_x_col_kernel` body in `dflash-drafter-forward.cu:121-141` is removed in the same commit. No fallback flag, no env-gate.
+
+**Per-cycle perf model** (TU102, sm_75, 130 TFLOPS fp16 TC, ~672 GB/s):
+- Q-proj at NP=8 (M=40, N=4096, K=5120): 1.68 GFLOP, 41 MB → 61 µs at memory roofline.
+- All 35 GEMMs sum to ≈ 8-12 ms/cycle at 50-80% of roofline.
+- Target: < 30 ms/cycle (3132 ms scalar baseline → 100× speedup).
+- ncu acceptance: `dram__throughput.avg.pct_of_peak_sustained_elapsed` ≥ 50% on Gate/Up/Down (the largest GEMMs); HMMA pipeline active ≥ 25%.
+
+**Closure** (re-verified post-amendment, gates from §6.1):
+- argmax 4/4 MATCH on the 8-prompt closure set (unchanged from T4)
+- cos_sim ≥ 0.9999 on every prompt
+- Full NPC NP={1,2,4,8} multi-GPU byte-identical via `scripts/verify-production-determinism.sh`
+- DFlash multi-slot NPC: slot-0 byte-identical NP={1,2,4,8} via `tests/dflash-speculative/test-dflash-np-multislot`
+- Sub-kernel binding harness (task #57) at six capture points (CP-A, CP-Q, CP-B, CP-C, CP-D-pinned, CP-D) byte-identical NP=1 vs NP=8 across all 8 closure prompts
+
+---
+
+
 
 **File**: `ggml-cuda/dflash-inject-kv.cu`
 
