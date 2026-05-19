@@ -7163,3 +7163,29 @@ ncu before/after captures: `data/nsys-perf-2026-05-19-prod/ncu-mmq.ncu-rep`
 the bench delta (+20% TG) confirms occupancy improvement landed.
 
 Submodule HEAD bumped in parent commit.
+
+## 2026-05-19 — Lever A stacked on split-K MMQ — +1% incremental
+
+`__launch_bounds__(WARP_SIZE*nwarps, 1) -> (*, 2)` on the split-K main
+kernel for Volta+. ncu confirms:
+- 125 registers/thread (under the 128 cap for 2 blocks/SM) — 0 spills.
+- Theoretical occupancy still 25% — bound by shared memory now, not
+  registers. So Lever A didn't unlock more warps as projected; the
+  shmem footprint of the load-tiles path is the new binding constraint.
+
+Measured at production bench (split-K alone vs split-K + Lever A):
+  np=2 x 256k TG  22.28 -> 22.44 t/s (+0.7%)
+  np=2 x 256k Agg 23.26 -> 23.57 t/s (+1.3%)
+  np=1 x 256k Agg 60.47 -> 60.70 t/s (+0.4%)
+
+Kept because: 0 spills, no regression, slightly positive on every line.
+Future shmem-reduction work on this kernel would let the reg cap
+actually unlock occupancy (currently moot).
+
+PHASE_TU102_SPECIALIZATION.md target #1 stays CLOSED. Cumulative TG
+NP=2 × 256k gain across today's stack:
+  Baseline (BF16 lm_head + default cuBLAS algo): ~17 t/s estimated
+  F16 lm_head only: 21.4 t/s
+  + ALGO0 pin (option C): 21.06 t/s (NPC PASS where prev FAIL)
+  + split-K MMQ (Lever B): 22.28 t/s
+  + Lever A: 22.44 t/s (+31% over BF16 default baseline if extrapolated)
