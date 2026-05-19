@@ -126,10 +126,30 @@ pre-NPC ceiling by exploiting sm_75 tensor cores for the same shapes.
 - **Effort.** **Medium.** Mostly NCCL env / runtime config + bind point
   change in `ggml-cuda.cu` reduce dispatch. No new kernel.
 
-### #3 — `cuBLAS_gemvx_bf16` lm_head → F16 + pinned-HMMA batched
+### #3 — `cuBLAS_gemvx_bf16` lm_head → F16 + cuBLAS algo pin
 
-**Status (2026-05-19): GGUF-side switch landed. Dispatch-side work pending
-re-profile to determine yield.**
+**Status (2026-05-19): CLOSED via cuBLAS `ALGO0_TENSOR_OP` pin, not via
+pinned-HMMA dispatch. F16 GGUF switch is in. Measured: TG NP=8 21.41 →
+25.42 t/s (+18.7%); NPC FAIL → PASS.**
+
+The originally projected path (F16 lm_head + pinned-HMMA batched
+dispatch) turned out to be slower at the typical F16 HMMA shape mix —
+pinned-HMMA at M=1 wins on lm_head but loses 5.7× on 408k *other* F16
+GEMMs (small post-norm projections, MoE expert outputs). Global pinned
+dispatch cost -21% TG vs default cuBLAS HGEMM.
+
+The actual fix turned out to be simpler and orthogonal: pin the cuBLAS
+gemm algorithm to `CUBLAS_GEMM_ALGO0_TENSOR_OP` unconditionally
+(removing the `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH` dependency at both
+algo-selection sites in `ggml-cuda.cu`). This:
+1. Closes the NP-cluster-partition NPC failure that the audit found in
+   production runtime (NP=2 diverged with F16 lm_head, NP=4 with BF16).
+2. Adds +18.7% TG at NP=8 because the default-adaptive algo had been
+   falling back to non-TC at small M; ALGO0 engages tensor cores
+   unconditionally.
+
+Verified at the actual production runtime config (env=0): NPC GREEN
+across full NP={1,2,4,8} slot byte-identity + cross-NP slot-0 matrix.
 
 - **Aggregate cost (BF16 baseline).** 8.8 s NP=8 decode (5.3%) + 271 ms
   NP=1 prefill (3.7%). Per-call **4174 µs** at NP=8 — by far the most
