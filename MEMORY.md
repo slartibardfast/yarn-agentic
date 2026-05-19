@@ -6895,3 +6895,66 @@ silently if not caught. Production V-F1.T1 target was unaffected — produced
 via a different toolchain step that didn't go through this code path.
 
 Submodule HEAD: 37f28896. Parent HEAD: 88b92e7. Path A bench (cuBLAS) is next.
+
+## 2026-05-19 — DFlash Path A CLOSED — pinned-HMMA dispatch on drafter forward + lm_head
+
+Path A landed via pinned-HMMA dispatch (not cuBLAS — see ledger note below).
+The 35 scalar `gemm_row_x_col_kernel` calls in `dflash_drafter_forward_launch`
+(7 GEMMs/layer × 5 layers) AND the scalar `dflash_drafter_lm_head_kernel`
+(the F16 GEMV against the 248320-row output.weight) now all dispatch through
+`ggml_cuda_mul_mat_f16_pinned` via a thin new launcher `dflash_gemm_npc`
+(`ggml/src/ggml-cuda/dflash/dflash-gemm.cu` + `.cuh`). The pinned kernel is
+byte-identity-by-construction across batch composition (one CTA per output
+cell, fixed K-loop, fp32 accumulator inside HMMA m16n8k16 fragments, no
+Split-K, no atomics) — so NPC is preserved without any per-dispatch
+algo-pin validation.
+
+GEMM outputs are F32; downstream consumers (`q_norm_rope_kernel`,
+`k_norm_rope_kernel`, `cache_write_kv_kernel`, `silu_mul_kernel`,
+`residual_add_kernel`) gained F32-input overloads that carry fp32
+internally and fuse the F32→F16 cast at their natural store boundaries.
+This is precision-improving relative to the prior every-GEMM-stores-F16
+flow.
+
+**Perf measurement** (test-dflash-np-multislot, F16 target):
+  pre-Path-A (scalar fp32, F16 target):
+    NP=1 1830 ms/cycle  2.2 tok/s
+    NP=8 3138 ms/cycle 10.2 tok/s
+  S59 alone (drafter pinned, lm_head still scalar):
+    NP=1 1830 ms/cycle  2.2 tok/s   (no change — drafter dropped to 17 ms/cycle
+                                     but lm_head still 1648 ms/call dominated)
+  S59 + lm_head pinned (Path A complete):
+    NP=1  211 ms/cycle 19.0 tok/s   (8.7× per-cycle, 8.6× throughput)
+    NP=8 1499 ms/cycle 21.3 tok/s   (2.1× per-cycle, 2.1× throughput)
+
+**nsys profile** (closure test, 8 prompts) after S59 (drafter-only) was the
+diagnostic: `mul_mat_f16_pinned_kernel_wmma` at 133 ms total (0.9% of GPU),
+`dflash_drafter_lm_head_kernel` at **13190 ms total (89.3% of GPU)**. S59
+delivered the projected 184× speedup on its scope (3132 → 17 ms for 35 GEMMs)
+but the bottleneck moved cleanly to lm_head. Swapping lm_head was a ~30-line
+file rewrite forwarding to `dflash_gemm_npc` — same NPC contract reused.
+
+**Gates green:**
+- `test-dflash-drafter-lm-head`: 5/5 configs PASS via NMSE ≤ 1e-12 cos = 1.0
+  (byte-identical rate drops 100% → 2–20% because HMMA fragment reduction
+  tree differs from serial-scalar fp32; numerics class unchanged)
+- `test-dflash-closure` against the F16 target: 8/8 prompts argmax 4/4 vs
+  vLLM, cos ≥ 0.9998 per prompt, NMSE ≤ 4e-4
+- `test-dflash-np-invariance`: 4 seeds × NP{1,2,4,8} byte-identical
+- `test-dflash-np-multislot`: slot-0 byte-identical NP{1,2,4,8}, 4 cycles
+- `scripts/verify-production-determinism.sh`: all slots × all NP × cross-NP
+  slot-0 matrix BYTE-IDENTICAL on production graph (multi-GPU CUDA0+CUDA1)
+
+**Ledger note on naming**: task #59 was titled "cuBLAS dispatch for drafter
+forward GEMMs". Implementation chose pinned-HMMA (existing
+`ggml_cuda_mul_mat_f16_pinned`) over cuBLAS HGEMM because: (a) all shapes are
+tall-skinny (M=4–40, huge N/K) → memory-bound regime where pinned saturates
+fine; (b) pinned is NPC-by-construction so the planned #54 cuBLAS-determinism
+micro-test was avoidable; (c) zero new code vs an entire HGEMM ALGO0-pin
+validation. Task #54 left parked-exploratory in case pinned underperforms its
+roofline on Gate/Up/Down (M=40 N=17408) and we want cuBLAS as a backup.
+
+Spec amended at `specs/dflash/kernel-design.md §6.1.A` (parent commit b36f5fe)
+declaring pinned canonical, cuBLAS forbidden in drafter forward TU.
+
+Submodule HEAD: 581e0734. Parent HEAD: b9032d4.
