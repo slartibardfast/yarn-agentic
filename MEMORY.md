@@ -7340,3 +7340,53 @@ divergence that isn't visible to verify-production-determinism.sh
 under the SHIPPED scheduler. Future scheduler work must include an
 NPC verification step against the same harness BEFORE landing — and
 the kernel fixes may need to come first.
+
+## 2026-05-19 — R5 NPC investigation: kernel layer is innocent, bug is server-side
+
+After this morning's v1 scheduler revert + the "session-owned KV" plan
+exploration, ran R5.1-R5.3 to localize the NPC failure that
+PHASE_NP_CLOSURE.md documented at HEAD.
+
+R5.1 — production harness (`scripts/test-production-np-determinism.sh`,
+200-tok prompt, dual-GPU, q4_0 KV + Hadamard) confirmed failure pattern
+even worse than PHASE_NP_CLOSURE recorded — at HEAD (5b6605d8, MMQ I=8 +
+v1 reverted) no NP pair is byte-identical:
+
+| NP pair | bytes |
+|---|---|
+| NP=1 vs NP=2 | 380 vs 352 |
+| NP=1 vs NP=4 | 380 vs 372 |
+| NP=1 vs NP=8 | 380 vs 359 |
+| NP=2 vs NP=4 | 352 vs 372 |
+
+Slot-position-dependent: NP=4 slot 1 byte-identical to NP=1; NP=8 slots
+3 and 6 byte-identical to NP=1. Other slots produce DIFFERENT outputs
+including garbage text. Artifacts:
+`data/npc-r5-baseline/run-20260519T182906/`.
+
+R5.2/R5.3 — used `llama-state-capture --autoregress 4 --np {1,2}` to
+bisect first divergent tensor at layers {0,1,2,3,30,31,32,33,60,61,62,63}
+across prefill + auto-{0,1}. **All captured tensors slot-0 byte-identical
+NP=1 vs NP=2.** Capture-tool path is fully NPC-clean at this scope.
+
+**Conclusion: the bug is NOT in CUDA kernel dispatch.** All PHASE_NPC4
+kernel-level fixes are working. The divergence is in the server's
+continuous-batching path — slot allocator, batch composition, mask
+construction, cb_eval interaction, or HTTP handler — that the capture
+tool does NOT exercise.
+
+R5 plan must redirect from kernel-level bisection to server-side
+bisection. Tasks #91, #92 deleted; new task #95 created for the
+server-side hunt. Plan file `/home/llm/.claude/plans/cached-crunching-tiger.md`
+needs revision: R5.4/R5.4b are based on a false premise.
+
+Caveat (`feedback_verify_test_mechanism_before_trusting`): the capture
+tool generated TEXT does NOT match the server's NP=1 text (capture says
+"code generation. The development of..."; server says "code generation,
+though they remain..."). Both share " code generation" prefix then
+diverge by token 2. This indicates the capture tool's prefill path is
+NOT bit-identical to the server's prefill path — so "capture-tool NPC
+clean" doesn't fully exclude kernel dispatch as the cause of the server
+bug. A stronger test: instrument the server itself to dump tensors via
+cb_eval and run the harness, comparing per-tensor NP=1 vs NP=2 from
+actual server invocations. R5.4* task captures this.
