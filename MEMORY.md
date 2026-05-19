@@ -6958,3 +6958,79 @@ Spec amended at `specs/dflash/kernel-design.md §6.1.A` (parent commit b36f5fe)
 declaring pinned canonical, cuBLAS forbidden in drafter forward TU.
 
 Submodule HEAD: 581e0734. Parent HEAD: b9032d4.
+
+## 2026-05-19 — DFlash combine_features + inject_kv_fused — batched-pinned collapse
+
+The post-Path-A nsys profile (closure test, NP=1) named the two next
+bottlenecks: `dflash_combine_features_kernel` at 108 ms/cycle (51.6% of
+GPU) and `dflash_inject_kv_fused_kernel` at 14 ms × 5 layers = 70 ms/cycle
+(33.6%). Both shared the same structural problem as the pre-Path-A
+drafter forward — each CTA ran ~40,000 fp32 FMAs in a serial K-loop,
+never engaging tensor cores. The 14 ms/call on inject_kv was **70×
+slower** than the equivalent K/V GEMM shapes inside drafter forward
+(which now run at <200 µs each via pinned).
+
+Same fix as Path A: route the matmul through `dflash_gemm_npc` (pinned
+HMMA m16n8k16) and keep the post-FC work as a thin sub-kernel.
+
+**combine_features** (spec §6.6.A, submodule commit 8b2a9843):
+- Single batched pinned call: M=N_slots*MAL_anchors, K=25600, N=5120
+- `source_hiddens[N_slots, MAL_anchors, L_src=5, D_d=5120]` row-major
+  is byte-identical to `[M, K=L_src*D_d]` — channel-wise concat IS the
+  contiguous K-axis (no pack kernel needed)
+- New `combine_features_norm_kernel`: per-row RMSNorm + hidden_norm
+  weight + F16 store
+- **108 ms/cycle → ~3 ms (36× collapse)**
+
+**inject_kv_fused** (spec §6.2.A, submodule commit 020eba3d):
+- 2 batched pinned calls per layer × 5 layers (K_proj + V_proj):
+  M=N_slots*MAL_anchors, K=5120, N=1024
+- `context_states[N_slots, MAL_anchors, D_d]` already laid out [M, K]
+- New `inject_kv_postprocess_kernel`: per-head RMSNorm on K (D=128
+  scope) + RoPE on K + cache scatter; V cast F32→F16 on store
+- **70 ms/cycle → ~5 ms (14× collapse)**
+
+**End-to-end perf trajectory** (test-dflash-np-multislot, F16 target):
+
+|        | NP=1 ms/cycle | NP=1 tok/s | NP=8 ms/cycle | NP=8 agg tok/s |
+|--------|---------------|------------|---------------|----------------|
+| Pre-Path-A baseline (scalar fp32, F16 target) | 1830 | 2.2  |  3138 |  10.2 |
+| + Path A (drafter forward + lm_head)          |  211 | 19.0 |  1499 |  21.3 |
+| + combine_features                            |  105 | 38.1 |   654 |  48.9 |
+| + inject_kv_fused (this milestone)            | 35.7 | **112.2** |  97.5 | **328.3** |
+
+**Cumulative speedup from pre-Path-A**:
+- NP=1: **51.3× per-cycle, 51× throughput**
+- NP=8: **32.2× per-cycle, 32× throughput**
+
+**Final nsys decomposition** (NP=1, closure test, post both rewrites):
+- `mul_mat_f16_pinned_kernel_wmma`: 249 ms (92.9%) — 47 GEMMs/cycle
+- `q_norm_rope_kernel`: 7 ms (2.6%)
+- `attention_kernel`: 6.6 ms (2.5%) — fp32 SWA/full attention in drafter
+- All other small kernels combined: ~5 ms (1.9%)
+
+The pipeline is now **matmul-dominated** — the optimal terminal structure
+without rewriting pinned itself or compressing GEMM count via fusion.
+Further perf work would need to target pinned WMMA itself (different
+block geometry, K-tile prefetching, dual-issue ILP) — but at 92.9% of
+GPU time on the right kernel, the diagnostic is clean.
+
+**Test gates** revised on test-dflash-combine-features and
+test-dflash-inject-fused: strict ULP-distance gate replaced with
+NMSE ≤ 1e-5 AND cos ≥ 0.99999 (HMMA reduction tree differs from
+serial-fp32 reference but numerics class unchanged — same precedent
+as post-S59 lm_head test). 8/8 configs each PASS at NMSE 1-9e-9,
+cos = 1.0, byte-identical rate 91% (combine) and ≥99.85% (inject).
+
+**Gates green at every commit**:
+- closure 8/8 prompts argmax 4/4 vs vLLM (cos ≥ 0.9998 each)
+- test-dflash-np-invariance 4/4 seeds × NP{1,2,4,8} byte-identical
+- test-dflash-np-multislot slot-0 byte-identical NP{1,2,4,8}
+- scripts/verify-production-determinism.sh — all slots × all NP ×
+  cross-NP slot-0 matrix BYTE-IDENTICAL on production multi-GPU graph
+
+Spec amended at §6.2.A + §6.6.A (parent commit 6aa98f7); §6.2 header
+inadvertently dropped by earlier §6.1.A append was restored in the same
+commit.
+
+Submodule HEAD: 020eba3d. Parent will bump in the follow-up commit.
