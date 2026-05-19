@@ -22,7 +22,7 @@
 set -uo pipefail
 
 CTX_PER_SLOT=${CTX_PER_SLOT:-8192}
-GGUF=${GGUF:-/opt/models/recast-out/qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf}
+GGUF=${GGUF:-/opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.gguf}
 BIN=${LLAMA_SERVER_BIN:-/home/llm/yarn-agentic/ik_llama.cpp/build/bin/llama-server}
 PORT=${PORT:-18292}
 N_PREDICT=${N_PREDICT:-64}
@@ -73,20 +73,21 @@ start_server() {
     if [[ "$_DEVICE" == *","* ]]; then
         _SPLIT_FLAGS="--split-mode graph --tensor-split ${TENSOR_SPLIT:-1,1}"
     fi
-    # Full production env stack:
-    #   LLAMA_FATTN_PER_SLOT_KV_ENABLE=1       — per-slot KV dispatch
-    #   LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 — forces MMQ for AR16 at all batch sizes
-    #   CUBLAS_WORKSPACE_CONFIG=:4096:8        — required for cuBLAS reproducibility
-    # CY.F.17: GGML_CUDA_MMQ_DISABLE_STREAM_K=1 disables stream_K shape-dep.
-    # CY.F.18: now fixed in-source via sched->has_reduce — no env-gate.
-    # Build env-var prefix via env(1) so conditional expansion is uniform.
+    # Live env knobs:
+    #   LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH — pinned-HMMA / pinned-F32 dispatch
+    #     (default 1 = NPC-by-construction path, matches verify history;
+    #     override to 0 to test production-runtime cuBLAS HGEMM dispatch).
+    #   CUBLAS_WORKSPACE_CONFIG=:4096:8 — required for cuBLAS reproducibility.
+    #
+    # Removed (dead env knobs — no getenv site in the binary as of 2026-05-19):
+    #   LLAMA_FATTN_PER_SLOT_KV_ENABLE       (PSKV dispatch is baked unconditionally)
+    #   LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE (decode order is baked sequential)
+    #   LLAMA_PSKV_MODE                      (PSKV mode is baked = singlewarp)
+    #   GGML_CUDA_MMQ_DISABLE_STREAM_K       (stream-K disabled in-source via
+    #                                         sched->has_reduce per CY.F.18)
     env \
-        GGML_CUDA_MMQ_DISABLE_STREAM_K=${GGML_CUDA_MMQ_DISABLE_STREAM_K:-1} \
-        LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 \
-        LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1 \
-        LLAMA_PSKV_MODE=${LLAMA_PSKV_MODE:-singlewarp} \
+        LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=${LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH-1} \
         CUBLAS_WORKSPACE_CONFIG=:4096:8 \
-        ${LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE:+LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=${LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE}} \
     "$BIN" -m "$GGUF" \
         --device "$_DEVICE" $_SPLIT_FLAGS \
         -ngl 999 -fa on \
@@ -149,9 +150,8 @@ echo "=== production-stack NP-cross determinism ==="
 echo "  prompt: \"$PROMPT\""
 echo "  n_predict=$N_PREDICT  ctx_per_slot=$CTX_PER_SLOT  np_list=\"$NP_LIST\""
 echo "  binary: $BIN"
-echo "  env: LLAMA_FATTN_PER_SLOT_KV_ENABLE=1 LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1"
+echo "  env: LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=${LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH-1}"
 echo "  cont-batching: ENABLED (no --no-cont-batching)"
-echo "  strict-sequential: DISABLED"
 echo "  results: $RUN_DIR"
 echo ""
 
