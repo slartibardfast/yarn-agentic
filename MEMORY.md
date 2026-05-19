@@ -7390,3 +7390,58 @@ clean" doesn't fully exclude kernel dispatch as the cause of the server
 bug. A stronger test: instrument the server itself to dump tensors via
 cb_eval and run the harness, comparing per-tensor NP=1 vs NP=2 from
 actual server invocations. R5.4* task captures this.
+
+## 2026-05-19 — R5.4*-bisect: hook is too intrusive; bug bisected to MMQ I=8 + a second latent kernel
+
+R5.4* added cb_eval tensor-dump to llama-server (commit 3ad8934e). When run
+against the production NPC harness at HEAD, **NP=1 ≡ NP=4 concurrent
+byte-identical** with the hook active — i.e. the hook masks the bug. The
+hook does a synchronous `ggml_backend_tensor_get + ggml_fp16_to_fp32_row +
+ofstream::write` per captured tensor; that perturbs eval-thread timing
+enough to hide the race. Confirms `feedback_verify_test_mechanism_before_trusting`:
+the previous-summary's "single-request smoke test passes ⇒ kernel-clean"
+conclusion was rendered moot under concurrent firing only because the hook
+itself was active.
+
+Without the hook, the harness signature at HEAD is:
+- NP=1 ≡ NP=2 ≡ NP=8 (all slots, 380 bytes, hash 037be1)
+- NP=4 FAILS: slots 0/1/3 deterministically converge to wrong-but-coherent
+  output (352 bytes, hash 37cfa8); slot 2 outputs partly-garbage (254 bytes,
+  hash 0978).
+
+Bisection via probe-disable (LLAMA_DISABLE_I8_PROBE on the I=8 MMQ split-K
+gate, ran `RESULTS_DIR=/tmp/r5-disable-i8 bash scripts/test-production-np-determinism.sh`):
+- WITH I=8 disabled: NP=4 ≡ NP=1 (PASSES). NP=2 slot 0 newly FAILS (one
+  slot, 352 bytes, same hash 37cfa8 as the NP=4 wrong output). NP=8 still
+  PASSES.
+
+Conclusions:
+1. The harness failure is at least TWO independent kernel-shape dispatch
+   divergences. The MMQ I=8 path (added 2026-05-19 in f8fa3928) is one;
+   the I=16 path (or whatever NP=2 routes to when I=8 is off) is the other.
+   Both happen to produce the SAME wrong content "they remain probabilistic
+   systems that can produce inac..." which suggests both are mis-dispatching
+   to the same divergent branch.
+2. NP-pool-size (the --parallel N argument) and which-slot-is-broken are
+   correlated. With I=8 enabled and NP=4: slot 2 is special. With I=8
+   disabled and NP=2: slot 0 is special. This is not random — it's
+   slot-index-dependent kernel routing.
+3. The cb_eval-hook approach is the wrong tool for this bug class. It
+   needs to be either replaced by something non-perturbing (e.g. logits-
+   only capture, post-hoc), or abandoned for source-level audit of the
+   dispatcher.
+4. Per `feedback_no_workarounds`: probe gate reverted; no shipped
+   LLAMA_DISABLE_I8_PROBE knob.
+
+Next directions for user to choose:
+- **Option Z1:** Revert MMQ I=8 (f8fa3928) entirely; pursue NP=2 bug
+  separately. Loses ~PP throughput recovery from I=8 but closes one half
+  cleanly.
+- **Option Z2:** Surgically audit I=8 split-K fixup (tmp_fixup uninitialized
+  / OOB-read pattern at ne11<mmq_x) and the I=16 equivalent dispatch ladder
+  branch for NP=2 slot 0.
+- **Option Z3:** Build a non-perturbing diagnostic (logits-tap on final
+  layer only, written async post-hoc) and re-bisect tensor-by-tensor.
+
+Plan file `/home/llm/.claude/plans/cached-crunching-tiger.md` and PHASE_NP_CLOSURE.md
+need the new signature (NP=4-only, NOT NP=1≠all) recorded.
