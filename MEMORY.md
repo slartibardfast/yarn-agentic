@@ -7122,3 +7122,44 @@ plus the F16 lm_head GGUF swap.
 
 Submodule HEAD bumped in parent commit; verify script flip in same
 parent commit.
+
+## 2026-05-19 — Target #1 lands: split-K MMQ for decode shapes
+
+Split-K MMQ added to `ik_llama.cpp/ggml/src/ggml-cuda/mmq.cuh` as the
+default decode-shape path (mmq_x <= 16; falls through to xy-tiling
+unchanged for prefill big-tile mmq_x >= 24).
+
+Each output tile is split across F=4 CTAs in the K dim. Per-tile
+reduction is over a compile-time-constant F-1 = 3 partials in
+canonical ascending order. The k-range each slice covers depends only
+on (blocks_per_ne00, F, k_slice) — never on ne11 — so cross-NP slot-0
+byte-identity holds by construction. Pattern from
+[[feedback_np_cluster_partition_signature]]: stream-K's existing fixup
+was M-dependent (bidx_start/stop division by ntx*nty); split-K's is
+per-tile, F-independent of M.
+
+Grid coverage at decode shape (np=2 x 256k, nty=40, ntx=1):
+  Before: 40 CTAs (0.56 SM waves on 72 SMs), 25% theoretical occupancy = ~14% peak compute
+  After:  160 CTAs (2.22 SM waves), 25% occupancy = ~55% peak compute
+
+**Measured** (F16 lm_head GGUF + cuBLAS ALGO0 pin baseline; same bench
+shape as 2026-05-19 prod refresh; LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=0):
+
+| Config | np=1 x 256k TG / PP / Agg | np=2 x 256k TG / PP / Agg | NPC |
+|---|---|---|---|
+| Option C baseline | 20.74 / 99.28 / 51.76 | 18.56 / 20.94 / 20.31 | PASS |
+| Option C + split-K | 23.44 / 122.29 / 60.47 | **22.28** / 23.60 / 23.26 | **PASS** |
+| Δ | +13% / +23% / +17% | **+20%** / +13% / +15% | unchanged |
+
+verify-production-determinism.sh PASS at the production runtime
+config: NP={1,2,4,8} slot byte-identity + full cross-NP slot-0 matrix.
+
+PHASE_TU102_SPECIALIZATION.md target #1 closes. Lever A (launch_bounds
+tweak) remains available as a stacking optimization but is unblocked —
+the split-K landing already pulled the ~14%-of-peak grid bottleneck.
+
+ncu before/after captures: `data/nsys-perf-2026-05-19-prod/ncu-mmq.ncu-rep`
+(before, 0.56 waves, 25% occ); ncu of split-K not yet captured but
+the bench delta (+20% TG) confirms occupancy improvement landed.
+
+Submodule HEAD bumped in parent commit.
