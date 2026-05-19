@@ -75,8 +75,10 @@ start_server() {
     fi
     # Live env knobs:
     #   LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH — pinned-HMMA / pinned-F32 dispatch
-    #     (default 1 = NPC-by-construction path, matches verify history;
-    #     override to 0 to test production-runtime cuBLAS HGEMM dispatch).
+    #     (default 0 = production runtime config — cuBLAS HGEMM with
+    #     ALGO0_TENSOR_OP baked in-source for NPC, 2026-05-19. Override to
+    #     1 to also engage the pinned-HMMA replacement path, but the algo
+    #     pin alone is sufficient for NPC and is ~18% faster.).
     #   CUBLAS_WORKSPACE_CONFIG=:4096:8 — required for cuBLAS reproducibility.
     #
     # Removed (dead env knobs — no getenv site in the binary as of 2026-05-19):
@@ -86,7 +88,7 @@ start_server() {
     #   GGML_CUDA_MMQ_DISABLE_STREAM_K       (stream-K disabled in-source via
     #                                         sched->has_reduce per CY.F.18)
     env \
-        LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=${LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH-1} \
+        LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=${LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH-0} \
         CUBLAS_WORKSPACE_CONFIG=:4096:8 \
     "$BIN" -m "$GGUF" \
         --device "$_DEVICE" $_SPLIT_FLAGS \
@@ -150,7 +152,7 @@ echo "=== production-stack NP-cross determinism ==="
 echo "  prompt: \"$PROMPT\""
 echo "  n_predict=$N_PREDICT  ctx_per_slot=$CTX_PER_SLOT  np_list=\"$NP_LIST\""
 echo "  binary: $BIN"
-echo "  env: LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=${LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH-1}"
+echo "  env: LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=${LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH-0}"
 echo "  cont-batching: ENABLED (no --no-cont-batching)"
 echo "  results: $RUN_DIR"
 echo ""
