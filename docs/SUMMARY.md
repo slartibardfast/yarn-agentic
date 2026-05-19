@@ -25,6 +25,10 @@
 - [Multi-slot orchestrator (closed 2026-05-18)](PHASE_DFLASH_MULTISLOT.md)
 - [Batched-pinned dispatch — perf collapse (closed 2026-05-19)](PHASE_DFLASH_BATCHED_PINNED.md)
 
+# TU102 specialization
+
+- [Qwen 3.6 27B kernel ranking (opened 2026-05-19)](PHASE_TU102_SPECIALIZATION.md)
+
 # MTP production
 
 - [Phase 29: CUDA/HIP backend gaps for tight Qwen3.5 MTP](phases/30-mtp-production/PHASE29.md)
