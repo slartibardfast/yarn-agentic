@@ -7662,3 +7662,36 @@ level audit.
 - `3ad8934e` (submodule): cb_eval server-capture hook (R5.4*-prep)
 - (submodule): prod-dim MMVQ test
 - Parent: submodule bumps + MEMORY appends + r5-sanitize / r5-probe-np4 / r5-capture-bisect scripts
+
+## 2026-05-19 — R5: DeltaNet ruled out at production geometry
+
+`test-deltanet-shape-invariance.cpp` (submodule `b54a905c`) wraps
+`ggml_delta_net` via ggml-backend CUDA at Qwen 3.6 27B Linear-Attention
+geometry (head_dim=128, H_v=16, H_k=2, gqa_ratio=8, n_tokens=1) and
+asserts both slot-0 output AND slot-0 new-state are byte-identical
+across n_seqs ∈ {1, 2, 4, 8}. PASSES.
+
+Result: DeltaNet kernel is shape-invariant across n_seqs at decode
+geometry. Combined with the previous sweep, EVERY production-shape
+Qwen 3.6 27B kernel is now shape-invariance-tested at decode dims:
+
+| Kernel                     | Test                                                     | Result |
+|----------------------------|----------------------------------------------------------|--------|
+| MMQ Q4_0_AR16              | test-mmq-q4-0-ar16-shape-invariance-prod-dim             | PASS   |
+| MMVQ Q4_0_AR16             | test-mmvq-q4-0-ar16-shape-invariance-prod-dim            | PASS   |
+| FA per-slot KV (singlewarp)| test-fattn-per-slot-kv-dispatch-np-invariance + sweep    | PASS   |
+| RMSNorm                    | test-rmsnorm-batch-shape-invariance                       | PASS   |
+| RoPE                       | test-rope-batch-shape-invariance                          | PASS   |
+| ggml_reduce                | test-ggml-reduce-shape-invariance                         | PASS   |
+| cuBLAS pinned-HMMA         | test-cublas-pinned-shape-invariant                        | PASS   |
+| DeltaNet (linear-attn)     | test-deltanet-shape-invariance                            | PASS   |
+
+The NP=2 stochastic ~10% harness failure is **NOT a single-kernel
+shape-invariance bug** at production geometry. Remaining candidate is
+integration-level: slot allocator, batch composition, cb_eval dispatch
+ordering under continuous batching, or multi-GPU cudaEvent timing on
+the inter-device shard boundary.
+
+Next direction for R5.4*-residual: integration-level audit (cb_eval
+dispatch path, slot allocator + batch composition under concurrent
+fire), NOT further kernel-level testing.
