@@ -7189,3 +7189,39 @@ NP=2 × 256k gain across today's stack:
   + ALGO0 pin (option C): 21.06 t/s (NPC PASS where prev FAIL)
   + split-K MMQ (Lever B): 22.28 t/s
   + Lever A: 22.44 t/s (+31% over BF16 default baseline if extrapolated)
+
+## 2026-05-19 — Shmem-reduction attempt (mmq_y=128 → 64) blocked by architectural invariant
+
+Attempted to drop `mmq_y` to 64 for the split-K MMQ kernel to halve
+the `shmem_x = mmq_y * MMQ_MMA_TILE_X_K_Q8_0 * sizeof(int)` footprint
+(~38 KB → ~19 KB → unlock 2 blocks/SM = 50% occupancy on Turing).
+
+Hit a hard architectural invariant at `mmq.cuh:3805`:
+```cpp
+static_assert(nwarps*mma_C::I == mmq_y, "nwarps*mma_C::I != mmq_y");
+```
+
+The write-back kernel assumes a 1:1 mapping: each of `nwarps` warps
+owns `mma_C::I` rows of the output tile, totaling `nwarps * mma_C::I`
+rows = mmq_y. With nwarps=8 and `mma_int_C_I16J8::I=16`, **mmq_y must
+be 128 in this kernel architecture.**
+
+To break the 25% occupancy ceiling on the MMQ Q4_0 kernel requires
+EITHER:
+- nwarps=4 (half-size block) — invasive: MMQ_NWARPS is a macro touched
+  throughout mmq.cuh; threading a per-kernel nwarps would require
+  rework of multiple write-back/dispatch paths
+- Smaller MMA fragment (mma_int_C_I8J8 via single `m8n8k16` instead of
+  the current 2× pair) — requires restructuring vec_dot_q4_0_q8_1_mma
+  to use single I=8 fragments
+- New write-back layout that doesn't require nwarps * mma_C::I = mmq_y
+
+All three are kernel-rewrite scope, not the surgical edit my scope-doc
+estimated. Reverted the attempted change cleanly.
+
+**Target #1 stops at split-K + Lever A** (TG NP=2 × 256k = 22.44 t/s).
+The shmem-reduction path is in the bigger-rewrite bucket, queued for
+when we're ready to do an MMQ kernel ground-up.
+
+Repo state restored to `submodule HEAD` from earlier in the day
+(split-K + Lever A baked, mmq_y=128 unchanged). No changes pushed.
