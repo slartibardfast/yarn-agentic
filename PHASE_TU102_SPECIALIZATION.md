@@ -156,10 +156,15 @@ production np=2 × 256k shape with F16 lm_head + cuBLAS ALGO0 baseline:
 | Aggregate NP=2 | 20.31 t/s | 23.26 t/s | +15% |
 | NPC matrix | PASS | PASS | unchanged |
 
-Lever A (`launch_bounds(*,1)→(*,2)` for occupancy bump) remains
-available as a stacking optimization on top of split-K; not pursued
-since split-K alone landed the grid-coverage win that was the real
-bottleneck.
+Lever A (`launch_bounds(*,1)→(*,2)`) stacked on the split-K kernel
+2026-05-19 — ncu shows 125 regs/thread (under the 128 cap), 0 spills,
+but theoretical occupancy stays at 25% capped by **shared memory**,
+not registers. So Lever A didn't unlock more warps as projected; the
+shmem footprint of the load-tiles path is the new binding constraint.
+Measured +0.7–1.5% across np=1/np=2 bench lines — small consistent
+positive, kept. Final TG NP=2 × 256k = **22.44 t/s** (split-K + A).
+Future shmem-reduction on this kernel would let the reg cap actually
+unlock occupancy.
 
 **Reframed 2026-05-19 after ncu probe + source survey. Original framing
 (engage int8 IMMA TC) was wrong — kernel already uses int8 IMMA on
