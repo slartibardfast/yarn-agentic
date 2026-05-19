@@ -7068,3 +7068,57 @@ not the dispatch layer.
 **Pending.** Verify-production-determinism.sh re-run + reprofile (same
 nsys bench shape) to confirm projected ~7s NP=8 collapse on the lm_head
 line and refresh the `PHASE_TU102_SPECIALIZATION.md` breakdown table.
+
+## 2026-05-19 — Option C lands: cuBLAS ALGO0 pin closes silent NPC regression
+
+Audit on 2026-05-19 discovered the production runtime had been silently
+NPC-broken at specific NP values for the entire post-NPC.4 era. The
+verify script set `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=1`, routing
+through the pinned-HMMA replacement path; the actual production server
+runs with the env unset, going through cuBLAS HGEMM at
+`CUBLAS_GEMM_DEFAULT_TENSOR_OP`. Verify-vs-prod path divergence hid the
+defect.
+
+**Measured production-runtime NPC failures** (verify with env=0):
+- F16 lm_head GGUF: NP=2 diverges from {1,4,8} cluster
+- BF16 lm_head GGUF: NP=4 diverges from {1,2,8} cluster
+
+Pattern matches [[feedback_np_cluster_partition_signature]] — different
+batch shape selects a different adaptive cuBLAS algo whose reduction
+order is associatively non-equivalent to the others.
+
+**Fix (Option C, ik_llama.cpp@HEAD 2026-05-19):** pin both cuBLAS algo
+selectors (`s_cublas_algo` line 1691, `s_cublas_algo_b` line 2414) to
+`CUBLAS_GEMM_ALGO0_TENSOR_OP` unconditionally. Removes the
+LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH dependency from algo selection
+(env still gates the separate pinned-HMMA replacement, which is a
+slower fallback).
+
+**Net result for production F16 lm_head GGUF** (npp=200 ntg=64, dual
+RTX 6000 split-graph, npl=8):
+- TG  21.41 → 25.42 t/s (+18.7%)
+- PP  18.62 → 19.97 t/s  (+7.3%)
+- Agg 19.23 → 21.06 t/s  (+9.5%)
+- NPC FAIL → PASS (full slot byte-identity + cross-NP slot-0 matrix)
+
+Faster *and* NPC-correct. The default-adaptive algo had been
+selecting a non-TC fallback at small M; ALGO0_TENSOR_OP engages
+tensor cores unconditionally.
+
+BF16 GGUF cross-check (supplementary, since production has switched to
+F16): also NPC PASS at env=0 with the algo pin.
+
+**Verify-script default** (`scripts/test-production-np-determinism.sh`)
+flipped to `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=0` so the script now
+tests the actual production runtime path. Pinned-HMMA can still be
+forced for diagnostics by setting env=1.
+
+**Target #3 in PHASE_TU102_SPECIALIZATION.md** is closed differently
+than originally projected: instead of routing lm_head through pinned
+HMMA, the algo pin alone collapses the cuBLAS bf16-fallback-at-M=1
+penalty AND fixes the NP=2 cluster-partition NPC failure. The
+projected 7s lm_head wedge collapse is partially realized via this
+plus the F16 lm_head GGUF swap.
+
+Submodule HEAD bumped in parent commit; verify script flip in same
+parent commit.
