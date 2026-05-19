@@ -7225,3 +7225,75 @@ when we're ready to do an MMQ kernel ground-up.
 
 Repo state restored to `submodule HEAD` from earlier in the day
 (split-K + Lever A baked, mmq_y=128 unchanged). No changes pushed.
+
+---
+
+## 2026-05-19 — I=8 MMQ ground-up rewrite SHIPPED (Lever D)
+
+Reopened target #1 after compaction. The user committed "all or nothing"
+to the rewrite, then asked to "aim for 100% occupancy first".
+
+Diagnostic-first probe: bumped existing split-K launch_bounds from
+`(256, 2)` → `(256, 4)` to bid 100% theoretical occupancy via reg-trim
+alone. Compiler hit REG:64 STACK:0 LOCAL:0 cleanly but TG delta was 0%
+across 3 runs (22.44 ± 0.08 t/s vs baseline 22.44 t/s). Reverted.
+
+The 0% confirmed the prior PHASE diagnosis: **shmem is the binding
+constraint, not registers**. At mmq_y=128 with row-stride 76-84 ints
+the X-tile is ~38 KB/CTA, and sm_75's 64 KB/SM cap forces 1 CTA/SM = 25%
+theoretical regardless of reg budget. Reg-trim is a no-op when shmem
+already caps you.
+
+Built the I=8 path proper. mma.cuh: `mma_int_A_I8K4`,
+`mma_int_A_I8K8`, `mma_int_C_I8J8` with single-PTX `mma_K4`/`mma_K8`
+methods. mmq.cuh: parallel `vec_dot_q8_0_q8_1_mma_i8`,
+`vec_dot_q4_0_ar16_q8_1_mma_i8`, `mmq_write_back_mma_i8`,
+`mul_mat_q_process_tile_i8`, `mul_mat_q_split_k_i8`,
+`mul_mat_q_split_k_fixup_i8`, `mmq_type_traits_i8`. ~585 lines added
+across two files.
+
+Target geometry: mmq_y=16 nwarps=2 (64 threads/CTA), `launch_bounds(64,
+16)` for 100% theoretical bid. Hardware caps at 9 CTAs/SM by 64 KB/SM
+shmem total → 56% theoretical (still 2.24× the prior 25%). Dispatch
+gates on `cc==CC_TURING && type in {Q4_0, Q4_0_AR16} && mmq_x <= 16`.
+
+First-build NPC FAIL — server output garbage tokens. Two bugs found by
+inspection (no debug prints needed):
+
+1. **`rows_per_warp = granularity` was wrong.** The I=16 path uses
+   `rows_per_warp = 2 * granularity` (each warp owns doubled-row tiles).
+   For I=8 the right formula is `mmq_y / nwarps` directly. The
+   granularity shortcut only worked at the existing config by
+   coincidence.
+
+2. **Fixup kernel sum[] array sized assuming `mmq_y >= WARP_SIZE`.**
+   At mmq_y=16, `mmq_y/WARP_SIZE = 16/32 = 0` (integer division),
+   collapsing all writes to `sum[0]`. Replaced with element-wise
+   per-thread accumulation, no intermediate sum[] array.
+
+Also added an OOB guard in `load_tiles_q4_0_ar16` scale loop: at
+mmq_y=128 nwarps=8 the branch is dead code (i ∈ [0, 128) by
+construction); at mmq_y=16 nwarps=2 it stops a shmem-overflow into
+neighbouring CTAs.
+
+Post-fix measurement at production NP=2 × 256k shape (3 runs):
+  TG: 22.44 → 23.57 t/s = **+5.04%** (3-run noise ±0.01 t/s, very tight)
+  PP: 23.93 → 25.71 t/s = **+7.4%**
+  NPC: full byte-identity across NP={1,2,4,8} + cross-NP slot-0 matrix
+
+Win mechanism in retrospect:
+- 9 CTAs/SM × 2 warps = 18 warps/SM (vs prior 1 CTA × 8 warps = 8)
+- More in-flight warps → better latency hiding on K-loop barriers
+- Smaller per-CTA shmem allocation → less bank contention
+- Wave overhead worse (1.97 vs 1.11 waves at decode shape) but
+  latency-hiding gain dominates
+
+Committed in submodule at `f8fa3928`. Submodule pointer bump pending.
+
+Lesson reinforcing existing memories:
+- `feedback_probe_before_implementing`: the cheap launch_bounds probe
+  told us occupancy alone wouldn't help, sharpening the rewrite scope
+- `feedback_launch_bounds_non_monotonic`: reg-trim is a no-op when
+  shmem caps you; "0 spills" doesn't mean "occupancy delivered"
+- `feedback_oneshot_then_evaluate`: coherent bundle (~585 lines) + 3
+  bench rounds gave empirical closure in one verify cycle
