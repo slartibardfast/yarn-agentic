@@ -46,10 +46,64 @@ hook each target exploits.
 
 ---
 
-## Absolute kernel breakdown (HEAD)
+## Refreshed kernel breakdown (current production, 2026-05-19)
 
-NP=8 capture total GPU time ≈ 167 s; NP=1 ≈ 7.4 s (NP=1 is prefill-heavy
-because 200-tok prefill dominates 64-tok decode at a single slot).
+**Captured against the option C binary** (F16 lm_head GGUF + cuBLAS
+`ALGO0_TENSOR_OP` baked + `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=0`) at the
+active profile shape: `-c 524288 -npl 2 -khad -vhad` (np=2 × 256k/slot,
+Hadamard on, q4_0 KV). Plus a `-c 262144 -npl 1` companion for the
+prefill-heavy view. Bench: same canonical `-npp 200 -ntg 64`.
+
+Captures: `data/nsys-perf-2026-05-19-prod/prod-np{1,2}-ctx256k.nsys-rep`.
+
+Headline t/s (option C + F16 lm_head, production runtime path):
+
+| | np=1 × 256k | np=2 × 256k |
+|---|---:|---:|
+| Wall time | 5.10 s | 26.00 s |
+| PP t/s | 99.28 | 20.94 |
+| TG t/s | 20.74 | 18.56 |
+| Aggregate | 51.76 | 20.31 |
+
+### Top kernels — np=2 × 256k (active production shape)
+
+| # | Kernel | Time | % | Per-call | Calls |
+|---|---|---:|---:|---:|---:|
+| 1 | `mul_mat_q[Q4_0, ncols=8]` | 16.85 s | **38.8%** | 76.6 µs | 219 904 |
+| 2 | `NCCL_AllReduce_f32` | 9.11 s | **21.0%** | 72.9 µs | 125 020 |
+| 3 | `fused_mmvq[Q4_0, nc=1, F.4.1']` | 4.41 s | 10.2% | 86.7 µs | 50 946 |
+| 4 | `mul_mat_q[Q4_0_AR16, ncols=8]` | 2.70 s | 6.2% | 53.2 µs | 50 688 |
+| 5 | `cutlass_75_wmma_h161616` (incl. lm_head) | 2.69 s | 6.2% | 25.6 µs | 104 975 |
+| 6 | `PSKV-singlewarp-FA` | 2.32 s | 5.4% | 156.5 µs | 14 848 |
+| 7 | `cpy_flt[fp32→fp32]` | 0.90 s | 2.1% | 6.9 µs | 131 264 |
+| 8 | `fused_mmvq[Q4_0, nc=2]` | 0.79 s | 1.8% | 95.1 µs | 8 318 |
+| 9 | `fused_rms_norm` | 0.60 s | 1.4% | 4.8 µs | 125 485 |
+| 10 | `quantize_q8_1` | 0.36 s | 0.8% | 1.9 µs | 190 778 |
+| 11 | `delta_net_recurrent_f32` | 0.34 s | 0.8% | 6.7 µs | 50 784 |
+
+Top 10 covers **~94%** of GPU time at np=2 × 256k.
+
+### Top kernels — np=1 × 256k (prefill-heavy)
+
+| # | Kernel | Time | % | Per-call | Calls |
+|---|---|---:|---:|---:|---:|
+| 1 | `NCCL_AllReduce_f32` | 2.79 s | **33.5%** | 164.9 µs | 16 892 |
+| 2 | `mul_mat_q[Q4_0, ncols=8]` | 2.22 s | 26.7% | 77.3 µs | 28 676 |
+| 3 | `fused_mmvq[Q4_0, nc=1, F.4.1']` | 0.71 s | 8.5% | 86.7 µs | 8 194 |
+| 4 | `mul_mat_q[Q4_0, ncols=112]` (prefill tile) | 0.54 s | 6.5% | 781.5 µs | 696 |
+| 5 | `cutlass_75_wmma_h161616` | 0.49 s | 5.9% | 9.2 µs | 53 825 |
+| 6 | `mul_mat_q[Q4_0_AR16, ncols=8]` | 0.33 s | 3.9% | 53.2 µs | 6 144 |
+| 7 | `PSKV-singlewarp-FA` | 0.27 s | 3.3% | 128.8 µs | 2 112 |
+
+### What changed vs the 2026-05-17 baseline
+
+| Kernel | 2026-05-17 (BF16, default algo, npl=8 × 4k) | 2026-05-19 (option C, F16, np=2 × 256k) |
+|---|---:|---:|
+| `cuBLAS_gemvx_bf16` (lm_head fp32 fallback) | 8.8 s, 5.3% | **GONE** — folded into `cutlass_75_wmma` at 25.6 µs/call |
+| `mul_mat_q[Q4_0, nc=8]` | 30.4% | 38.8% (relative share grew with lm_head out) |
+| `NCCL_AllReduce_f32` | 20.4% | 21.0% |
+| `PSKV-singlewarp-FA` | 18.4% (597 µs/call at npl=8) | 5.4% (156 µs/call at np=2) — less concurrent, shorter wall |
+| `cutlass_75_wmma_h161616` | 0.9% (3.8 µs/call) | 6.2% (25.6 µs/call) — lm_head moved here |
 
 | # | Kernel | NP=8 decode-dominant | NP=1 prefill-dominant | Per-call NP=8 | Calls NP=8 |
 |---|---|---:|---:|---:|---:|
@@ -67,6 +121,8 @@ because 200-tok prefill dominates 64-tok decode at a single slot).
 | 12 | `mul_mat_q[Q4_0, ncols=112]` (prefill tile) | — | 5.7% (420 ms) | 608.1 µs | 690 |
 
 Top 10 covers **95.8%** of NP=8 decode GPU time; top 12 covers **96.6%**.
+
+### Pre-option-C breakdown above is stale; refer to the refreshed table for the current production binary.
 
 ### Pre-NPC ceiling reference (same bench)
 
