@@ -144,7 +144,22 @@ pre-NPC ceiling by exploiting sm_75 tensor cores for the same shapes.
 
 ## Top 3 — clear absolute wins
 
-### #1 — `mul_mat_q[Q4_0,*]` → occupancy + grid utilization
+### #1 — `mul_mat_q[Q4_0,*]` → split-K MMQ — CLOSED 2026-05-19
+
+**Closed via Lever B (split-K MMQ).** Final measured result at
+production np=2 × 256k shape with F16 lm_head + cuBLAS ALGO0 baseline:
+
+| | Before split-K | After split-K | Δ |
+|---|---:|---:|---:|
+| TG NP=2 × 256k | 18.56 t/s | **22.28 t/s** | **+20%** |
+| PP NP=2 × 256k | 20.94 t/s | 23.60 t/s | +13% |
+| Aggregate NP=2 | 20.31 t/s | 23.26 t/s | +15% |
+| NPC matrix | PASS | PASS | unchanged |
+
+Lever A (`launch_bounds(*,1)→(*,2)` for occupancy bump) remains
+available as a stacking optimization on top of split-K; not pursued
+since split-K alone landed the grid-coverage win that was the real
+bottleneck.
 
 **Reframed 2026-05-19 after ncu probe + source survey. Original framing
 (engage int8 IMMA TC) was wrong — kernel already uses int8 IMMA on
