@@ -176,9 +176,28 @@ The write-back maps `nwarps=8` warps × `mma_C::I=16` rows-per-warp = 128
 output rows = `mmq_y`. Lowering `mmq_y` to 64 requires either nwarps=4
 (half block; MMQ_NWARPS is a macro touched widely) or a smaller MMA
 fragment (`mma_int_C_I8J8`, restructuring `vec_dot_q4_0_q8_1_mma`).
-Both are kernel-rewrite scope, not surgical. **Target #1 stops at
-split-K + Lever A.** Shmem-reduction queued as a deeper MMQ rewrite
-when we revisit.
+
+**Lever D — I=8 fragment ground-up rewrite — SHIPPED 2026-05-19** at
+`f8fa3928` (submodule). Adds `mma_int_A_I8K4`, `mma_int_A_I8K8`,
+`mma_int_C_I8J8` and a parallel `mul_mat_q_split_k_i8` kernel running
+at `mmq_y=16 nwarps=2`. Drops shmem to ~6.4 KB/CTA, bids
+`launch_bounds(64, 16)` for 100% theoretical occupancy. Hardware
+delivers ~9 CTAs/SM = 56% theoretical (still shmem-capped, but 2.24×
+boost over the prior 25%). REG:64 STACK:0 LOCAL:0 — 0 spills on Q4_0
+and Q4_0_AR16, both `need_check` variants. Engaged only for sm_75 +
+decode (mmq_x ≤ 16) + Q4_0/Q4_0_AR16 weights.
+
+| | After split-K + Lever A | After Lever D (I=8) | Δ |
+|---|---:|---:|---:|
+| TG NP=2 × 256k | 22.44 t/s | **23.57 t/s** | **+5.04%** |
+| PP NP=2 × 256k | 23.93 t/s | 25.71 t/s | +7.4% |
+| 3-run noise | ±0.08 | **±0.01** | tight |
+| NPC matrix | PASS | PASS | unchanged |
+
+Realized win mechanism: shmem-reduction unlocks higher achieved
+occupancy (latency hiding) AND smaller per-CTA shmem-bank contention.
+Wave overhead increases (1.97 vs 1.11 waves at decode shape) but
+the latency-hiding gain dominates.
 
 **Reframed 2026-05-19 after ncu probe + source survey. Original framing
 (engage int8 IMMA TC) was wrong — kernel already uses int8 IMMA on
