@@ -7569,3 +7569,96 @@ Next decision-fork for user:
 
 Probe scripts kept: scripts/r5-sanitize.sh (env: TOOL=memcheck|racecheck|
 synccheck|initcheck), scripts/r5-capture-bisect.sh, scripts/r5-probe-np4.sh.
+
+## 2026-05-19 — R5 kernel-coverage sweep: bug is NOT in any tested mul_mat / FA / norm path
+
+After Z2-narrow closed NP=4 deterministic, attempted to localise the
+residual NP=2 stochastic (~10%) harness fail. Did not find it.
+
+### Z2 fix landed (committed)
+`1f83f681 ggml-cuda/mmq: bound I=8 tile_y load to tile_y_extent`. The
+I=8 split-K main kernel's tile_y load loop overshoots by 32 ints for
+mmq_x=8, nwarps=2 (288 not a multiple of 64). Capture-sanitizer
+initcheck pinned the OOB read to mmq.cuh:4358. Guard added. Production
+harness NP={1,4,8} stable PASS across 3+ runs.
+
+### Wrong turn: dB[mma_C::ne/2] "fix" attempt (reverted, not committed)
+The I=8 vec_dot path declares `float dB[mma_C::ne/2] = float dB[1]` but
+indexes `dB[l%2]` for l ∈ [0, ne=2), so dB[1] reads out-of-bounds-of-array
+register storage. By C/C++ this is UB. Empirically though, my "fix"
+(widening dB to `dB[ne]` and indexing `dB[l]`) REGRESSED all of
+NP={2,4,8} to stochastic-fail. The original layout has a load-bearing
+assumption about mma_int_C_I8J8 lane→(i,j) cell mapping that I didn't
+correctly reverse-engineer. Reverted, dB fix abandoned.
+
+Key unresolved: what makes the original `dB[ne/2] + dB[l%2]` pattern
+produce correct output for I=16 (where ne=4 → dB[2] alloc, dB[0..1]
+load, l%2 reuse) but NOT analogously correct for I=8 (ne=2 → dB[1]
+alloc, dB[0] load, l%2 reads dB[1] which is OOB). For I=16 the reuse
+pattern works because the 4 lane cells span 2 i-rows × 2 j-cols (so
+dB only needs 2 unique j-scales reused). For I=8 the 2 lane cells span
+1 i-row × 2 j-cols, which would seem to also need 2 j-scales — but the
+empirical evidence says loading both breaks the kernel. Next session
+should microtest the actual mma_int_C_I8J8 lane→cell mapping before
+touching this code.
+
+### Kernel coverage sweep — all pass at production geometry
+
+| Path | Small N=64 test | Prod N=5120 test |
+|---|---|---|
+| MMQ Q4_0_AR16 mul_mat | FAIL M=8 (pre-existing since 198f1575) | PASS M ∈ {1,2,4,8,12,16}; 1-ULP at M≥32 (MMVQ/MMQ boundary) |
+| MMVQ Q4_0_AR16 mul_mat | FAIL M ∈ {2,4,8} (CTA-tail-corruption) | **PASS M ∈ {1,2,4,8}** (new test added) |
+| FA per-slot KV (np-invariance) | PASS | covered |
+| FA per-slot KV (ncols-invariance) | PASS at n_tok ∈ {1,2,4,8} | covered |
+| FA per-slot KV (sm75 correctness) | 464/464 + 464/464 + 464/464 | covered |
+| RMSNorm batch shape-invariance | PASS at n_tok ∈ {1,2,4,8} | covered |
+| RoPE batch shape-invariance | PASS at n_tok ∈ {1,2,4,8} | covered |
+| ggml_reduce shape-invariance | PASS M ∈ {1,2,4,8} | covered |
+| cuBLAS pinned shape-invariant | PASS | covered |
+
+**Conclusion**: every kernel path Qwen 3.6 27B actually exercises at
+production geometry produces byte-identical output across decode batch
+sizes. The small-N test failures (which I initially thought were the
+production bug) don't reproduce at production dimensions — they're
+geometry-specific CTA-tail-corruption that only manifests when N is
+small enough that the bug shows on row indices near N.
+
+### Remaining gap: DeltaNet shape-invariance
+Only `test-deltanet-d1-capture.cpp` and `test-deltanet-s23-op-capture.cpp`
+exist — both are capture-driven dump tools, not shape-invariance unit
+tests. Qwen 3.6 27B is a hybrid arch (DeltaNet recurrent + standard
+attention layers ~3, 31, 63 etc.). The DeltaNet's recurrent state makes
+"batch=1 vs N" comparison less direct than for stateless mul_mat — would
+need careful test design.
+
+### Stochastic-NP-2 location, narrowed by elimination
+
+After comprehensive kernel coverage:
+- NOT in MMQ / MMVQ at production dims
+- NOT in FA per-slot KV
+- NOT in RMS / RoPE / reduce / cuBLAS-pinned
+- COULD BE in DeltaNet (untested for shape-invariance)
+- COULD BE at integration level (slot allocator, batch composition,
+  multi-GPU cudaEvent timing)
+
+Probe data: `bash scripts/r5-probe-np4.sh PROBE=2` (NP=8 fire 4) is also
+~20% stochastic with Z2-narrow committed. So failure rate is NOT purely
+tied to slot pool size matching inflight count — it correlates with
+*any* multi-slot continuous-batching configuration. Most consistent with
+integration-level race rather than a single kernel.
+
+### Plan file `/home/llm/.claude/plans/cached-crunching-tiger.md`
+Updated as plan execution is complete for R5.1-R5.4*. R5.5 (re-land v1
+scheduler) and R5.6 (production bake) remain pending. Next direction
+for R5.4*-residual to be decided: DeltaNet test build OR integration-
+level audit.
+
+### Test artifact (new)
+`ik_llama.cpp/tests/dflash-speculative/test-mmvq-q4-0-ar16-shape-invariance-prod-dim.cpp`
+— PASSES at production dims, rules MMVQ Q4_0_AR16 out as bug source.
+
+### Commits this session
+- `1f83f681` (submodule): Z2-narrow I=8 tile_y bound — closes NP=4 OOB
+- `3ad8934e` (submodule): cb_eval server-capture hook (R5.4*-prep)
+- (submodule): prod-dim MMVQ test
+- Parent: submodule bumps + MEMORY appends + r5-sanitize / r5-probe-np4 / r5-capture-bisect scripts
