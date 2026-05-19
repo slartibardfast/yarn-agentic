@@ -287,6 +287,42 @@ is the unfinished part of this phase.
 C.4 is the cheapest probe and a strong signal in either direction —
 do it first.
 
+### C.4 result (CLOSED — NOT the multi-GPU path)
+
+`scripts/r5-probe-c4.sh ITERS=10` on `--device CUDA0` only, NP=2, fire
+2 concurrent identical requests, same prompt/seed as the harness.
+
+Result: **1 / 10 FAIL** — same ~10% rate as multi-GPU. The bug is NOT
+the multi-GPU cudaEvent path / inter-device split.
+
+Failure signature on the one failing iter (artefacts in
+`/tmp/r5-probe-c4-234248/`):
+- Slot 0 emits ` code` (correct first token) then immediately collapses
+  to incoherent fragments (`, , and,,,,/,, and the,,, and,,.`) and
+  finally attempts to **re-emit the input prompt** mid-output (`The AI,
+  of artificial intelligence began in earnest with the work of Alan
+  Turing...`).
+- Slot 1 emits coherent text but a different valid completion than the
+  NP=1 baseline (`probabilistic systems that can produce inaccurate
+  outputs` vs the baseline's `fundamentally statistical pattern
+  matchers`). Length 356 vs baseline 367.
+- Divergence between slot 0 and the NP=1 baseline at character 5 — one
+  token into the completion.
+
+Interpretation: slot 0's attempt to re-emit the input prompt strongly
+suggests its KV cache region was overwritten or mis-addressed by slot
+1's concurrent prefill — slot 0 reads cells that contain slot 1's
+prompt tokens instead of its own decoded state. This is a
+**slot-KV cross-contamination at concurrent prefill**, not a kernel
+non-determinism.
+
+Implication for the next subtasks:
+- C.1 (slot allocator) and C.2 (batch composition under concurrent
+  prefill) are now the highest-priority probes.
+- C.3 (cb_eval dispatch ordering) drops in priority — cb_eval is fine
+  on single-GPU and the symptom is a KV-address bug not an op-order
+  bug.
+
 ### Commits this session
 
 - Submodule `1f83f681` — `ggml-cuda/mmq`: bound I=8 tile_y load to
