@@ -2,7 +2,7 @@
 
 **Branch**: `production/2026-q2-next` (off submodule HEAD `16b608d1`).
 **Predecessor**: `PHASE_NSTREAM_KV.md` — closed 2026-05-20. Bug C structurally closed; decode-side prefill gate removed; 6 correctness gates green; **-6.2 % TG NP=8 regression carried over**.
-**Status**: Open. Direction tree below, starting hypothesis locked to **Tier 2 refined** (extend existing `update_cache_copies` per-stream patching to the attention-read views).
+**Status**: Open. **Phase 0 prerequisites must land before Tier 2 work begins.** Direction tree below, post-prereq starting hypothesis locked to **Tier 2 refined** (extend existing `update_cache_copies` per-stream patching to the attention-read views).
 **Triangulated 2026-05-20** against prior CUDA-graph work, PSKV per-slot landing, P3.X NPC failures, PHASE45 D10 multi-slot work, and `feedback_n_stream_byte_compat_tradeoff`.
 
 ## Why this phase exists — sharpened framing post-triangulation
@@ -60,6 +60,92 @@ These are direct lessons-learned that bind Tier 2 / Tier 3 scoping:
 6. **`feedback_oneshot_then_evaluate`** — implement Tier 2 coherently (no intermediate "builds green but not yet correct" partial states), evaluate against gates including the warm-up R1=R2=R3 test, then decide whether to advance to Tier 3.
 7. **NPC contract**: the 6 gates closed in PHASE_NSTREAM_KV must stay green. The bench gate GP3.a is *additional* binding — recover the -6.2 % regression at minimum.
 8. **PHASE45 D10.b explicitly named "CUDA graph reuse for batched draft" as the next lever** for multi-slot perf beyond +27%. Tier 2 is essentially that lever for vanilla decode, not just MTP draft.
+
+## Phase 0 — Prerequisites (must land before any Tier 2 work)
+
+Two prerequisites identified during triangulation. Both close gaps that PHASE_NSTREAM_KV's closure left implicit but that this phase's gates expose.
+
+### P0.A — DFlash server CLI wiring fix
+
+**Why this is a prereq, not a follow-up.** [[project_dflash_multislot_phase5_landed]] documents that `llama-server --spec-type dflash --model-draft <sidecar.gguf>` currently fails on missing `tokenizer.ggml.tokens` — `--model-draft` routes the sidecar through the standalone draft-model loader which doesn't accept the sidecar shape (the sidecar shares the target's tokenizer by design). The orchestrator (`common_speculative_init` + `common_speculative_draft_batched`) is wired and exercised by `test-dflash-spec-batched-fanout`, but CLI cannot reach it.
+
+This means **GP3.e (DFlash test suite GREEN) only binds at the libllama layer**. Production CLI cannot deploy DFlash at all today. Tier 2/3 changes affect the server's `process_batch_tokens` dispatch — that's exactly the layer where the DFlash + Tier 3 unification composition must be tested. Without CLI access we are blind to the integration.
+
+**P0.A.1 — Wiring fix.** Route `--spec-type dflash` to call `common_speculative_init` with `mparams_dft.path` set, bypassing `load_model_draft`. Verify the orchestrator accepts the sidecar and tokenizer is sourced from the target ctx. Source files: `examples/server/server.cpp` argument parsing, `examples/server/server-context.cpp` slot init, `common/speculative.cpp` `common_speculative_init`.
+
+**P0.A.2 — DFlash production profile.** Add `profiles/qwen36-dflash.sh` mirroring `profiles/qwen36-27b-x1.sh` (the production MTP profile) but with `--spec-type dflash --model-draft <sidecar.gguf>`. Locate sidecar GGUF on disk (per [[project_dflash_t8_closed]] the bench data lives at `data/phase_dflash_t8/bench-spec-{none,mtp,dflash}.json`).
+
+**P0.A.3 — End-to-end smoke.** `llama-server --parallel 1 --spec-type dflash --model-draft <sidecar>` starts cleanly, accepts `/v1/completions` request, generates ≥ 30 tokens. Then `--parallel 2 --spec dflash` smoke. NPC: byte-identical token output to the libllama `test-dflash-closure` reference for the same prompts.
+
+**P0.A gates (closure):**
+- **GP0.A.a** — `llama-server --spec-type dflash --model-draft <sidecar>` starts without error.
+- **GP0.A.b** — End-to-end `/v1/completions` smoke at `--parallel 1` and `--parallel 2`; tokens match `test-dflash-closure` reference byte-identical for same seeds.
+- **GP0.A.c** — `data/phase_dflash_t8/bench-spec-dflash.json` reproducible via the new profile (≤ ±5 % delta).
+- **GP0.A.d** — Production `verify-production-determinism.sh` still GREEN with the wiring change in place (it doesn't run DFlash but the diff must be NPC-safe for vanilla).
+
+Token estimate: 20-40 k.
+
+### P0.B — Radical spec / TLA+ / test surface expansion
+
+**Why this is a prereq, not parallel work.** The existing S1-S5 spec layer (`batch_composition.allium`, `n_stream_layer.allium`, `BatchComposition.tla`, `StreamIsolation.tla`) was scoped to **what the 4D port preserved** — Bug C absence, per-stream allocator, mask isolation. It does not cover:
+
+1. The CUDA-graph reuse / `cudaGraphExecUpdate` invariants we now depend on at Tier 2.
+2. The unified-stream dispatch semantics Tier 3 introduces.
+3. The composition of MTP fused × n_stream > 1 × per-stream view patching.
+4. The composition of DFlash multi-slot × unified verify-side × graph reuse.
+5. The dispatch-mode invariants the DFlash server-CLI fix (P0.A) must preserve.
+6. The warm-up determinism contract (P2 memory flagged this as a divergence vector; gate GP3.g binds it but no spec exists).
+
+Past in-tree perf work (tasks #37/38/39 — cudaMallocAsync NPC stochastic 1/8) is the historical reason this expansion is non-optional: that failure mode was not catchable by any S1-S5 test because no spec existed for "CUDA runtime state ordering under per-tick perf changes." If we ship Tier 2/3 against the current spec surface and hit a stochastic-NPC class regression, we will not catch it cheaply.
+
+Expansion targets — each is a parallel of an existing S1-S5 artifact:
+
+**P0.B.S1 — Allium specs (5 new + 1 tend):**
+- `specs/graphs/cuda_graph_reuse.allium` — contracts for the multi-entry topology-hash cache, `cudaGraphExecUpdate` patch semantics, dtype-strict invariant, VIEW/CPY src_address tolerance, `GGML_CUDA_GRAPH_MAX` cap + FIFO eviction. Source-tied to `ggml-cuda.cu` lines 4500-4830.
+- `specs/kv-cache/per_stream_read_view_patching.allium` — extension of S1.b's per-stream contracts to the K/V *read* views in `llm_build_kqv` (currently NOT patched per-stream — the Tier 2 gap). `ReadViewStreamPatching` contract mirrors S1.b's `PerStreamAllocator` shape.
+- `specs/dispatch/unified_stream_dispatch.allium` — Tier 3 contracts. `UnifiedUbatchInvariant` (one llama_decode/tick spans N streams via ne[3]); `UniformShapePerTick` (mul_mat sees one shape per call, not N shapes within a tick — the Q1 composition argument formalised); `PreservesBugCAbsence` (derived from BatchCompositionInvariant under unified dispatch).
+- `specs/dflash/dflash_server_cli.allium` — contract for `--spec-type dflash` orchestrator invocation; `SidecarSharesTargetTokenizer`; `OrchestratorInvokedFromServerCLI`. Binds P0.A's wiring.
+- `specs/composition/mtp_fused_x_n_stream.allium` — MTP fused × n_stream > 1 composition. `MTPFusedReuseSurvivesStreamPatching` (Phase 37 #5 reuse branch composes with Tier 2's update_cache_copies extension at NP > 1).
+- `specs/mtp_fused_draft.allium` **tend** — reference the new cross-cutting contracts from `unified_stream_dispatch.allium` and `mtp_fused_x_n_stream.allium`. No new contracts inline; pure cross-reference.
+
+**P0.B.S2 — TLA+ specs (3 new + 1 extension):**
+- `specs/graphs/CUDAGraphReuse.tla` — state machine over `{Captured, Instantiated, ExecUpdated, Invalidated}`; actions `Capture`, `Update`, `Evict`. Invariant: `DtypeStrictness` (no graph reused across a dtype change). Liveness: `EventualEviction` (FIFO under cap).
+- `specs/dispatch/UnifiedStreamDispatch.tla` — state machine for the unified ubatch builder; admission of new prefill streams, fan-out across the n_stream axis. Invariants: `UnifiedUbatchSeqIdsAreUnique`, `UniformShapePerTick`, `BugCAbsencePreserved`.
+- `specs/composition/MTPxNStream.tla` — composition state machine. Variables: `mtp_op_type`, `n_stream`, `chain_residual`. Invariant: `MTPChainResidualPerStream` (n_streams chain_residual buffers each tracked independently).
+- `specs/dflash/DFlashMultiSlot.tla` **extend** — add `VerifySideUnification` action covering Tier 3's verify-side dispatch change; preserve existing `NoCrossSlotRegionOverlap` invariant.
+
+**P0.B.S3 — TLC model checking (every new spec + negative-tests):**
+- For each new `.tla`: `MC.cfg` clean run + `MC_negative.cfg` that disables the invariant the spec binds and confirms TLC produces the expected counterexample. Mirror the existing `BatchCompositionMC.cfg` + `BatchCompositionMC_no_gate.cfg` pattern.
+- Specifically the negative test for `UnifiedStreamDispatch.tla` must produce the Bug C signature when `UniformShapePerTick` is disabled — proving the spec captures the predecessor's closure mechanism.
+
+**P0.B.S4 — Property tests (allium propagate):**
+- `tests/spec/test-cuda-graph-reuse.cpp` — exercise the `is_cuda_graph_update_required` + `ggml_cuda_graph_node_props_eq` checks at the dtype boundary, VIEW src_address change, op-sequence change. PASS on HEAD.
+- `tests/spec/test-per-stream-read-view-patching.cpp` — exercise `update_cache_copies` after Tier 2 extension lands; FAIL on HEAD (before Tier 2), PASS after. Binding RED test.
+- `tests/spec/test-unified-stream-dispatch.cpp` — exercise Tier 3 dispatch; FAIL on HEAD (before Tier 3), PASS after. Binding RED test.
+- `tests/spec/test-mtp-x-n-stream.cpp` — exercise MTP fused at NP > 1; PASS on HEAD (MTP NP > 1 not used in production but composes correctly).
+- `tests/spec/test-dflash-server-cli.cpp` — drives `llama-server` with `--spec-type dflash`. PASS after P0.A lands.
+
+**P0.B.S5 — Trace harness expansion:**
+- Extend `examples/server/server-trace-ndjson.h` with `emit_graph_event` (`CaptureGraph`, `UpdateGraphExec`, `EvictGraphCacheEntry`). Gate on `LLAMA_TRACE_NDJSON_DIR`.
+- Extend `scripts/validate-batch-composition-trace.py` to validate the new graph-event records against `CUDAGraphReuse.tla`.
+- Extend the harness to emit `WarmUpRunIndex` markers so the validator can verify R1=R2=R3 byte-identity for GP3.g.
+
+**P0.B gates (closure):**
+- **GP0.B.a** — All new `.allium` files `allium check` clean.
+- **GP0.B.b** — All new `.tla` files SANY-parse clean; `MC.cfg` runs clean; `MC_negative.cfg` produces the expected counterexample for each.
+- **GP0.B.c** — All new property tests build + run via `cmake --build build --target <test-name>`. RED tests fail on pre-Tier-2 HEAD (proves they bind on what Tier 2 will deliver).
+- **GP0.B.d** — `LLAMA_TRACE_NDJSON_DIR=...` `r5-probe-c4.sh ITERS=20` produces traces; `scripts/validate-batch-composition-trace.py` reports zero violations across BatchComposition + StreamIsolation + CUDAGraphReuse + UnifiedStreamDispatch.
+- **GP0.B.e** — `allium weed` against current HEAD finds expected gaps for the unmlanded contracts (`ReadViewStreamPatching`, `UnifiedUbatchInvariant`) and clean for the already-landed ones.
+
+Token estimate: 25-40 k Allium + 30-50 k TLA+ + 15-25 k TLC + 20-30 k property tests + 15-25 k trace harness = **105-170 k tokens**.
+
+### P0 sequencing
+
+P0.A and P0.B can run in parallel. P0.A is contained scope (server CLI wiring); P0.B is broad surface expansion. Both must close before T2.a probe begins.
+
+**Phase 0 closure**: GP0.A.a–d and GP0.B.a–e all GREEN. Submodule + parent commits per CLAUDE.md §5. MEMORY entry per §6.
+
+---
 
 ## Direction tree (refined and primary-sourced)
 
@@ -208,11 +294,15 @@ T3.g — **Bench gate GP3.i** against vLLM's 154.77 t/s measurement.
 
 Per CLAUDE.md §8:
 
+- **Phase 0.A** — DFlash server CLI wiring fix + profile + smoke gates: **20-40 k tokens**. Must precede T2.a.
+- **Phase 0.B** — Radical spec/TLA+/test surface expansion (5 Allium + 3 TLA+ + 5 property tests + trace harness ext.): **105-170 k tokens**. Must precede T2.a.
 - **Tier 2 refined** — read-view probe + cache_copies extension + bailout drop + warm-up gate harness + GP3.a-h verification: **60-100 k tokens**.
-- **Tier 3 refined** — server fusion + KQ-mask shape + graph builder uniform-batch + non-FA shape-invariance verify + GP3.i-k: **120-180 k tokens** (significantly less than the original "fresh FA kernel port" framing because the PSKV per-slot kernel is the prerequisite and it's already production).
+- **Tier 3 refined** — server fusion + KQ-mask shape + graph builder uniform-batch + non-FA shape-invariance verify + GP3.i-m: **120-180 k tokens** (significantly less than the original "fresh FA kernel port" framing because the PSKV per-slot kernel is the prerequisite and it's already production).
 - Diagnosis if Tier 2 hits unexpected invalidation: 20-30 k per round, budget 2-3.
 
-Total scope: ~100-330 k tokens depending on how far we run. The structural foundation (PHASE_NSTREAM_KV's 4D layout + the existing CUDA-graph patching infra + the PSKV per-slot FA kernel) carries most of the engineering risk; this phase is the dispatch refit.
+Total scope: **305-490 k tokens** depending on how far we run. The structural foundation (PHASE_NSTREAM_KV's 4D layout + the existing CUDA-graph patching infra + the PSKV per-slot FA kernel) carries most of the engineering risk; this phase is the dispatch refit *plus* the surface expansion that should have shipped with PHASE_NSTREAM_KV but didn't.
+
+Per `feedback_oneshot_then_evaluate`: Phase 0.A and 0.B can run in parallel as separate bundles. Tier 2 implements coherently after both close. Tier 3 implements coherently after Tier 2 closes. No partial intermediate landings.
 
 ## Primary research sources
 
