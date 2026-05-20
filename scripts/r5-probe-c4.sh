@@ -24,10 +24,12 @@ mkdir -p "$OUT_DIR"
 
 start_server() {
     local np=$1
+    local tag="${2:-base}"
     pkill -x llama-server 2>/dev/null || true
     sleep 3
     local total_ctx=$((8192 * np))
     env CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+        LLAMA_KV_CONCURRENT_TRACE="${LLAMA_KV_CONCURRENT_TRACE:-}" \
     "$BIN" -m "$GGUF" \
         --device CUDA0 \
         -ngl 999 -fa on \
@@ -37,7 +39,7 @@ start_server() {
         --k-cache-hadamard --v-cache-hadamard \
         --no-context-shift --ctx-checkpoints 3 \
         --port "$PORT" --host 127.0.0.1 \
-        > "$OUT_DIR/server-np$np.log" 2>&1 &
+        > "$OUT_DIR/server-np${np}-${tag}.log" 2>&1 &
     SRV=$!
     for i in $(seq 1 240); do
         if curl -fsS --max-time 1 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
@@ -46,7 +48,7 @@ start_server() {
         sleep 1
     done
     echo "FAIL: server didn't start at np=$np within 240s" >&2
-    tail -30 "$OUT_DIR/server-np$np.log" >&2
+    tail -30 "$OUT_DIR/server-np${np}-${tag}.log" >&2
     kill -9 "$SRV" 2>/dev/null || true
     return 1
 }
@@ -69,7 +71,7 @@ extract() { /home/llm/venv/bin/python -c "import json,sys; print(json.load(open(
 
 # Single-GPU NP=1 baseline (cached for all iters).
 echo "[baseline] single-GPU NP=1"
-start_server 1 || exit 2
+start_server 1 baseline || exit 2
 fire "$OUT_DIR/np1.json"
 extract "$OUT_DIR/np1.json" > "$OUT_DIR/np1.txt"
 echo "  np1 (first 80): $(head -c 80 "$OUT_DIR/np1.txt")"
@@ -80,7 +82,7 @@ echo "[probe C.4] single-GPU NP=$NP, fire $NP, $ITERS iterations"
 
 FAILS=0
 for iter in $(seq 1 "$ITERS"); do
-    start_server "$NP" || exit 2
+    start_server "$NP" "iter${iter}" || exit 2
     PIDS=()
     for i in $(seq 0 $((NP - 1))); do
         fire "$OUT_DIR/iter${iter}-p${i}.json" &

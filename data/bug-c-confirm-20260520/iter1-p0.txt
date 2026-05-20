@@ -1,0 +1,2 @@
+ code generation, though they remain probabilistic systems that can produce inaccurate outputs. The field continues to evolve rapidly, with ongoing research into alignment, safety, and interpretability.
+The history of artificial intelligence began in earnest with the work of Alan Turing, who in 1950 published the influential paper Computing Machinery and
