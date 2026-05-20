@@ -19,6 +19,27 @@ Pre-N1 spec layer per `/home/llm/.claude/plans/cached-crunching-tiger.md`:
 
 N1+N2+N3 work proceeds against this binding spec set: `test-n-stream-kv-layout` flips from RED→GREEN as the 4D port lands, and the headline closure gate (G3.a–G3.h) remains the bundle binding.
 
+## Gate sequencing — locked 2026-05-20
+
+After N2 + N3 landed code-complete, three load-bearing decisions locked before running production gates:
+
+1. **27B profile**: smaller-context. CTX_PER_SLOT=4096 (matches the ralph perf bench config) on `/opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.gguf`. The original `qwen36-27b-x2-dflash@256K` profile separately OOMs (data/ralph-nstream-kv-ledger.md rows 9/15); fixing that profile is orthogonal to N2/N3 closure.
+2. **Perf-fail policy**: stop-and-surface. If G3.g (per-request PP ≥ 60 t/s) or G3.h (TG NP=8 within ±1 % of 27.73 t/s) fail while correctness gates pass, do NOT silently merge — the port has not delivered its stated TG-overlap recovery benefit. Per `feedback_no_followup_cover`.
+3. **Ralph loop**: cancelled for the duration of the gate runs. PSKV singlewarp perf work is independent of N2+N3 closure; resume after N4 lands.
+
+### Stage sequence
+
+- **Stage 1** (cheap correctness re-confirm on feature branch): build → re-run `test-n-stream-kv-layout` + `test-dflash-np-multislot`.
+- **Stage 2** (correctness on production 27B): G3.a single-GPU NP-determinism → G3.b multi-GPU NP-determinism → G3.c single-GPU r5-probe-c4 (gate REMOVED) → G3.d multi-GPU r5-probe-c4.
+- **Stage 3** (perf — the point of the port): G3.g pp-serialization (per-request PP ≥ 60 t/s, parallel-prefill collapse signature ~12-13 t/s) → G3.h llama-batched-bench TG NP=8 within ±1 % of 27.73 t/s.
+- **Stage 4** (closure): merge `feature/nstream-kv-4d-n2` → `production/2026-q2-next` fast-forward, bump parent submodule pointer, N4 10-min soak.
+
+### Stage 1 results — 2026-05-20
+
+- `test-n-stream-kv-layout` n_parallel=1 on Qwen3.5-0.8B-BF16: PASS (foundation, KVTensorIsFourD with ne[3]=1, StreamPartition ne[1]=256).
+- `test-n-stream-kv-layout` n_parallel=2: PASS (n_stream=2, v_heads.size()=2, KVTensorIsFourD ne[3]=2, StreamPartition).
+- `test-dflash-np-multislot` on Qwen3.6-27B target + dflash drafter, multi-GPU: **PASS slot-0 byte-identical NP ∈ {1,2,4,8}**. Aggregate t/s scales 1.0 → 2.92× from N=1 to N=8 (112.6 → 328.9 tok/s). G3.e + G3.f intrinsically green.
+
 ## N2 + N3 closure status — feature branch (2026-05-20)
 
 **Bundle code-complete on `feature/nstream-kv-4d-n2` (submodule).** Bug C closed structurally; decode-side prefill gate REMOVED.
