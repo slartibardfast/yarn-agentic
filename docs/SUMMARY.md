@@ -5,18 +5,22 @@
 
 # Determinism — Qwen 3.6 27B on dual sm_75
 
-- [Plan: production NP-determinism audit](PLAN_DETERMINISM_AUDIT.md)
 - [Master phase tracker (A, B, C, CX, CY, D, E, F)](PHASE_MMQ_Q4_0_AR16.md)
-- [Closed: CY.F.18 proper fix (scheduler needs_sync)](PHASE_CY_F18_PROPER_FIX.md)
 - [Closed: NP-determinism — canonical writeup](PHASE_NP_DETERMINISM_CLOSED.md)
 - [Open: F.4.1' perf-recovery phase](PHASE_PERF_F4_1.md)
-- [Plan: NP-closure (NPC.1–NPC.6)](PLAN_NP_CLOSURE.md)
-- [Reference: NPC.4 deep audit + fix plan](PHASE_NPC4_FIX_AUDIT.md)
-- [Reference: NPC handover (superseded)](PHASE_NPC_HANDOVER.md)
-- [Superseded: Phase D plan (race not multi-GPU specific)](PHASE_D_PLAN.md)
-- [Reference: FIX-C v5 final report (singlewarp FA)](FIX_C_V5_FINAL_REPORT.md)
 - [Reference: CX.A aftermath audit (2026-05-16)](AUDIT_2026-05-16_CX_A_AFTERMATH.md)
 - [Reference: Research log (2026-05-16)](RESEARCH_2026-05-16.md)
+
+## Archive (closed sub-phases + superseded plans)
+
+- [Archive: PLAN_DETERMINISM_AUDIT](archive/np-determinism/PLAN_DETERMINISM_AUDIT.md)
+- [Archive: PHASE_CY_F18_PROPER_FIX](archive/np-determinism/PHASE_CY_F18_PROPER_FIX.md)
+- [Archive: PHASE_NP_CLOSURE](archive/np-determinism/PHASE_NP_CLOSURE.md)
+- [Archive: PLAN_NP_CLOSURE](archive/np-determinism/PLAN_NP_CLOSURE.md)
+- [Archive: PHASE_NPC4_FIX_AUDIT](archive/np-determinism/PHASE_NPC4_FIX_AUDIT.md)
+- [Archive: FIX_C_V5_FINAL_REPORT](archive/np-determinism/FIX_C_V5_FINAL_REPORT.md)
+- [Archive: PLAN_FIX_A](archive/np-determinism/PLAN_FIX_A.md)
+- [Archive: PLAN_FIX_C](archive/np-determinism/PLAN_FIX_C.md)
 
 # N-stream KV cache (Bug C closure)
 

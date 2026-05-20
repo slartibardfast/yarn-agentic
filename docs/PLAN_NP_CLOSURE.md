@@ -1,1 +1,0 @@
-../PLAN_NP_CLOSURE.md
