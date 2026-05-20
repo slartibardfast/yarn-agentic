@@ -8206,3 +8206,66 @@ deep-dive approach. The general pattern was "what is the smallest possible test 
 distinguishes hypothesis H from ¬H" — for T5 that was running the SAME verify path
 with a different spec-type that doesn't install the hook. Worth keeping as a template
 for future "X works but Y doesn't" diagnostic problems on this stack.
+
+## P0.A.3 cb_eval-as-cause FALSIFIED — root cause REOPENED (2026-05-20, later same day)
+
+A direct binding observational test contradicts the matrix above. Wrote a libllama-level
+test (`tests/dflash-speculative/test-dflash-extract-observational.cpp`) that decodes the
+same prompt twice with `llama_set_dflash_extract_layers` armed on the production set
+{1, 16, 31, 46, 61} vs disarmed, comparing per-row argmax. Ran three shapes:
+
+| Shape | Generated tokens | cb_eval armed? | Result |
+|---|---|---|---|
+| Single 12-token prefill | 12 | yes | byte-identical to baseline |
+| Prefill + 64 single-token autoregressive decodes | 64 | yes | byte-identical |
+| Prefill + 32 verify-style 5-wide multi-token decodes | 160 | yes | byte-identical |
+
+Extract buffer populates correctly (61440 floats = 12 rows × 5120 D_emb for the
+prefill), confirming the cb_eval hook actually fires on every configured `l_out-<il>`
+node and the scheduler takes its slow path. The target's argmax is unchanged.
+
+**Conclusion**: T5 ("cb_eval hook perturbation breaks operator fusion → argmax flip")
+is FALSIFIED at the surface the test exercises. The previous falsification matrix
+relied on `ngram-simple ≡ spec-none ≠ DFlash`, but the architectural difference
+between ngram-simple and DFlash is NOT *only* the cb_eval install — it is the
+entire DFlash pipeline (combine_features, inject_kv_fused, drafter forward,
+common_speculative_draft sample-and-accept loop). The earlier matrix was
+**correlation, not causation**. cb_eval install ∧ scheduler slow-path is now empirically
+exonerated as a sufficient cause of the DFlash CLI output divergence.
+
+**P0.A.3 root cause is REOPENED.** Candidate downstream theories (none yet bound):
+- `combine_features` cuBLAS pinned-HMMA GEMM dispatch ordering (PHASE 67-69 batched-pinned
+  may interact with post-fold 4D KV in unanalysed ways)
+- `inject_kv_fused` async sync — does the post-fold variant serialise correctly
+  against subsequent target decodes?
+- drafter_forward kernel state leakage / shared CUDA stream race with target context
+- `common_speculative_draft` sample-and-accept loop position math (verify-batch position
+  drift relative to target's committed pos)
+- post-fold 4D KV interaction with drafter's own KV (shared `llama_context`,
+  possible cell alias)
+
+**Bundle held on disk uncommitted** for future revival once the real mechanism is
+named:
+- `specs/dflash/cb_eval_residual_capture.allium` (Allium contract, parses clean)
+- `specs/dflash/CbEvalObservational.tla` + `CbEvalObservationalMC.{tla,cfg}` +
+  `CbEvalObservationalMC_callback.cfg` (TLA+ positive verifies; negative test
+  produces expected counterexample on SchedulerStaysFastPath at depth 2)
+- `ik_llama.cpp/tests/dflash-speculative/test-dflash-extract-observational.cpp`
+  (binding test, currently PASSES — encodes a true contract on the cb_eval surface
+  but is not the P0.A.3 fix path because cb_eval is not the cause)
+
+**Lesson** — every "smallest test that distinguishes H from ¬H" must distinguish on
+ONE variable. The earlier matrix's "T5 CONFIRMED" step changed two variables at once
+(cb_eval install AND the entire DFlash spec-CLI pipeline) and attributed the
+divergence to the cheaper-to-fix one. The cheap binding test that varies ONLY
+cb_eval install is what closed the diagnostic correctly. Reaffirms
+`feedback_verify_test_mechanism_before_trusting` — write the binding test even when
+the diagnostic looks confident, especially when the diagnostic is sitting on a
+correlation that could be confounded.
+
+**Next experiment**: A/B on `examples/dflash-speculative-simple/dflash-speculative-simple.cpp`
+(an existing self-contained DFlash CLI driver) with cb_eval install force-disabled
+vs intact. This is the experiment the earlier matrix should have run; it isolates
+cb_eval at the actual CLI level where the bug is observed. If the divergence
+SURVIVES disabling cb_eval, the mechanism is in the rest of the DFlash pipeline
+(very likely given the libllama-level falsification above).
