@@ -101,6 +101,44 @@ exists):
   `llama_memory_*`). Keep ik's existing `llama_kv_cache_*` free-function
   shape; the change is internal.
 
+## Update 2026-05-20 (d) — decoupled from Bug C, still wanted on own merits
+
+User confirms (post-(c) discussion): the n_stream KV port is still a
+desired feature independent of whether it closes Bug C. Standalone
+value:
+
+- **v1 scheduler reland maps cleanly onto disjoint per-session regions.**
+  The "shared pool pretending to be per-session" friction goes away.
+  Even if v1 ships pre-port via a different patch path, the post-port
+  v1 is structurally healthier.
+- **DFlash multi-slot `N_slots` vs `n_slots_cap` becomes type-level.**
+  Already fixed at runtime (P4 closure), but the type-level guarantee
+  prevents a future regression.
+- **Upstream alignment.** ik's KV layer drifts further from upstream
+  each session; closing this distance simplifies future ports (the
+  `memory_i` interface, hybrid cache architectures, draft-batch
+  rebalancing).
+
+Sequencing post-(c):
+
+1. **Bug C mechanism confirm first.** Task #103 — instrument
+   `find_slot` + `KQ_mask`, run `r5-probe-c4.sh` to failure, diff.
+   ~20k tokens. Outcome: confirmed mechanism.
+2. **Fix Bug C at the confirmed site.** Likely mask construction or
+   metadata path; ~10–40k tokens. Closes the production gate.
+3. **Re-land v1 scheduler.** On the Bug-C-closed base, separate from
+   this phase. Recovers the 3.5× win.
+4. **Then proceed with N1+N2+N3+N4** as structural improvement on its
+   own merits. The original `Goal` and `Verification gates` in this
+   doc still apply, but the headline harness gate (G3.a–G3.f) is no
+   longer the Bug C closure proof — it becomes a regression check.
+
+The N1+N2+N3+N4 work packages and the (b) range-partition variant
+remain valid implementation options; choose at re-entry time based on
+how much of the wider goal (DFlash typesafety, upstream alignment) the
+user wants delivered. 4D port = full alignment; range-partition =
+narrow improvement. Both stand on their own.
+
 ## Update 2026-05-20 (c) — STRUCTURAL FIX PAUSED, ROOT CAUSE NOT CONFIRMED
 
 Pre-implementation read of `fattn-per-slot-kv-singlewarp-sm75.cu` invalidates
