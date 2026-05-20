@@ -29,7 +29,7 @@
 # DFlash speculative decoding
 
 - [Qwen3.6-27B DFlash on sm_75](phases/70-dflash/PHASE_DFLASH.md)
-- [Phase 46: speculative decoding port](phases/70-dflash/PHASE46.md)
+- [DFlash Qwen 3.6 27B port](phases/70-dflash/DFLASH_QWEN36_PORT.md)
 - [Archive: Multi-slot orchestrator (closed 2026-05-18)](archive/dflash/PHASE_DFLASH_MULTISLOT.md)
 - [Archive: Batched-pinned dispatch — perf collapse (closed 2026-05-19)](archive/dflash/PHASE_DFLASH_BATCHED_PINNED.md)
 

@@ -1,4 +1,4 @@
-# Phase 46 — DFlash speculative decoding port into ik_llama.cpp
+# DFlash Qwen 3.6 27B port — speculative decoding on `production/2026-q2-next`
 
 ## Goal
 
@@ -12,10 +12,10 @@ Ship DFlash speculative decoding on `production/2026-q2-next` such that:
 - Measured tok/s strictly exceeds production MTP `--draft 3` baseline
   (33.5 tok/s on this hardware, 2× Quadro RTX 6000 sm_75).
 
-GREEN closes Phase 46. RED at any stage closes the port cleanly with
+GREEN closes the port. RED at any stage closes the port cleanly with
 the cause documented and the production MTP path untouched.
 
-## Non-goals (out of scope for Phase 46)
+## Non-goals (out of scope for this port)
 
 - vLLM-on-sm_75 measurements. Abandoned. ik_llama.cpp is the fastest
   engine on this hardware; vLLM is reference-implementation only and
@@ -330,10 +330,10 @@ Empirical perf vs MTP `--draft 3`; soak; doc closure.
       Verify: NRestarts=0 over the soak window. Soak duration is
       multi-hour; budget accordingly.
 - [ ] **T4.4 — MEMORY.md + retrospective.** Append a memory entry
-      naming Phase 46 landing (or the negative-result close).
+      naming the DFlash port landing (or the negative-result close).
       Update `MEMORY.md` in the top-level repo and write the
       private auto-memory entries that future sessions need.
-- [ ] **T4.5 — SUMMARY.md sidebar.** Ensure PHASE46.md is in
+- [ ] **T4.5 — SUMMARY.md sidebar.** Ensure DFLASH_QWEN36_PORT.md is in
       `SUMMARY.md` so the mdBook site renders it.
 
 ## Verification — phase-level gate
