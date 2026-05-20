@@ -101,6 +101,60 @@ exists):
   `llama_memory_*`). Keep ik's existing `llama_kv_cache_*` free-function
   shape; the change is internal.
 
+## Update 2026-05-20 (e) — Bug C mechanism CONFIRMED: mixed prefill+decode batch
+
+Diagnostic probe with `LLAMA_KV_CONCURRENT_TRACE=1` instrumentation
+(diag prints in `find_slot` + post-mask population) ran 15 iters of
+`scripts/r5-probe-c4.sh`. 2/15 (~13%) failed, matching prior rate.
+Comparing the trace of a failing iter (1) against the immediately
+adjacent passing iter (2):
+
+**Passing iter** tick 4: one batch with `n_tokens=420` containing BOTH
+slots' prefills back-to-back (210 + 210 tokens). After that, every
+tick contains exactly 2 tokens (one decode per slot, paired).
+
+**Failing iter** tick 4: slot 0's prefill alone, `n_tokens=210`.
+Tick 5: `n_tokens=211` containing **slot 0's first decode token
+(pos=210, seq=0) AS BATCH TOKEN 0, followed by slot 1's full 210-token
+prefill (pos=0..209, seq=1) AS BATCH TOKENS 1..210**.
+
+The mask is constructed correctly in both cases (tok=0 sees range
+[0..210] for seq=0; tok=1..210 see [211..211+pos] for seq=1; no
+cross-slot mask leakage). `find_slot` allocates correctly with proper
+`seq_id` metadata. The KV cache layout itself is fine.
+
+**Bug C is downstream of the mask** — a kernel or graph node that
+fails on the mixed-prefill+decode batch geometry. Candidates:
+- RoPE applied per-token with mixed pos values across slots in the
+  same batch.
+- The per-slot-kv FA kernel processing a batch where some queries
+  decode and others prefill.
+- DeltaNet recurrent state when prefill and decode are interleaved.
+- Some graph-build path that assumes uniform batch type.
+
+**The v1 PP-serialisation scheduler (commit `67878813`, task #76)
+explicitly forbids this batch composition** — "≤1 PP-in-flight, TG
+overlap OK". v1 was reverted on a prior session because it failed
+NPC; that NPC failure was almost certainly Bug B (the deterministic
+NP=4 OOB at `mmq.cuh:4358`, now closed by Z2-narrow in submodule
+`1f83f681`).
+
+**Plan revision:**
+
+1. **#103 Bug C mechanism confirm** — CLOSED. Diagnostic data preserved
+   at `data/bug-c-confirm-20260520/`.
+2. **#93 Bug C fix** (was: v1 cherry-pick + perf gate) — now scoped
+   as "reland v1 to prevent mixed prefill+decode batches". Same gates
+   as before (NPC harness pass, PP perf recovered, TG perf ≤ 1%
+   regression).
+3. **#100/#101/#102 N1/N2/N3** (n_stream KV port) — remain decoupled
+   per (d), pursued on own merits AFTER Bug C closure.
+
+The diagnostic env hook `LLAMA_KV_CONCURRENT_TRACE` and its `[kv-trace]`
+prints stay in source through #93's gate verification (used to confirm
+v1's reland actually eliminates mixed batches); then deleted in a
+separate cleanup commit per `feedback_bake_measurement_env_gates`.
+
 ## Update 2026-05-20 (d) — decoupled from Bug C, still wanted on own merits
 
 User confirms (post-(c) discussion): the n_stream KV port is still a
