@@ -65,33 +65,305 @@ These are direct lessons-learned that bind Tier 2 / Tier 3 scoping:
 
 Two prerequisites identified during triangulation. Both close gaps that PHASE_NSTREAM_KV's closure left implicit but that this phase's gates expose.
 
-### P0.A — DFlash server CLI: verify on post-fold submodule
+### P0.A — DFlash server CLI: surface, fix, document open gaps
 
-**Scope change recorded 2026-05-20 (post-discovery).** The original plan (commit `0adfe9f` / `d9fb279`) listed P0.A as an *implementation* task — wire `--spec-type dflash --model-draft <sidecar>` end-to-end. **A grep of recent commits reveals the wiring already landed** in submodule commit `61a7e874` (2026-05-18) — *"server: wire DFlash sidecar drafter path; drop n_parallel=1 refusal"*. That commit:
+**Scope evolution log:**
+- **Original (`0adfe9f` / `d9fb279`)** — frame as *implementation* of CLI wiring fix.
+- **2026-05-20 first revision** — grep of recent commits revealed `61a7e874` (2026-05-18) *"server: wire DFlash sidecar drafter path; drop n_parallel=1 refusal"* already landed wiring + production profile `/home/llm/profiles/qwen36-27b-x2-dflash.sh`. Reframed as *verify-on-post-fold*.
+- **2026-05-20 second revision (this section)** — verification surfaced two additional pre-existing DFlash bugs and one fundamental open issue. Reframed again as *land what we can, document what's open with explicit testable theories*.
 
-1. Detects `params_base.speculative.type == COMMON_SPECULATIVE_TYPE_DFLASH` (server-context.cpp:156).
-2. Routes `--model-draft <path>` into `params_base.speculative.mparams_dft.path` and **skips** `llama_model_load_from_file` for the sidecar (server-context.cpp:189-196).
-3. `common_speculative_init` then hands the path to `llama_dflash_drafter_load` (speculative.cpp:1216-1225, 1001).
-4. Removed the `n_parallel == 1` refusal so the sidecar runs under multi-slot.
+#### P0.A.1 — Drafter K/V VRAM cap [SHIPPED]
 
-A production profile already exists at `/home/llm/profiles/qwen36-27b-x2-dflash.sh` and is the active.sh symlink target.
+**Symptom on first verify-on-post-fold attempt:**
 
-**What remains open** is *verify-on-post-fold*. The 4D per-stream KV layout (`PHASE_NSTREAM_KV`) landed AFTER `61a7e874`. Server-side `process_batch_tokens` now splits multi-seq batches per-stream (server-context.cpp:2225, 4576-4687). DFlash's per-slot scratch sizing (Phase 2) and `cb_eval` per-slot demux (Phase 3) compose with that split, but the composition has not been freshly exercised end-to-end since the fold submodule landed today. Tier 2/3 will change `process_batch_tokens` further — we need a green pre-Tier-2 DFlash baseline to compare against.
+```
+[dflash] CUDA error in alloc K cache: out of memory
+common_speculative_state_dflash: llama_set_dflash failed: rc=-8
+... abort in FUSED_RMS_NORM during common_speculative_is_compat
+```
 
-**P0.A deliverables (verification, not implementation):**
+**Root cause:** `llama_set_dflash` sized the drafter K/V cache to the full target `n_ctx`:
 
-- **P0.A.1 — Restart `llama-server` with the existing dflash profile** against current submodule HEAD `16b608d1`. Confirm clean boot (no tokenizer error, no n_parallel refusal).
-- **P0.A.2 — End-to-end smoke.** `/v1/completions` at `--parallel 2` produces sane output (≥ 30 tokens, not garbled, EOS reached). Capture the response.
-- **P0.A.3 — NPC under DFlash multi-slot.** `verify-production-determinism.sh` with the DFlash profile active (or a DFlash-specific NPC harness if one exists; otherwise the standard production NPC suite + a DFlash byte-identical-token check at NP={1,2}).
-- **P0.A.4 — Capture bench reference.** Reproduce `data/phase_dflash_t8/bench-spec-dflash.json` measurement on post-fold submodule so Tier 2/3 has a binding pre-change baseline.
+```cpp
+// src/llama-dflash.cpp:474 (pre-fix)
+const int seq_len_cap = (int) ctx_tgt->cparams.n_ctx;  // = 524288
+```
 
-**P0.A gates (closure):**
-- **GP0.A.a** — `systemctl --user start llama-server` (with `qwen36-27b-x2-dflash.sh` active) reaches `READY` per `llama-healthcheck`; no startup errors.
-- **GP0.A.b** — End-to-end `/v1/completions` smoke at `--parallel 2` returns sane output for a fixed prompt (golden file under `data/dflash-smoke/`).
-- **GP0.A.c** — NPC byte-identical at NP={1,2} for DFlash via existing test harness OR `verify-production-determinism.sh` (whichever covers the DFlash code path).
-- **GP0.A.d** — Bench reference re-captured; delta vs `data/phase_dflash_t8/bench-spec-dflash.json` within ±5 %.
+Cache footprint at production profile (--ctx-size 524288, --parallel 2):
+```
+kv_bytes = L_d × n_slots × SeqLen × H_kv × D_h × sizeof(__half) × 2 (K and V)
+         = 5  × 2       × 524288  × 8    × 128 × 2                 × 2
+         = 21.5 GiB
+```
+That alone exceeds the 24 GiB Quadro RTX 6000's free VRAM after weights + main KV + NCCL.
 
-Token estimate (revised): 5-15 k if all green; 20-60 k if smoke surfaces a regression that needs root-cause + fix on the 4D × DFlash composition.
+**Fix:** the drafter has 4 SWA layers (sliding_window=2048) + 1 full-attention layer (per `dflash.layer_types` in the GGUF). With MAL capped universally at `swa_window + block_size + 16 = 2080`, all layers operate within the same bound; cache footprint drops to **85 MB** (99.6 % reduction). The full-attention layer becomes effectively SWA-bounded under this regime — an explicit cost of the universal cap, to revisit if drafter quality at production scale shows measurable regression.
+
+Submodule commits (production/2026-q2-next):
+- `[MAL cap commit]` — set `seq_len_cap = MAL_max` in allocate_ctx_scratch; cap `anchor_pos = min(prompt_tgt.size(), MAL_max)` at both single-slot and multi-slot DFlash draft call sites in `common/speculative.cpp`.
+
+#### P0.A.2 — stage_target_hiddens end-trim restore [SHIPPED]
+
+**Symptom on first smoke after VRAM cap landed:**
+
+DFlash at `--parallel 1`, temp=0, simple prompt — output filled with token duplication and acceptance rate at 8 % (vs the canonical 30–50 % range for DFlash).
+
+**Root cause:** the MAL-cap commit changed `stage_target_hiddens` to read from the extract buffer's tail (intended for the long-context case where `buf` accumulates more rows than `mal_anchors`). That edit replaced the original `buf.resize(mal_anchors * D_emb)` end-trim with a conditional front-erase — **silently dropping the end-trim entirely**.
+
+Effect across cycles: the previous cycle's verify decode appended `(1 + n_draft)` rows past the post-accept `cache_tokens.size()`. Without the end-trim, those rejected-draft hiddens survived into the next cycle's `stage_target_hiddens`. The drafter then read stale rejected hiddens as if they were accepted target features → wrong predictions → cycle never recovered.
+
+**Fix:** restored the end-trim `buf.resize(mal_anchors * D_emb)`. With the MAL cap and caller-side anchor_pos cap in place, `mal_anchors ≤ MAL_max`, so `buf` stays bounded.
+
+Submodule commit:
+- `[stage trim commit]` — restore end-trim at end of `stage_target_hiddens`.
+
+**Effect on smoke:** acceptance rate jumped from **8 % → 54 %** at temp=0. Numerically validates the trim was a real correctness regression (not just a perf issue).
+
+#### P0.A.3 — DFlash output divergence from spec-none baseline [OPEN — fundamental, needs dedicated diagnostic phase]
+
+**Symptom after P0.A.1 + P0.A.2 landed:**
+
+Same prompt (`"Write a quicksort in Python."`), same temperature, same seed, np=1, ctx=65536, side-by-side token capture from `/completion`:
+
+```
+spec-none (n_predict=30, temp=0.0, seed=42):
+  '\n\n<think>\nHere\'s a thinking process:\n\n1.  **Understand User Request:**
+   The user wants a "quick quiz in C". This'
+
+dflash    (n_predict=30, temp=0.0, seed=42):
+  '\n\n<think>\n  - The **UserUser**:**: The user wants is asking asking for
+   for a a " quick quick quick quick quick quick'
+```
+
+The two outputs **match byte-identical for the prefill+first-decode prefix** (`\n\n<think>\n`), then diverge at the first multi-token verify-batch decode. The DFlash output collapses into a degenerate `quick quick quick…` loop.
+
+This was reproduced under **multiple cache configurations** to isolate variables:
+
+| Cache config           | Hadamard | Temp | Output      | Accept |
+|------------------------|----------|------|-------------|--------|
+| Q4_0 K / Q4_0 V        | yes      | 0.0  | degenerate  | 54 %   |
+| Q4_0 K / Q4_0 V        | yes      | 0.6  | degenerate  | 7.8 %  |
+| f16 K / f16 V          | no       | 0.0  | degenerate  | 14.9 % |
+
+The degenerate pattern survives the matrix. **Quantization, Hadamard rotation, and the GEMV-vs-GEMM accumulation-order divergence are all ruled out as root causes**.
+
+The MTP production path on the same target model + same Q4_0+Hadamard cache produces clean output (production verified `np=1 --draft 3` MTP throughput 33.5 t/s). Since MTP and DFlash share `server_context::speculative_decoding_accept` and the `add_sampled_tokens` verify-batch construction, the bug is somewhere DFlash-specific — most likely in either the drafter's input-construction half (`stage_target_hiddens` / `inject_kv` positional semantics) or the cb_eval hook's interaction with the verify-batch causal mask.
+
+**Why P0.A.3 cannot close in this conversation:** the bug requires capturing target logits at the first divergent position with and without DFlash drafting, plus tracing K/V writes and reads through a single verify cycle. That is dedicated kernel-level diagnostic phase work — significantly more than P0.A's verification scope and not addressable from this conversation's remaining context budget.
+
+##### Theories for P0.A.3 — what the dedicated phase should test
+
+The theories below are non-exclusive. The dedicated phase should pick the cheapest binding test for each, in the order shown.
+
+###### Theory T1 — KQ mask off-by-one in multi-token verify batch
+
+**Mechanism.** The verify batch contains `1 + n_draft` tokens at absolute positions `[N, N+1, ..., N+K]`. The causal mask should restrict each Q position to attend only to K positions ≤ itself. If the mask under the post-fold 4D KV path **leaks** future positions into the attention window for the anchor — even just position `N+1`'s K into position `N`'s attention — then logits at position `N` (which gate the token at position `N+1`) are computed against a context that includes the *drafted* token at `N+1`.
+
+```
+Correct causal mask for verify batch [P, P+1, P+2, P+3, P+4]:
+                ┌──────────────────────────┐
+                │ K-pos →   P P+1 P+2 P+3 P+4
+                │ Q-pos ↓
+                │ P         X . . . .          ← P attends ONLY to P
+                │ P+1       X X . . .
+                │ P+2       X X X . .
+                │ P+3       X X X X .
+                │ P+4       X X X X X
+                └──────────────────────────┘
+
+Hypothesised broken mask (off-by-one):
+                ┌──────────────────────────┐
+                │ K-pos →   P P+1 P+2 P+3 P+4
+                │ Q-pos ↓
+                │ P         X X . . .         ← P leaks attention to P+1
+                │ P+1       X X X . .
+                │ P+2       X X X X .
+                │ P+3       X X X X X
+                │ P+4       X X X X X
+                └──────────────────────────┘
+```
+
+If T1 holds: position-`N` logits depend on the drafted token at position `N+1`. Whatever the drafter predicted becomes self-fulfilling — target's `argmax` at position `N` is biased toward continuing the drafter's prediction. This would explain why "quick quick quick" reinforces itself: each cycle the drafter predicts `quick`, the leaked mask makes the target's logits also favor `quick`, the verify accepts, and the loop continues.
+
+**Cheap binding test.** Dump the KQ mask tensor from the verify-batch `ggml_cgraph` for a slot with `n_draft=4`. Compare to the dumped mask for the same slot with `n_draft=0` (spec-none). They should be identical at the overlap (the anchor row). If they differ, that's the bug.
+
+Files in scope: `src/llama.cpp` graph build for Qwen35 — search for `KQ_mask` construction with `n_tokens > 1` per stream; the 4D port's `[n_kv, n_tokens/n_stream, 1, n_stream]` mask shape (see `PHASE_NSTREAM_KV` STATUS.md note on KQ-mask shape).
+
+###### Theory T2 — Drafter input positions vs cache_tokens cardinality mismatch
+
+**Mechanism.** The drafter is told its input shape via `(anchor_id, anchor_pos)`. `anchor_pos` is `cache_tokens.size()` at the start of the cycle (capped at MAL_max). The drafter combines features from `extract_buf` rows `[0, anchor_pos)`, treating those rows as target hiddens at "anchor positions" `[0, 1, ..., anchor_pos-1]`.
+
+Each row in `extract_buf` is a `l_out-<il>` hidden written by the cb_eval hook for one position in one target decode. The mapping is "row index in buf ↔ absolute target context position" — and that mapping is preserved ONLY if `stage_target_hiddens`'s end-trim (P0.A.2 fix) keeps `len(buf) == cache_tokens.size()` at every cycle boundary.
+
+```
+Healthy invariant after each cycle's accept + stage_end_trim:
+
+  Absolute target positions:  0  1  2  …  P-1  P  P+1
+  cache_tokens[i]:            t0 t1 t2 …  t_{P-1}  s  d0
+                              ───────prompt──────   ↑   ↑
+                                                anchor accepted-draft
+
+  extract_buf rows:           h0 h1 h2 …  h_{P-1}  h_s h_d0
+                              (1 row per absolute target position)
+
+Bug variant — buf has one extra row from a prior partial-accept that
+escaped the end-trim, OR one missing row from a cb_eval that fired for
+a rejected position that was then trimmed:
+
+  cache_tokens[i]:            t0 t1 t2 …  t_{P-1}  s  d0
+  extract_buf rows:           h0 h1 h2 …  h_{P-1}  h_s h_d0  h_REJ  ← extra
+                              row index → absolute target position shifts
+                              by ±1 from this point onward
+```
+
+If T2 holds: drafter sees target-hidden rows whose row index no longer matches their absolute target position. Drafter's anchor positions `[0, anchor_pos-1]` mean different things to the drafter and to the target. Drafter's RoPE and attention compute against shifted positions. Predictions are systematically wrong.
+
+**Cheap binding test.** Instrument `speculative_decoding_accept` + `stage_target_hiddens` to log `(cycle_n, cache_tokens.size(), buf.size() / D_emb)` per cycle. Assert equality at every cycle boundary. If violated, dump the cycle where they diverge.
+
+###### Theory T3 — cb_eval hook fires on rejected-draft positions and the trim isn't tight enough
+
+**Mechanism.** Related to T2 but more specific. The cb_eval hook is registered as `ggml_backend_sched_eval_callback` and fires for every evaluated `l_out-<il>` tensor — including positions in the verify batch that correspond to rejected drafts. After accept:
+
+```
+Verify batch positions appended to buf during target verify decode:
+  position:   N   N+1   N+2   N+3   N+4
+  token:      s   d0    d1    d2    d3
+  cb_eval:    h0  h1    h2    h3    h4    ← all 5 rows appended
+
+If accept: m drafts accepted, m-1 < n_draft.
+
+  cache_tokens (after accept):  …, s, d0, d1, …, d_{m-2}, [slot.sampled=ids[m-1]]
+                                size = prev + m
+                                                     ↑ NOT in cache_tokens
+
+  Desired buf size (next cycle): prev + m
+  Actual buf size pre-trim:      prev + 1 + n_draft
+
+  P0.A.2 fix trims to mal_anchors = prev + m — drops last (n_draft + 1 - m) rows.
+```
+
+If P0.A.2's trim is correct, this all balances. But if the trim drops `n_draft - m` rows instead of `n_draft + 1 - m` (off-by-one), then one stale row survives every cycle and accumulates over time — explaining why early cycles produce *somewhat* sensible tokens before the loop degenerates.
+
+```
+Cycle counter vs row drift (off-by-one variant):
+  cycle:   1   2   3   4   5  …
+  drift:   1   2   3   4   5  …  ← per-cycle drift accumulates
+```
+
+**Cheap binding test.** Same as T2 — log buf.size() / D_emb vs cache_tokens.size() per cycle. T3 distinguishes from T2 by *monotonic linear drift* with cycle number. T2 would show stable mismatch (constant offset). T1 would show no row mismatch — the bug would be elsewhere.
+
+###### Theory T4 — Drafter K/V positional encoding mismatched to target's
+
+**Mechanism.** The drafter applies RoPE at "anchor positions" `[0, anchor_pos-1]` and Q positions `[anchor_pos, anchor_pos+BS-1]`. These are the drafter's *internal* positions. Target's K/V applies RoPE at absolute target positions `[N, N+1, ..., N+K]`.
+
+If the drafter's anchor_pos at cycle K equals the target's absolute position N (which it does — `anchor_pos = cache_tokens.size() = N`), the positions align. **But if the drafter's K/V cache uses position-`x` semantics that don't match the kernel's RoPE position-`x` semantics** (e.g. the drafter inject kernel writes K at absolute position but the forward kernel reads K at position % SeqLen), then drafter's K/V is RoPE-encoded inconsistently with what its forward attention expects.
+
+```
+Drafter inject (writes K with RoPE at absolute position `position`):
+  K_cache[slot, position % SeqLen, h, d]  = RoPE(K_proj, position) [h, d]
+                          ↑
+                          With SeqLen >= max position, modulo is no-op.
+
+Drafter forward attention (reads K at qpos minus offsets in window):
+  K_read = K_cache[slot, k_idx % SeqLen, h, d]    ← if forward reads modulo
+  K_read = K_cache[slot, k_idx, h, d]             ← if forward reads absolute
+                          ↑
+                          MISMATCH if inject uses modulo and forward doesn't,
+                          or vice versa.
+```
+
+If T4 holds: forward attention reads K/V whose RoPE encoding is for a DIFFERENT absolute position than what the kernel computes against the Q. Attention scores would be ~random. Drafter would predict noise.
+
+For T4 to explain the specific "quick quick" loop, the noise would need to be biased — possibly because the wrong-RoPE'd K/V vectors point to embeddings that disproportionately match certain tokens after lm_head.
+
+**Cheap binding test.** Compare drafter K_cache indices used during inject vs read for a single cycle. Add an assertion that inject's `cache_idx == k_read_idx` for the same `position`. The PHASE_NSTREAM_KV_PERF discussion above already considered modulo addressing for SWA — if the kernels ARE modulo-aware but the current code uses absolute, this would surface.
+
+###### Theory T5 — cb_eval hook side-effect on verify-batch graph compute
+
+**Mechanism.** cb_eval calls `ggml_backend_tensor_get` per matched `l_out-<il>` tensor — a device-to-host DMA. This forces stream synchronization on the CUDA stream the graph is running on.
+
+For the verify batch (1 + n_draft = 5 tokens), the graph contains multiple `l_out-<il>` nodes (5 source layers × 5 positions = 25 evaluations per verify decode). Each fires a synchronizing DMA.
+
+If the synchronization interacts with cudaGraphExecUpdate (PHASE 36/37/38 machinery) in a way that invalidates the *non-extracted* graph nodes' state — e.g., async K/V writes haven't completed when the next position's Q reads — then K/V at the just-written position would contain garbage. The Q at position `N+1` would attend to a half-written K at position `N`.
+
+```
+Timeline within one verify decode:
+  ┌─ position N graph nodes execute ─┐
+  │   K_proj(s), V_proj(s) → K[N], V[N]
+  │   l_out-1 evaluation               ─┐  cb_eval fires.
+  │                                    │  ggml_backend_tensor_get
+  │                                    │  forces sync.
+  │   Async write to K[N] in flight    ←  Sync may complete before
+  │                                       OR concurrent with Q[N+1] read.
+  └────────────────────────────────────┘
+  ┌─ position N+1 graph nodes ──────────┐
+  │   K_proj(d0), V_proj(d0) → K[N+1], V[N+1]
+  │   Q[N+1] @ K[0..N+1]  ←  attends to K[N] which may be partially written
+  └─────────────────────────────────────┘
+```
+
+**Cheap binding test.** Disable cb_eval temporarily (return early from `llama_dflash_extract_cb_eval`) and run the smoke. If DFlash output now matches spec-none, T5 holds and the fix is to fence cb_eval reads behind a cudaStreamSynchronize per layer.
+
+###### Theory T6 — cudaGraphExecUpdate machinery + DFlash dynamic batch shape
+
+**Mechanism.** The 4D port + DFlash both stress cudaGraphExecUpdate machinery. The CUDA graph cache (`ggml-cuda.cu:4500-4830`) is keyed by topology hash. A verify batch of `1+K` tokens has a different topology than the prefill (`P` tokens) and the next single-token decode (`1` token).
+
+If the multi-entry cache evicts the WRONG entry under DFlash's batch shape sequence (FIFO under MAX=128 cap), graph reuse may use a *stale* graph instance whose `src_address` pointers were last patched for a different batch shape.
+
+```
+Graph-cache state across DFlash cycles:
+  cycle 0 (prefill, n_tokens=P):    GRAPH_A captured + instantiated
+  cycle 1 (verify,  n_tokens=1+K):  GRAPH_B captured + instantiated
+  cycle 2 (verify,  n_tokens=1+K):  GRAPH_B reused → cudaGraphExecUpdate
+                                    src_addr for K/V → new positions
+  ...
+  cycle N (verify,  n_tokens=1+K'): GRAPH_C? cache eviction?
+                                    OR GRAPH_B with stale K/V address?
+```
+
+If T6 holds: K/V writes happen but to stale buffer addresses; subsequent verify cycles read from those stale addresses; logits become drifting noise.
+
+**Cheap binding test.** Disable the CUDA graph cache (`GGML_CUDA_DISABLE_GRAPHS=1`) and re-run smoke. If output now matches spec-none, T6 holds.
+
+##### How a future phase should test these
+
+A future P0.A.3-dedicated phase budget should run the cheap binding tests in this order — T5 first (single env var, ≤ 5k tokens), T6 next (single env var, ≤ 5k tokens), then T1 (graph dump diff, 15-30k), T2/T3 (log instrumentation, 15-30k), T4 (kernel-level audit, 50-100k).
+
+#### P0.A.4 — Multi-slot DFlash SEGV in `llama_sampling_prepare` [OPEN — bounded scope]
+
+**Symptom at `--parallel 2`:**
+
+```
+llama_get_logits_ith: invalid logits id 5, reason: batch.logits[5] != true
+SIGSEGV at: llama_sampling_prepare
+  ← llama_sampling_sample_impl
+  ← common_sampler_sample_and_accept_n
+  ← server_context::speculative_decoding_accept
+  ← server_context::process_batch_tokens
+```
+
+The verify batch for 2 slots × `(1 + n_draft = 5)` tokens = 10 batch positions. Position 5 is slot 1's anchor. `batch.logits[5] = false` suggests the multi-slot verify batch isn't enabling logits at every position the sampler will index into.
+
+This is independent of P0.A.3 and likely contained to the `add_sampled_tokens` multi-slot loop in `server-context.cpp`. Estimated scope: 30-80k tokens once P0.A.3 is closed (the SEGV may also be a symptom of T1/T2/T3 — verify position-mismatch math more carefully under np>1 before assuming an independent bug).
+
+#### What this phase actually depends on
+
+Tier 2 and Tier 3 do NOT depend on DFlash CLI working end-to-end. Production runs MTP `--draft 3` at np=1 today; MTP is the gated production path for both correctness (Bug C absence) and perf (the -6.2 % TG NP=8 regression we're trying to recover comes from per-stream graph rebuilds in the vanilla decode path, not from DFlash). **Tier 2's gate GP3.n binds on MTP NP=1 production smoke**, not on DFlash CLI smoke.
+
+Tier 2 entry condition therefore relaxes to:
+- ✅ P0.A.1 (MAL cap) — landed.
+- ✅ P0.A.2 (stage end-trim) — landed.
+- ⏸ P0.A.3 (output divergence) — documented; deferred to dedicated diagnostic phase.
+- ⏸ P0.A.4 (multi-slot SEGV) — documented; deferred (likely subsumed by P0.A.3 root cause).
+- ✅ P0.A.5 (production server boots clean on post-fold for the non-DFlash production profile) — verified.
+
+Gates GP3.e ("DFlash test suite GREEN") in Tier 2/3 bind at the libllama layer only — the `test-dflash-np-multislot` family in `tests/dflash-speculative/`, which already passes on current HEAD. Server-side DFlash gates are deferred with P0.A.3.
+
+#### Token estimate revision
+
+- P0.A.1 + P0.A.2: ~30 k actual (delivered).
+- P0.A.3 dedicated phase: ~100-300 k (scope is "root cause + fix a deep DFlash + 4D KV composition bug"; range is wide because deep into kernel/cb_eval interaction).
+- P0.A.4: ~30-80 k once P0.A.3 closes (or subsumed).
 
 ### P0.B — Radical spec / TLA+ / test surface expansion
 
@@ -302,13 +574,13 @@ T3.g — **Bench gate GP3.i** against vLLM's 154.77 t/s measurement.
 
 Per CLAUDE.md §8:
 
-- **Phase 0.A** — DFlash server CLI verify-on-post-fold (wiring + profile already landed in `61a7e874`): **5-15 k tokens** if all green; **20-60 k** if smoke surfaces a 4D × DFlash composition regression. Must precede T2.a.
+- **Phase 0.A** — DFlash server CLI verify-on-post-fold (wiring + profile already landed in `61a7e874`). **Actual cost ~30 k** for the two fixes that landed (MAL cap + stage end-trim). **Plus deferred:** 100-300 k for the dedicated P0.A.3 phase that root-causes DFlash output divergence (see theories T1-T6 above). Tier 2 entry does NOT block on P0.A.3 — production runs MTP, not DFlash CLI.
 - **Phase 0.B** — Radical spec/TLA+/test surface expansion (5 Allium + 3 TLA+ + 5 property tests + trace harness ext.): **105-170 k tokens**. Must precede T2.a.
 - **Tier 2 refined** — read-view probe + cache_copies extension + bailout drop + warm-up gate harness + GP3.a-h verification: **60-100 k tokens**.
 - **Tier 3 refined** — server fusion + KQ-mask shape + graph builder uniform-batch + non-FA shape-invariance verify + GP3.i-m: **120-180 k tokens** (significantly less than the original "fresh FA kernel port" framing because the PSKV per-slot kernel is the prerequisite and it's already production).
 - Diagnosis if Tier 2 hits unexpected invalidation: 20-30 k per round, budget 2-3.
 
-Total scope: **290-510 k tokens** depending on how far we run + whether P0.A smoke is clean. The structural foundation (PHASE_NSTREAM_KV's 4D layout + the existing CUDA-graph patching infra + the PSKV per-slot FA kernel) carries most of the engineering risk; this phase is the dispatch refit *plus* the surface expansion that should have shipped with PHASE_NSTREAM_KV but didn't.
+Total scope: **305-510 k tokens** for this phase's required path to Tier 3 closure (excludes the deferred P0.A.3 dedicated diagnostic phase, which is its own 100-300 k workstream and can run in parallel). The structural foundation (PHASE_NSTREAM_KV's 4D layout + the existing CUDA-graph patching infra + the PSKV per-slot FA kernel) carries most of the engineering risk; this phase is the dispatch refit *plus* the surface expansion that should have shipped with PHASE_NSTREAM_KV but didn't.
 
 Per `feedback_oneshot_then_evaluate`: Phase 0.A and 0.B can run in parallel as separate bundles. Tier 2 implements coherently after both close. Tier 3 implements coherently after Tier 2 closes. No partial intermediate landings.
 
