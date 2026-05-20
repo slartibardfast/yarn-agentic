@@ -7841,3 +7841,74 @@ runs to bind. Bundle is code-complete; gate-running is N4 bake.
 Parent commits: `7e5c4eb` (locked N2 decisions), `7f1fe45` (closure
 status). Submodule pointer on `production/2026-q2-next` still at
 `38ea4127` — bumps to the feature branch after gates pass.
+
+## 2026-05-20 — PHASE_NSTREAM_KV_4D closed on production/2026-q2-next
+
+N2 + N3 bundle merged to `production/2026-q2-next` (submodule HEAD
+`16b608d1`). Parent submodule pointer bumped. Phase closed; perf
+regression deferred to a follow-on phase per user direction.
+
+**Gates on Qwen3.6 27B + dual Quadro RTX 6000:**
+
+| Gate | Result | Detail |
+|---|---|---|
+| G3.a | PASS | Single-GPU NP-determinism, NP ∈ {1,2,4,8} byte-identical |
+| G3.b | PASS | Multi-GPU NP-determinism (`--device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1`) |
+| G3.c | PASS | r5-probe-c4 0/20 Bug C divergences, single-GPU, WITHOUT decode-side gate |
+| G3.d | PASS | r5-probe-c4 0/20, multi-GPU |
+| G3.e | PASS | test-dflash-np-multislot slot-0 byte-identical NP ∈ {1,2,4,8} |
+| G3.f | PASS | test-n-stream-kv-layout n_parallel ∈ {1, 2} |
+| G3.g | PASS (caveat) | PP per-request 114.1 / 110.4 t/s ≫ 60 t/s threshold. Wall 15.7 s vs pre-port 15.9 s — TG-overlap recovery only ~1.3 %, far below the ~38 % the cached plan estimated. |
+| G3.h | FAIL | TG NP=8 = 26.00 t/s vs 27.73 t/s baseline = -6.2 %, outside ±1 % bound. |
+
+**G3.h root cause.** Graph reuse is disabled at `n_stream>1` (an
+intentional gate in `llama-context::can_reuse_graph` — stream-
+aware view offsets in `llm_build_kqv` would read from the wrong
+slice if the graph were reused across streams). Every single-
+token sub-batch rebuilds the graph (~2-3 ms each). With 2112 sub-
+calls in the bench, total rebuild ≈ 5-6 s of the 80 s run.
+Production server steady-state TG at NP=8 pays the same overhead.
+
+**Bench-path fix landed inline** (`16b608d1`). The pre-existing
+qwen3next interleaved-batch sub-batcher in `llama_decode_internal`
+handled INTERLEAVED patterns but passed CONTIGUOUS_BLOCKS through.
+At `n_stream>1`, `llama_kv_cache_find_slot` derives stream_id from
+`seq_id[0][0]` and allocates all n_tokens cells into that one
+stream; a CONTIGUOUS_BLOCKS batch with multi-stream seq_ids
+corrupted stream 0. Extended sub-batching to fire on CONTIGUOUS_-
+BLOCKS too when `n_stream>1`. `n_stream==1` behaviour preserved.
+This covers `llama-batched-bench`, `parallel`, `perplexity`.
+
+**Decision.** User offered four options (hold + per-stream graph
+cache, hold + single-graph stream-aware reuse, override + merge,
+roll back N2/N3) and selected "Override locked policy — merge
+with -6.2% regression". Reason: all six correctness gates green,
+Bug C structurally closed, the 6 % TG-NP=8 trade-off documented
+for the next phase. Per-stream graph cache is the next phase's
+work, not a current-step gap (no follow-up cover) — the structural
+closure goal of PHASE_NSTREAM_KV_4D is delivered without it.
+
+**Open follow-ups carried over to the perf phase (one prev->graph
+per stream_id is the proposed approach):**
+
+- Per-stream graph cache to recover the ~6 % TG-NP=8 regression
+  and the unmaterialised TG-overlap window.
+- K-shift (`build_k_shift`) lifted off `GGML_ASSERT(n_stream == 1)`
+  — not blocking production decode but required for `ctx_shift`
+  at multi-slot.
+- Defrag (`build_defrag`) same n_stream==1 gate.
+- v_trans non-FA V path same n_stream==1 gate.
+- MLA path (DeepSeek): not in scope.
+
+**Verified on Qwen3.6-27B production GGUF** (`qwen3.6-27b-V-F1.T1.lm_head-f16.gguf`
+for correctness gates; `qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf`
+for perf baseline) at CTX_PER_SLOT=4096, dual Quadro RTX 6000,
+q4_0 KV with Hadamard rotation.
+
+Parent commits this phase added: `7e5c4eb` (N2 locked decisions),
+`7f1fe45` (initial closure status), `b30dbfa` (feature-branch
+N2+N3 MEMORY entry), and today's set — gate sequencing +
+closure addendum, `scripts/r5-probe-c4.sh` DEVICE env override,
+submodule pointer bump to `16b608d1`, this MEMORY entry, and
+`PHASE_NSTREAM_KV_PERF.md` stub for the next phase's per-stream
+graph cache.
