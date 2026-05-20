@@ -189,6 +189,50 @@ Submodule commit:
 > diagnostic record** of the now-falsified T5 line of investigation,
 > NOT as guidance for the fix.
 
+##### P0.A.3 A/B result — cb_eval at the CLI level RESULT (2026-05-20)
+
+> **The CLI-level A/B is complete and confirms the libllama-level
+> finding.** With `LLAMA_NO_DFLASH_CB_EVAL=1` patched into the
+> install site at `src/llama.cpp:10072` (env-gated, diagnostic-only,
+> reverted after capture), the dflash-speculative-simple binary
+> running at temp=0, seed=42, the documented prompt
+> ("Write a quicksort in Python.", n=64):
+>
+> | Run | Output start | n_emitted | drafts | accepted | t/s |
+> |---|---|---|---|---|---|
+> | A — cb_eval intact (HEAD) | `<think>  - The **UserUser**:**: ... quick quick quick quick ...` | 64 | 88 | 42 | 16.80 |
+> | B — cb_eval disabled (env-gated) | `<think>... and modify... 2.` (clean prose) | 63 | 0 | 0 | 25.79 |
+>
+> Logs at `data/p0a3-cb-eval-ab/{A,B}-cb_eval-*.log`.
+>
+> B's drafter pipeline failed every cycle with "extract buffer too
+> short for slot 0 (layer 1) seq_id 0: have 0 rows, need N" — the
+> drafter has no hiddens to consume because cb_eval never populated
+> the extract buffer. The CLI falls back to plain decode
+> (`llama_decode` of a single token) for every cycle, which produces
+> clean output. n_drafts=0 confirms the drafter pipeline never ran
+> successfully.
+>
+> Composed with the libllama-level result (cb_eval install + scheduler
+> slow-path does NOT perturb the target's argmax), the diagnostic
+> reads:
+>
+> 1. cb_eval is the SUPPLIER of hiddens to the drafter pipeline.
+> 2. cb_eval's slow-path does NOT perturb the target's forward output.
+> 3. The drafter pipeline, FED CORRECT HIDDENS via cb_eval, produces
+>    degenerate predictions (the "quick quick quick" loop).
+> 4. Therefore: **the bug is downstream of cb_eval, inside the drafter
+>    pipeline** — `combine_features`, `inject_kv_fused`,
+>    `drafter_forward`, or `drafter_lm_head` — not in cb_eval itself.
+>
+> P0.A.3 root cause is now narrowed to **the drafter pipeline kernels**.
+> The libllama Allium/TLA+/test bundle on cb_eval remains held on disk
+> uncommitted (the contract it encodes is still valid; it just isn't
+> the P0.A.3 fix surface).
+>
+> Diagnostic env-gate at `src/llama.cpp:10072` REVERTED in working
+> tree. Not committed; nothing to revert in git history.
+
 ##### P0.A.3 next experiment + code review of candidate suspects (2026-05-20)
 
 This subsection is the plan and code-review writeup that precedes
