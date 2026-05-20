@@ -18,6 +18,12 @@
 - [Reference: CX.A aftermath audit (2026-05-16)](AUDIT_2026-05-16_CX_A_AFTERMATH.md)
 - [Reference: Research log (2026-05-16)](RESEARCH_2026-05-16.md)
 
+# N-stream KV cache (Bug C closure)
+
+- [PHASE_NSTREAM_KV — 4D port design + bisect history](PHASE_NSTREAM_KV.md)
+- [Closed: PHASE_NSTREAM_KV_4D — 4D K/V layout + per-stream dispatch](PHASE_NSTREAM_KV_4D.md)
+- [Open: PHASE_NSTREAM_KV_PERF — recover -6.2 % TG-NP=8 regression](PHASE_NSTREAM_KV_PERF.md)
+
 # DFlash speculative decoding
 
 - [Qwen3.6-27B DFlash on sm_75](phases/70-dflash/PHASE_DFLASH.md)
