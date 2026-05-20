@@ -101,7 +101,66 @@ exists):
   `llama_memory_*`). Keep ik's existing `llama_kv_cache_*` free-function
   shape; the change is internal.
 
-## Update 2026-05-20 (b) — DESIGN PIVOT: range-partition over 3D, not 4D port
+## Update 2026-05-20 (c) — STRUCTURAL FIX PAUSED, ROOT CAUSE NOT CONFIRMED
+
+Pre-implementation read of `fattn-per-slot-kv-singlewarp-sm75.cu` invalidates
+the mechanism hypothesis that motivated either the 4D port or the
+range-partition variant. The kernel at line 94 reads
+`K + nb13*seq + nb12*head_kv`, but `seq = blockIdx.z` and `grid.z =
+Q->ne[3]` (line 363 of the same file). The K tensor passed in is created
+by `ggml_view_3d(ctx0, split_kl, n_embd_head_k, n_kv, n_head_kv, ...)`
+(`llama-build-context.cpp:2712`) — a 3D view whose `ne[3] = 1` by
+construction.
+
+Therefore in current dispatch `seq = 0` always and `nb13 * seq = 0`. The
+kernel does NOT do per-slot K addressing today. The phase doc's claim
+"`fattn-per-slot-kv-singlewarp-sm75.cu:68–94` reads
+`K + nb13*seq + nb12*head_kv` today — the bug is upstream, in the
+allocator that produces the strides" is technically correct (the kernel
+CAN handle a per-stream layout) but does NOT describe the runtime
+behaviour that fires Bug C — at runtime the kernel reads all `n_kv`
+cells through the flat 3D view and the mask is what discriminates per
+slot.
+
+Consequence: neither the 4D port nor range-partition `find_slot` is
+demonstrated to close Bug C. The actual mechanism must be in:
+
+- mask construction (does `KQ_mask` correctly encode per-cell seq_id
+  visibility under multi-slot prefill?),
+- KV view shape (is the kernel ever invoked with `Q->ne[3] > 1`,
+  which would make `seq > 0` and exercise `nb13` for real?),
+- cells[].seq_id metadata correctness post-`find_slot` (is the
+  metadata written consistently with the K/V data the graph copies?),
+- or something between — cache.head being shared across a concurrent
+  llama_decode call, or a write-coalescing path that bypasses cells[].
+
+**N1 implementation paused until the mechanism is confirmed
+empirically.** Per `feedback_diagnostic_discipline_before_declaring_done`
+and `feedback_bisect_before_revert`, a 500–1000 LoC structural rewrite
+must NOT land while the root cause is a hypothesis.
+
+Recommended next step (does not require touching production code):
+
+1. Instrument `find_slot` to dump `(cache.head, n_tokens, batch.seq_id[i][0]
+   for each i, allocated cell positions)` to a per-tick log file.
+2. Instrument `KQ_mask` build site to dump the mask tensor on the
+   first failing tick.
+3. Run `scripts/r5-probe-c4.sh` until a failure fires; compare the
+   failing-tick log against a passing-tick log; identify the first
+   divergence.
+
+This is ~10k tokens to instrument, ~5k to capture, ~5k to diff. Total
+~20k for a confirmed mechanism — cheap relative to a wrong structural
+fix.
+
+The N1+N2+N3+N4 work packages below remain specced, but the user
+should explicitly authorise re-entry after the mechanism is confirmed
+to match one of the proposed structural fixes. If the mechanism is in
+mask construction (most likely), neither structural variant closes it
+— a mask fix lands much closer to `build-context.cpp` than to the
+allocator.
+
+## Update 2026-05-20 (b) — DESIGN PIVOT: range-partition over 3D, not 4D port (SUPERSEDED by (c))
 
 After reading the C.4 failure signature in PHASE_NP_CLOSURE.md alongside
 the per-slot-kv kernel (`fattn-per-slot-kv-singlewarp-sm75.cu:68–94`)
