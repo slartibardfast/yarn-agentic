@@ -42,10 +42,10 @@ CONSTANTS
     PerStreamDispatchOn \* TRUE = Option A active; FALSE = legacy shared pool
 
 VARIABLES
-    cells,           \* [Streams -> [0..StreamSize-1 -> Nat]]
-                     \* cells[s][i] = pos written there, or 0 if empty
     cell_seq,        \* [Streams -> [0..StreamSize-1 -> {NONE} \cup Streams]]
-                     \* cell_seq[s][i] = seq_id owning the cell, or NONE
+                     \* cell_seq[s][i] = seq_id owning the cell, or NONE.
+                     \* The pos values themselves don't enter any
+                     \* structural invariant, so they are not modelled.
     v_head,          \* [Streams -> 0..StreamSize] — next-free pointer
     dispatch_unit,   \* SUBSET (Streams \X (1..MaxTokensPerTick))
                      \* {(seq_id, token_index)} carried by the most-recent
@@ -54,8 +54,7 @@ VARIABLES
                      \* when no dispatch in flight.
     step_count
 
-vars == <<cells, cell_seq, v_head, dispatch_unit, dispatch_seq_id,
-          step_count>>
+vars == <<cell_seq, v_head, dispatch_unit, dispatch_seq_id, step_count>>
 
 ----------------------------------------------------------------------------
 NONE == "NONE"
@@ -64,7 +63,6 @@ NoneOrStream == {NONE} \cup Streams
 CellIndex == 0..(StreamSize - 1)
 
 TypeOK ==
-    /\ cells \in [Streams -> [CellIndex -> Nat]]
     /\ cell_seq \in [Streams -> [CellIndex -> NoneOrStream]]
     /\ v_head \in [Streams -> 0..StreamSize]
     /\ dispatch_unit \subseteq (Streams \X (1..MaxTokensPerTick))
@@ -85,7 +83,6 @@ OccupiedCells == { c \in AllCells : cell_seq[c[1]][c[2]] # NONE }
 
 ----------------------------------------------------------------------------
 Init ==
-    /\ cells = [s \in Streams |-> [i \in CellIndex |-> 0]]
     /\ cell_seq = [s \in Streams |-> [i \in CellIndex |-> NONE]]
     /\ v_head = [s \in Streams |-> 0]
     /\ dispatch_unit = {}
@@ -107,18 +104,13 @@ Init ==
 (* slice with capacity, demonstrating the StreamPartition failure that     *)
 (* motivates the port.                                                      *)
 (*****************************************************************************)
-FindSlotAndWrite(s, n_tokens, base_pos) ==
+FindSlotAndWrite(s, n_tokens) ==
     /\ n_tokens \in 1..MaxTokensPerTick
     /\ s \in Streams
     /\ step_count < MaxStep
     /\ IF PerStreamDispatchOn
        THEN \* Strict per-stream allocation: only within stream s's slice.
             /\ v_head[s] + n_tokens <= StreamSize
-            /\ cells' = [cells EXCEPT
-                          ![s] = [i \in CellIndex |->
-                                   IF i \in (v_head[s] .. (v_head[s] + n_tokens - 1))
-                                   THEN base_pos + (i - v_head[s])
-                                   ELSE cells[s][i]]]
             /\ cell_seq' = [cell_seq EXCEPT
                              ![s] = [i \in CellIndex |->
                                       IF i \in (v_head[s] .. (v_head[s] + n_tokens - 1))
@@ -128,11 +120,6 @@ FindSlotAndWrite(s, n_tokens, base_pos) ==
        ELSE \* Legacy shared pool: may allocate into ANY stream's slice with capacity.
             \E target \in Streams:
               /\ v_head[target] + n_tokens <= StreamSize
-              /\ cells' = [cells EXCEPT
-                            ![target] = [i \in CellIndex |->
-                                          IF i \in (v_head[target] .. (v_head[target] + n_tokens - 1))
-                                          THEN base_pos + (i - v_head[target])
-                                          ELSE cells[target][i]]]
               /\ cell_seq' = [cell_seq EXCEPT
                                ![target] = [i \in CellIndex |->
                                             IF i \in (v_head[target] .. (v_head[target] + n_tokens - 1))
@@ -162,7 +149,7 @@ DispatchPerStream(s, n_tokens) ==
     /\ dispatch_unit' = { <<s, k>> : k \in 1..n_tokens }
     /\ dispatch_seq_id' = s
     /\ step_count' = step_count + 1
-    /\ UNCHANGED <<cells, cell_seq, v_head>>
+    /\ UNCHANGED <<cell_seq, v_head>>
 
 ----------------------------------------------------------------------------
 (* Action: DispatchMixed(slots, n_per_slot).                                 *)
@@ -183,7 +170,7 @@ DispatchMixed(seqs, n_per_slot) ==
                           THEN CHOOSE s \in seqs : TRUE
                           ELSE NONE
     /\ step_count' = step_count + 1
-    /\ UNCHANGED <<cells, cell_seq, v_head>>
+    /\ UNCHANGED <<cell_seq, v_head>>
 
 ----------------------------------------------------------------------------
 (* Action: ClearDispatch.                                                    *)
@@ -195,12 +182,12 @@ ClearDispatch ==
     /\ dispatch_unit # {}
     /\ dispatch_unit' = {}
     /\ dispatch_seq_id' = NONE
-    /\ UNCHANGED <<cells, cell_seq, v_head, step_count>>
+    /\ UNCHANGED <<cell_seq, v_head, step_count>>
 
 ----------------------------------------------------------------------------
 Next ==
-    \/ \E s \in Streams, n \in 1..MaxTokensPerTick, p \in 0..MaxStep:
-         FindSlotAndWrite(s, n, p)
+    \/ \E s \in Streams, n \in 1..MaxTokensPerTick:
+         FindSlotAndWrite(s, n)
     \/ \E s \in Streams, n \in 1..MaxTokensPerTick: DispatchPerStream(s, n)
     \/ \E seqs \in (SUBSET Streams) \ {{}},
          n \in 1..MaxTokensPerTick: DispatchMixed(seqs, n)

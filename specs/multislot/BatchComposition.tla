@@ -149,8 +149,9 @@ ArrivePrompt(s, n) ==
     /\ n \in 1..MaxPromptLen
     /\ slot_command' = [slot_command EXCEPT ![s] = "LOAD_PROMPT"]
     /\ n_prompt_total' = [n_prompt_total EXCEPT ![s] = n]
-    /\ UNCHANGED <<slot_state, n_prompt_done, pending_decode,
-                   batch_prefill, batch_decodes, step_count>>
+    /\ batch_prefill' = {}    \* batch is dispatched-and-consumed atomically in Tick
+    /\ batch_decodes' = {}
+    /\ UNCHANGED <<slot_state, n_prompt_done, pending_decode, step_count>>
 
 ----------------------------------------------------------------------------
 (* Action: Tick — assemble and dispatch one llama_decode batch.              *)
@@ -206,9 +207,10 @@ CompletePrefill(s) ==
     /\ n_prompt_total[s] > 0
     /\ slot_state' = [slot_state EXCEPT ![s] = "PROCESSING"]
     /\ slot_command' = [slot_command EXCEPT ![s] = "NONE"]
-    /\ pending_decode' = [pending_decode EXCEPT ![s] = TRUE]  \* first decode ready
-    /\ UNCHANGED <<n_prompt_total, n_prompt_done,
-                   batch_prefill, batch_decodes, step_count>>
+    /\ pending_decode' = [pending_decode EXCEPT ![s] = TRUE]
+    /\ batch_prefill' = {}
+    /\ batch_decodes' = {}
+    /\ UNCHANGED <<n_prompt_total, n_prompt_done, step_count>>
 
 ----------------------------------------------------------------------------
 (* Action: ProduceSample(s).                                                 *)
@@ -220,8 +222,10 @@ ProduceSample(s) ==
     /\ slot_state[s] = "PROCESSING"
     /\ ~pending_decode[s]
     /\ pending_decode' = [pending_decode EXCEPT ![s] = TRUE]
+    /\ batch_prefill' = {}
+    /\ batch_decodes' = {}
     /\ UNCHANGED <<slot_state, slot_command, n_prompt_total, n_prompt_done,
-                   batch_prefill, batch_decodes, step_count>>
+                   step_count>>
 
 ----------------------------------------------------------------------------
 (* Action: Release(s).                                                       *)
@@ -237,7 +241,9 @@ Release(s) ==
     /\ n_prompt_total' = [n_prompt_total EXCEPT ![s] = 0]
     /\ n_prompt_done' = [n_prompt_done EXCEPT ![s] = 0]
     /\ pending_decode' = [pending_decode EXCEPT ![s] = FALSE]
-    /\ UNCHANGED <<batch_prefill, batch_decodes, step_count>>
+    /\ batch_prefill' = {}
+    /\ batch_decodes' = {}
+    /\ UNCHANGED <<step_count>>
 
 ----------------------------------------------------------------------------
 (* Next.                                                                     *)
