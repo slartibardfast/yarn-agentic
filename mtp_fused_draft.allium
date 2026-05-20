@@ -298,6 +298,70 @@ invariant KvWritesAreExactlyNSteps {
 --   become production-relevant.
 
 -- ============================================================
+-- Cross-cutting — scheduler interaction
+-- ============================================================
+
+-- FusedDraftStep is invoked from the verify-decode path; the
+-- verify ubatch carries one decode-contribution token per
+-- active PROCESSING slot. The scheduling of that ubatch is
+-- governed by specs/scheduler/batch_composition.allium, not by
+-- this spec. The two interact as follows.
+
+-- A FusedDraftStep invocation only occurs when its parent
+-- verify ubatch was admitted by the scheduler. Under v1's
+-- PrefillSerialisationGate + the DecodeHoldGate, that means no
+-- slot is in LOAD_PROMPT at the moment of dispatch (per
+-- BatchCompositionInvariant in the scheduler spec). The
+-- draft round itself does not need to re-enforce these gates;
+-- it inherits them from the parent dispatch.
+invariant FusedDraftRoundsRunOnPureDecodeBatches {
+    for round in DraftRoundsViaFusedPath:
+        round.parent_ubatch.matches(BatchCompositionInvariant)
+            and round.parent_ubatch.all_tokens_are_decode
+}
+
+-- When the n_stream KV 4D port (specs/kv-cache/n_stream_layer.allium)
+-- lands and the server switches to PerStreamDispatch, the
+-- fused draft graph still composes correctly: one
+-- llama_decode per stream means one fused round writes to
+-- exactly that stream's KV slice (per StreamPartition); no
+-- cross-stream KV writes from draft rounds. The
+-- KvWrittenAtPositionsPThroughPPlusN contract above is
+-- already per-(seq_id, pos) and survives the layout change
+-- unmodified.
+invariant FusedDraftRespectsStreamPartition {
+    for round in DraftRoundsViaFusedPath:
+        let writes = kv_writes_in_round(round)
+        writes.all(w => w.seq_id = round.seq_id)
+            and writes.all(w => stream_id_of_cell(w) = round.seq_id)
+}
+
+-- ============================================================
+-- Related specs
+-- ============================================================
+
+-- specs/scheduler/batch_composition.allium
+--   Governs the slot state machine, PrefillSerialisationGate
+--   (v1's active_pp_slot_id selection — at most one slot in
+--   LOAD_PROMPT contributes per tick), DecodeHoldGate, and
+--   BatchCompositionInvariant / MixedBatchProhibition. The
+--   verify ubatch that triggers a FusedDraftStep is admitted
+--   only when these gates pass.
+--
+-- specs/kv-cache/n_stream_layer.allium
+--   Models the 4D per-stream KV layout the project is porting
+--   to. Once that layout lands, PerStreamDispatch makes
+--   MixedBatchProhibition automatic and the DecodeHoldGate
+--   becomes removable. The fused draft graph's KV writes
+--   continue to satisfy StreamPartition (per
+--   FusedDraftRespectsStreamPartition above).
+--
+-- mtp_ubatch_hook.allium
+--   The companion spec — the per-ubatch MTP-KV update during
+--   the verify forward. Same per-(seq_id, pos) write semantics
+--   on a different code path.
+
+-- ============================================================
 -- Implementation notes
 -- ============================================================
 
