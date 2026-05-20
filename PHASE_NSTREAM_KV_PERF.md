@@ -233,6 +233,58 @@ Submodule commit:
 > Diagnostic env-gate at `src/llama.cpp:10072` REVERTED in working
 > tree. Not committed; nothing to revert in git history.
 
+##### P0.A.3 Suspect 2 result — `save_per_step_ssm = true` perturbs the verify decode (2026-05-20)
+
+> **Suspect 2 confirmed at coarse grain.** A series of env-gated
+> diagnostic patches in `src/llama.cpp` spec_ckpt code produced
+> meaningfully different outputs at the same prompt/seed/temp/n:
+>
+> | Test | save_per_step_ssm | per_step_restore | Output start |
+> |---|---|---|---|
+> | A — HEAD | true | runs | `...quick quick quick...` (degenerate, accept=1.91) |
+> | D — `LLAMA_NO_SPEC_CKPT_RESTORE=1` | true | skipped | `...<think>\n\n\n</think>\n\n a a a...` (different degenerate, accept=2.47) |
+> | E — `LLAMA_NO_SPEC_CKPT_SAVE=1` | false | runs (reads stale buf) | `...<think>\n\n# How to\n# How to use of the 1...` (partially coherent, accept=0.29) |
+>
+> The fact that flipping `save_per_step_ssm` between true and false
+> CHANGES the output materially proves the two paths through
+> `ggml_delta_net` are NOT byte-equivalent. Specifically:
+>
+> - At `src/llama-delta-net.cpp:73`:
+>   `save_per_step_states = lctx.transformer_kv.save_per_step_ssm && batch.n_tokens > 1;`
+> - At `src/llama-delta-net.cpp:125`:
+>   `ggml_tensor * fused_result = ggml_delta_net(ctx0, q, k, v, g, beta, state_flat, save_all_steps);`
+> - At `src/llama-delta-net.cpp:140-142`: when `save_all_steps`, `new_state` is
+>   the LAST per-step state (`output_size + (n_tokens - 1) * state_size`);
+>   when not, it is at offset `output_size`. These should be the SAME
+>   mathematical value (the recurrent state after processing all n_tokens
+>   steps).
+>
+> They are not.
+>
+> **Why the libllama observational test passed but the CLI fails**:
+> the libllama test never sets `save_per_step_ssm`. The DFlash CLI
+> sets it on every cycle via `llama_spec_ckpt_save`. The verify decode
+> shape is identical (5-row multi-token) in both — only the
+> save_per_step_ssm flag differs.
+>
+> **Suspect 2 root location**: the `ggml_delta_net` CUDA kernel's
+> `save_all_steps=true` path is numerically divergent from the
+> `save_all_steps=false` path at the LAST step. They should agree
+> bit-exact (the kernel runs the same sequential recurrence either way;
+> save_all_steps only changes whether intermediate states are written
+> to the output tensor). The next binding test is a libllama-level
+> harness that runs the same multi-token decode with
+> `save_per_step_ssm` on vs off and asserts argmax equality — the
+> equivalent of the cb_eval observational test but for save_per_step_ssm.
+>
+> If that confirms (very high prior given the above), the fix is in
+> the DeltaNet CUDA kernel — make the save_all_steps=true path emit
+> the same last state as save_all_steps=false. This is a kernel-level
+> fix downstream of the post-fold 4D KV port and adjacent to PHASE 67-69's
+> batched-pinned changes.
+>
+> Diagnostic env-gates reverted; submodule clean.
+
 ##### P0.A.3 Suspect 1 result — `cudaMallocAsync` FALSIFIED (2026-05-20)
 
 > **Suspect 1 falsified.** Diagnostic patches replaced
