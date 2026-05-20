@@ -189,6 +189,246 @@ Submodule commit:
 > diagnostic record** of the now-falsified T5 line of investigation,
 > NOT as guidance for the fix.
 
+##### P0.A.3 next experiment + code review of candidate suspects (2026-05-20)
+
+This subsection is the plan and code-review writeup that precedes
+the next experiment. It is intentionally folded into PHASE_NSTREAM_KV_PERF.md
+rather than carried in a new doc so the falsification + plan + review
+sit on one page.
+
+###### Next experiment — A/B on `dflash-speculative-simple` with cb_eval install force-disabled
+
+The previous matrix never ran the experiment that isolates cb_eval at
+the actual CLI level. That is the cheapest binding step. Plan:
+
+1. Build the existing `examples/dflash-speculative-simple/dflash-speculative-simple.cpp`
+   (already wired). It is a self-contained DFlash CLI driver — prefill
+   + per-cycle (drafter_forward → 5-token verify decode → sample-accept
+   → spec_ckpt_restore → trim_extract). No HTTP / scheduler / multi-slot
+   complexity. Single-slot, np=1.
+2. Capture baseline output at a fixed prompt / seed / `--n-predict 64`,
+   intact binary. Expected: degenerate output matching the documented
+   P0.A.3 symptom ("user user wants wants quick quick").
+3. Patch the binary: at `src/llama.cpp:10072` change
+   `ctx->cparams.cb_eval = llama_dflash_extract_cb_eval;` to
+   `ctx->cparams.cb_eval = nullptr;` (also clear `cb_eval_user_data`),
+   rebuild, re-run with the same args. Outcome A: divergence
+   SURVIVES → cb_eval install is conclusively exonerated at the CLI
+   level (consistent with the libllama-level falsification). Outcome
+   B: divergence DISAPPEARS → cb_eval IS the cause in some way the
+   libllama-level test missed (very unlikely given the three test
+   shapes already passed, but the binding A/B is what closes the
+   diagnostic either way).
+4. Either outcome closes the cb_eval line of investigation. If A,
+   move to the candidate suspects below. If B, instrument the
+   scheduler split boundary to find which fusion the slow path
+   perturbs at the CLI shape.
+
+Cost: 1 build + 2 runs (~3 min each) ≈ 15-20 minutes wallclock.
+Token cost: 10-20 k for the experiment + writeup.
+
+If outcome A, do NOT revert the cb_eval install — the libllama tests
+that rely on the extract surface (test-dflash-extract-multi-seq,
+the various capture-driven harnesses) still need it. The patch is a
+temporary diagnostic-only edit; the conclusion is what we record.
+
+###### Code review — candidate suspects downstream of cb_eval
+
+The DFlash CLI per-cycle flow (reading `examples/dflash-speculative-simple/dflash-speculative-simple.cpp:137-258`):
+
+```
+prefill prompt (cb_eval fires)
+  → sample first token id_last
+  → loop:
+       spec_ckpt_save (DeltaNet recurrent shadow + save_per_step_ssm on)
+       common_speculative_draft (drafter forward → 4 candidate tokens)
+       build verify batch [id_last @P, c1 @P+1, ..., c4 @P+4]
+       llama_decode (verify, cb_eval fires)
+       sample argmax per row → sampled_at[0..4]
+       n_accepted = longest prefix where draft[k] == sampled_at[k+1]
+       spec_ckpt_restore (DeltaNet rewind + seq_rm rejected positions)
+       trim_extract (drop rows past P + n_accepted + 1)
+       emit n_accepted drafts + bonus
+       id_last = bonus
+```
+
+The libllama test that exonerated cb_eval exercised the target
+forward only. It did NOT exercise: drafter forward, combine_features,
+inject_kv_fused, spec_ckpt_save/restore, trim_extract, or
+common_speculative_draft's position math. Any one of those is a
+candidate downstream of cb_eval.
+
+Suspect ranking (highest first) with citations:
+
+**Suspect 1 (HIGH) — `cudaMallocAsync` jitter in combine_features and inject_kv_fused.**
+
+Citations:
+- `ggml/src/ggml-cuda/dflash/dflash-combine-features.cu:134,156` —
+  `cudaMallocAsync(&fc_out_f32, ...)` and `cudaFreeAsync(...)` per
+  combine call (once per cycle).
+- `ggml/src/ggml-cuda/dflash/dflash-inject-kv.cu:202,203,234,235` —
+  TWO `cudaMallocAsync` (K and V projections) and matching frees per
+  layer. For Qwen3.6-27B-DFlash with L_d=4 drafter layers, that is
+  8 alloc/free pairs per cycle, 9 total per cycle including combine.
+
+Why this is suspect: auto-memory record P3.X.B (task #38) is
+"`cudaMallocAsync` — NPC FAIL 1/8 stochastic. Bench TG@NP=8 =
+28.45 t/s (+5.0 %)". The same async-pool API has previously been
+confirmed to cause stochastic non-determinism on this hardware /
+driver stack. The DFlash pipeline now uses it on every cycle. Pool
+allocation pointers can vary call-to-call (size class fragmentation,
+prior frees not yet returned to pool, etc.) — and even though the
+F32 scratch is written-then-read in the same stream, different
+backing memory between cycles can change peer-access / TLB / coherence
+state in ways that perturb downstream kernel timing and produce
+ULP-level differences in F32 reductions.
+
+Cheap binding test: replace both `cudaMallocAsync` sites with
+`cudaMalloc`/`cudaFree` (synchronous, deterministic pool) for one
+diagnostic run; if divergence disappears, the suspect is confirmed
+and the fix is to pre-allocate the scratch ONCE in `alloc_ctx_scratch`
+sized to `n_slots_cap * MAL_max * D_kv` and reuse it (no per-cycle
+alloc). Cost: ~20 k tokens.
+
+**Suspect 2 (HIGH) — `llama_spec_ckpt_restore` under post-fold 4D KV.**
+
+Citations:
+- `src/llama.cpp:8505-8520` — PER_STEP restore:
+  - `kv.per_step_restore(accepted_step)` (DeltaNet recurrent rewind)
+  - `kv.cells[seq_id].pos = accepted_pos`
+  - `llama_kv_cache_seq_rm(kv, seq_id, accepted_pos + 1, -1)`
+- `src/llama-context.h:76` — `std::vector<llama_kv_cell> cells` —
+  cell metadata array.
+- `examples/dflash-speculative-simple/dflash-speculative-simple.cpp:224` —
+  CLI invocation site, called every cycle after sample-accept.
+
+Why this is suspect: the post-fold 4D KV layout puts K/V cells in
+per-stream slices. Whether `cells[seq_id].pos = accepted_pos` and
+`llama_kv_cache_seq_rm(...)` correctly scope to the seq_id's stream
+slice has not been re-validated since PHASE_NSTREAM_KV landed. The
+PER_STEP path was authored pre-fold (DFlash T6.α) for the shared-pool
+layout. If the seq_rm bound is wrong, rejected positions stay live
+in cache → next cycle's verify decode attends to stale K/V → wrong
+logits → drift.
+
+Cheap binding test: add an assertion at the end of `llama_spec_ckpt_restore`
+that the K/V for positions `> accepted_pos` is logically empty for
+this seq's slice. Use the existing `LLAMA_KV_CONCURRENT_TRACE`
+instrumentation (PHASE_NSTREAM_KV Bug C work) to dump
+`kv.cells[i]` for the seq's slice after restore in a few cycles.
+Cost: ~15-25 k tokens.
+
+**Suspect 3 (MEDIUM) — `stage_target_hiddens` post-trim staging order.**
+
+Citations:
+- `src/llama-dflash.cpp:566-626` — function definition.
+- `src/llama-dflash.cpp:600-605` — F32 → __half host stage of rows
+  `[0, mal_anchors)` BEFORE the trim at line 614.
+- `src/llama-dflash.cpp:614` — `buf.resize(mal_anchors * D_emb)`
+  (P0.A.2 fix landed earlier this session).
+
+Why this is suspect: the per-layer loop reads
+`buf.data() + a * D_emb` for `a ∈ [0, mal_anchors)`. After a verify
+decode appended 5 rows past the prior cycle's `mal_anchors`, the
+buffer has `prev_mal_anchors + 5` rows. The new cycle's `mal_anchors`
+is `prev_mal_anchors + n_accepted + 1`. The trim at line 614 truncates
+to the new mal_anchors AFTER staging. The staging reads the FIRST
+mal_anchors rows of the buffer — but those rows include the verify
+decode's appended hiddens at indices `[prev_mal_anchors, prev_mal_anchors + n_accepted]`
+which correspond to positions `[P, P+n_accepted]` (the anchor +
+accepted drafts). That IS what the drafter wants for the next cycle.
+Probably correct, but the alignment is delicate; an off-by-one in
+the anchor row (do we include the anchor's hidden from the verify
+batch's row 0, or the prior cycle's bonus-decode hidden?) could
+silently produce a one-row drift that compounds across cycles.
+
+Cheap binding test: add a per-cycle log that prints `buf.size() / D_emb`,
+`mal_anchors`, and the first-row hidden norm before stage. Compare
+across two consecutive cycles. If the row at index `prev_mal_anchors`
+is the bonus-decode's hidden vs the anchor's verify hidden — that's
+the off-by-one. Cost: ~10-15 k tokens.
+
+**Suspect 4 (MEDIUM) — `llama_dflash_trim_extract` × `stage_target_hiddens` interaction.**
+
+Citations:
+- `src/llama-dflash.cpp:885-941` — function definition. PER_STEP
+  semantics: `p_end < 0` truncates to first `p_start` rows.
+- `examples/dflash-speculative-simple/dflash-speculative-simple.cpp:235` —
+  CLI call: `llama_dflash_trim_extract(ctx, P + n_accepted + 1, -1)`.
+- `src/llama-dflash.cpp:614` — `stage_target_hiddens`'s own trim
+  inside the per-layer loop.
+
+Why this is suspect: there are now TWO trim sites — `trim_extract` at
+the CLI level (after spec_ckpt_restore) AND `stage_target_hiddens`
+post-stage trim (P0.A.2 restored). If they disagree on the row count,
+the buffer is over-trimmed (drafter sees too few rows next cycle)
+or under-trimmed (drafter sees stale rejected hiddens). The
+`stage_target_hiddens` trim runs INSIDE the next cycle's stage call,
+which is AFTER `trim_extract` has already run. If
+`trim_extract(P + n_accepted + 1, -1)` already produced
+`buf.size() / D_emb == mal_anchors_next`, the per-layer trim at
+line 614 is a no-op (idempotent). But if either of the row counts is
+off by one, the no-op becomes a corruption.
+
+Cheap binding test: assert
+`buf.size() / D_emb == mal_anchors` at the START of
+`stage_target_hiddens` (before staging). If it fails, the trim
+sites disagree. Cost: ~5-10 k tokens.
+
+**Suspect 5 (MEDIUM) — drafter K/V cache alias with target context after post-fold.**
+
+Citations:
+- `src/llama-dflash.cpp:728` — `n_kv_per_layer = n_slots_cap * SeqLen * H_kv * D_h`.
+  The drafter K/V cache lives in `st.d_k_cache, st.d_v_cache` — separate
+  CUDA allocations from the target's K/V.
+- `src/llama-dflash.cpp:768` — `st.d_k_cache + l * n_kv_per_layer + s * kv_slot_stride`
+  pointer arithmetic.
+
+Why this is suspect: the drafter cache is sized at `llama_set_dflash`
+time from `seq_len_cap = swa_window + block_size + 16`. The
+production capacity is 2080 (per P0.A.1 fix). The drafter writes to
+this cache via `inject_kv_fused` at the anchor positions, and reads
+during its forward kernel via `slot_positions`. The drafter cache
+is entirely separate from the target's 4D KV — no direct alias is
+possible. But: the drafter's `inject_kv_fused_launch` is called for
+EACH source layer `l ∈ [0, L_d)`. If the per-layer base pointer
+math `(std::size_t) l * n_kv_per_layer + s * kv_slot_stride` overflows
+or wraps for large `l × n_slots_cap × SeqLen`, layer L_d-1's writes
+could clobber layer 0's reads on the next cycle. For Qwen3.6-27B-DFlash:
+L_d=4, n_slots_cap=2 (production), SeqLen=2080, H_kv=8, D_h=128
+→ per-layer bytes = 2080 × 2 × 8 × 128 × 2 = 8.5 MiB. Total drafter
+K cache = L_d × per-layer = 34 MiB. No overflow risk at `size_t`.
+The arithmetic looks clean; downgrade this suspect to LOW unless
+the others fail.
+
+###### Suspect priority + sequencing
+
+1. Run the **A/B on dflash-speculative-simple** first (15-20 min,
+   10-20 k tokens). This either closes cb_eval forever or reopens
+   it as a different mechanism.
+2. If divergence survives, attack **Suspect 1 (`cudaMallocAsync`)**
+   next — cheapest binding test (replace with `cudaMalloc`, one
+   diagnostic run), strongest prior (P3.X.B is the established
+   precedent for `cudaMallocAsync` stochastic non-determinism on
+   this hardware).
+3. Then **Suspect 2 (spec_ckpt_restore)** — requires more
+   instrumentation but addresses the post-fold integration gap most
+   directly.
+4. Then **Suspect 3** and **4** in parallel — both are simple
+   asserts on the extract buffer state.
+5. Suspect 5 only if 1-4 all fail.
+
+###### What we ship along the way
+
+- No code changes from this code review yet — read-only audit.
+- The A/B experiment edit at `src/llama.cpp:10072` is a **diagnostic-only**
+  patch, not committed. After capturing both outputs, revert the
+  edit.
+- Findings from each binding test land as an append-only MEMORY.md
+  entry + an inline update to THIS subsection. If a suspect is
+  CONFIRMED, the fix lands as a separate commit with its own
+  PHASE_NSTREAM_KV_PERF.md update.
+
 **Symptom after P0.A.1 + P0.A.2 landed:**
 
 Same prompt (`"Write a quicksort in Python."`), same temperature, same seed, np=1, ctx=65536, side-by-side token capture from `/completion`:
