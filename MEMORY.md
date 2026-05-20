@@ -7770,3 +7770,41 @@ work is bound to flip these RED tests green AS its closure criterion.
 Submodule commits: `7749a875` (S4 property tests) and the S5
 follow-on "S5: NDJSON trace instrumentation". Parent submodule bumps
 committed and pushed.
+
+## 2026-05-20 — N1 4D structural landed; N2/N3 require non-byte-compatible axis order
+
+PHASE_NSTREAM_KV_4D N1 (4D K/V tensor reshape + per-stream allocator
+fields) landed on `production/2026-q2-next` in three submodule commits:
+`52d845e9` → `c1beb104` → `38ea4127`. The binding RED test
+(`tests/spec/test-n-stream-kv-layout.cpp`) is GREEN at `n_parallel ∈
+{1, 2}`.
+
+The load-bearing finding for the next round of work: the 4D axis order
+chosen this session — `[head_dim, n_head_kv, kvps, n_stream]` —
+keeps the byte layout byte-identical to legacy 2D K `[head_dim,
+n_head_kv*kv_size]` at all `n_stream` values. This was deliberate to
+avoid rewriting the ~30–40 K/V view/copy sites in
+`llama-build-context.cpp` and the per-arch graph builders. The
+empirical consequence is that byte-compatibility and per-stream
+semantics are **incompatible** under unchanged graph builders:
+
+- Per-stream `find_slot` (allocating slot s's cells inside
+  `[s*kvps, (s+1)*kvps)`): single-request to slot 1 produced
+  all-"!"-token garbage. Reverted to legacy global flat scan.
+- Per-stream `process_batch_tokens` dispatch (one `llama_decode` per
+  primary-seq_id run): concurrent NP=2 with decode-side gate either
+  ON or OFF produced R2 garbage after the first few tokens.
+  Reverted to legacy n_batch chunking.
+- The decode-side prefill gate in `add_sampled_tokens` stays in place.
+  N3 gate removal is open.
+
+N2 / N3 require the upstream-aligned non-byte-compatible axis order
+`[head_dim, kvps, n_head_kv, n_stream]` (positions inner per stream,
+heads outer) AND rewriting every K/V view/copy site to use stream-aware
+base offsets (`s * nb[3]`) plus per-stream `n_kv` bounds. The
+"shortcut" of byte-compatible-and-no-graph-builder-rewrites does not
+deliver structural Bug C closure; it only delivers the foundation
+tensors.
+
+Parent commits: `853f199` (PHASE doc + submodule bump). Submodule
+contains the N1 work; bundle closure (N2+N3) is OPEN follow-up.
