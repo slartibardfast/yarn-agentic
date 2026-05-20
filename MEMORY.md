@@ -7737,3 +7737,36 @@ The diagnostic env hooks (`LLAMA_KV_CONCURRENT_TRACE`,
 `LLAMA_SERVER_CAPTURE_*`, `LLAMA_SINGLEWARP_TRACE`) remain in source
 pending a separate cleanup commit per
 `feedback_bake_measurement_env_gates`.
+
+## 2026-05-20 — Bug C spec layer (S1–S5) landed pre-N1 4D port
+
+Per `/home/llm/.claude/plans/cached-crunching-tiger.md`. Pre-implementation
+spec set for the n_stream KV 4D port (PHASE_NSTREAM_KV_4D.md N1+N2+N3):
+
+- Allium contracts in `specs/scheduler/batch_composition.allium` (the
+  two-gate Bug C closure) and `specs/kv-cache/n_stream_layer.allium`
+  (the structural layout that makes mixed batches impossible). Cross-
+  referenced from `mtp_fused_draft.allium`.
+- TLA+ models `specs/multislot/BatchComposition.tla` and `StreamIsolation.tla`.
+  TLC verifies safety invariants AND the negative-test (gate removal /
+  dispatch-disabled) reproduces a Bug C-shaped counterexample at 10
+  states — confirms specs bind on failure mode.
+- Property tests `tests/spec/test-batch-composition-gates.cpp` (1296
+  slot-config sweep, PASS on HEAD) and `tests/spec/test-n-stream-kv-layout.cpp`
+  (binding RED test for N1: `k_l[3]->ne[3] = 1 vs n_stream = 2` on HEAD;
+  flips GREEN when N1 lands).
+- NDJSON live trace harness via `examples/server/server-trace-ndjson.h`
+  (env-gated on `LLAMA_TRACE_NDJSON_DIR`) plus validator at
+  `scripts/validate-batch-composition-trace.py`. Live-verified on
+  Qwen3.5-0.8B BF16 — spec models HEAD reality.
+
+The TLA+ negative tests are the load-bearing artifact: a spec that
+always passes proves nothing. Negative configs show `BatchCompositionInvariant`
+violates when `DecodeHoldGateOn = FALSE` (BatchComposition.tla) and
+`StreamPartition` violates when `PerStreamDispatchOn = FALSE`
+(StreamIsolation.tla) at low state counts. The N1+N2+N3 implementation
+work is bound to flip these RED tests green AS its closure criterion.
+
+Submodule commits: `7749a875` (S4 property tests) and the S5
+follow-on "S5: NDJSON trace instrumentation". Parent submodule bumps
+committed and pushed.
