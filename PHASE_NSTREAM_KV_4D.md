@@ -19,6 +19,19 @@ Pre-N1 spec layer per `/home/llm/.claude/plans/cached-crunching-tiger.md`:
 
 N1+N2+N3 work proceeds against this binding spec set: `test-n-stream-kv-layout` flips from RED→GREEN as the 4D port lands, and the headline closure gate (G3.a–G3.h) remains the bundle binding.
 
+## N1 closure status (2026-05-20)
+
+**N1 — 4D structural foundation: ✓ LANDED** (submodule commits 52d845e9 → c1beb104 → 38ea4127). What landed:
+
+- `struct llama_kv_cache` extended with `n_stream`, `kv_size_per_stream`, `v_heads` fields.
+- `llama_kv_cache_init`: K/V allocated as 4D `[head_dim, n_head_kv, kv_size_per_stream, n_stream]`. `kv_size` rounded UP to a multiple of `n_stream`.
+- `_clear / _seq_rm / _seq_keep / _seq_add` carry per-stream `v_heads` tracking (benign bookkeeping; not consumed by the legacy find_slot path).
+- `tests/spec/test-n-stream-kv-layout.cpp` binds GREEN at `n_parallel ∈ {1, 2}`.
+
+**The axis-order load-bearing decision.** The chosen 4D order `[head_dim, n_head_kv, kvps, n_stream]` (positions outer, heads inner per stream) makes the byte layout IDENTICAL to the legacy 2D K `[head_dim, n_head_kv*kv_size]` at all `n_stream` values — just partitioned by `ne[3]`. This was deliberate: it lets the existing ~30–40 K/V view/copy sites in `llama-build-context.cpp` and per-arch graph builders keep their legacy offset math unchanged. **The cost:** the byte-compatible layout is INCOMPATIBLE with a per-stream allocator. Legacy graph builders treat the cells[] array as a flat single arena; allocating slot s's metadata at flat range `[s*kvps, (s+1)*kvps)` puts the K-store / K-read at the right bytes (because of byte-compatibility), BUT each `llama_decode` still has to operate over the full flat cell range, mask-filtering by seq_id. No structural Bug-C closure follows from N1 alone; the decode-side prefill gate stays load-bearing.
+
+**N2 and N3 are OPEN.** The structural Bug C closure (per-stream dispatch with no mixed mul_mat shapes, and removal of the decode-side gate to recover v1's TG-overlap) needs the FULL upstream-aligned non-byte-compatible 4D layout — i.e. axis order `[head_dim, kvps, n_head_kv, n_stream]` (heads outer, positions inner per stream) — paired with rewriting every K/V view/copy site to use stream-aware base offsets and per-stream `n_kv` bounds. Empirical bisect during this session (single-request to slot 1 with per-stream `find_slot` returned garbage tokens; concurrent NP=2 with per-stream `process_batch_tokens` dispatch returned garbage on R2 after the first few tokens) confirmed that the byte-compatible shortcut precludes per-stream semantics under unchanged graph builders.
+
 ## TL;DR
 
 Port upstream's per-stream KV layout: K/V tensors gain a 4th axis `n_stream = max(1, n_seq_max)`. Each session owns its own contiguous KV slice. The graph builder dispatches one `llama_decode` per stream (or per-stream graph nodes within one decode) so **the mixed prefill+decode batch geometry never exists in mul_mat input shapes**. Slot 0's decode token always runs through a single-row mul_mat on its own stream; slot 1's prefill runs through a multi-row mul_mat on its own stream. No mixed batch → no GEMM-vs-GEMV divergence → no Bug C → **the decode-side prefill gate can be removed**, recovering v1's TG-overlap perf goal.
