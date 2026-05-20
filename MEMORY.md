@@ -8145,3 +8145,64 @@ document what's open with binding theories" rather than chase root cause to comp
 in-conversation. The theories captured in PHASE_NSTREAM_KV_PERF.md P0.A.3 are the real
 deliverable from this push-through — a future phase can pick the cheapest binding test
 without re-doing the discovery work.
+
+---
+
+## 2026-05-20 — P0.A.3 root cause confirmed: cb_eval hook perturbs target's forward pass
+
+Append-only continuation. The six theories T1-T6 were tested with cheap binding tests; 5
+of 6 falsified, T5 confirmed via decisive existence proof.
+
+**The decisive test:** `--spec-type ngram-simple --draft-max 4` on the SAME target model,
+same prompt, same temp, same seed, same Q4_0+Hadamard KV cache.
+
+```
+spec-none      output:  '\n\n<think>\nHere\'s a thinking process:\n\n1.  **Understand User Request:**...'
+ngram-simple   output:  '\n\n<think>\nHere\'s a thinking process:\n\n1.  **Understand User Request:**...'   ← byte-identical
+DFlash         output:  '\n\n<think>\n  - The **UserUser**:**:...quick quick quick...'                     ← degenerate
+```
+
+ngram-simple goes through the SAME `add_sampled_tokens` + multi-token verify batch
+(n_tokens=5) + `speculative_decoding_accept` path as DFlash. The standard verify path
+is correct.
+
+**The single architectural difference between ngram and DFlash:** `llama_set_dflash_extract_layers`
+(at `src/llama.cpp:10067-10073`) installs `cparams.cb_eval = llama_dflash_extract_cb_eval`.
+This hook fires on every evaluated tensor; returns `true` for `l_out-<il>` nodes at the
+configured source layers (1, 16, 31, 46, 61). Returning `true` on the `ask=true` call
+causes the scheduler to isolate that node for inspection — most likely breaking an
+operator fusion (RMSnorm + residual-add + attention input projection are otherwise
+fusable in the CUDA backend) and producing numerically different intermediates that
+cascade through 65 layers into argmax flips.
+
+**Why MTP-works observation didn't catch this initially:** MTP uses fused draft
+generation (`MTP_OP_DRAFT_GEN_FUSED`) via the dedicated mask path at `llama.cpp:4454`.
+MTP never exercises the standard multi-token verify-batch path with cb_eval installed.
+Production MTP works because it doesn't hit the affected fusion-breaking path.
+
+**Falsification matrix (all done 2026-05-20):**
+
+| Theory | Verdict | Evidence |
+|--------|---------|----------|
+| T1 KQ-mask off-by-one | reopened then F | MTP uses different mask path; ngram clean confirms standard path is fine |
+| T2 buf row mismatch | falsified | `DFLASH_DIAG=1` 6-cycle trace shows formula holds exactly |
+| T3 cb_eval off-by-one trim | falsified | same as T2 |
+| T4 RoPE position semantics | falsified | kernel index audit; both use absolute, no modulo |
+| T5 cb_eval hook perturbation | CONFIRMED | ngram-simple at same verify shape produces byte-identical-to-spec-none output |
+| T6 cudaGraphExecUpdate stale | falsified | `GGML_CUDA_DISABLE_GRAPHS=1` produces same garbled output |
+
+**Total falsification cost:** ~30 k tokens of investigation (vs original 100-300 k
+estimate for the diagnostic phase). The ngram-simple existence proof closed the
+diagnostic in a single targeted test.
+
+**P0.A.3 fix scope (revised):**
+- Preferred (path 1): re-architect to capture hiddens via graph-builder tap nodes
+  instead of cb_eval. Removes the perturbation source entirely. ~30-50 k tokens.
+- Stop-gap (path 2): arm cb_eval only during prefill, detach before verify. ~15-30 k.
+- Deepest (path 3): backend-level fusion fix. ~50-100 k. Avoid unless paths 1/2 fail.
+
+**Lesson on cheap-test-first:** the falsification matrix saved ~70-270 k tokens vs the
+deep-dive approach. The general pattern was "what is the smallest possible test that
+distinguishes hypothesis H from ¬H" — for T5 that was running the SAME verify path
+with a different spec-type that doesn't install the hook. Worth keeping as a template
+for future "X works but Y doesn't" diagnostic problems on this stack.
