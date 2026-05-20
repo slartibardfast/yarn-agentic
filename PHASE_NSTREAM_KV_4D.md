@@ -125,6 +125,80 @@ Default: **Option A** — server-side split, one `llama_decode` per active strea
 - `bin/test-dflash-np-invariance` GREEN at np ∈ {1, 2, 4, 8}.
 - Single-GPU `scripts/r5-probe-c4.sh ITERS=20` PASSes WITHOUT the decode-side gate (the test the gate was previously load-bearing for).
 
+### N2 — refined plan (post-N1-fixup, 2026-05-20)
+
+The N1 fixup landed the structural 4D tensors with **byte-compatible axis order** `[head_dim, n_head_kv, kvps, n_stream]`. The bisect during the same session proved this axis order cannot be combined with per-stream allocator or per-stream dispatch under unchanged graph builders — slot 1 single-request and concurrent NP=2 R2 both produce garbage. N2 therefore has to (a) switch to the upstream-aligned non-byte-compatible axis order AND (b) rewrite all the K/V view/copy sites in lockstep. They cannot land separately without breaking production NP>1.
+
+**N2.a — axis-order switch (load-bearing, breaks production until N2.b lands)**
+
+- `src/llama.cpp` `llama_kv_cache_init`: change K shape to `ggml_new_tensor_4d(ctx, type_k, n_embd_head_k, kv_size_per_stream, n_head_kv, n_stream)` — positions inner per stream, heads outer per stream. Stream stride is `nb[3] = n_head_kv * kvps * head_dim * sizeof(elem)`, the value the existing plan named.
+- V mirrors: `ggml_new_tensor_4d(ctx, type_v, n_embd_head_v, kv_size_per_stream, n_head_kv, n_stream)` for the regular path; the hybrid V tail keeps its 1D fallback but partitioned by `ne[3]`.
+- `tests/spec/test-n-stream-kv-layout.cpp`: revert StreamPartition probe to `k_l[il]->ne[1] == kvps` (the original test expectation pre-byte-compat fixup).
+
+This change BREAKS production NP>1 until N2.b lands — graph builders will read from wrong byte offsets. **Develop on a feature branch off `production/2026-q2-next`; merge back only when bundle gates G3.a–G3.h pass.**
+
+**N2.b — graph builder per-stream offset rewrite**
+
+Threading model: add `stream_id` to `struct llm_build_context` (initialised in the ctor from `batch.seq_id[0][0]`; defaults to 0 if no seq_id). All K/V view/copy helpers consume `lctx.stream_id` and compute `s * nb[3]` as a per-layer base offset.
+
+Sites to rewrite (in priority order — entry-point helpers first, per-arch coverage second):
+
+1. **`llm_build_kv_store`** (`llama-build-context.cpp:543`) — adds `stream_offset = stream_id * n_head_kv * kvps * head_dim * sizeof(elem)` to both the K-cache 2D view offset and the V-cache 1D view offset. `n_ctx` reference in the v_trans branch becomes `kv_size_per_stream`.
+2. **`llm_build_kqv`** (`llama-build-context.cpp:1525`) — the K view at offset 0 becomes offset `stream_id * nb[3]`. Same for V view. `n_kv` argument becomes the **stream-local** active range (computed from `v_cells[stream_id]`), not the global `transformer_kv.n`. Mask shape mirrors stream-local n_kv.
+3. **`build_std_attention`** (`llama-build-context.cpp:2519`) — same offset addition for the multi-device-split branch (lines 2681–2699).
+4. **K-shift** (`build_k_shift`, ~`llama-build-context.cpp:148`) — `ggml_view_3d` on `kv_self.k_l[il]` reads/writes all positions of a head; for n_stream>1 needs per-stream views (one shift per stream, or one combined shift that knows the layout).
+5. **Defrag** (`llama-build-context.cpp:247–283`) — per-stream defrag, never crossing stream boundaries. Easiest: skip defrag entirely under n_stream>1 in the first cut; revisit if fragmentation bites.
+6. **Cache copies** (`llama.cpp:update_cache_copies` ~648–680) — `c.cpy->view_offs = (stream_id * kvps + head_local) * c.step` (where `head_local` is `v_heads[stream_id]`).
+7. **Graph reuse** (`llama.cpp:can_reuse_graph` ~609–615) — `transformer_kv.head` check becomes per-stream; `n_kv` bucket comparison uses stream-local n_kv.
+
+Mask builder (`llama.cpp:set_inputs` mask path ~4408–4615): the iteration changes from `for i in [0..global_n_kv)` to `for i in [0..stream_local_n_kv) { cell = v_cells[stream_id][i]; ... }`. Each query's seq_id IS the stream_id (single-stream batch by per-stream dispatch), so the mask is purely causal-over-stream-cells.
+
+DFlash drafter (`llama-dflash.cpp`): the drafter's K/V pointer-pass sites — same stream-aware offset added.
+
+**N2.c — per-stream `find_slot` (re-enable)**
+
+Restores the per-stream `find_slot` from `52d845e9` (the version that was reverted in `38ea4127`). Allocates within `v_cells[stream_id]` using `v_heads[stream_id]`. `cache.head` becomes a stale legacy shadow; primary path is per-stream.
+
+**N2.d — per-stream dispatch in `process_batch_tokens` (re-enable)**
+
+Restores the seq-id-run split from the same session's reverted state. Each contiguous primary-seq_id run dispatches as its own `llama_decode`. At n_seq_max==1 this collapses to legacy single-dispatch.
+
+**Gate N2 (binding, before any commit to `production/2026-q2-next`):**
+
+- Build clean on sm_75 nvcc, no warnings.
+- `tests/spec/test-n-stream-kv-layout.cpp` GREEN at `n_parallel ∈ {1, 2, 4, 8}` (ne[3]==n_stream, ne[1]==kvps).
+- `bin/test-backend-ops` GREEN (op tests, no KV).
+- `bin/test-dflash-closure` GREEN (np=1 baseline).
+- `bin/test-dflash-np-invariance` GREEN at np ∈ {1, 2, 4, 8}.
+- `llama-batched-bench` at NP={1, 2, 4, 8} produces coherent text (Qwen3.5-0.8B smoke before moving to 27B).
+- `LLAMA_TRACE_NDJSON_DIR` validator finds zero violations across `r5-probe-c4.sh ITERS=20`.
+
+**Risks / open questions:**
+
+- **MLA path** (DeepSeek/GLM-DSA/Mistral4): separate K shape `[kv_lora_rank + n_embd_head_qk_rope, kv_size]`. NOT in production scope; can stay 2D legacy under `if (is_mla_attn)`. Document this exclusion.
+- **MTP-tail layers** (Qwen35MOE nextn): separate K/V allocation. Need stream-aware too; mirror the regular path.
+- **Multi-GPU split tensors** (`split_k_l`, `split_v_l`): per-device splits. Options: (i) 4D-ify each split with `ne[3]=n_stream` and stream-aware offsets, (ii) keep splits 2D but compute stream-aware offsets when constructing views. Option (ii) is faster to land; option (i) is structurally cleaner. **Decision needed.**
+- **Per-arch graph builders** (`graphs/build_*.cpp`): most go through `llm_build_kv_store` + `llm_build_kqv` (already covered). Direct K/V access in per-arch builders is rare (Qwen35MOE MTP layer, T5 cross-attention, DeepSeek-2 MLA). Audit before declaring N2 complete.
+- **Graph cache invalidation**: NS4.OPEN.3 — invalidate any reused graph on first `llama_kv_cache_clear` after the axis switch.
+- **`_seq_cp` cross-stream**: NS4.OPEN.1 — copying KV from stream A's slice to stream B's slice. Either (i) graph-level memcpy at the next decode (heavy), (ii) require seq_cp endpoints to share a stream (lighter). For DFlash multi-slot, slots' seq_ids = stream_ids, so cross-stream copy doesn't arise in production today. Defer until needed.
+
+**Token cost estimate (post-fixup):**
+
+| Sub-step | Tokens |
+|---|---|
+| N2.a axis order + test fix | 5 k |
+| N2.b graph builder rewrites (entry points) | 30–40 k |
+| N2.b graph builder rewrites (per-arch coverage) | 15–25 k |
+| N2.c per-stream `find_slot` re-enable | 5 k |
+| N2.d per-stream dispatch re-enable | 5 k |
+| N2.e graph reuse + mask + cache copies | 10–15 k |
+| N2.f DFlash drafter offset audit | 10 k |
+| N3 server cleanup + gate removal | 15 k |
+| Bundle verification + iteration | 25–35 k |
+| **Total** | **120–155 k** |
+
+**Branch strategy:** feature branch off `production/2026-q2-next` (the N1-foundation state). Land N2.a–N3 as one bundle. Merge back to `production/2026-q2-next` only when gates G3.a–G3.h all pass. Do NOT commit intermediate "axis switched but graph builders incomplete" states to the production branch.
+
 ### N3 — Server-side cleanup + gate removal
 
 **Files:**
