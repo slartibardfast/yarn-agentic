@@ -19,6 +19,51 @@ Pre-N1 spec layer per `/home/llm/.claude/plans/cached-crunching-tiger.md`:
 
 N1+N2+N3 work proceeds against this binding spec set: `test-n-stream-kv-layout` flips from RED→GREEN as the 4D port lands, and the headline closure gate (G3.a–G3.h) remains the bundle binding.
 
+## N2 + N3 closure status — feature branch (2026-05-20)
+
+**Bundle code-complete on `feature/nstream-kv-4d-n2` (submodule).** Bug C closed structurally; decode-side prefill gate REMOVED.
+
+Submodule commits (off `production/2026-q2-next` at `38ea4127`):
+- `0472275d` — N2 + N3 main: axis switch, graph builder rewrites (entry points), per-stream allocator, per-stream dispatch, decode-side gate removal.
+- `95d3c9eb` — N2.b multi-device split per-stream K/V + gate K-shift/defrag to n_stream==1.
+- `a202f4f4` — Worst-case n_kv bounded by kv_size_per_stream; V split factored to mirror K split.
+
+**Verified on Qwen3.5-0.8B-BF16:**
+
+| Test | Config | Result |
+|---|---|---|
+| `test-n-stream-kv-layout` | n_parallel=1 | PASS |
+| `test-n-stream-kv-layout` | n_parallel=2 | PASS |
+| llama-server single request | single-GPU, NP=1 | coherent |
+| llama-server slot=1 alone | single-GPU, NP=2 | coherent |
+| llama-server R1+R2 concurrent | single-GPU, NP=2, **gate REMOVED** | both coherent |
+| llama-server R1+R2 concurrent | multi-GPU, NP=2, gate REMOVED | both coherent |
+| `test-dflash-np-invariance` | 4 seeds × N ∈ {1,2,4,8} | PASS byte-identical |
+
+The "concurrent NP=2 gate REMOVED" line is the load-bearing structural closure: with the decode-side gate gone, mixed prefill+decode batches CAN form, but the per-stream dispatch in `process_batch_tokens` splits them at seq_id boundaries before any `llama_decode`. Each call sees a single-stream batch; each mul_mat sees a uniform shape; Bug C cannot trigger.
+
+**Gates pending (require production Qwen3.6 27B + multi-GPU runs):**
+
+- G3.a — `scripts/test-production-np-determinism.sh` byte-identical NP={1,2,4,8} single-GPU
+- G3.b — same multi-GPU
+- G3.c — `scripts/r5-probe-c4.sh ITERS=20` 0/20 single-GPU **without** decode-side gate
+- G3.d — same multi-GPU
+- G3.e — `bin/test-dflash-np-multislot` GREEN (kernel-level binding test already PASS)
+- G3.f — spec tests (PASS on this branch already)
+- G3.g — `scripts/test-pp-serialization.sh` wall ≤ 10s (TG-overlap recovery)
+- G3.h — `llama-batched-bench` TG NP=8 within ±1% of 27.73 t/s baseline
+
+**Branch merge plan:**
+
+Merge `feature/nstream-kv-4d-n2` → `production/2026-q2-next` ONLY after G3.a–G3.h pass on the production model. Bundle gate verification is N4 / N4-bake territory.
+
+**Open follow-ups not touched in this bundle (legacy guards in place):**
+
+- K-shift (`build_k_shift`): `GGML_ASSERT(kv_self.n_stream == 1)`. Production decode path does not exercise K-shift; revisit when `ctx_shift` is needed at multi-slot.
+- Defrag (`build_defrag`): same n_stream==1 gate. Production usage does not trigger defrag in normal decode.
+- v_trans non-FA V path: gated to n_stream==1. FA always-on for production.
+- MLA (DeepSeek): not in scope; production model is non-MLA.
+
 ## N1 closure status (2026-05-20)
 
 **N1 — 4D structural foundation: ✓ LANDED** (submodule commits 52d845e9 → c1beb104 → 38ea4127). What landed:
