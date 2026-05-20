@@ -233,6 +233,31 @@ Submodule commit:
 > Diagnostic env-gate at `src/llama.cpp:10072` REVERTED in working
 > tree. Not committed; nothing to revert in git history.
 
+##### P0.A.3 Suspect 1 result — `cudaMallocAsync` FALSIFIED (2026-05-20)
+
+> **Suspect 1 falsified.** Diagnostic patches replaced
+> `cudaMallocAsync`/`cudaFreeAsync` with synchronous `cudaMalloc`/
+> `cudaFree` in `dflash-combine-features.cu` and `dflash-inject-kv.cu`,
+> rebuilt, ran the same prompt/seed/temp:
+>
+> | Run | Output start | n_emitted | drafts | accepted | t/s |
+> |---|---|---|---|---|---|
+> | A — HEAD (cudaMallocAsync) | `...quick quick quick quick...` | 64 | 88 | 42 | 16.80 |
+> | C — sync cudaMalloc | `...quick quick quick quick...` | 64 | 88 | 42 | 16.76 |
+>
+> Byte-identical degenerate output. Identical stats. The
+> async-allocator jitter is not the perturbation source despite the
+> auto-memory P3.X.B precedent. Diagnostic patches reverted; submodule
+> clean.
+>
+> Suspect priority updated:
+> 1. ~~cb_eval install + scheduler slow-path~~ (falsified)
+> 2. ~~`cudaMallocAsync` jitter~~ (falsified)
+> 3. **Suspect 2 — `llama_spec_ckpt_restore` under post-fold 4D KV** (next)
+> 4. Suspect 3 — `stage_target_hiddens` post-trim alignment
+> 5. Suspect 4 — `trim_extract` × `stage_target_hiddens` interaction
+> 6. Suspect 5 — drafter K/V pointer arithmetic (downgrade)
+
 ##### P0.A.3 next experiment + code review of candidate suspects (2026-05-20)
 
 This subsection is the plan and code-review writeup that precedes
