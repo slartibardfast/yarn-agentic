@@ -7912,3 +7912,102 @@ closure addendum, `scripts/r5-probe-c4.sh` DEVICE env override,
 submodule pointer bump to `16b608d1`, this MEMORY entry, and
 `PHASE_NSTREAM_KV_PERF.md` stub for the next phase's per-stream
 graph cache.
+
+## 2026-05-20 — PHASE_NSTREAM_KV_PERF scoped: Phase 0 prereqs + Tier 2/3 plan
+
+After deep two-agent web research pass (framework-agnostic continuous-batching
+literature + sm_75-specific SoTA triangulation) and careful cross-check against
+PHASE_NSTREAM_KV closure commitments, DFlash multi-slot expectations, prior
+CUDA-graph perf work (tasks #37/38/39 — cudaMallocAsync NPC stochastic 1/8),
+and existing in-tree machinery, `PHASE_NSTREAM_KV_PERF` is now scoped as a
+four-layer phase. Submodule HEAD remains `16b608d1`; no code changes yet —
+this is the design-lock entry.
+
+**Why the original "per-stream graph cache" hypothesis was under-ambitious:**
+After triangulation it became clear that (a) ik_llama.cpp's downstream
+`cudaGraphExecUpdate` machinery (Phase 36/37/38, `ggml-cuda.cu:4500-4830`)
+already supports per-call patching of `src_address`/`ne`/`nb`, explicitly
+tolerating `src_address` change for `GGML_OP_VIEW` and `GGML_OP_CPY` nodes,
+(b) `update_cache_copies()` in `src/llama.cpp:630` already patches the K/V
+*write* CPY view offsets per-stream (baked in PHASE_NSTREAM_KV_4D N2.b), and
+(c) the only thing not patched are the K/V *read* views in `llm_build_kqv`.
+Tier 2 is therefore "extend `update_cache_copies` per-stream patching to the
+read views, drop the bailout" — a mechanical extension of existing N2.b
+machinery, not novel CUDA-graph engineering.
+
+Tier 3 unlocks the dispatch ceiling: vLLM's measured 154.77 t/s aggregate at
+NP=8 was MEASURED on our hardware 2026-05-12 (`data/gate0-np1-np8.json`).
+Unified-stream dispatch via the existing production PSKV per-slot FA kernel
+(`GGML_OP_FLASH_ATTN_EXT_PER_SLOT_KV`, always-on, NPC-verified at NP={1,2,4,8})
+is the path to closing the gap — no FA kernel port required because the
+kernel we built for PSKV is the prerequisite Tier 3 needs.
+
+**Phase 0 prereqs locked (must precede Tier 2):**
+
+- **P0.A — DFlash server CLI wiring fix.** `--spec-type dflash --model-draft
+  <sidecar>` currently fails on missing `tokenizer.ggml.tokens` because
+  `--model-draft` routes through the standalone draft-model loader. The
+  orchestrator (`common_speculative_init`) is wired and exercised by
+  `test-dflash-spec-batched-fanout` but unreachable from CLI. Without this,
+  GP3.e gates DFlash only at the libllama layer, not at the dispatch layer
+  Tier 2/3 touch. P0.A.1 wiring fix + P0.A.2 production profile +
+  P0.A.3 end-to-end smoke. Four gates GP0.A.a–d. 20–40 k tokens.
+
+- **P0.B — Radical Allium / TLA+ / test surface expansion.** 5 new Allium
+  specs (`cuda_graph_reuse.allium`, `per_stream_read_view_patching.allium`,
+  `unified_stream_dispatch.allium`, `dflash_server_cli.allium`,
+  `mtp_fused_x_n_stream.allium`) + 3 new TLA+ (`CUDAGraphReuse.tla`,
+  `UnifiedStreamDispatch.tla`, `MTPxNStream.tla`) + 1 TLA+ extension
+  (`DFlashMultiSlot.tla` adds `VerifySideUnification` action) + 5 property
+  tests (two binding RED until Tier 2/3 land) + trace-harness extension
+  (graph events + warm-up markers). Historical justification:
+  tasks #37/38/39 (cudaMallocAsync NPC stochastic 1/8) were not catchable
+  by S1–S5 because no spec existed for CUDA runtime state ordering.
+  Five gates GP0.B.a–e. 105–170 k tokens.
+
+P0.A and P0.B run in parallel. Tier 2 begins only after BOTH close.
+
+**Tier 2 + Tier 3 (post-prereqs):**
+
+- **Tier 2** — extend `update_cache_copies` to patch K/V read view offsets
+  per-stream (mirroring the N2.b CPY patching); drop the `n_stream > 1`
+  bailout at `src/llama.cpp:616`. Six implementation cards T2.a–g.
+  Eight gates GP3.a–h + GP3.n (MTP NP=1 production smoke). 60–100 k tokens.
+- **Tier 3** — server-side fusion in `process_batch_tokens`; KQ-mask shape
+  `[n_kv, n_tokens/n_stream, 1, n_stream]`; verify FA dispatch routes to PSKV
+  for unified ubatch; non-FA shape-invariance audit (Q/K/V proj, RMSNorm,
+  MLP, output proj); drop n_stream==1 guards on K-shift/defrag/v_trans.
+  Five gates GP3.i–m. 120–180 k tokens.
+
+**Workload coverage** explicit in gates:
+- Standard Qwen 3.6 27B vanilla NP=8: GP3.a–c, GP3.f–h
+- Qwen 3.6 27B MTP NP=1 (current production): GP3.n
+- Qwen 3.6 27B MTP NP>1 (future): GP3.m
+- DFlash multi-slot: GP3.e expanded to cover Phase 4/5/6 + T7 + closure
+  tests; GP3.k binds kernel-level NPC at ne[1]>1; GP3.l binds orchestrator
+  symmetric+asymmetric under unified verify
+
+**Hardware ground truth (probed 2026-05-20):** `nvidia-smi nvlink -s` → all
+links inActive; `topo -m` → PHB. Two RTX 6000s PCIe Gen3 through host bridge,
+~13 GB/s. No NVLink bridge installed.
+
+**vLLM pivot ruled out on evidence:** weight format incompatibility
+(Q4_0+Hadamard+Q4_0 KV uniquely SoTA on sm_75); FP8 KV impossible on TU102;
+FA2/FA3 not on sm_75; NVFP4 broken on Turing; vLLM #38918 — zero working
+attention backends for Gemma4 on sm_75; GGUF path ran 8.7 t/s on A100 for
+Llama-3.1 70B. ik_llama.cpp's split-mode-graph already beats mainline 33 %
+TG / 6-9× PP on our weight class — kernels SoTA, only dispatch behind.
+
+**Repo hygiene done this entry:** stale `PLAN.md` (DeltaNet content
+superseded by PHASE_NSTREAM_KV closure) archived to
+`docs/archive/np-determinism/PLAN_DELTANET.md`. Fresh `PLAN.md` written
+pointing at PHASE_NSTREAM_KV_PERF.md as active workstream per README
+convention. STATUS.md + README.md refreshed.
+
+**Parent commits this entry:** `0adfe9f` (initial Tier 2 lock from research),
+`07bb7b9` (triangulation against in-tree work), `14a60f6` (workload coverage
+— vanilla + MTP + DFlash gates), `d9fb279` (Phase 0 prereqs added).
+Additional commits forthcoming: PLAN.md refresh, this MEMORY entry,
+STATUS+README+SUMMARY refresh.
+
+**Total scope:** 305–490 k tokens phase-wide.

@@ -18,6 +18,7 @@
 - [Archive: FIX_C_V5_FINAL_REPORT](archive/np-determinism/FIX_C_V5_FINAL_REPORT.md)
 - [Archive: PLAN_FIX_A](archive/np-determinism/PLAN_FIX_A.md)
 - [Archive: PLAN_FIX_C](archive/np-determinism/PLAN_FIX_C.md)
+- [Archive: PLAN_DELTANET (superseded by NSTREAM closure)](archive/np-determinism/PLAN_DELTANET.md)
 - [Archive: CX.A aftermath audit (2026-05-16)](archive/2026-05-16-refs/AUDIT_2026-05-16_CX_A_AFTERMATH.md)
 - [Archive: Research log (2026-05-16)](archive/2026-05-16-refs/RESEARCH_2026-05-16.md)
 

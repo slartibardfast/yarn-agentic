@@ -24,11 +24,20 @@ Six correctness gates green on the production 27B (single + multi-GPU NP-determi
 
 ## What's open — and why
 
-`PHASE_NSTREAM_KV_PERF.md` (carries from today's `PHASE_NSTREAM_KV` closure):
+`PHASE_NSTREAM_KV_PERF.md` (carries from `PHASE_NSTREAM_KV` closure, scoped 2026-05-20 after deep triangulation):
 
-The 4D port disables graph reuse at `n_stream > 1` because stream-aware view offsets bake into the graph; reusing a graph across streams would read from the wrong slice. Every per-stream sub-batch rebuilds the graph (~2–3 ms each). On `llama-batched-bench` TG NP=8 that's a **-6.2 % regression** vs the pre-port 27.73 t/s baseline. The G3.h perf gate failed by that margin; user-selected override merged the bundle because all six correctness gates were green and the structural goal of the phase was delivered.
+The 4D port disables graph reuse at `n_stream > 1` because stream-aware view offsets in `llm_build_kqv`'s K/V read views bake into the graph; reusing a graph across streams would read from the wrong slice. Every per-stream sub-batch rebuilds the graph. On `llama-batched-bench` TG NP=8 that's a **-6.2 % regression**. The G3.h perf gate failed by that margin; user-selected override merged the bundle because all six correctness gates were green and the structural goal was delivered.
 
-The next phase is per-stream graph cache: one `prev->graph` per `stream_id`, so each per-stream sub-batch reuses its own stream's graph. Adjacent K-shift / defrag / v_trans paths are guarded at `n_stream == 1` and need lifting for full multi-slot coverage. MLA (DeepSeek) stays out of scope.
+The plan is now four-layered (Phase 0 prereqs → Tier 1/2 → Tier 3 → optional Tier 4):
+
+- **Phase 0.A** — DFlash server CLI wiring fix. Production CLI cannot deploy DFlash today (`--spec-type dflash --model-draft <sidecar>` fails on missing `tokenizer.ggml.tokens`). Must land before Tier 2 because GP3.e gates would otherwise only bind at libllama, not at the dispatch layer Tier 2/3 touch.
+- **Phase 0.B** — Radical Allium / TLA+ / test surface expansion. Existing S1–S5 covers what PHASE_NSTREAM_KV preserved (Bug C absence, per-stream allocator, mask isolation). Tier 2/3 introduce surface (CUDA-graph reuse semantics, unified-stream dispatch, MTP/DFlash composition under graph reuse) that is not yet bound by spec. Historical justification: tasks #37/38/39 (cudaMallocAsync NPC stochastic 1/8) were not catchable by S1–S5 because no spec existed for CUDA runtime state ordering.
+- **Tier 1 / 2** — Patch attention-read view offsets per-stream in `update_cache_copies` (mirroring the K/V write CPY patching that already ships in N2.b); drop the `n_stream > 1` bailout in `can_reuse_graph`. Existing in-tree `cudaGraphExecUpdate` infra (Phase 36/37/38) carries the downstream patching. Recovers regression + 15-30 % on top.
+- **Tier 3** — Unified-stream dispatch (one `llama_decode` per tick spanning N streams via the ne[3] axis). Uses the existing production PSKV per-slot FA kernel — no novel FA kernel port. Approaches vLLM's measured 154.77 t/s aggregate at NP=8.
+
+Adjacent K-shift / defrag / v_trans paths are guarded at `n_stream == 1` and lifted by Tier 3. MLA (DeepSeek) stays out of scope.
+
+Total scope: 305-490 k tokens phase-wide (Phase 0 ≈ 125-210 k; Tier 2 ≈ 60-100 k; Tier 3 ≈ 120-180 k).
 
 ## What this changes vs the 2026-05-17 framing
 
@@ -38,9 +47,9 @@ The next phase is per-stream graph cache: one `prev->graph` per `stream_id`, so 
 
 ## Where to start the next session
 
-1. Read this file + `PHASE_NSTREAM_KV.md` (closure detail) + `PHASE_NSTREAM_KV_PERF.md` (next phase scope).
-2. Read MEMORY.md entries from 2026-05-20 — the override decision, the byte-compat axis-order tradeoff, the G3.h root cause.
-3. Begin the per-stream graph cache design lock (`PHASE_NSTREAM_KV_PERF.md` "Starting hypothesis" section). Open questions there are intentionally unresolved — measure before committing.
+1. Read this file + `PHASE_NSTREAM_KV.md` (closure detail) + `PHASE_NSTREAM_KV_PERF.md` (current scope).
+2. Read MEMORY.md entries from 2026-05-20 — the override decision, the byte-compat axis-order tradeoff, the G3.h root cause, the Phase 0 prereq scoping entry.
+3. Start Phase 0 — P0.A (DFlash server CLI fix) and P0.B (Allium / TLA+ / test surface expansion) can run in parallel. Tier 2 begins only after both close (GP0.A.a-d and GP0.B.a-e all GREEN).
 
 Note: production `llama-server.service` is currently FAILED (stopped during gate runs 2026-05-20 ~09:59). Restart manually with `systemctl --user restart llama-server` after deciding whether to ship the post-fold submodule (currently selected) or pin earlier.
 
