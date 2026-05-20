@@ -8011,3 +8011,60 @@ Additional commits forthcoming: PLAN.md refresh, this MEMORY entry,
 STATUS+README+SUMMARY refresh.
 
 **Total scope:** 305–490 k tokens phase-wide.
+
+---
+
+## 2026-05-20 — P0.A scope correction: wiring fix already landed in 61a7e874
+
+Append-only correction to the Phase 0 scoping entry above. Per CLAUDE.md §6,
+do not rewrite old entries — adding new entry to correct the prior claim.
+
+**The claim that needed correcting:** the Phase 0 scoping entry (and the
+auto-memory entry `project_phase_nstream_kv_perf_scoped.md`) framed P0.A
+as an *implementation* task: "fix `--spec-type dflash --model-draft
+<sidecar>` failing on missing `tokenizer.ggml.tokens`; 20-40 k tokens".
+
+**Why that was wrong:** before starting P0.A work in this session, I
+grepped recent commits and found submodule commit `61a7e874` (2026-05-18,
+"server: wire DFlash sidecar drafter path; drop n_parallel=1 refusal").
+That commit:
+
+1. Detects `params_base.speculative.type == COMMON_SPECULATIVE_TYPE_DFLASH`
+   at server-context.cpp:156.
+2. Routes `--model-draft <path>` into
+   `params_base.speculative.mparams_dft.path` and SKIPS
+   `llama_model_load_from_file` for the sidecar (server-context.cpp:189-196).
+3. `common_speculative_init` then hands the path to
+   `llama_dflash_drafter_load` (speculative.cpp:1216-1225, 1001).
+4. Removes the `n_parallel == 1` refusal.
+
+A production DFlash profile already exists at
+`/home/llm/profiles/qwen36-27b-x2-dflash.sh` and is the `active.sh`
+symlink target. The server is currently FAILED in journalctl, but for
+status=15/TERM (manual stop during gate runs on 2026-05-20 09:59) — not
+a tokenizer error.
+
+**What is actually open:** the 4D per-stream KV layout (PHASE_NSTREAM_KV
+closure 2026-05-20) landed AFTER `61a7e874`. The composition of DFlash
+multi-slot × per-stream dispatch (`process_batch_tokens` per-stream
+splitting at server-context.cpp:2225, 4576-4687) has not been freshly
+verified end-to-end on post-fold HEAD `16b608d1`. P0.A becomes
+*verify-on-post-fold*, not *implement*.
+
+**Lesson reinforced:** the auto-memory entry was written from the
+pre-PHASE_NSTREAM_KV understanding of the gap. Per the global auto-memory
+guidance ("memory records can become stale; verify by reading the current
+state before acting"), I should have read the code first before
+fabricating implementation work. Per CLAUDE.md §3 + §4, I needed to ground
+"do it right" in the actual code state, not the plan-doc claim.
+
+**Updates this entry triggers:**
+- `PHASE_NSTREAM_KV_PERF.md` P0.A rewritten from implement → verify; token
+  estimate revised from 20-40 k to 5-15 k (green) / 20-60 k (regression).
+- `PLAN.md` P0.A bullet updated.
+- `STATUS.md` P0.A bullet updated.
+- Auto-memory `project_phase_nstream_kv_perf_scoped.md` updated in place
+  (auto-memory is editable per its own rules; this repo MEMORY.md is the
+  append-only audit trail).
+
+Total scope revised: 290-510 k tokens (was 305-490 k).
