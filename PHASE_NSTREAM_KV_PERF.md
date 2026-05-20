@@ -119,7 +119,75 @@ Submodule commit:
 
 **Effect on smoke:** acceptance rate jumped from **8 % → 54 %** at temp=0. Numerically validates the trim was a real correctness regression (not just a perf issue).
 
-#### P0.A.3 — DFlash output divergence from spec-none baseline [OPEN — fundamental, needs dedicated diagnostic phase]
+#### P0.A.3 — DFlash output divergence from spec-none baseline [OPEN — root cause REOPENED, T5 falsified]
+
+> **Update 2026-05-20 (later same day): T5 (cb_eval as cause) is FALSIFIED.**
+>
+> Wrote a libllama-level binding observational test
+> (`ik_llama.cpp/tests/dflash-speculative/test-dflash-extract-observational.cpp`,
+> held on disk uncommitted) that decodes the same prompt twice with
+> `llama_set_dflash_extract_layers` armed on the production set
+> {1, 16, 31, 46, 61} vs disarmed, comparing per-row argmax. Ran three
+> shapes:
+>
+> | Shape | Generated tokens | Result |
+> |---|---|---|
+> | Single 12-token prefill | 12 | byte-identical |
+> | Prefill + 64 single-token autoregressive decodes | 64 | byte-identical |
+> | Prefill + 32 verify-style 5-wide multi-token decodes | 160 | byte-identical |
+>
+> All with cb_eval armed. Extract buffer populates correctly (61440
+> floats = 12 rows × 5120 D_emb), confirming the hook fires on every
+> configured `l_out-<il>` node and the scheduler takes its slow path.
+> The target's argmax is unchanged.
+>
+> The previous falsification matrix's "T5 CONFIRMED" rested on
+> `ngram-simple ≡ spec-none ≠ DFlash`. The architectural diff between
+> ngram-simple and DFlash is NOT only the cb_eval install — it is the
+> entire DFlash pipeline (combine_features, inject_kv_fused, drafter
+> forward, common_speculative_draft sample-and-accept loop). The
+> matrix was correlation, not causation; the cheap binding test
+> isolated cb_eval as a single variable and exonerates it.
+>
+> **The fix paths below ("re-architect to set_output tap nodes" etc.)
+> are NO LONGER justified by P0.A.3** — there is no longer a bug at
+> the cb_eval surface for that change to fix.
+>
+> **Candidate downstream theories that need fresh investigation:**
+>
+> - `combine_features` cuBLAS pinned-HMMA GEMM dispatch ordering
+>   (PHASE 67-69 batched-pinned rewrite landed; may interact with
+>   post-fold 4D KV in unanalysed ways).
+> - `inject_kv_fused` async sync — does the post-fold variant
+>   serialise correctly against subsequent target decodes?
+> - `drafter_forward` kernel state leakage / shared CUDA stream race
+>   with the target context.
+> - `common_speculative_draft` sample-and-accept loop position math
+>   (verify-batch position drift relative to target's committed pos).
+> - Post-fold 4D KV interaction with drafter's own KV (shared
+>   `llama_context`, possible cell alias on the inject path).
+>
+> **Next experiment**: A/B on `examples/dflash-speculative-simple/dflash-speculative-simple.cpp`
+> with cb_eval install force-disabled vs intact. This isolates
+> cb_eval at the CLI level where the bug is observed. Predicted
+> outcome (given the libllama-level falsification above): the
+> divergence survives disabling cb_eval, confirming the mechanism is
+> in the rest of the DFlash pipeline.
+>
+> **Bundle held on disk uncommitted** for future revival once the
+> real mechanism is named:
+> `specs/dflash/cb_eval_residual_capture.allium` (Allium contract,
+> parses clean); `specs/dflash/CbEvalObservational.tla` +
+> `CbEvalObservationalMC.{tla,cfg}` +
+> `CbEvalObservationalMC_callback.cfg` (TLA+ positive verifies,
+> negative produces expected counterexample); the libllama test
+> above. They encode a legitimate contract on the cb_eval surface
+> (extraction is observational) that the implementation upholds —
+> but the contract is independent of P0.A.3 root cause.
+>
+> Sections below this banner are preserved as the **historical
+> diagnostic record** of the now-falsified T5 line of investigation,
+> NOT as guidance for the fix.
 
 **Symptom after P0.A.1 + P0.A.2 landed:**
 
