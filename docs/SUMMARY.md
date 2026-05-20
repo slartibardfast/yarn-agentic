@@ -8,9 +8,6 @@
 - [Master phase tracker (A, B, C, CX, CY, D, E, F)](PHASE_MMQ_Q4_0_AR16.md)
 - [Closed: NP-determinism — canonical writeup](PHASE_NP_DETERMINISM_CLOSED.md)
 - [Open: F.4.1' perf-recovery phase](PHASE_PERF_F4_1.md)
-- [Reference: CX.A aftermath audit (2026-05-16)](AUDIT_2026-05-16_CX_A_AFTERMATH.md)
-- [Reference: Research log (2026-05-16)](RESEARCH_2026-05-16.md)
-
 ## Archive (closed sub-phases + superseded plans)
 
 - [Archive: PLAN_DETERMINISM_AUDIT](archive/np-determinism/PLAN_DETERMINISM_AUDIT.md)
@@ -21,6 +18,8 @@
 - [Archive: FIX_C_V5_FINAL_REPORT](archive/np-determinism/FIX_C_V5_FINAL_REPORT.md)
 - [Archive: PLAN_FIX_A](archive/np-determinism/PLAN_FIX_A.md)
 - [Archive: PLAN_FIX_C](archive/np-determinism/PLAN_FIX_C.md)
+- [Archive: CX.A aftermath audit (2026-05-16)](archive/2026-05-16-refs/AUDIT_2026-05-16_CX_A_AFTERMATH.md)
+- [Archive: Research log (2026-05-16)](archive/2026-05-16-refs/RESEARCH_2026-05-16.md)
 
 # N-stream KV cache (Bug C closure)
 
@@ -31,8 +30,8 @@
 
 - [Qwen3.6-27B DFlash on sm_75](phases/70-dflash/PHASE_DFLASH.md)
 - [Phase 46: speculative decoding port](phases/70-dflash/PHASE46.md)
-- [Multi-slot orchestrator (closed 2026-05-18)](PHASE_DFLASH_MULTISLOT.md)
-- [Batched-pinned dispatch — perf collapse (closed 2026-05-19)](PHASE_DFLASH_BATCHED_PINNED.md)
+- [Archive: Multi-slot orchestrator (closed 2026-05-18)](archive/dflash/PHASE_DFLASH_MULTISLOT.md)
+- [Archive: Batched-pinned dispatch — perf collapse (closed 2026-05-19)](archive/dflash/PHASE_DFLASH_BATCHED_PINNED.md)
 
 # TU102 specialization
 
