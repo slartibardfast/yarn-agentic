@@ -7808,3 +7808,36 @@ tensors.
 
 Parent commits: `853f199` (PHASE doc + submodule bump). Submodule
 contains the N1 work; bundle closure (N2+N3) is OPEN follow-up.
+
+## 2026-05-20 — N2 + N3 bundle code-complete on feature/nstream-kv-4d-n2
+
+Following the N1 byte-compatibility lesson, the N2+N3 bundle landed
+on submodule branch `feature/nstream-kv-4d-n2`:
+
+  - `0472275d` — N2.a axis switch + N2.b graph builder rewrites
+    (entry points) + N2.c per-stream find_slot + N2.d per-stream
+    dispatch + N3 decode-side gate removal.
+  - `95d3c9eb` — N2.b multi-device split per-stream K/V +
+    K-shift / defrag legacy guards (n_stream == 1 asserts).
+  - `a202f4f4` — Worst-case n_kv bounded by kv_size_per_stream;
+    V split factored to mirror K split shape.
+
+Bug C is closed structurally: each llama_decode sees a single-seq
+batch via process_batch_tokens's seq_id-run split, and the graph
+build addresses only the current stream's K/V slice via
+stream_id-derived `s * nb[3]` offsets.
+
+Verified on Qwen3.5-0.8B-BF16:
+  - test-n-stream-kv-layout n_parallel ∈ {1, 2}:        PASS
+  - llama-server single-GPU NP=1 single request:        coherent
+  - llama-server single-GPU NP=2 slot 1 alone:          coherent
+  - llama-server single-GPU NP=2 concurrent gate OFF:   both coherent
+  - llama-server multi-GPU NP=2 concurrent gate OFF:    both coherent
+  - test-dflash-np-invariance 4 seeds × N ∈ {1,2,4,8}:  byte-identical
+
+Pending production gates (G3.a-G3.h) need Qwen3.6 27B + multi-GPU
+runs to bind. Bundle is code-complete; gate-running is N4 bake.
+
+Parent commits: `7e5c4eb` (locked N2 decisions), `7f1fe45` (closure
+status). Submodule pointer on `production/2026-q2-next` still at
+`38ea4127` — bumps to the feature branch after gates pass.
