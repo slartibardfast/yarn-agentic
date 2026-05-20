@@ -30,14 +30,14 @@ The 4D port disables graph reuse at `n_stream > 1` because stream-aware view off
 
 The plan is now four-layered (Phase 0 prereqs → Tier 1/2 → Tier 3 → optional Tier 4):
 
-- **Phase 0.A** — DFlash server CLI wiring fix. Production CLI cannot deploy DFlash today (`--spec-type dflash --model-draft <sidecar>` fails on missing `tokenizer.ggml.tokens`). Must land before Tier 2 because GP3.e gates would otherwise only bind at libllama, not at the dispatch layer Tier 2/3 touch.
+- **Phase 0.A** — DFlash server CLI: verify on post-fold submodule. The wiring fix + production profile already landed in `61a7e874` (2026-05-18). What's open is confirming the post-fold submodule (which introduced the 4D KV layout AFTER `61a7e874`) still composes with DFlash at NP>1.
 - **Phase 0.B** — Radical Allium / TLA+ / test surface expansion. Existing S1–S5 covers what PHASE_NSTREAM_KV preserved (Bug C absence, per-stream allocator, mask isolation). Tier 2/3 introduce surface (CUDA-graph reuse semantics, unified-stream dispatch, MTP/DFlash composition under graph reuse) that is not yet bound by spec. Historical justification: tasks #37/38/39 (cudaMallocAsync NPC stochastic 1/8) were not catchable by S1–S5 because no spec existed for CUDA runtime state ordering.
 - **Tier 1 / 2** — Patch attention-read view offsets per-stream in `update_cache_copies` (mirroring the K/V write CPY patching that already ships in N2.b); drop the `n_stream > 1` bailout in `can_reuse_graph`. Existing in-tree `cudaGraphExecUpdate` infra (Phase 36/37/38) carries the downstream patching. Recovers regression + 15-30 % on top.
 - **Tier 3** — Unified-stream dispatch (one `llama_decode` per tick spanning N streams via the ne[3] axis). Uses the existing production PSKV per-slot FA kernel — no novel FA kernel port. Approaches vLLM's measured 154.77 t/s aggregate at NP=8.
 
 Adjacent K-shift / defrag / v_trans paths are guarded at `n_stream == 1` and lifted by Tier 3. MLA (DeepSeek) stays out of scope.
 
-Total scope: 305-490 k tokens phase-wide (Phase 0 ≈ 125-210 k; Tier 2 ≈ 60-100 k; Tier 3 ≈ 120-180 k).
+Total scope: 290-510 k tokens phase-wide (Phase 0 ≈ 110-230 k depending on P0.A smoke outcome; Tier 2 ≈ 60-100 k; Tier 3 ≈ 120-180 k).
 
 ## What this changes vs the 2026-05-17 framing
 

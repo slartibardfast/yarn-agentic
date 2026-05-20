@@ -65,25 +65,33 @@ These are direct lessons-learned that bind Tier 2 / Tier 3 scoping:
 
 Two prerequisites identified during triangulation. Both close gaps that PHASE_NSTREAM_KV's closure left implicit but that this phase's gates expose.
 
-### P0.A — DFlash server CLI wiring fix
+### P0.A — DFlash server CLI: verify on post-fold submodule
 
-**Why this is a prereq, not a follow-up.** [[project_dflash_multislot_phase5_landed]] documents that `llama-server --spec-type dflash --model-draft <sidecar.gguf>` currently fails on missing `tokenizer.ggml.tokens` — `--model-draft` routes the sidecar through the standalone draft-model loader which doesn't accept the sidecar shape (the sidecar shares the target's tokenizer by design). The orchestrator (`common_speculative_init` + `common_speculative_draft_batched`) is wired and exercised by `test-dflash-spec-batched-fanout`, but CLI cannot reach it.
+**Scope change recorded 2026-05-20 (post-discovery).** The original plan (commit `0adfe9f` / `d9fb279`) listed P0.A as an *implementation* task — wire `--spec-type dflash --model-draft <sidecar>` end-to-end. **A grep of recent commits reveals the wiring already landed** in submodule commit `61a7e874` (2026-05-18) — *"server: wire DFlash sidecar drafter path; drop n_parallel=1 refusal"*. That commit:
 
-This means **GP3.e (DFlash test suite GREEN) only binds at the libllama layer**. Production CLI cannot deploy DFlash at all today. Tier 2/3 changes affect the server's `process_batch_tokens` dispatch — that's exactly the layer where the DFlash + Tier 3 unification composition must be tested. Without CLI access we are blind to the integration.
+1. Detects `params_base.speculative.type == COMMON_SPECULATIVE_TYPE_DFLASH` (server-context.cpp:156).
+2. Routes `--model-draft <path>` into `params_base.speculative.mparams_dft.path` and **skips** `llama_model_load_from_file` for the sidecar (server-context.cpp:189-196).
+3. `common_speculative_init` then hands the path to `llama_dflash_drafter_load` (speculative.cpp:1216-1225, 1001).
+4. Removed the `n_parallel == 1` refusal so the sidecar runs under multi-slot.
 
-**P0.A.1 — Wiring fix.** Route `--spec-type dflash` to call `common_speculative_init` with `mparams_dft.path` set, bypassing `load_model_draft`. Verify the orchestrator accepts the sidecar and tokenizer is sourced from the target ctx. Source files: `examples/server/server.cpp` argument parsing, `examples/server/server-context.cpp` slot init, `common/speculative.cpp` `common_speculative_init`.
+A production profile already exists at `/home/llm/profiles/qwen36-27b-x2-dflash.sh` and is the active.sh symlink target.
 
-**P0.A.2 — DFlash production profile.** Add `profiles/qwen36-dflash.sh` mirroring `profiles/qwen36-27b-x1.sh` (the production MTP profile) but with `--spec-type dflash --model-draft <sidecar.gguf>`. Locate sidecar GGUF on disk (per [[project_dflash_t8_closed]] the bench data lives at `data/phase_dflash_t8/bench-spec-{none,mtp,dflash}.json`).
+**What remains open** is *verify-on-post-fold*. The 4D per-stream KV layout (`PHASE_NSTREAM_KV`) landed AFTER `61a7e874`. Server-side `process_batch_tokens` now splits multi-seq batches per-stream (server-context.cpp:2225, 4576-4687). DFlash's per-slot scratch sizing (Phase 2) and `cb_eval` per-slot demux (Phase 3) compose with that split, but the composition has not been freshly exercised end-to-end since the fold submodule landed today. Tier 2/3 will change `process_batch_tokens` further — we need a green pre-Tier-2 DFlash baseline to compare against.
 
-**P0.A.3 — End-to-end smoke.** `llama-server --parallel 1 --spec-type dflash --model-draft <sidecar>` starts cleanly, accepts `/v1/completions` request, generates ≥ 30 tokens. Then `--parallel 2 --spec dflash` smoke. NPC: byte-identical token output to the libllama `test-dflash-closure` reference for the same prompts.
+**P0.A deliverables (verification, not implementation):**
+
+- **P0.A.1 — Restart `llama-server` with the existing dflash profile** against current submodule HEAD `16b608d1`. Confirm clean boot (no tokenizer error, no n_parallel refusal).
+- **P0.A.2 — End-to-end smoke.** `/v1/completions` at `--parallel 2` produces sane output (≥ 30 tokens, not garbled, EOS reached). Capture the response.
+- **P0.A.3 — NPC under DFlash multi-slot.** `verify-production-determinism.sh` with the DFlash profile active (or a DFlash-specific NPC harness if one exists; otherwise the standard production NPC suite + a DFlash byte-identical-token check at NP={1,2}).
+- **P0.A.4 — Capture bench reference.** Reproduce `data/phase_dflash_t8/bench-spec-dflash.json` measurement on post-fold submodule so Tier 2/3 has a binding pre-change baseline.
 
 **P0.A gates (closure):**
-- **GP0.A.a** — `llama-server --spec-type dflash --model-draft <sidecar>` starts without error.
-- **GP0.A.b** — End-to-end `/v1/completions` smoke at `--parallel 1` and `--parallel 2`; tokens match `test-dflash-closure` reference byte-identical for same seeds.
-- **GP0.A.c** — `data/phase_dflash_t8/bench-spec-dflash.json` reproducible via the new profile (≤ ±5 % delta).
-- **GP0.A.d** — Production `verify-production-determinism.sh` still GREEN with the wiring change in place (it doesn't run DFlash but the diff must be NPC-safe for vanilla).
+- **GP0.A.a** — `systemctl --user start llama-server` (with `qwen36-27b-x2-dflash.sh` active) reaches `READY` per `llama-healthcheck`; no startup errors.
+- **GP0.A.b** — End-to-end `/v1/completions` smoke at `--parallel 2` returns sane output for a fixed prompt (golden file under `data/dflash-smoke/`).
+- **GP0.A.c** — NPC byte-identical at NP={1,2} for DFlash via existing test harness OR `verify-production-determinism.sh` (whichever covers the DFlash code path).
+- **GP0.A.d** — Bench reference re-captured; delta vs `data/phase_dflash_t8/bench-spec-dflash.json` within ±5 %.
 
-Token estimate: 20-40 k.
+Token estimate (revised): 5-15 k if all green; 20-60 k if smoke surfaces a regression that needs root-cause + fix on the 4D × DFlash composition.
 
 ### P0.B — Radical spec / TLA+ / test surface expansion
 
@@ -141,7 +149,7 @@ Token estimate: 25-40 k Allium + 30-50 k TLA+ + 15-25 k TLC + 20-30 k property t
 
 ### P0 sequencing
 
-P0.A and P0.B can run in parallel. P0.A is contained scope (server CLI wiring); P0.B is broad surface expansion. Both must close before T2.a probe begins.
+P0.A and P0.B can run in parallel. P0.A is contained scope (verify post-fold DFlash CLI on the existing profile + commit `61a7e874`); P0.B is broad surface expansion. Both must close before T2.a probe begins.
 
 **Phase 0 closure**: GP0.A.a–d and GP0.B.a–e all GREEN. Submodule + parent commits per CLAUDE.md §5. MEMORY entry per §6.
 
@@ -294,13 +302,13 @@ T3.g — **Bench gate GP3.i** against vLLM's 154.77 t/s measurement.
 
 Per CLAUDE.md §8:
 
-- **Phase 0.A** — DFlash server CLI wiring fix + profile + smoke gates: **20-40 k tokens**. Must precede T2.a.
+- **Phase 0.A** — DFlash server CLI verify-on-post-fold (wiring + profile already landed in `61a7e874`): **5-15 k tokens** if all green; **20-60 k** if smoke surfaces a 4D × DFlash composition regression. Must precede T2.a.
 - **Phase 0.B** — Radical spec/TLA+/test surface expansion (5 Allium + 3 TLA+ + 5 property tests + trace harness ext.): **105-170 k tokens**. Must precede T2.a.
 - **Tier 2 refined** — read-view probe + cache_copies extension + bailout drop + warm-up gate harness + GP3.a-h verification: **60-100 k tokens**.
 - **Tier 3 refined** — server fusion + KQ-mask shape + graph builder uniform-batch + non-FA shape-invariance verify + GP3.i-m: **120-180 k tokens** (significantly less than the original "fresh FA kernel port" framing because the PSKV per-slot kernel is the prerequisite and it's already production).
 - Diagnosis if Tier 2 hits unexpected invalidation: 20-30 k per round, budget 2-3.
 
-Total scope: **305-490 k tokens** depending on how far we run. The structural foundation (PHASE_NSTREAM_KV's 4D layout + the existing CUDA-graph patching infra + the PSKV per-slot FA kernel) carries most of the engineering risk; this phase is the dispatch refit *plus* the surface expansion that should have shipped with PHASE_NSTREAM_KV but didn't.
+Total scope: **290-510 k tokens** depending on how far we run + whether P0.A smoke is clean. The structural foundation (PHASE_NSTREAM_KV's 4D layout + the existing CUDA-graph patching infra + the PSKV per-slot FA kernel) carries most of the engineering risk; this phase is the dispatch refit *plus* the surface expansion that should have shipped with PHASE_NSTREAM_KV but didn't.
 
 Per `feedback_oneshot_then_evaluate`: Phase 0.A and 0.B can run in parallel as separate bundles. Tier 2 implements coherently after both close. Tier 3 implements coherently after Tier 2 closes. No partial intermediate landings.
 
