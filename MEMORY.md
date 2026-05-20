@@ -7695,3 +7695,45 @@ the inter-device shard boundary.
 Next direction for R5.4*-residual: integration-level audit (cb_eval
 dispatch path, slot allocator + batch composition under concurrent
 fire), NOT further kernel-level testing.
+
+## Bug C closure landed (2026-05-20)
+
+The NP=2 stochastic ~10% harness failure observed since R5 is closed.
+
+**Mechanism (confirmed via LLAMA_KV_CONCURRENT_TRACE diagnostic probe,
+data/bug-c-confirm-20260520/):** mixed prefill+decode tokens in a single
+`llama_decode` batch. When slot 0 finishes its prefill and transitions
+to PROCESSING, slot 1's still-pending prefill lands in the same batch
+as slot 0's first decode token (`n_tokens=211 = 1 decode + 210 prefill`).
+The mask and `find_slot` metadata are correct in that batch, but a
+downstream kernel/graph node mishandles the mixed-batch geometry —
+slot's decode output collapses to garbage / re-emits the input prompt.
+Pre-fix rate: 13% stochastic. With only v1's PP-serialisation
+re-applied: 100% deterministic (slot 0 always prefills alone, mixed
+batch becomes inevitable).
+
+**Fix:** pair v1 PP-serialisation (commit `67878813`, gate in
+`batch_pending_prompt`'s `active_pp_slot_id` logic) with a SYMMETRIC
+decode-side gate in `add_sampled_tokens`: if any slot is in
+`SLOT_STATE_IDLE && SLOT_COMMAND_LOAD_PROMPT`, early-return without
+adding decode tokens. Result: every batch is either pure-prefill or
+pure-decode. TG latency cost: bounded by one prefill duration when
+another slot is mid-prefill (the wait was implicit in v1 anyway).
+
+**Verification:**
+- `scripts/r5-probe-c4.sh ITERS=20` single-GPU NP=2: 0/20 fails.
+- `scripts/test-production-np-determinism.sh` multi-GPU full NP=
+  {1,2,4,8} matrix: byte-identical at slot 0 (cross-NP).
+- `scripts/test-pp-serialization.sh`: PP=113 t/s per request, wall=15.9 s
+  on 2× 710-tok concurrent (v1's perf win recovered).
+- `llama-batched-bench` production geometry NP=8: TG=27.73 t/s,
+  PP=23.51 t/s — TG within 1% of pre-Bug-C-fix HEAD post-PSKV baseline.
+
+Submodule commits: `cef533ac` (v1 re-cherry-pick) and the follow-on
+"server: pair v1 PP-serialisation with decode-side prefill gate"
+commit. Parent submodule bump committed and pushed.
+
+The diagnostic env hooks (`LLAMA_KV_CONCURRENT_TRACE`,
+`LLAMA_SERVER_CAPTURE_*`, `LLAMA_SINGLEWARP_TRACE`) remain in source
+pending a separate cleanup commit per
+`feedback_bake_measurement_env_gates`.
