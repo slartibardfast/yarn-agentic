@@ -101,6 +101,92 @@ exists):
   `llama_memory_*`). Keep ik's existing `llama_kv_cache_*` free-function
   shape; the change is internal.
 
+## Update 2026-05-20 (g) — Kernel-level bisect of Bug C: GEMV-vs-GEMM accumulation order
+
+Per user direction "diagnose and fix 1", attempted to identify the
+kernel-level cause of Bug C — the downstream op that produces wrong
+output when a mixed prefill+decode batch passes through. Goal: fix at
+the kernel level so the decode-side prefill gate can be dropped to
+recover steady-state TG throughput.
+
+### Bisect setup
+
+- Temporarily re-applied the `LLAMA_SERVER_CAPTURE_*` cb_eval hook
+  (from prior commit `3ad8934e`) in working tree.
+- Temporarily disabled the decode-side prefill gate in
+  `add_sampled_tokens` (working tree) so the mixed-batch geometry
+  could form on the post-v1 binary.
+- Captured `l_out-*` per layer at `decode-00001-t1` (NP=1 baseline,
+  slot 0's first decode token) and `decode-00001-t211` (NP=2-mixed,
+  slot 0's first decode batched with slot 1's full prefill).
+- Bisect script `scripts/bug-c-bisect.py` compared slot-0 row of
+  layer-0's `l_out-0` and downstream layers.
+
+### Findings
+
+1. **Layer-0 `l_out-0` diverges at slot-0 row**, with `max|Δ| =
+   3.011e-03`, `~n_diff/n_total = 5120/5120`. Pattern: small per-
+   element deltas (~1e-4 to 1e-5), random signs, identical mean
+   magnitudes. Classic accumulation-order divergence, not a logic
+   bug.
+2. **`--graph-reduce-type f32` did not fix it.** All `cparams.reduce_type`-
+   gated `ggml_cast` sites were disabled, but the divergence
+   remained identical bit-for-bit across runs.
+3. **`LLAMA_DELTA_FORCE_SLOW=1` did not fix it.** Forcing NP=1 into
+   the same per-block slow path as NP=2-mixed produced the same
+   divergence.
+4. **A `force_reduce_cast_blk` per-block fix was a no-op.** The
+   force_reduce_cast parameter is only consumed in the multi-device
+   split-graph path (line 586, `n_device > 1`). Our test was single-
+   device (`--device CUDA0`). Reverted.
+5. **The divergence is intrinsic to mul_mat dispatch**: for a row
+   shape `[d, 1]` (single-token decode, NP=1), CUDA mul_mat picks
+   GEMV with a single-thread sequential accumulator. For shape
+   `[d, N>1]` (mixed batch, slot 0's row at row 0), the kernel
+   picks tiled GEMM with parallel partial sums + reduction tree.
+   The two paths compute the same mathematical result with bit-
+   different accumulation order — output bits diverge by ~1 ULP per
+   element, which propagates through layers as ~3e-3 absolute by
+   layer 0's residual sum.
+
+### Conclusion
+
+There is **no kernel-level patch** for this without rewriting all
+mul_mat kernels to enforce GEMV-equivalent accumulation order at all
+batch sizes — a massive undertaking with significant performance
+loss (the GEMV-order path can't use tensor cores or tile-level
+parallelism).
+
+The **decode-side prefill gate in `add_sampled_tokens` is the
+correct fix.** It prevents the mixed batch from forming, so slot 0's
+decode always goes through GEMV in its own pure-decode batch, byte-
+identical to NP=1 baseline. The "policy-level closure" *is* the
+kernel-level closure.
+
+### Restore state
+
+- All diag/capture hooks deleted from working tree.
+- Decode-side gate restored in `add_sampled_tokens`.
+- `scripts/r5-probe-c4.sh ITERS=20` PASS post-restore (0/20).
+- Working tree matches submodule HEAD `969d156e` (n_stream + v_heads
+  foundation slice 1 on top of Bug C closure).
+
+### Implications for n_stream KV port
+
+The kernel-level finding doesn't change the case for n_stream KV.
+The 4D port still wouldn't fix this — it changes KV layout, not
+mul_mat accumulation. The decode-side gate is needed regardless.
+
+Phase C work on n_stream KV is decoupled from Bug C as per Update
+(d). The user has indicated intent to pursue full 4D port for its
+own structural merits — that work proceeds on its own gates.
+
+### Task closure
+
+- #104 (kernel-level bisect): CLOSED with finding above.
+- #105 (kernel-level fix): CLOSED INFEASIBLE. The fix is the
+  scheduler policy already landed.
+
 ## Update 2026-05-20 (f) — Phase C deferred, design analysis surfaces a wider blocker
 
 During the ralph-loop pass to deliver remaining work, Bug C closure
