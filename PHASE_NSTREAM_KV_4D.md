@@ -2,7 +2,22 @@
 
 **Branch**: `production/2026-q2-next`
 **Predecessors**: `PHASE_NSTREAM_KV.md` (a)–(g) for design history. **(g) is the load-bearing finding**: there is no kernel-level patch for the mixed-batch GEMM-vs-GEMV divergence.
-**Status**: Specced. Foundation slice landed (`n_stream`, `v_heads` fields on the struct, init only, no allocator use).
+**Status**: Specced. Foundation slice landed (`n_stream`, `v_heads` fields on the struct, init only, no allocator use). **Spec layer S1–S5 landed (2026-05-20) — see [S-phase closure status](#s-phase-closure-status-2026-05-20).**
+
+## S-phase closure status (2026-05-20)
+
+Pre-N1 spec layer per `/home/llm/.claude/plans/cached-crunching-tiger.md`:
+
+- **S1.a — `specs/scheduler/batch_composition.allium`**: ✓ landed. Contracts: `PrefillSerialisationGate`, `DecodeHoldGate`, `BatchCompositionInvariant`, `MixedBatchProhibition`, `AtMostOnePrefillSlotPerBatch`. `allium check` clean.
+- **S1.b — `specs/kv-cache/n_stream_layer.allium`**: ✓ landed. Contracts: `PerStreamAllocator`, `MaskPerStream`, `PerStreamDispatch`, `BugCAbsenceByConstruction`, `DFlashCompatibility`. `allium check` clean.
+- **S1.c — `mtp_fused_draft.allium` tend**: ✓ landed. Added `FusedDraftRoundsRunOnPureDecodeBatches` + `FusedDraftRespectsStreamPartition` cross-cutting invariants linking S1.a / S1.b.
+- **S2.a — `specs/multislot/BatchComposition.tla`**: ✓ landed. State machine + WF fairness. SANY-clean.
+- **S2.b — `specs/multislot/StreamIsolation.tla`**: ✓ landed. SANY-clean.
+- **S3 — TLC model-check**: ✓ landed. Configs `BatchCompositionMC.cfg` (gate ON, 541 distinct states, PASS), `BatchCompositionMC_no_gate.cfg` (gate OFF, `BatchCompositionInvariant` violated — spec binds), `StreamIsolationMC.cfg` (PerStreamDispatch ON, 78 distinct states, PASS), `StreamIsolationMC_legacy.cfg` (PerStreamDispatch OFF, `StreamPartition` violated — spec binds).
+- **S4 — Property tests via `allium plan` obligations**: ✓ landed. `tests/spec/test-batch-composition-gates.cpp` (1296 slot-config sweep, PASS on HEAD). `tests/spec/test-n-stream-kv-layout.cpp` (foundation PASS; `KVTensorIsFourD` FAIL on HEAD with `k_l[3]->ne[3]=1 vs n_stream=2` — the binding RED test for N1).
+- **S5 — NDJSON trace harness + live validation**: ✓ landed. `examples/server/server-trace-ndjson.h` emit helper, single emit site at the dispatch boundary, gated on `LLAMA_TRACE_NDJSON_DIR`. Validator at `scripts/validate-batch-composition-trace.py`. Live-verified on Qwen3.5-0.8B BF16: 2 concurrent completion requests, 2-record trace, validator PASS — spec models HEAD reality.
+
+N1+N2+N3 work proceeds against this binding spec set: `test-n-stream-kv-layout` flips from RED→GREEN as the 4D port lands, and the headline closure gate (G3.a–G3.h) remains the bundle binding.
 
 ## TL;DR
 
