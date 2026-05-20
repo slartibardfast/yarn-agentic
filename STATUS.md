@@ -1,6 +1,6 @@
 # Project status — Qwen 3.6 27B determinism on dual sm_75
 
-Last updated: 2026-05-17
+Last updated: 2026-05-20
 
 ## The goal
 
@@ -8,69 +8,51 @@ Get a production multi-slot inference server that returns **byte-identical outpu
 
 Byte-identity matters because the alternative is "deterministic up to fp32-ULP noise" — which means argmax can flip, tokens can diverge, and an experiment that returns one answer at NP=1 returns a different answer at NP=2. For research reproducibility, regression debugging, and any system that stores or compares model responses, that's unacceptable.
 
-We started this work thinking it was a kernel-level math problem.
+We started thinking it was a kernel-level math problem. It turned out to be a scheduler problem masquerading as one.
 
-## What we've built (and what works)
+## Where we are now (2026-05-20)
 
-Four named fixes have shipped on `ik_llama.cpp`:
+**The NP-determinism work is structurally closed on `production/2026-q2-next`** at submodule HEAD `16b608d1`. The path:
 
-- **Phase A + B** — custom Q4_0_AR16 MMQ and MMVQ kernels. INT4 matmul paths that don't suffer from cuBLAS's per-shape algo selection.
-- **Phase C** — cuBLAS algorithm pinning for F16/BF16/F32 weights. Algo is locked regardless of M; same shape always uses the same code path.
-- **CY.F.17** — disabled MMQ's stream_K dispatch, which had a shape-dependent reduction order at prefill M ≥ 215.
-- **CY.F.18** — fixed a scheduler `needs_sync` lifecycle race for multi-GPU peer writes. The bug let the scheduler clear its sync flag while peer-stream writes were still pending.
+1. **Kernel-level audit landed four fixes** (Phase A/B custom Q4_0_AR16 MMQ/MMVQ, Phase C cuBLAS algo pinning, CY.F.17 stream_K disable, CY.F.18 scheduler `needs_sync` race). These are real, valid, shipped fixes — but none of them closed the production-state NP-determinism gap on their own.
+2. **The bisection of 2026-05-17** found the residual failure was content-dependent (PASS–FAIL–PASS across prompt sizes), single-GPU-symmetric, and lived below the conditionals the audit was looking at. The "Today's bisection" notes in earlier git history record the falsified facts (mla_attn force-reset, ne[1]>32 cast dead, harness bash bug that masked half a session's probes).
+3. **Bug C mechanism confirmed (2026-05-20).** `LLAMA_KV_CONCURRENT_TRACE` instrumentation showed the failing iteration had a **mixed prefill+decode batch**: slot 0's first decode token batched together with slot 1's full 210-token prefill. CUDA `mul_mat` picks GEMV (single-thread sequential accumulator) for `[d, 1]` and tiled GEMM (parallel partial sums + reduction tree) for `[d, N>1]`. Same math, bit-different accumulation order, ~1 ULP per element propagating to ~3e-3 absolute by layer 0. No kernel-level patch without rewriting all `mul_mat` to GEMV-order at every batch size — major perf loss, ruled out by the user.
+4. **Policy-level closure landed first** as v1 PP-serialisation + decode-side prefill gate (`cef533ac` + follow-on). Prevents mixed batches from forming. Correct fix but loses TG-overlap (~6s wall-time penalty in `test-pp-serialization.sh`).
+5. **Structural closure landed today** as `PHASE_NSTREAM_KV` — the upstream 4D per-stream KV layout port. K/V tensors become `[head_dim, kv_size_per_stream, n_head_kv, n_stream]`; each session owns its slice by construction; the server's `process_batch_tokens` splits multi-seq batches into per-stream sub-batches before any `llama_decode` so each call sees a single-stream batch. **Mixed batches cannot form by construction; the decode-side gate is removed.**
 
-At the C API level, the unit test `test-cy-np2-multi-step-decode` runs 10/10 byte-identical comparing NP=2 against NP=1. At the server level, the production harness `scripts/test-production-np-determinism.sh` passes 5/5 multi-run with the default short prompt at NP={1,2,4,8}.
+Six correctness gates green on the production 27B (single + multi-GPU NP-determinism, r5-probe-c4 0/20 without gate, DFlash multi-slot byte-identical, spec tests, PP serialisation above threshold). See `PHASE_NSTREAM_KV.md` for the full closure table.
 
-These are real, valid, shipped fixes.
+## What's open — and why
 
-## The catch
+`PHASE_NSTREAM_KV_PERF.md` (carries from today's `PHASE_NSTREAM_KV` closure):
 
-The "default short prompt" is fifteen tokens.
+The 4D port disables graph reuse at `n_stream > 1` because stream-aware view offsets bake into the graph; reusing a graph across streams would read from the wrong slice. Every per-stream sub-batch rebuilds the graph (~2–3 ms each). On `llama-batched-bench` TG NP=8 that's a **-6.2 % regression** vs the pre-port 27.73 t/s baseline. The G3.h perf gate failed by that margin; user-selected override merged the bundle because all six correctness gates were green and the structural goal of the phase was delivered.
 
-The production harness's hardcoded default prompt was *"The history of artificial intelligence began in earnest with the work of"* — short enough that prefill barely exercises the model's batched code paths. When we re-tested today with a realistic ~200-token prompt, the same harness fails 0/5 multi-run at NP>1. Specific prompts at specific sizes deterministically produce different output across slots.
+The next phase is per-stream graph cache: one `prev->graph` per `stream_id`, so each per-stream sub-batch reuses its own stream's graph. Adjacent K-shift / defrag / v_trans paths are guarded at `n_stream == 1` and need lifting for full multi-slot coverage. MLA (DeepSeek) stays out of scope.
 
-We hadn't been catching this because the test fixture was overfit to a toy case.
+## What this changes vs the 2026-05-17 framing
 
-## Today's bisection, and what it told us
-
-The natural reflex was to assume the failure was somewhere in the kernel work we'd been doing — maybe CY.F.17 didn't extend to all M values, or CY.F.18 had a corner case at long context. So we built a bisection: start from the unit-test config (which passes 10/10) and step it toward the server config, one variable at a time. Five configs × six prompt sizes = thirty cells. We expected to find a single variable whose change flips PASS→FAIL.
-
-The result was not what we expected.
-
-**Several variables turned out to have no effect.** The unit test sets `mla_attn=3`, which we'd treated as a meaningful Qwen-specific knob. But `llama.cpp:7156` force-resets `mla_attn=0` for any model not in {DeepSeek2, GLM_DSA, Mistral4}. Qwen 3.6 never runs mla_attn=3 regardless of what the unit test asks for. The bisection cell was testing the same thing on both sides.
-
-**The CY.A audit's named suspect was dead code.** The `cur->ne[1] > 32` conditional that casts the residual stream to fp16 for prefill — long flagged as the prime determinism risk — doesn't fire in our config. `reduce_type` is forced to F32 for Qwen 3.5/3.6 (shipped under CY.F.16). The cast condition `ne[1] > 32 && reduce_type != GGML_TYPE_F32` evaluates to false on the right side, always.
-
-**The matrix is non-monotonic.** We see PASS-FAIL-PASS-FAIL across prompt sizes. ~200 tokens fails; ~350 tokens passes; ~1100 tokens fails. Same model, same config, same harness. Whatever's wrong isn't "prompts above some size threshold."
-
-**And then the punchline: Hadamard isn't masking the race.** Turning Hadamard rotation off doesn't relax the determinism constraint — it dramatically tightens it. Without Hadamard, even the three-token "tiny" prompt fails. With Hadamard, only specific prompts fail. The reframe: Hadamard's stated purpose is precision optimization for Q4_0 KV cache quantization, but it has a second effect we hadn't recognized — it keeps cache values uniform enough that the upstream drift stays below the argmax-flip margin. The drift exists everywhere; Hadamard happens to keep most prompts safely above the line.
-
-The race is at the **kernel level**, not the build-graph level. It's **content-dependent**: specific token sequences trigger it, others don't. It fires **identically on single-GPU and multi-GPU**. None of the fixes named in earlier phases address it directly — the kernels' shape-dependent paths run below the conditionals the audit was looking at.
-
-## What this changes
-
-Phase D was framed as multi-GPU peer-access determinism. That framing is dead — the race fires single-GPU. Phase CX was the non-MMQ shape-dependent op audit, but its bindings tested random tensors at unit-test shapes; production-state bindings at the same ops would not pass. Phase CY had been "closed" at narrow scope; the real binding doesn't hold.
-
-We considered three paths:
-
-- **A. Strict determinism-first**: block all forward work until the audit closes.
-- **B. Ship NP=1 deterministic, document the NP>1 gap**: move on to perf tuning and other workstreams while the determinism work continues in the background.
-- **C. Time-box the audit (~150k tokens of foundation + first audit cycle), then re-evaluate**: if a meaningful fix lands, continue; if not, fall back to B.
-
-We chose C. The plan is `PLAN_DETERMINISM_AUDIT.md`: build a state-capture harness, build a per-kernel byte-identity binder, gather 100 diverse prompts, then audit the most likely culprits in priority order — singlewarp FA at production K/V cache first, then cache write/read paths, then MMQ at production weight distributions. The audit closure binding is 100 diverse prompts × 4 NP values × 3 sweeps, zero divergences. That's deliberately strict; today's bisection convinced us that anything narrower is overfit-able.
+- **The race isn't kernel-level.** It's a scheduler problem: the kernel just exposed the underlying mixed-batch composition issue. Once batch composition is enforced single-stream, `mul_mat` sees a uniform shape per call and the GEMV-vs-GEMM accumulation question goes away.
+- **The `PLAN_DETERMINISM_AUDIT.md` strict capture-harness approach was superseded** by the spec-led S1–S5 layer (Allium + TLA+ + property tests + NDJSON trace harness) which served the same role at one-tenth the token cost. That plan is now under `docs/archive/np-determinism/`.
+- **Hadamard's "second effect"** observation (keeping cache values uniform enough that drift stays below argmax-flip margin) was a useful diagnostic but isn't load-bearing once batches are single-stream by construction.
 
 ## Where to start the next session
 
-1. Read `STATUS.md` (this file) and `PLAN_DETERMINISM_AUDIT.md`.
-2. Read MEMORY.md entries from 2026-05-17 onward — they record the falsified facts (mla_attn force-reset, ne[1]>32 cast dead, harness bash bug that masked all probes for half a session) and the corrected understanding.
-3. Begin task #211 — Audit F.1, the production-state capture harness.
+1. Read this file + `PHASE_NSTREAM_KV.md` (closure detail) + `PHASE_NSTREAM_KV_PERF.md` (next phase scope).
+2. Read MEMORY.md entries from 2026-05-20 — the override decision, the byte-compat axis-order tradeoff, the G3.h root cause.
+3. Begin the per-stream graph cache design lock (`PHASE_NSTREAM_KV_PERF.md` "Starting hypothesis" section). Open questions there are intentionally unresolved — measure before committing.
+
+Note: production `llama-server.service` is currently FAILED (stopped during gate runs 2026-05-20 ~09:59). Restart manually with `systemctl --user restart llama-server` after deciding whether to ship the post-fold submodule (currently selected) or pin earlier.
 
 ## Other live workstreams
 
-These are independent of the determinism audit and not blocked by it:
+These are independent of the NP-determinism work and not blocked by it:
 
-- **DFlash speculative decoding** — Qwen3.6-27B with bespoke sm_75 kernels. Kernel-pipeline closed at T1-T9.
+- **DFlash speculative decoding** — Qwen 3.6 27B with bespoke sm_75 kernels. Kernel-pipeline closed at T1-T9; multi-slot orchestrator closed 2026-05-18; batched-pinned dispatch closed 2026-05-19 (both archived under `docs/archive/dflash/`).
 - **MTP production** — Multi-token prediction for Qwen 3.6 27B, shipped Q2 2026.
 - **Vulkan multi-GPU split-mode graph** — RDNA2 + Vega multi-GPU production stack, 22 phases of work landed.
+- **TU102 specialization** — open kernel-ranking work (`PHASE_TU102_SPECIALIZATION.md`).
+- **F.4.1 perf recovery** — open (`PHASE_PERF_F4_1.md`).
+- **AsyncReduce** — planning (`PHASE_ASYNC_REDUCE.md`).
 
 See the workstream-specific docs in the mdBook nav.
