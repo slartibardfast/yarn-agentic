@@ -101,6 +101,64 @@ exists):
   `llama_memory_*`). Keep ik's existing `llama_kv_cache_*` free-function
   shape; the change is internal.
 
+## Update 2026-05-20 (f) — Phase C deferred, design analysis surfaces a wider blocker
+
+During the ralph-loop pass to deliver remaining work, Bug C closure
+(Phase A) and diag cleanup (Phase B.1/B.2) landed cleanly. Phase B.3
+(production bake) was skipped on an orthogonal profile-side OOM
+(qwen36-27b-x2-dflash at 256K context — pre-existing, not a Bug C
+regression). Phase C (the n_stream KV port itself) was reached but
+analysis surfaced a wider blocker than the phase doc anticipated.
+
+### The wider blocker
+
+The phase doc's (b) range-partition-over-3D variant looked surgical
+(~500–1000 LoC, no graph changes). It is NOT. The decode case has
+batches with **mixed seq_ids — one decode token per slot, batched
+together** (post-Bug-C-fix, prefills are single-seq but decodes still
+mix). With range-partition, each batch token's K/V row would need to
+land in its own stream's cell range (non-adjacent across slots). The
+existing `ggml_cpy(Kcur, k_cache_view)` writes rows contiguously
+starting at one base offset — it cannot scatter across non-adjacent
+cells.
+
+ggml has `ggml_set_rows` (a scatter-write op), but it requires the
+data source to be F32. The KV cache is Q4_0 (production) and the
+quantization happens inside `ggml_cpy`. There is no current path to
+scatter-write into a quantized destination.
+
+Therefore (b) requires either:
+- A new scatter-quantized-write op in ggml (~hundreds of LoC + CUDA
+  kernel + graph node).
+- OR the full 4D port (a), which puts each stream in its own
+  contiguous tensor slice and a single per-stream `cpy` lands the
+  data naturally (still graph-builder changes, but a known pattern).
+
+Either way, the original phase doc's ~500–1000 LoC estimate for (b)
+is wrong; the true cost is closer to the (a) estimate of ~3000–5000.
+
+### Where this leaves things
+
+- **Bug C is closed.** v1 PP-serialisation + decode-side prefill gate
+  pair (commits `cef533ac` and the follow-on, on `production/2026-q2-next`)
+  delivers correct NP={1,2,4,8} byte-identical semantics multi-GPU,
+  with perf parity (TG within 1% of pre-fix HEAD, PP recovered).
+- **n_stream KV port** remains on the roadmap per Update (d), but
+  now needs the user to choose between:
+  1. Full 4D port (a) — ~3000–5000 LoC, multi-session structural rewrite,
+     delivers upstream alignment + DFlash typesafety.
+  2. New scatter-quantized-write op in ggml (compromise) — narrower
+     scope but builds new infra in ggml.
+  3. Defer indefinitely — the v1+decode-gate scheduler fix is
+     structurally healthy on its own; n_stream KV is a "nice to have"
+     after Bug C closure.
+- The ralph-loop stops with this analysis in the ledger
+  (`data/ralph-nstream-kv-ledger.md`) and emits the STALLED promise.
+
+The phase doc, the n_stream KV port itself, and the Phase B.3
+production bake (profile-side OOM) all need user attention next
+session. Bug C is sealed.
+
 ## Update 2026-05-20 (e) — Bug C mechanism CONFIRMED: mixed prefill+decode batch
 
 Diagnostic probe with `LLAMA_KV_CONCURRENT_TRACE=1` instrumentation
