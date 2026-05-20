@@ -8068,3 +8068,80 @@ fabricating implementation work. Per CLAUDE.md §3 + §4, I needed to ground
   append-only audit trail).
 
 Total scope revised: 290-510 k tokens (was 305-490 k).
+
+---
+
+## 2026-05-20 — P0.A verification cascade: two real fixes landed, two open issues deferred
+
+Append-only continuation of the 2026-05-20 Phase 0 scoping correction above. During
+post-fold DFlash CLI verification, four-layer cascade of bugs surfaced; two fixed
+inline, two require dedicated diagnostic phase.
+
+**Bugs found and FIXED (committed to submodule production/2026-q2-next):**
+
+1. **Drafter K/V cache sized to full target n_ctx.** `seq_len_cap = ctx_tgt->cparams.n_ctx`
+   in `src/llama-dflash.cpp:474` caused 21.5 GB drafter K/V allocation at production
+   `--ctx-size 524288 --parallel 2`. Fixed by capping at `swa_window + block_size + 16`
+   universally (the drafter has 4 SWA layers + 1 full-attn; full-attn becomes
+   effectively SWA-bounded under this cap — explicit trade-off).
+
+2. **`stage_target_hiddens` end-trim regression.** The MAL-cap commit replaced the
+   original `buf.resize(mal_anchors * D_emb)` with a conditional front-erase, silently
+   dropping the END trim. Effect: stale rejected-draft hiddens accumulated, drafter
+   acceptance fell to 8 %. Restored end-trim → acceptance back to 54 % at temp=0.
+
+**Open issues DEFERRED to a dedicated diagnostic phase (P0.A.3 and P0.A.4 in PHASE_NSTREAM_KV_PERF.md):**
+
+3. **DFlash output diverges from spec-none baseline at the first multi-token verify-batch decode.**
+   - Same prompt + seed + temp produces fundamentally different output ("Here's a thinking process" vs " - The **UserUser**...quick quick quick").
+   - Survives variation across: Q4_0+Hadamard vs f16 KV, temp=0 vs temp=0.6.
+   - NOT explained by GEMV-vs-GEMM accumulation ULP divergence (would be statistically
+     dampened by rejection sampling at temp>0).
+   - MTP production path on the SAME target model + same cache produces clean output, so
+     the bug is DFlash-specific (in either the drafter input construction or the
+     verify-batch causal mask).
+   - Six testable theories captured in PHASE doc with ASCII illustrations:
+     T1 KQ-mask off-by-one in multi-token verify batch
+     T2 buf-row vs cache_tokens cardinality mismatch
+     T3 cb_eval rejected-position residual (off-by-one trim)
+     T4 drafter K/V cache RoPE position semantics inconsistent with forward read
+     T5 cb_eval hook synchronization breaking async K/V writes
+     T6 cudaGraphExecUpdate using stale src_address from prior batch shape
+
+4. **Multi-slot DFlash SEGV** — `batch.logits[5] != true` in `llama_sampling_prepare`
+   at `--parallel 2`. Likely subsumed by P0.A.3 root cause (position-mismatch math
+   compounded across slots).
+
+**Why deferred (not pushed-through to closure):**
+- Push-through chose at this session and reached the kernel-level diagnostic boundary.
+- The remaining work requires capturing target logits + K/V writes through a single verify
+  cycle with vs without DFlash. Estimated 100-300 k tokens of focused diagnostic.
+- Tier 2 does NOT block on this: production runs MTP `--draft 3` at np=1 today; Tier 2's
+  perf gate (recover -6.2 % TG NP=8) is about vanilla decode per-stream graph reuse, not
+  about DFlash CLI. DFlash CLI was never on the Tier 2 critical path; the cascade
+  surfaced through P0.A's "verify everything end-to-end" framing.
+
+**Submodule commits (production/2026-q2-next):**
+- MAL cap fix: `seq_len_cap = swa_window + block_size + 16` + caller-side `anchor_pos` cap.
+- Stage trim fix: restore `buf.resize(mal_anchors * D_emb)` in stage_target_hiddens.
+
+**Tier 2 entry condition (revised):**
+- ✅ P0.A.1 (MAL cap) — landed.
+- ✅ P0.A.2 (stage end-trim) — landed.
+- ⏸ P0.A.3 (output divergence) — documented; deferred.
+- ⏸ P0.A.4 (multi-slot SEGV) — documented; deferred (likely subsumed by P0.A.3).
+- ✅ P0.A.5 (non-DFlash production server boots clean on post-fold) — verified
+  pre-cascade (the failed startup at 09:59 UTC was the MAL-cap OOM, NOT a non-DFlash
+  regression).
+
+**Token cost actuals:**
+- P0.A.1 + P0.A.2 actual: ~80 k tokens (vs original "5-15 k green / 20-60 k regression"
+  scoping — both regressions hit, plus exploratory diagnostic for P0.A.3 before deferral).
+- P0.A.3 deferred phase estimate: 100-300 k.
+
+**Lesson on push-through framing:** when "verify post-fold" cascades into multi-layer
+bug discovery, the right move at layer 3 was to bias toward "land what you can,
+document what's open with binding theories" rather than chase root cause to completion
+in-conversation. The theories captured in PHASE_NSTREAM_KV_PERF.md P0.A.3 are the real
+deliverable from this push-through — a future phase can pick the cheapest binding test
+without re-doing the discovery work.
