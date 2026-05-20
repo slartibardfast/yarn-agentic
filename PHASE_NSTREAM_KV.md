@@ -101,6 +101,74 @@ exists):
   `llama_memory_*`). Keep ik's existing `llama_kv_cache_*` free-function
   shape; the change is internal.
 
+## Update 2026-05-20 (b) — DESIGN PIVOT: range-partition over 3D, not 4D port
+
+After reading the C.4 failure signature in PHASE_NP_CLOSURE.md alongside
+the per-slot-kv kernel (`fattn-per-slot-kv-singlewarp-sm75.cu:68–94`)
+and `llama_kv_cache_find_slot` (`src/llama.cpp:1156–1254`), the bug
+mechanism is sharper than this doc's original framing:
+
+- The per-slot-kv kernel reads `K + nb13 * seq + nb12 * head_kv`. It
+  **assumes** slot `S`'s cells start at byte-offset `S * nb13` within
+  the flat K tensor.
+- `find_slot` (the non-recurrent branch, lines 1216–1241) scans
+  `cache.cells[]` linearly from `cache.head`, allocates the first
+  contiguous free run, and labels cells with the batch tokens' seq_ids.
+  **The allocation position is arrival-order, NOT seq_id-order.**
+- When two prefills land in the same server tick, the kernel's
+  `nb13 * seq` indexing reads from the wrong region in `~10%` of runs
+  (whenever the two requests' tokens get interleaved differently in
+  the batch). Hence Bug C's stochastic signature and the "slot 0
+  re-emits slot 1's prompt" symptom.
+
+**The fix is to make `find_slot` enforce the assumption the per-slot
+kernel already depends on.** Range-partition the flat `cache.cells[]`:
+seq_id `S`'s cells must live in `[S * stream_size, (S+1) * stream_size)`,
+where `stream_size = kv_size / n_stream` and `n_stream = max(1, n_seq_max)`.
+The K/V tensors stay 3D — the per-slot kernel's `nb13` arithmetic
+is already correct against this layout because slot-S cells now
+deterministically occupy a fixed contiguous slice.
+
+What changes vs the doc above:
+
+- **N1 stays.** Same scope name, refined implementation. Add `n_stream`,
+  `v_heads[n_stream]`, range-partition `find_slot`, per-stream `_seq_*`
+  ops. K/V tensors stay 3D.
+- **N2 collapses to ~zero.** Tensor shape is unchanged. Graph builders
+  in `llama-build-context.cpp` need NO stride changes — the per-stream
+  region is already addressed correctly via cell index. The only
+  N2-style work is verifying that the per-slot-kv kernel's `nb13`
+  computation matches `stream_size * n_head_kv * head_dim * sizeof(elem)`,
+  which it already does today by accident — Bug C was the "by accident"
+  becoming "by construction".
+- **N3 stays.** Server-side cleanup still meaningful — drop the
+  `cache.head` global references and the bookkeeping that defended
+  the shared-pool model.
+- **N4 stays.** v1 scheduler reland maps cleanly onto disjoint cell
+  ranges.
+
+Tradeoffs given up by NOT doing the full 4D port:
+
+- DFlash multi-slot's `N_slots` vs `n_slots_cap` distinction is NOT
+  promoted to a type-level guarantee. It stays a runtime convention.
+  Already fixed in DFlash Phase 4 (`project_dflash_multislot_phase4_landed`),
+  so the structural reinforcement isn't load-bearing.
+- The upstream-naming-convention alignment (`slot_info`, `n_stream`
+  as tensor axis) is lost. We keep ik's allocator shape; only the
+  semantic invariant changes.
+
+Net: ~500–1000 LoC instead of ~3000–5000 LoC. The actual bug closes
+either way; the surgical approach is the proper fix for the actual
+failure mechanism (CLAUDE.md §1: push back when a simpler approach is
+clearly better).
+
+Token estimate revised:
+- N1 (range-partition + per-stream _seq_*): 20–35k.
+- N2 (verify-only sweep of graph builders + per-slot-kv kernel): 5–10k.
+- N3 (server cleanup + bundle gate): 15–25k.
+- N4 (v1 reland + perf): 20–30k.
+- **Total: 65–110k** (was 95–155k).
+
 ## Update 2026-05-20 — code survey clarifications
 
 Pre-N1 code survey shifts scope slightly. Recorded here, not in the body
