@@ -173,14 +173,16 @@ Restores the seq-id-run split from the same session's reverted state. Each conti
 - `llama-batched-bench` at NP={1, 2, 4, 8} produces coherent text (Qwen3.5-0.8B smoke before moving to 27B).
 - `LLAMA_TRACE_NDJSON_DIR` validator finds zero violations across `r5-probe-c4.sh ITERS=20`.
 
-**Risks / open questions:**
+**Load-bearing decisions (locked 2026-05-20):**
 
-- **MLA path** (DeepSeek/GLM-DSA/Mistral4): separate K shape `[kv_lora_rank + n_embd_head_qk_rope, kv_size]`. NOT in production scope; can stay 2D legacy under `if (is_mla_attn)`. Document this exclusion.
-- **MTP-tail layers** (Qwen35MOE nextn): separate K/V allocation. Need stream-aware too; mirror the regular path.
-- **Multi-GPU split tensors** (`split_k_l`, `split_v_l`): per-device splits. Options: (i) 4D-ify each split with `ne[3]=n_stream` and stream-aware offsets, (ii) keep splits 2D but compute stream-aware offsets when constructing views. Option (ii) is faster to land; option (i) is structurally cleaner. **Decision needed.**
-- **Per-arch graph builders** (`graphs/build_*.cpp`): most go through `llm_build_kv_store` + `llm_build_kqv` (already covered). Direct K/V access in per-arch builders is rare (Qwen35MOE MTP layer, T5 cross-attention, DeepSeek-2 MLA). Audit before declaring N2 complete.
+- **Multi-GPU split tensors — 4D-ify each split (clean).** `split_k_l[i]` and `split_v_l[i]` are allocated as 4D `[head_dim, kv_size_per_stream, n_head_kv_split, n_stream]` with default contig strides (i.e. symmetric with the primary K/V layout). `llama_kv_cache_init`'s split branch (currently `ggml_new_tensor_2d` at lines 1078, 1089) gets the same 4D rewrite as the primary path. `build_std_attention`'s multi-device split branch (`llama-build-context.cpp:2519` onward, with the K-store at line 2681, V-store at lines 2693/2699) gets the same `s * nb[3]` offset addition as the single-device path.
+- **Per-arch coverage — Qwen production path only.** Rewrites focus on the two entry-point helpers (`llm_build_kv_store`, `llm_build_kqv`), `build_std_attention`'s multi-device branch, K-shift, defrag, cache copies, graph reuse, and the Qwen3.5 MTP-tail path. Other architectures' direct K/V access sites (DeepSeek-2 MLA, T5 cross-attention) stay on legacy code paths under explicit `if (is_mla_attn || arch == LLM_ARCH_T5 || ...) { legacy }` guards. The guard predicate stays in `llama_kv_cache_init` (the only N1 site that branches on MLA) and is mirrored in the build helpers. Adds documentation comments at the guards so the deferred scope is auditable.
+
+**Other risks / open questions:**
+
+- **MTP-tail layers** (Qwen35MOE nextn): separate K/V allocation inside `llama_kv_cache_init`'s `is_mtp_tail_layer` branch. Need stream-aware too; mirror the regular path (4D + n_stream).
 - **Graph cache invalidation**: NS4.OPEN.3 — invalidate any reused graph on first `llama_kv_cache_clear` after the axis switch.
-- **`_seq_cp` cross-stream**: NS4.OPEN.1 — copying KV from stream A's slice to stream B's slice. Either (i) graph-level memcpy at the next decode (heavy), (ii) require seq_cp endpoints to share a stream (lighter). For DFlash multi-slot, slots' seq_ids = stream_ids, so cross-stream copy doesn't arise in production today. Defer until needed.
+- **`_seq_cp` cross-stream**: NS4.OPEN.1 — copying KV from stream A's slice to stream B's slice. For DFlash multi-slot, slots' seq_ids = stream_ids, so cross-stream copy doesn't arise in production today. Stays as a graph-level memcpy stub that aborts at runtime under n_stream>1 with a clear error message; revisit when a use case shows up.
 
 **Token cost estimate (post-fixup):**
 
