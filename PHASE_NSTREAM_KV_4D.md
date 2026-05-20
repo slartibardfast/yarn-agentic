@@ -40,6 +40,33 @@ After N2 + N3 landed code-complete, three load-bearing decisions locked before r
 - `test-n-stream-kv-layout` n_parallel=2: PASS (n_stream=2, v_heads.size()=2, KVTensorIsFourD ne[3]=2, StreamPartition).
 - `test-dflash-np-multislot` on Qwen3.6-27B target + dflash drafter, multi-GPU: **PASS slot-0 byte-identical NP ∈ {1,2,4,8}**. Aggregate t/s scales 1.0 → 2.92× from N=1 to N=8 (112.6 → 328.9 tok/s). G3.e + G3.f intrinsically green.
 
+### Stage 2 + 3 results — production gates on Qwen3.6 27B — 2026-05-20
+
+| Gate | Result | Detail |
+|---|---|---|
+| G3.a (single-GPU NP-determinism) | ✅ PASS | NP ∈ {1,2,4,8} byte-identical to NP=1; cross-NP slot-0 matrix all identical |
+| G3.b (multi-GPU NP-determinism) | ✅ PASS | Same, with `--device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1`. Validates V-split per-stream factoring. |
+| G3.c (r5-probe-c4 single-GPU) | ✅ PASS | 0/20 Bug C divergences WITHOUT decode-side gate. Per-stream dispatch structurally prevents Bug C. |
+| G3.d (r5-probe-c4 multi-GPU) | ✅ PASS | 0/20. |
+| G3.g (pp-serialization) | ✅ PASS (with caveat) | Per-request PP = 114.1 / 110.4 t/s ≫ 60 t/s threshold. **Wall = 15.7s vs pre-port 15.9s — only ~1.3% reduction, far below the cached plan's ~38% estimate.** TG-overlap recovery is marginal. |
+| G3.h (llama-batched-bench TG NP=8) | ❌ **FAIL** | **26.00 t/s vs baseline 27.73 t/s = -6.2%, outside ±1% bound.** |
+
+### G3.h root cause + merge decision
+
+Two layered findings:
+
+**Layer 1 — bench harness bug, fixed inline (`16b608d1`).** `llama-batched-bench` feeds multi-seq batches directly to `llama_decode` (bypassing the server's per-stream dispatch). At `n_stream>1`, `find_slot` derives stream_id from `seq_id[0][0]` and allocates ALL n_tokens cells into that one stream — corrupting it. The pre-existing qnext detector sub-batched `INTERLEAVED` patterns but passed `CONTIGUOUS_BLOCKS` through (the TG path). Extended the sub-batching to also fire on `CONTIGUOUS_BLOCKS` when `n_stream>1`. Behaviour at `n_stream==1` preserved (legacy CONTIGUOUS_BLOCKS pass-through). Bench now completes; this also covers `parallel` and `perplexity` examples that hit the same direct-llama_decode path.
+
+**Layer 2 — the 6.2% TG-NP=8 regression.** Graph reuse is disabled at `n_stream>1` (`llama.cpp:616`, intentional — view offsets are stream-aware so cross-stream reuse would read from the wrong slice). Every single-token sub-batch rebuilds the graph from scratch (~2–3 ms overhead per call). With 2112 single-token sub-calls in the bench, total rebuild cost ≈ 5–6 s of the 80 s run. Matches the observed delta. Affects production-server steady-state TG too (each tick fans out to 8 per-stream sub-batches, each rebuilding).
+
+**Decision 2026-05-20.** Per the locked perf-fail policy this gate would block merge. User was asked between four options (hold + per-stream graph cache, hold + single-graph stream-aware reuse, override + merge, roll back N2/N3) and selected "Override locked policy — merge with -6.2% regression" with these grounds available in the option description: all six correctness gates green; Bug C structurally closed; perf trade-off documented for N4-bake. Per-stream graph cache (one prev->graph per stream_id) is left as future optimisation work.
+
+### Submodule + parent state at merge
+
+- Submodule `feature/nstream-kv-4d-n2` HEAD: `16b608d1` (N2 fixup: CONTIGUOUS_BLOCKS sub-batch).
+- Predecessors: `a202f4f4` (worst-case n_kv + V split factoring), `95d3c9eb` (multi-device split + K-shift/defrag gates), `0472275d` (N2 + N3 main bundle).
+- Fast-forward merge target: `production/2026-q2-next`.
+
 ## N2 + N3 closure status — feature branch (2026-05-20)
 
 **Bundle code-complete on `feature/nstream-kv-4d-n2` (submodule).** Bug C closed structurally; decode-side prefill gate REMOVED.
