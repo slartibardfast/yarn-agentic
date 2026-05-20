@@ -101,6 +101,38 @@ exists):
   `llama_memory_*`). Keep ik's existing `llama_kv_cache_*` free-function
   shape; the change is internal.
 
+## Update 2026-05-20 — code survey clarifications
+
+Pre-N1 code survey shifts scope slightly. Recorded here, not in the body
+above, so the original spec is preserved.
+
+- **`struct llama_kv_cache` lives in `src/llama-context.h:37–170`**, not free-form
+  in `src/llama.cpp`. N1 starts there. The struct also carries `s_l` (Qwen3Next
+  recurrent state), `split_*_l` (multi-GPU split mirrors), `gpu_checkpoint`
+  (recurrent snapshot for speculative decoding), and a `qnext-state-slot-allocator`
+  include (`src/qnext-state-slot-allocator.h`).
+- **Recurrent state (`s_l`) is already per-stream by construction.** It's
+  allocated as `[n_embd_v_s, qnext_state_slots]` where `qnext_state_slots ≈
+  max(1, n_seq_max)` (`src/llama.cpp:922, 982`). NS.OPEN.1 closes: no
+  recurrent-state changes needed.
+- **Old-Mamba 2D-reshape sites at `src/llama-build-context.cpp:202–211`**
+  (the `ggml_reshape_2d(kv_self.k_l[il], …)` paths) are dead-code for our
+  production model — Qwen3Next nullifies `k_l[il]`/`v_l[il]` on recurrent
+  layers (line 986–987). N2 leaves them alone.
+- **`split_k_l`/`split_v_l`** inherit the new `n_stream` axis by mirroring
+  the parent tensor layout. No separate per-stream split allocator needed.
+- **`cells[i].src` recurrent-state-copy chain** stays correct under
+  per-stream — copies are within-stream by definition.
+- **N0 deviation:** the unit-level `test-kv-cache-stream-isolation.cpp`
+  is dropped. Pre-N1, the property it asserts (cell-level cross-stream
+  contamination) cannot manifest because streams don't exist — the test
+  would be tautological. The binding gate for Bug C is the existing
+  harness `scripts/r5-probe-c4.sh`, which demonstrably fails ~10% at
+  HEAD (R5 closure-final run, 2026-05-19). `feedback_verify_test_mechanism_before_trusting`
+  is satisfied at the harness level. A future-proofing unit test can be
+  added inside N1 once the data structures exist, but it would be
+  decorative and isn't blocking.
+
 ## Work packages
 
 Four packages, each with a binding verification gate. Per §4 (Goal-Driven
