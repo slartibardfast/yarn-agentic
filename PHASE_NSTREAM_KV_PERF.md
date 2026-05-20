@@ -325,9 +325,53 @@ If T6 holds: K/V writes happen but to stale buffer addresses; subsequent verify 
 
 **Cheap binding test.** Disable the CUDA graph cache (`GGML_CUDA_DISABLE_GRAPHS=1`) and re-run smoke. If output now matches spec-none, T6 holds.
 
-##### How a future phase should test these
+##### Falsification matrix (run 2026-05-20)
 
-A future P0.A.3-dedicated phase budget should run the cheap binding tests in this order — T5 first (single env var, ≤ 5k tokens), T6 next (single env var, ≤ 5k tokens), then T1 (graph dump diff, 15-30k), T2/T3 (log instrumentation, 15-30k), T4 (kernel-level audit, 50-100k).
+| Theory | Test | Result | Verdict |
+|--------|------|--------|---------|
+| T1 | MTP code-path-share check | MTP fused uses a DIFFERENT mask path (line 4454, gated on MTP_OP_DRAFT_GEN_FUSED). MTP-works ≠ standard-multi-token-verify-works. | reopened |
+| T2 / T3 | `DFLASH_DIAG=1` + 6 cycles of buf_rows vs MAL trace | buf_rows tracks `MAL + 1 + n_draft - m` formula exactly per cycle. No drift, no off-by-one. | **falsified** |
+| T4 | Kernel index audit (inject vs forward read) | Both use `slot * SeqLen + position` form, no modulo, consistent. | **falsified** |
+| T5 | `--spec-type ngram-simple --draft-max 4` (same standard verify-batch path, NO cb_eval hook) | **Output byte-identical to spec-none baseline**: `'\n\n<think>\nHere\'s a thinking process:...'`. The standard multi-token verify path works correctly without the DFlash cb_eval hook. | **CONFIRMED** |
+| T6 | `GGML_CUDA_DISABLE_GRAPHS=1` | Output byte-identical to enabled-graphs run (still degenerate). | **falsified** |
+
+Verifications that further support T5:
+- `--draft-max 1` (verify batch n_tokens=2): output byte-identical to `--draft-max 4` degenerate output. So the bug is not batch-shape-specific within multi-token, only "DFlash vs other-spec multi-token" specific.
+- ngram-simple uses the standard `add_sampled_tokens` + standard verify-batch construction + standard `speculative_decoding_accept`. The ONLY architectural difference from DFlash is the `cb_eval` hook installation via `llama_set_dflash_extract_layers` at `src/llama.cpp:10067-10073`.
+
+#### P0.A.3 — Confirmed root cause: `cb_eval` hook perturbs target's forward pass
+
+The cb_eval hook (`llama_dflash_extract_cb_eval` at `src/llama.cpp:9961-10049`) is registered as `cparams.cb_eval` for any context where DFlash is bound. It fires on every evaluated tensor in the target's decode graph; when the tensor matches a configured source-layer's `l_out-<il>` node (layers 1, 16, 31, 46, 61 for the Qwen 3.6 drafter), it returns `true` to claim ownership for inspection.
+
+```
+ggml_backend_sched_eval_callback invocation per node:
+
+  1st call (ask=true)   ──┐
+                          │   if return true:
+                          │     - scheduler ISOLATES this node
+                          │     - may break operator fusion
+                          │     - may force separate buffer allocation
+                          │     - may force sync before subsequent reads
+                          └─→  ┐
+  2nd call (ask=false)  ───→   ggml_backend_tensor_get
+                               (device → host DMA)
+```
+
+The standard multi-token verify decode (DFlash, ngram, draft model spec-types) all use the same `add_sampled_tokens` + verify-batch construction. Only DFlash installs the cb_eval hook. ngram-simple's output matches spec-none exactly → standard verify path is correct. DFlash's output diverges → hook is the perturbation.
+
+The most likely mechanism: returning `true` on `ask=true` for `l_out-<il>` nodes prevents the CUDA backend from fusing those nodes with adjacent ops (RMS-norm + residual-add + attention input projection are otherwise fusable). The unfused path is numerically different — slightly different intermediate accumulations through 65 layers cascade into argmax flips at the output.
+
+**Why it doesn't affect MTP**: MTP uses fused draft generation (`MTP_OP_DRAFT_GEN_FUSED`) which has its own dedicated mask + dispatch path (`llama.cpp:4454`) and never goes through the standard verify-batch path with cb_eval installed. Production MTP works because it never exercises the affected fusion path under hook observation.
+
+#### P0.A.3 fix paths (in increasing scope)
+
+1. **Re-architect hidden-state capture to NOT use cb_eval.** Add tap nodes inside the graph builder for the 5 source layers (e.g., `ggml_dup` to a dedicated output buffer that lives outside the fused region). The drafter reads from those buffers after `llama_decode` returns. Estimated 30-50 k tokens. Cleanest fix; cb_eval hook removed entirely.
+
+2. **Conditional hook arming.** Only install cb_eval during the prefill (when capturing prefill hiddens) and detach it before verify decodes. Drafter still has prefill data but post-prefill hidden updates are missed. Acceptable if MAL is bounded — drafter operates on a sliding window already. Estimated 15-30 k tokens.
+
+3. **Investigate the specific fusion broken and find a minimal workaround.** Identify which CUDA backend fusion is disrupted by `cb_eval=true`. Patch the backend to fuse-around the inspection points (or use a different inspection mechanism such as `ggml_backend_tensor_get_async` after compute completes). Estimated 50-100 k tokens if backend changes needed.
+
+Per `feedback_no_workarounds`, path 1 is the proper fix. Path 2 is a stop-gap if production needs DFlash CLI before path 1 lands. Path 3 is the most invasive (touches ggml backend).
 
 #### P0.A.4 — Multi-slot DFlash SEGV in `llama_sampling_prepare` [OPEN — bounded scope]
 
@@ -574,7 +618,7 @@ T3.g — **Bench gate GP3.i** against vLLM's 154.77 t/s measurement.
 
 Per CLAUDE.md §8:
 
-- **Phase 0.A** — DFlash server CLI verify-on-post-fold (wiring + profile already landed in `61a7e874`). **Actual cost ~30 k** for the two fixes that landed (MAL cap + stage end-trim). **Plus deferred:** 100-300 k for the dedicated P0.A.3 phase that root-causes DFlash output divergence (see theories T1-T6 above). Tier 2 entry does NOT block on P0.A.3 — production runs MTP, not DFlash CLI.
+- **Phase 0.A** — DFlash server CLI verify-on-post-fold (wiring + profile already landed in `61a7e874`). **Actual cost ~110 k** for the two fixes that landed (MAL cap + stage end-trim) PLUS the falsification matrix that confirmed T5 as the root cause (cb_eval hook perturbs target's forward pass; ngram-simple at same verify-batch shape produces clean output byte-identical to spec-none). **Plus deferred:** 30-100 k for the P0.A.3 fix (preferred path: re-architect hidden-state capture without cb_eval, ~30-50 k). Tier 2 entry does NOT block on P0.A.3 — production runs MTP, not DFlash CLI.
 - **Phase 0.B** — Radical spec/TLA+/test surface expansion (5 Allium + 3 TLA+ + 5 property tests + trace harness ext.): **105-170 k tokens**. Must precede T2.a.
 - **Tier 2 refined** — read-view probe + cache_copies extension + bailout drop + warm-up gate harness + GP3.a-h verification: **60-100 k tokens**.
 - **Tier 3 refined** — server fusion + KQ-mask shape + graph builder uniform-batch + non-FA shape-invariance verify + GP3.i-m: **120-180 k tokens** (significantly less than the original "fresh FA kernel port" framing because the PSKV per-slot kernel is the prerequisite and it's already production).
