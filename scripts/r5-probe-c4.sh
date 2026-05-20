@@ -28,10 +28,15 @@ start_server() {
     pkill -x llama-server 2>/dev/null || true
     sleep 3
     local total_ctx=$((8192 * np))
+    local _DEVICE="${DEVICE:-CUDA0}"
+    local _SPLIT_FLAGS=""
+    if [[ "$_DEVICE" == *","* ]]; then
+        _SPLIT_FLAGS="--split-mode graph --tensor-split ${TENSOR_SPLIT:-1,1}"
+    fi
     env CUBLAS_WORKSPACE_CONFIG=:4096:8 \
         LLAMA_KV_CONCURRENT_TRACE="${LLAMA_KV_CONCURRENT_TRACE:-}" \
     "$BIN" -m "$GGUF" \
-        --device CUDA0 \
+        --device "$_DEVICE" $_SPLIT_FLAGS \
         -ngl 999 -fa on \
         --ctx-size "$total_ctx" --parallel "$np" \
         --threads 16 --batch-size 2048 --ubatch-size 512 \
