@@ -1,689 +1,150 @@
 # PHASE_NSTREAM_KV — port upstream's per-stream KV axis into ik_llama.cpp
 
-**Branch**: `production/2026-q2-next`
-**Predecessors**: `PHASE_NP_CLOSURE.md` (Bug C open after R5), `PHASE_NPC4_FIX_AUDIT.md` (kernel-layer audit closed).
-**Status**: Specced, not yet implemented.
+**Status**: ✅ **CLOSED** 2026-05-20.
+**Branch**: `production/2026-q2-next`.
+**Submodule HEAD at closure**: `16b608d1`.
+**Predecessors**: `PHASE_NP_CLOSURE.md`, `PHASE_NPC4_FIX_AUDIT.md`.
+**Successor**: `PHASE_NSTREAM_KV_PERF.md` (open — recover the -6.2 % TG-NP=8 regression).
 
-## TL;DR
+## TL;DR — what landed
 
-ik_llama.cpp's KV cache is a single shared region, sliced by a linear
-`head + n_tokens` allocator, with seq_id→cell mapping hand-rolled by
-the server. Upstream llama.cpp's KV cache carries a third tensor axis
-`n_stream` (`[head_dim, kv_size, n_stream]`) with a per-stream
-`slot_info` allocator — each session owns its own stream by construction,
-and the server's seq_id→stream binding is trivial.
+K/V tensors gained a per-stream axis: `[head_dim, kv_size_per_stream, n_head_kv, n_stream]`. Each session owns its own contiguous slice of the cache by construction. The server's `process_batch_tokens` splits mixed-seq batches into per-stream sub-batches before any `llama_decode` so each call sees a single-stream batch — `mul_mat` sees a uniform shape per call and **Bug C (the mixed prefill+decode GEMM-vs-GEMV accumulation divergence) is closed structurally**. The decode-side prefill gate (the v1 era's policy-level Bug C fix) is removed.
 
-This phase ports **only** that per-stream axis and `slot_info` allocator
-into ik. It does **not** port upstream's `llama_memory_i` virtual
-interface, does **not** touch CUDA kernels (they already accept per-slot
-strides), and does **not** rewrite ik's `transformer_kv`,
-`delta-net.cpp`, or `dflash.cpp` machinery.
+Six correctness gates green on Qwen 3.6 27B. One perf gate (G3.h, llama-batched-bench TG NP=8) failed by -6.2 % due to graph reuse being defeated at `n_stream > 1`; user-selected override merged the bundle and handed perf recovery to [`PHASE_NSTREAM_KV_PERF.md`](PHASE_NSTREAM_KV_PERF.md).
 
-Closes by construction:
-- **Bug C** (PHASE_NP_CLOSURE): NP=2 stochastic ~10% NPC failure caused
-  by slot-KV cross-contamination at concurrent prefill.
-- **v1 scheduler reland** (PHASE_PERF_F4_1): the "shared pool pretends
-  to be per-session" friction goes away; v1's PP-serialised + TG-overlapped
-  model becomes the natural mapping onto streams.
-- **DFlash multi-slot's `N_slots` vs `n_slots_cap` class of bug**
-  (PHASE_DFLASH_MULTISLOT Phase 4): the bug exists because the surrounding
-  KV layer is shared. Per-stream KV makes the distinction enforced by the
-  type system.
+## Closure gate results
 
-## Goal
+Qwen 3.6 27B production GGUFs (`qwen3.6-27b-V-F1.T1.lm_head-f16.gguf` correctness, `qwen3.6-27b-V-F1.T1.qq-tool1lossless-vocab-fix.gguf` perf), dual Quadro RTX 6000, `CTX_PER_SLOT=4096`, q4_0 KV with Hadamard rotation (correctness gates).
 
-The production server's KV cache layer presents per-session ownership at
-the tensor and allocator level, with no shared region that can be
-contaminated by a concurrent peer. After this phase:
-
-- `scripts/test-production-np-determinism.sh` PASSes the full NP=
-  {1, 2, 4, 8} matrix byte-identically at slot 0.
-- The harness reproducer for Bug C (10× iterations of NP=2 fire-2,
-  `scripts/r5-probe-c4.sh`) shows 0 / 10 failures.
-- v1 scheduler relands (cherry-pick of commit `67878813` onto the
-  post-phase base) PASSes NPC + recovers its 3.5× wall-time win on
-  `scripts/test-pp-serialization.sh`.
-- `bin/test-dflash-np-multislot` PASSes unchanged.
-
-## Architectural context
-
-### Current shared-pool model (ik_llama.cpp)
-
-- KV cache is a `struct llama_kv_cache` defined inline in `src/llama.cpp`,
-  one instance per `llama_context`. K/V tensors are 3D:
-  `[head_dim, kv_size, n_head_kv]`.
-- Allocation by `llama_kv_cache_find_slot` at `src/llama.cpp:1156–1256`:
-  linear scan over `cache.cells[]` finding a contiguous run of free
-  cells of length `n_tokens`, then assigns them to one or more seq_ids.
-- Seq_id ↔ slot binding is hand-rolled in
-  `examples/server/server-context.cpp:2225, 4576–4687`. The server
-  enforces `batch.seq_id[i][0] == slot.id` but there is no type-level
-  guarantee that two slots' prefill writes don't land in overlapping
-  cell ranges under concurrent fire.
-- **This is the surface where Bug C lives.** Concurrent prefill from
-  two requests submits two `llama_batch`es that race through
-  `find_slot`; the bug signature (slot 0 attempts to re-emit slot 1's
-  prompt) is consistent with `cache.head` advancing during slot 1's
-  allocator call between slot 0's `find_slot` and the kernel write.
-
-### Target n_stream-axis model (port from upstream)
-
-- K/V tensors gain a third axis: `[head_dim, kv_size, n_head_kv, n_stream]`
-  where `n_stream == n_seq_max` (one stream per session). DeltaNet's
-  recurrent state already has this shape; KV cache catches up.
-- `cells[]` becomes `v_cells[n_stream]` and `head` becomes `v_heads[n_stream]`.
-  Each stream allocates independently inside its own region.
-- `find_slot` returns a `slot_info` carrying per-stream cell indices.
-  `prepare()` iterates ubatches; within a ubatch, each token's
-  `seq_id[0]` selects its stream.
-- Kernels receive K/V pointers with `nb13 == sizeof(K_per_stream)` (the
-  stride between streams). They are **already wire-compatible**:
-  `fattn-per-slot-kv-singlewarp-sm75.cu:68–94` reads
-  `K + nb13*seq + nb12*head_kv` today — the bug is upstream, in the
-  allocator that produces the strides.
-
-### What this phase explicitly does NOT do
-
-Per CLAUDE.md §2 (Simplicity First) and §1 (push back where simpler
-exists):
-
-- Do **not** port `llama_memory_i` / `llama_memory_t` virtual
-  interface. The runtime polymorphism upstream uses (recurrent vs
-  hybrid vs standard) is not load-bearing here — ik has one cache
-  shape per model and dispatches statically.
-- Do **not** touch CUDA kernels. They are already per-slot-pointer
-  compatible (research finding from `Per-session KV abstraction
-  survey`, 2026-05-19).
-- Do **not** rewrite ik-only machinery: `transformer_kv`,
-  `delta-net.cpp`, `dflash.cpp`, `llama-build-context.cpp` (125k LoC).
-  These compose with the new allocator by stride.
-- Do **not** introduce a new C API surface (`llama_session_*`,
-  `llama_memory_*`). Keep ik's existing `llama_kv_cache_*` free-function
-  shape; the change is internal.
-
-## Update 2026-05-20 (g) — Kernel-level bisect of Bug C: GEMV-vs-GEMM accumulation order
-
-Per user direction "diagnose and fix 1", attempted to identify the
-kernel-level cause of Bug C — the downstream op that produces wrong
-output when a mixed prefill+decode batch passes through. Goal: fix at
-the kernel level so the decode-side prefill gate can be dropped to
-recover steady-state TG throughput.
-
-### Bisect setup
-
-- Temporarily re-applied the `LLAMA_SERVER_CAPTURE_*` cb_eval hook
-  (from prior commit `3ad8934e`) in working tree.
-- Temporarily disabled the decode-side prefill gate in
-  `add_sampled_tokens` (working tree) so the mixed-batch geometry
-  could form on the post-v1 binary.
-- Captured `l_out-*` per layer at `decode-00001-t1` (NP=1 baseline,
-  slot 0's first decode token) and `decode-00001-t211` (NP=2-mixed,
-  slot 0's first decode batched with slot 1's full prefill).
-- Bisect script `scripts/bug-c-bisect.py` compared slot-0 row of
-  layer-0's `l_out-0` and downstream layers.
-
-### Findings
-
-1. **Layer-0 `l_out-0` diverges at slot-0 row**, with `max|Δ| =
-   3.011e-03`, `~n_diff/n_total = 5120/5120`. Pattern: small per-
-   element deltas (~1e-4 to 1e-5), random signs, identical mean
-   magnitudes. Classic accumulation-order divergence, not a logic
-   bug.
-2. **`--graph-reduce-type f32` did not fix it.** All `cparams.reduce_type`-
-   gated `ggml_cast` sites were disabled, but the divergence
-   remained identical bit-for-bit across runs.
-3. **`LLAMA_DELTA_FORCE_SLOW=1` did not fix it.** Forcing NP=1 into
-   the same per-block slow path as NP=2-mixed produced the same
-   divergence.
-4. **A `force_reduce_cast_blk` per-block fix was a no-op.** The
-   force_reduce_cast parameter is only consumed in the multi-device
-   split-graph path (line 586, `n_device > 1`). Our test was single-
-   device (`--device CUDA0`). Reverted.
-5. **The divergence is intrinsic to mul_mat dispatch**: for a row
-   shape `[d, 1]` (single-token decode, NP=1), CUDA mul_mat picks
-   GEMV with a single-thread sequential accumulator. For shape
-   `[d, N>1]` (mixed batch, slot 0's row at row 0), the kernel
-   picks tiled GEMM with parallel partial sums + reduction tree.
-   The two paths compute the same mathematical result with bit-
-   different accumulation order — output bits diverge by ~1 ULP per
-   element, which propagates through layers as ~3e-3 absolute by
-   layer 0's residual sum.
-
-### Conclusion
-
-There is **no kernel-level patch** for this without rewriting all
-mul_mat kernels to enforce GEMV-equivalent accumulation order at all
-batch sizes — a massive undertaking with significant performance
-loss (the GEMV-order path can't use tensor cores or tile-level
-parallelism).
-
-The **decode-side prefill gate in `add_sampled_tokens` is the
-correct fix.** It prevents the mixed batch from forming, so slot 0's
-decode always goes through GEMV in its own pure-decode batch, byte-
-identical to NP=1 baseline. The "policy-level closure" *is* the
-kernel-level closure.
-
-### Restore state
-
-- All diag/capture hooks deleted from working tree.
-- Decode-side gate restored in `add_sampled_tokens`.
-- `scripts/r5-probe-c4.sh ITERS=20` PASS post-restore (0/20).
-- Working tree matches submodule HEAD `969d156e` (n_stream + v_heads
-  foundation slice 1 on top of Bug C closure).
-
-### Implications for n_stream KV port
-
-The kernel-level finding doesn't change the case for n_stream KV.
-The 4D port still wouldn't fix this — it changes KV layout, not
-mul_mat accumulation. The decode-side gate is needed regardless.
-
-Phase C work on n_stream KV is decoupled from Bug C as per Update
-(d). The user has indicated intent to pursue full 4D port for its
-own structural merits — that work proceeds on its own gates.
-
-### Task closure
-
-- #104 (kernel-level bisect): CLOSED with finding above.
-- #105 (kernel-level fix): CLOSED INFEASIBLE. The fix is the
-  scheduler policy already landed.
-
-## Update 2026-05-20 (f) — Phase C deferred, design analysis surfaces a wider blocker
-
-During the ralph-loop pass to deliver remaining work, Bug C closure
-(Phase A) and diag cleanup (Phase B.1/B.2) landed cleanly. Phase B.3
-(production bake) was skipped on an orthogonal profile-side OOM
-(qwen36-27b-x2-dflash at 256K context — pre-existing, not a Bug C
-regression). Phase C (the n_stream KV port itself) was reached but
-analysis surfaced a wider blocker than the phase doc anticipated.
-
-### The wider blocker
-
-The phase doc's (b) range-partition-over-3D variant looked surgical
-(~500–1000 LoC, no graph changes). It is NOT. The decode case has
-batches with **mixed seq_ids — one decode token per slot, batched
-together** (post-Bug-C-fix, prefills are single-seq but decodes still
-mix). With range-partition, each batch token's K/V row would need to
-land in its own stream's cell range (non-adjacent across slots). The
-existing `ggml_cpy(Kcur, k_cache_view)` writes rows contiguously
-starting at one base offset — it cannot scatter across non-adjacent
-cells.
-
-ggml has `ggml_set_rows` (a scatter-write op), but it requires the
-data source to be F32. The KV cache is Q4_0 (production) and the
-quantization happens inside `ggml_cpy`. There is no current path to
-scatter-write into a quantized destination.
-
-Therefore (b) requires either:
-- A new scatter-quantized-write op in ggml (~hundreds of LoC + CUDA
-  kernel + graph node).
-- OR the full 4D port (a), which puts each stream in its own
-  contiguous tensor slice and a single per-stream `cpy` lands the
-  data naturally (still graph-builder changes, but a known pattern).
-
-Either way, the original phase doc's ~500–1000 LoC estimate for (b)
-is wrong; the true cost is closer to the (a) estimate of ~3000–5000.
-
-### Where this leaves things
-
-- **Bug C is closed.** v1 PP-serialisation + decode-side prefill gate
-  pair (commits `cef533ac` and the follow-on, on `production/2026-q2-next`)
-  delivers correct NP={1,2,4,8} byte-identical semantics multi-GPU,
-  with perf parity (TG within 1% of pre-fix HEAD, PP recovered).
-- **n_stream KV port** remains on the roadmap per Update (d), but
-  now needs the user to choose between:
-  1. Full 4D port (a) — ~3000–5000 LoC, multi-session structural rewrite,
-     delivers upstream alignment + DFlash typesafety.
-  2. New scatter-quantized-write op in ggml (compromise) — narrower
-     scope but builds new infra in ggml.
-  3. Defer indefinitely — the v1+decode-gate scheduler fix is
-     structurally healthy on its own; n_stream KV is a "nice to have"
-     after Bug C closure.
-- The ralph-loop stops with this analysis in the ledger
-  (`data/ralph-nstream-kv-ledger.md`) and emits the STALLED promise.
-
-The phase doc, the n_stream KV port itself, and the Phase B.3
-production bake (profile-side OOM) all need user attention next
-session. Bug C is sealed.
-
-## Update 2026-05-20 (e) — Bug C mechanism CONFIRMED: mixed prefill+decode batch
-
-Diagnostic probe with `LLAMA_KV_CONCURRENT_TRACE=1` instrumentation
-(diag prints in `find_slot` + post-mask population) ran 15 iters of
-`scripts/r5-probe-c4.sh`. 2/15 (~13%) failed, matching prior rate.
-Comparing the trace of a failing iter (1) against the immediately
-adjacent passing iter (2):
-
-**Passing iter** tick 4: one batch with `n_tokens=420` containing BOTH
-slots' prefills back-to-back (210 + 210 tokens). After that, every
-tick contains exactly 2 tokens (one decode per slot, paired).
-
-**Failing iter** tick 4: slot 0's prefill alone, `n_tokens=210`.
-Tick 5: `n_tokens=211` containing **slot 0's first decode token
-(pos=210, seq=0) AS BATCH TOKEN 0, followed by slot 1's full 210-token
-prefill (pos=0..209, seq=1) AS BATCH TOKENS 1..210**.
-
-The mask is constructed correctly in both cases (tok=0 sees range
-[0..210] for seq=0; tok=1..210 see [211..211+pos] for seq=1; no
-cross-slot mask leakage). `find_slot` allocates correctly with proper
-`seq_id` metadata. The KV cache layout itself is fine.
-
-**Bug C is downstream of the mask** — a kernel or graph node that
-fails on the mixed-prefill+decode batch geometry. Candidates:
-- RoPE applied per-token with mixed pos values across slots in the
-  same batch.
-- The per-slot-kv FA kernel processing a batch where some queries
-  decode and others prefill.
-- DeltaNet recurrent state when prefill and decode are interleaved.
-- Some graph-build path that assumes uniform batch type.
-
-**The v1 PP-serialisation scheduler (commit `67878813`, task #76)
-explicitly forbids this batch composition** — "≤1 PP-in-flight, TG
-overlap OK". v1 was reverted on a prior session because it failed
-NPC; that NPC failure was almost certainly Bug B (the deterministic
-NP=4 OOB at `mmq.cuh:4358`, now closed by Z2-narrow in submodule
-`1f83f681`).
-
-**Plan revision:**
-
-1. **#103 Bug C mechanism confirm** — CLOSED. Diagnostic data preserved
-   at `data/bug-c-confirm-20260520/`.
-2. **#93 Bug C fix** (was: v1 cherry-pick + perf gate) — now scoped
-   as "reland v1 to prevent mixed prefill+decode batches". Same gates
-   as before (NPC harness pass, PP perf recovered, TG perf ≤ 1%
-   regression).
-3. **#100/#101/#102 N1/N2/N3** (n_stream KV port) — remain decoupled
-   per (d), pursued on own merits AFTER Bug C closure.
-
-The diagnostic env hook `LLAMA_KV_CONCURRENT_TRACE` and its `[kv-trace]`
-prints stay in source through #93's gate verification (used to confirm
-v1's reland actually eliminates mixed batches); then deleted in a
-separate cleanup commit per `feedback_bake_measurement_env_gates`.
-
-## Update 2026-05-20 (d) — decoupled from Bug C, still wanted on own merits
-
-User confirms (post-(c) discussion): the n_stream KV port is still a
-desired feature independent of whether it closes Bug C. Standalone
-value:
-
-- **v1 scheduler reland maps cleanly onto disjoint per-session regions.**
-  The "shared pool pretending to be per-session" friction goes away.
-  Even if v1 ships pre-port via a different patch path, the post-port
-  v1 is structurally healthier.
-- **DFlash multi-slot `N_slots` vs `n_slots_cap` becomes type-level.**
-  Already fixed at runtime (P4 closure), but the type-level guarantee
-  prevents a future regression.
-- **Upstream alignment.** ik's KV layer drifts further from upstream
-  each session; closing this distance simplifies future ports (the
-  `memory_i` interface, hybrid cache architectures, draft-batch
-  rebalancing).
-
-Sequencing post-(c):
-
-1. **Bug C mechanism confirm first.** Task #103 — instrument
-   `find_slot` + `KQ_mask`, run `r5-probe-c4.sh` to failure, diff.
-   ~20k tokens. Outcome: confirmed mechanism.
-2. **Fix Bug C at the confirmed site.** Likely mask construction or
-   metadata path; ~10–40k tokens. Closes the production gate.
-3. **Re-land v1 scheduler.** On the Bug-C-closed base, separate from
-   this phase. Recovers the 3.5× win.
-4. **Then proceed with N1+N2+N3+N4** as structural improvement on its
-   own merits. The original `Goal` and `Verification gates` in this
-   doc still apply, but the headline harness gate (G3.a–G3.f) is no
-   longer the Bug C closure proof — it becomes a regression check.
-
-The N1+N2+N3+N4 work packages and the (b) range-partition variant
-remain valid implementation options; choose at re-entry time based on
-how much of the wider goal (DFlash typesafety, upstream alignment) the
-user wants delivered. 4D port = full alignment; range-partition =
-narrow improvement. Both stand on their own.
-
-## Update 2026-05-20 (c) — STRUCTURAL FIX PAUSED, ROOT CAUSE NOT CONFIRMED
-
-Pre-implementation read of `fattn-per-slot-kv-singlewarp-sm75.cu` invalidates
-the mechanism hypothesis that motivated either the 4D port or the
-range-partition variant. The kernel at line 94 reads
-`K + nb13*seq + nb12*head_kv`, but `seq = blockIdx.z` and `grid.z =
-Q->ne[3]` (line 363 of the same file). The K tensor passed in is created
-by `ggml_view_3d(ctx0, split_kl, n_embd_head_k, n_kv, n_head_kv, ...)`
-(`llama-build-context.cpp:2712`) — a 3D view whose `ne[3] = 1` by
-construction.
-
-Therefore in current dispatch `seq = 0` always and `nb13 * seq = 0`. The
-kernel does NOT do per-slot K addressing today. The phase doc's claim
-"`fattn-per-slot-kv-singlewarp-sm75.cu:68–94` reads
-`K + nb13*seq + nb12*head_kv` today — the bug is upstream, in the
-allocator that produces the strides" is technically correct (the kernel
-CAN handle a per-stream layout) but does NOT describe the runtime
-behaviour that fires Bug C — at runtime the kernel reads all `n_kv`
-cells through the flat 3D view and the mask is what discriminates per
-slot.
-
-Consequence: neither the 4D port nor range-partition `find_slot` is
-demonstrated to close Bug C. The actual mechanism must be in:
-
-- mask construction (does `KQ_mask` correctly encode per-cell seq_id
-  visibility under multi-slot prefill?),
-- KV view shape (is the kernel ever invoked with `Q->ne[3] > 1`,
-  which would make `seq > 0` and exercise `nb13` for real?),
-- cells[].seq_id metadata correctness post-`find_slot` (is the
-  metadata written consistently with the K/V data the graph copies?),
-- or something between — cache.head being shared across a concurrent
-  llama_decode call, or a write-coalescing path that bypasses cells[].
-
-**N1 implementation paused until the mechanism is confirmed
-empirically.** Per `feedback_diagnostic_discipline_before_declaring_done`
-and `feedback_bisect_before_revert`, a 500–1000 LoC structural rewrite
-must NOT land while the root cause is a hypothesis.
-
-Recommended next step (does not require touching production code):
-
-1. Instrument `find_slot` to dump `(cache.head, n_tokens, batch.seq_id[i][0]
-   for each i, allocated cell positions)` to a per-tick log file.
-2. Instrument `KQ_mask` build site to dump the mask tensor on the
-   first failing tick.
-3. Run `scripts/r5-probe-c4.sh` until a failure fires; compare the
-   failing-tick log against a passing-tick log; identify the first
-   divergence.
-
-This is ~10k tokens to instrument, ~5k to capture, ~5k to diff. Total
-~20k for a confirmed mechanism — cheap relative to a wrong structural
-fix.
-
-The N1+N2+N3+N4 work packages below remain specced, but the user
-should explicitly authorise re-entry after the mechanism is confirmed
-to match one of the proposed structural fixes. If the mechanism is in
-mask construction (most likely), neither structural variant closes it
-— a mask fix lands much closer to `build-context.cpp` than to the
-allocator.
-
-## Update 2026-05-20 (b) — DESIGN PIVOT: range-partition over 3D, not 4D port (SUPERSEDED by (c))
-
-After reading the C.4 failure signature in PHASE_NP_CLOSURE.md alongside
-the per-slot-kv kernel (`fattn-per-slot-kv-singlewarp-sm75.cu:68–94`)
-and `llama_kv_cache_find_slot` (`src/llama.cpp:1156–1254`), the bug
-mechanism is sharper than this doc's original framing:
-
-- The per-slot-kv kernel reads `K + nb13 * seq + nb12 * head_kv`. It
-  **assumes** slot `S`'s cells start at byte-offset `S * nb13` within
-  the flat K tensor.
-- `find_slot` (the non-recurrent branch, lines 1216–1241) scans
-  `cache.cells[]` linearly from `cache.head`, allocates the first
-  contiguous free run, and labels cells with the batch tokens' seq_ids.
-  **The allocation position is arrival-order, NOT seq_id-order.**
-- When two prefills land in the same server tick, the kernel's
-  `nb13 * seq` indexing reads from the wrong region in `~10%` of runs
-  (whenever the two requests' tokens get interleaved differently in
-  the batch). Hence Bug C's stochastic signature and the "slot 0
-  re-emits slot 1's prompt" symptom.
-
-**The fix is to make `find_slot` enforce the assumption the per-slot
-kernel already depends on.** Range-partition the flat `cache.cells[]`:
-seq_id `S`'s cells must live in `[S * stream_size, (S+1) * stream_size)`,
-where `stream_size = kv_size / n_stream` and `n_stream = max(1, n_seq_max)`.
-The K/V tensors stay 3D — the per-slot kernel's `nb13` arithmetic
-is already correct against this layout because slot-S cells now
-deterministically occupy a fixed contiguous slice.
-
-What changes vs the doc above:
-
-- **N1 stays.** Same scope name, refined implementation. Add `n_stream`,
-  `v_heads[n_stream]`, range-partition `find_slot`, per-stream `_seq_*`
-  ops. K/V tensors stay 3D.
-- **N2 collapses to ~zero.** Tensor shape is unchanged. Graph builders
-  in `llama-build-context.cpp` need NO stride changes — the per-stream
-  region is already addressed correctly via cell index. The only
-  N2-style work is verifying that the per-slot-kv kernel's `nb13`
-  computation matches `stream_size * n_head_kv * head_dim * sizeof(elem)`,
-  which it already does today by accident — Bug C was the "by accident"
-  becoming "by construction".
-- **N3 stays.** Server-side cleanup still meaningful — drop the
-  `cache.head` global references and the bookkeeping that defended
-  the shared-pool model.
-- **N4 stays.** v1 scheduler reland maps cleanly onto disjoint cell
-  ranges.
-
-Tradeoffs given up by NOT doing the full 4D port:
-
-- DFlash multi-slot's `N_slots` vs `n_slots_cap` distinction is NOT
-  promoted to a type-level guarantee. It stays a runtime convention.
-  Already fixed in DFlash Phase 4 (`project_dflash_multislot_phase4_landed`),
-  so the structural reinforcement isn't load-bearing.
-- The upstream-naming-convention alignment (`slot_info`, `n_stream`
-  as tensor axis) is lost. We keep ik's allocator shape; only the
-  semantic invariant changes.
-
-Net: ~500–1000 LoC instead of ~3000–5000 LoC. The actual bug closes
-either way; the surgical approach is the proper fix for the actual
-failure mechanism (CLAUDE.md §1: push back when a simpler approach is
-clearly better).
-
-Token estimate revised:
-- N1 (range-partition + per-stream _seq_*): 20–35k.
-- N2 (verify-only sweep of graph builders + per-slot-kv kernel): 5–10k.
-- N3 (server cleanup + bundle gate): 15–25k.
-- N4 (v1 reland + perf): 20–30k.
-- **Total: 65–110k** (was 95–155k).
-
-## Update 2026-05-20 — code survey clarifications
-
-Pre-N1 code survey shifts scope slightly. Recorded here, not in the body
-above, so the original spec is preserved.
-
-- **`struct llama_kv_cache` lives in `src/llama-context.h:37–170`**, not free-form
-  in `src/llama.cpp`. N1 starts there. The struct also carries `s_l` (Qwen3Next
-  recurrent state), `split_*_l` (multi-GPU split mirrors), `gpu_checkpoint`
-  (recurrent snapshot for speculative decoding), and a `qnext-state-slot-allocator`
-  include (`src/qnext-state-slot-allocator.h`).
-- **Recurrent state (`s_l`) is already per-stream by construction.** It's
-  allocated as `[n_embd_v_s, qnext_state_slots]` where `qnext_state_slots ≈
-  max(1, n_seq_max)` (`src/llama.cpp:922, 982`). NS.OPEN.1 closes: no
-  recurrent-state changes needed.
-- **Old-Mamba 2D-reshape sites at `src/llama-build-context.cpp:202–211`**
-  (the `ggml_reshape_2d(kv_self.k_l[il], …)` paths) are dead-code for our
-  production model — Qwen3Next nullifies `k_l[il]`/`v_l[il]` on recurrent
-  layers (line 986–987). N2 leaves them alone.
-- **`split_k_l`/`split_v_l`** inherit the new `n_stream` axis by mirroring
-  the parent tensor layout. No separate per-stream split allocator needed.
-- **`cells[i].src` recurrent-state-copy chain** stays correct under
-  per-stream — copies are within-stream by definition.
-- **N0 deviation:** the unit-level `test-kv-cache-stream-isolation.cpp`
-  is dropped. Pre-N1, the property it asserts (cell-level cross-stream
-  contamination) cannot manifest because streams don't exist — the test
-  would be tautological. The binding gate for Bug C is the existing
-  harness `scripts/r5-probe-c4.sh`, which demonstrably fails ~10% at
-  HEAD (R5 closure-final run, 2026-05-19). `feedback_verify_test_mechanism_before_trusting`
-  is satisfied at the harness level. A future-proofing unit test can be
-  added inside N1 once the data structures exist, but it would be
-  decorative and isn't blocking.
-
-## Work packages
-
-Four packages, each with a binding verification gate. Per §4 (Goal-Driven
-Execution), each step's gate names the exact harness call that closes it.
-
-### N1 — Allocator + tensor reshape
-
-Add the `n_stream` axis to `struct llama_kv_cache`. K/V tensors become
-4D with the new axis = `cparams.n_seq_max`. Replace the single
-`cache.head` / `cache.cells[]` with `v_heads[n_stream]` /
-`v_cells[n_stream]`. Rewrite `llama_kv_cache_find_slot` to allocate
-within `v_cells[stream_id]` where `stream_id = batch.seq_id[i][0]`.
-
-Touched files:
-- `src/llama.cpp:790` (`llama_kv_cache_init`)
-- `src/llama.cpp:1156–1256` (`llama_kv_cache_find_slot` and supporting)
-- `src/llama.cpp:1942–2143` (`_clear / _seq_rm / _seq_cp / _seq_keep /
-  _seq_add` — all need per-stream awareness)
-- `src/llama.cpp:2177–2202` (`_seq_pos_min/max / _defrag`)
-
-Verification gate N1:
-- `bin/test-backend-ops` GREEN — unit tests for KV cache ops still pass.
-- A new test `tests/dflash-speculative/test-kv-cache-stream-isolation.cpp`
-  asserts that writes to stream `s1` do not modify any cell of stream
-  `s2 ≠ s1`. **Build this test before the implementation lands** and
-  fail it against the current shared-pool code to prove the test
-  mechanism works (per `feedback_verify_test_mechanism_before_trusting`).
-- ik builds clean with zero warnings on sm_75 nvcc.
-
-### N2 — Graph-builder strides
-
-Update every graph builder site that constructs K/V references to pass
-`nb13 = n_kv * n_head_kv * head_dim_size * sizeof(elem)` (the per-stream
-stride) instead of the current shared-pool stride. Likely sites:
-
-- `src/llama-build-context.cpp` — the bulk; ~125k LoC, only the K/V
-  view / copy / select sites change.
-- `src/graphs/build_qwen35.cpp:127` and adjacent — Qwen 3.6 27B graph
-  builder.
-- DFlash drafter graph in `src/llama-dflash.cpp` — has its own
-  per-slot scratch; verify the stride accounting matches.
-
-Touched files:
-- `src/llama-build-context.cpp` (search for `ggml_view_*` and `ggml_cpy`
-  on `kv.k_l[il]` / `kv.v_l[il]`).
-- `src/graphs/build_qwen35.cpp`.
-- `src/llama-dflash.cpp`.
-
-Verification gate N2:
-- `bin/test-dflash-closure` GREEN at np=1 (DeltaNet/DFlash drafter
-  composes with the new strides).
-- `bin/test-dflash-np-invariance` GREEN at np ∈ {1, 2, 4, 8}.
-- A `scripts/test-production-np-determinism.sh` run at np=1 produces
-  byte-identical output vs the pre-phase np=1 baseline. (np>1 not yet
-  expected to pass — that's gated on N3.)
-
-### N3 — Server-side seq_id → stream cleanup
-
-The server's `server-context.cpp:4576–4687` hand-rolls slot↔seq_id
-binding. With per-stream KV, slot.id naturally maps to stream_id. The
-work here is removing the bookkeeping that existed to defend the
-shared-pool model against the cross-contamination Bug C, and
-simplifying the per-slot mask construction now that the streams are
-truly independent.
-
-Touched files:
-- `examples/server/server-context.cpp:2225, 4576–4687`.
-- Any server-side code that uses `cache.head` as a global value.
-
-Verification gate N3:
-- `scripts/test-production-np-determinism.sh` PASSes the full NP=
-  {1, 2, 4, 8} matrix byte-identically at slot 0. This is the headline
-  gate — it binds on **Bug C closure**.
-- `scripts/r5-probe-c4.sh ITERS=10` shows 0 / 10 failures on
-  single-GPU NP=2.
-- The same probe run multi-GPU (`--device CUDA0,CUDA1 --split-mode
-  graph --tensor-split 1,1`) also shows 0 / 10.
-
-### N4 — v1 scheduler reland + DFlash regression + perf
-
-With per-stream KV in place, cherry-pick `67878813` (the v1 scheduler)
-onto the post-N3 base. Per the upstream survey, v1 was reverted because
-it failed NPC under the shared-pool model — with per-stream KV its
-"PP-serialised, TG-overlapped" model fits the architecture cleanly.
-
-Touched files:
-- `examples/server/server-context.cpp` (cherry-pick of v1).
-- Re-bench against the recorded baselines.
-
-Verification gate N4:
-- `scripts/test-pp-serialization.sh`: PP ≥ 60 t/s per request, wall
-  ≤ 20s for 2× 710-tok concurrent requests (the v1 win recovered).
-- `scripts/test-production-np-determinism.sh`: full byte-identity
-  matrix still PASSes (v1 didn't reintroduce Bug C).
-- `llama-batched-bench` at production shape: TG NP=8 regression vs
-  pre-phase baseline ≤ 1%. (Per `feedback_determinism_must_co_optimize_perf` —
-  this phase must not trade perf for determinism.)
-- `bin/test-dflash-np-multislot` GREEN unchanged.
-
-## Critical files
-
-| Path | Role | Touch |
+| Gate | Result | Detail |
 |---|---|---|
-| `src/llama.cpp:790` | `llama_kv_cache_init` | **N1** — add `n_stream` axis |
-| `src/llama.cpp:1156–1256` | `llama_kv_cache_find_slot` allocator | **N1** — per-stream cell allocation |
-| `src/llama.cpp:1942–2202` | `_seq_*` ops + `_defrag` | **N1** — per-stream awareness |
-| `src/llama-build-context.cpp` | Graph builder K/V views | **N2** — pass per-stream stride |
-| `src/graphs/build_qwen35.cpp:127` | Qwen 3.6 27B builder | **N2** — same |
-| `src/llama-dflash.cpp` | DFlash drafter graph | **N2** — stride accounting |
-| `examples/server/server-context.cpp:2225, 4576–4687` | Slot↔seq_id binding | **N3** — simplify |
-| Upstream `src/llama-kv-cache.{cpp,h}` | Port targets | **read-only reference** |
-| `tests/dflash-speculative/test-kv-cache-stream-isolation.cpp` | New isolation unit test | **N1** — write before fix |
-| `scripts/test-production-np-determinism.sh` | Binding harness | reuse, do not modify |
-| `scripts/r5-probe-c4.sh` | Bug C stochastic reproducer | reuse for N3 gate |
+| **G3.a** single-GPU NP-determinism | ✅ PASS | NP ∈ {1,2,4,8} byte-identical to NP=1; cross-NP slot-0 matrix all identical |
+| **G3.b** multi-GPU NP-determinism | ✅ PASS | Same with `--device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1`. Validates the V-split factoring (`a202f4f4`). |
+| **G3.c** r5-probe-c4 single-GPU | ✅ PASS | 0/20 Bug C divergences WITHOUT decode-side gate. Per-stream dispatch structurally prevents Bug C. |
+| **G3.d** r5-probe-c4 multi-GPU | ✅ PASS | 0/20. |
+| **G3.e** test-dflash-np-multislot | ✅ PASS | slot-0 byte-identical NP ∈ {1,2,4,8} on 27B target + dflash drafter |
+| **G3.f** spec tests | ✅ PASS | `test-n-stream-kv-layout` n_parallel ∈ {1, 2} on Qwen3.5-0.8B-BF16. KVTensorIsFourD + StreamPartition bind. |
+| **G3.g** pp-serialization | ✅ PASS (caveat) | Per-request PP = 114.1 / 110.4 t/s ≫ 60 t/s threshold. Wall = 15.7 s vs pre-port 15.9 s — only ~1.3 % reduction vs the cached plan's ~38 % estimate. TG-overlap recovery marginal. |
+| **G3.h** llama-batched-bench TG NP=8 | ❌ **-6.2 %** (user-override) | 26.00 t/s vs 27.73 t/s baseline. Outside ±1 % bound. |
 
-## Sequencing notes
+## G3.h root cause + merge decision
 
-Per `feedback_oneshot_then_evaluate`: this is a structural rewrite, not
-an experimental sweep. Write N1+N2+N3 coherently as one bundle, then
-evaluate measured results against the gates — including failures. Do
-not stop at intermediate "build green" points and call it progress.
+Two layered findings on the bench failure:
 
-Per `feedback_no_tmp_for_large_artifacts`: harness outputs land in
-`data/nstream-kv/run-YYYYMMDDTHHMMSS/`, not `/tmp`.
+**Layer 1 — bench-path bug, fixed inline (`16b608d1`).** `llama-batched-bench` feeds multi-seq batches directly to `llama_decode` (bypassing the server's per-stream dispatch). At `n_stream > 1`, `find_slot` derives stream_id from `seq_id[0][0]` and allocates ALL n_tokens cells into that one stream — corrupting it. The pre-existing qnext detector sub-batched `INTERLEAVED` patterns but passed `CONTIGUOUS_BLOCKS` through (the TG path). Extended the sub-batching to also fire on `CONTIGUOUS_BLOCKS` when `n_stream > 1`. `n_stream == 1` behaviour preserved (legacy CONTIGUOUS_BLOCKS pass-through). Also covers `parallel` and `perplexity` examples that hit the same direct-llama_decode path.
 
-Per `feedback_no_host_concerns_in_code`: NSTREAM / N1 / N2 nomenclature
-is for this doc only — code identifiers use `n_stream` (the upstream
-name) and content-descriptive function names.
+**Layer 2 — the 6.2 % TG-NP=8 regression.** Graph reuse is disabled at `n_stream > 1` (`src/llama.cpp:616`, intentional — view offsets are stream-aware so cross-stream reuse would read from the wrong slice). Every single-token sub-batch rebuilds the graph (~2–3 ms each). With 2112 single-token sub-calls in the bench, total rebuild cost ≈ 5–6 s of the 80 s run. Matches the observed delta. The production-server steady-state TG at NP=8 pays the same overhead.
 
-## Out of scope
+**Merge decision (2026-05-20).** Per the locked perf-fail policy this gate would block merge. User was offered four options (hold + per-stream graph cache, hold + single-graph stream-aware reuse, override + merge, roll back N2/N3) and selected **"Override locked policy — merge with -6.2 % regression"**. Reason: all six correctness gates green; Bug C structurally closed; perf trade-off documented for the next phase. Per-stream graph cache is the next phase's work, not a current-step gap (no follow-up cover) — the structural closure goal of this phase is delivered without it.
 
-- `llama_memory_i` virtual interface port — see "What this phase
-  explicitly does NOT do".
-- CUDA kernel changes — they are wire-compatible.
-- `transformer_kv` / DFlash / DeltaNet machinery — composes with the
-  new allocator.
-- D9.8 (`transformer_kv` migration to `llama_session`) — orthogonal;
-  proceeds on top of this phase or on its own timeline.
-- TU102 + NVLINK perf envelope — orthogonal.
-- MMQ I=8 further perf work — landed; out of scope here.
+## Submodule + parent commits at closure
 
-## Open subtasks (named, per `feedback_no_risks_only_tasks`)
+**Submodule** `production/2026-q2-next` HEAD `16b608d1`:
+- `0472275d` — N2 + N3 main: axis switch, graph builder rewrites (entry points), per-stream allocator, per-stream dispatch, decode-side gate removal.
+- `95d3c9eb` — N2.b multi-device split per-stream K/V + gate K-shift/defrag to `n_stream == 1`.
+- `a202f4f4` — worst-case `n_kv` bounded by `kv_size_per_stream` + V split factoring.
+- `16b608d1` — N2 fixup: sub-batch CONTIGUOUS_BLOCKS at `n_stream > 1` (bench-path fix surfaced by G3.h).
 
-These are not "risks with mitigations" — they are known gaps that
-become concrete sub-tasks if hit:
+Preceded by the N1 foundation (struct + 4D tensor reshape, init only, no allocator use):
+- `52d845e9` — initial 4D K/V reshape + per-stream allocator (incomplete bundle).
+- `c1beb104` — axis-order fixup to byte-compatible interim.
+- `38ea4127` — revert per-stream find_slot, keep 4D + foundation.
 
-- **NS.OPEN.1 — DeltaNet recurrent state stride.** DeltaNet's `[head_dim,
-  head_dim*n_heads, 1, n_seqs]` tensor already has a seq axis but is
-  allocated in a single contiguous block. N1 must verify that the
-  per-stream stride convention matches the existing recurrent-state
-  layout, OR change the recurrent-state layout to match. Decided at
-  N1-implementation time by reading `src/llama-delta-net.cpp`.
+**Parent repo** (this directory, `yarn-agentic`):
+- `2bf3524` — initial N2 refined plan.
+- `7e5c4eb` — locked N2 decisions.
+- `7f1fe45` — initial closure status doc.
+- `b30dbfa` — feature-branch N2+N3 MEMORY entry.
+- (today) — gate sequencing + Stage 1 results, Stage 2+3 results + override decision, `scripts/r5-probe-c4.sh` DEVICE env override, submodule pointer bump, MEMORY closure entry, `PHASE_NSTREAM_KV_PERF.md` next-phase stub.
 
-- **NS.OPEN.2 — `_seq_cp` semantics under per-stream.** Sequence-copy
-  ops (used by speculative draft acceptance) currently copy within the
-  shared pool. Per-stream, they may need to copy across streams. Could
-  be a pointer-swap rather than a memcpy if streams are equal-sized.
+## Open follow-ups → next phase
 
-- **NS.OPEN.3 — `_defrag` cost.** Per-stream, defrag runs per stream
-  independently — total work is unchanged but the inner loop body
-  doesn't have to coalesce across streams. Confirm this is a
-  simplification, not a regression.
+Carried over to [`PHASE_NSTREAM_KV_PERF.md`](PHASE_NSTREAM_KV_PERF.md):
 
-- **NS.OPEN.4 — KV memory budget.** Per-stream KV at `n_seq_max=8` and
-  `n_ctx=8192` requires the same total bytes as the current shared
-  pool at `n_ctx=8192*8`. Confirm the existing `--ctx-size` flag
-  semantics still hold (it has historically meant "total context across
-  all parallel requests"). If users have been treating it as
-  per-request, this phase changes that — document in
-  `examples/server/README.md` if so.
+- **Per-stream graph cache** (the main item): one `prev->graph` per `stream_id` so each per-stream sub-batch reuses its own stream's graph instead of rebuilding. Recovers the -6.2 % regression and probably the TG-overlap window too.
+- **K-shift** (`build_k_shift`): currently `GGML_ASSERT(kv_self.n_stream == 1)`. Lift for `ctx_shift` at multi-slot.
+- **Defrag** (`build_defrag`): same gate, same lift.
+- **v_trans non-FA V path**: same gate. Production runs FA-on so it's currently a guard; lift when adding non-FA paths.
+- **MLA path (DeepSeek)**: out of scope (production model is non-MLA).
 
-- **NS.OPEN.5 — Graph cache invalidation.** If ggml's graph cache keys
-  on tensor shapes, the n_stream axis change invalidates every cached
-  graph. Trivial flush at startup, but verify no stale graph references
-  survive a `llama_kv_cache_clear`.
+## Implementation summary — what each work package delivered
 
-Each subtask becomes a checkbox under its parent work package's
-verification gate. None of them are "deferred to a follow-up phase".
+### Spec layer (S1–S5) — pre-implementation
 
-## Estimated token cost (per CLAUDE.md §8)
+Per the cached plan `/home/llm/.claude/plans/cached-crunching-tiger.md`:
 
-- N1 allocator + tensor reshape: 30–50k
-- N2 graph-builder strides: 20–30k
-- N3 server-side cleanup + N3 verification: 15–25k
-- N4 v1 reland + DFlash regression + perf bench: 20–30k
-- MEMORY entries + PHASE updates + commits (per §5 push-per-edit): 5–10k
-- **Total: 90–145k** for a clean closure cycle.
+- **S1.a `specs/scheduler/batch_composition.allium`** — contracts: `PrefillSerialisationGate`, `DecodeHoldGate`, `BatchCompositionInvariant`, `MixedBatchProhibition`, `AtMostOnePrefillSlotPerBatch`. `allium check` clean.
+- **S1.b `specs/kv-cache/n_stream_layer.allium`** — contracts: `PerStreamAllocator`, `MaskPerStream`, `PerStreamDispatch`, `BugCAbsenceByConstruction`, `DFlashCompatibility`. `allium check` clean.
+- **S1.c `mtp_fused_draft.allium`** tend — added `FusedDraftRoundsRunOnPureDecodeBatches` + `FusedDraftRespectsStreamPartition` cross-cutting invariants.
+- **S2.a `specs/multislot/BatchComposition.tla`** — SANY-clean. State machine + WF fairness.
+- **S2.b `specs/multislot/StreamIsolation.tla`** — SANY-clean.
+- **S3** — TLC model check. Configs `BatchCompositionMC.cfg` (gate ON, 541 distinct states, PASS), `BatchCompositionMC_no_gate.cfg` (gate OFF, `BatchCompositionInvariant` violated — spec binds), `StreamIsolationMC.cfg` (PerStreamDispatch ON, PASS), `StreamIsolationMC_legacy.cfg` (PerStreamDispatch OFF, `StreamPartition` violated — spec binds).
+- **S4** — property tests via `allium plan` obligations. `tests/spec/test-batch-composition-gates.cpp` PASS on HEAD. `tests/spec/test-n-stream-kv-layout.cpp` foundation PASS; `KVTensorIsFourD` FAIL on pre-N1 HEAD with `k_l[3]->ne[3]=1 vs n_stream=2` — the binding RED test for N1.
+- **S5** — NDJSON trace harness + live validation. `examples/server/server-trace-ndjson.h` emit helper, gated on `LLAMA_TRACE_NDJSON_DIR`. Validator `scripts/validate-batch-composition-trace.py`. Live-verified on Qwen3.5-0.8B BF16.
 
-Compares to the prior estimate of 70–175k to close Bug C locally
-without touching the wider goals. The structural fix has a higher
-floor but a lower ceiling, and closes three workitems in one effort.
+### N1 — Per-stream allocator + tensor reshape
+
+`struct llama_kv_cache` extended (`src/llama-context.h:37–170`) with `n_stream`, `kv_size_per_stream`, `v_heads`. `llama_kv_cache_init` allocates K/V as 4D `[head_dim, kv_size_per_stream, n_head_kv, n_stream]`. `kv_size` rounded UP to a multiple of `n_stream`. `_clear / _seq_rm / _seq_keep / _seq_add` carry per-stream `v_heads` tracking.
+
+**Axis-order decision (load-bearing).** Initial commits (`52d845e9` → `c1beb104` → `38ea4127`) tried the byte-compatible interim layout `[head_dim, n_head_kv, kvps, n_stream]`. Empirical bisect 2026-05-20 showed it's INCOMPATIBLE with per-stream semantics under unchanged graph builders: single-request to slot 1 returned garbage tokens; concurrent NP=2 returned garbage on R2 after the first few tokens. The byte-compatible shortcut was reverted in favour of the full upstream-aligned `[head_dim, kvps, n_head_kv, n_stream]` (heads outer per stream, positions inner) which requires every K/V view/copy site to be rewritten with stream-aware offsets. That work landed in N2. See `feedback_n_stream_byte_compat_tradeoff` in the auto-memory for the full reasoning.
+
+### N2 — Graph builder per-stream strides + dispatch
+
+Touched files (all on `feature/nstream-kv-4d-n2`, then merged):
+
+- `src/llama-context.h` — struct extension (N1 foundation).
+- `src/llama.cpp` — per-stream `find_slot`, `_seq_*` ops, `_clear`, `can_reuse_graph` (returns false at `n_stream > 1` pending the next phase's per-stream graph cache), `update_cache_copies` (stream-aware `view_offs`), mask builder (stream-local cell range), `llm_build_context` ctor (worst-case `n_kv` bounded by `kv_size_per_stream`), llama_decode interleaved sub-batching extended to CONTIGUOUS_BLOCKS at `n_stream > 1`.
+- `src/llama-build-context.cpp` — `llm_build_kv_store`, `llm_build_kqv`, `build_std_attention` (multi-device branch with split K/V) rewritten with stream-aware base offsets `s * nb[3]`. K-shift / defrag / v_trans guarded `GGML_ASSERT(n_stream == 1)`.
+- `examples/server/server-context.cpp` — `process_batch_tokens` per-stream dispatch (scan for contiguous primary-seq_id runs, one `llama_decode` per run). Decode-side prefill gate REMOVED in `add_sampled_tokens`.
+
+### N3 — Server cleanup + decode-side gate removal
+
+Already folded into N2's `process_batch_tokens` rewrite. The seq_id→slot binding simplifies because `slot.id` now naturally maps to `stream_id`. The decode-side prefill gate (v1's Bug C policy fix) is REMOVED — per-stream dispatch makes mixed batches impossible by construction.
+
+## Design history (condensed)
+
+PHASE_NSTREAM_KV.md went through seven updates during the design phase before the implementation bundle landed. Compressed timeline:
+
+- **Original spec** — port upstream's per-stream KV axis; closes Bug C, enables v1 scheduler reland, gives DFlash multi-slot a type-level guarantee.
+- **(b) DESIGN PIVOT (SUPERSEDED)**: range-partition over 3D, not 4D port. Smaller scope (~500–1000 LoC vs ~3000–5000). Rejected once (c) showed the kernel's `nb13` arithmetic doesn't drive Bug C — the mask discriminates per-slot, not the per-stream axis.
+- **(c) STRUCTURAL FIX PAUSED**: pre-implementation read of `fattn-per-slot-kv-singlewarp-sm75.cu` invalidated the mechanism hypothesis. Per `feedback_diagnostic_discipline_before_declaring_done` — don't ship a structural rewrite while the root cause is a hypothesis. Open subtask #103 was opened to confirm the mechanism empirically.
+- **(d) Decoupled from Bug C, still wanted**: n_stream KV is a standalone-value port (v1 reland, DFlash typesafety, upstream alignment). Pursued AFTER Bug C closure via the scheduler path.
+- **(e) Bug C mechanism CONFIRMED**: `LLAMA_KV_CONCURRENT_TRACE` instrumentation showed the failing iteration has a mixed prefill+decode batch (slot 0's first decode token batched with slot 1's full 210-token prefill). Bug C is downstream of the mask, in a kernel/graph node that fails on mixed batch geometry.
+- **(f) Phase C deferred — wider blocker**: the (b) range-partition variant needs a scatter-quantized-write op in ggml (KV cache is Q4_0; `ggml_set_rows` requires F32 source). Either invent that op, or commit to the full 4D port.
+- **(g) Kernel-level bisect of Bug C — GEMV-vs-GEMM accumulation order**: per user direction "diagnose and fix 1", attempted kernel-level fix. Findings: layer-0 `l_out-0` diverges at slot-0 row with `max|Δ| = 3.011e-03`. Classic accumulation-order divergence — for row shape `[d, 1]` mul_mat picks GEMV with sequential accumulator; for `[d, N>1]` it picks tiled GEMM with parallel partial sums + reduction tree. Same math, bit-different order. **No kernel-level patch without rewriting all mul_mat kernels.** Conclusion: the decode-side prefill gate is the correct fix at the scheduler level. The 4D port is then the structural way to make Bug C impossible by construction (and remove the gate's perf cost).
+
+## What this phase explicitly did NOT do (per CLAUDE.md §2)
+
+- Did **not** port `llama_memory_i` / `llama_memory_t` virtual interface. ik uses static dispatch.
+- Did **not** touch CUDA kernels. They are per-slot-pointer wire-compatible.
+- Did **not** rewrite ik-only machinery: `transformer_kv`, `delta-net.cpp`, `dflash.cpp` machinery composes with the new allocator by stride.
+- Did **not** introduce a new C API surface. The change is internal to `llama_kv_cache_*`.
+- Did **not** lift the K-shift / defrag / v_trans paths off `n_stream == 1` (guards are in place — future work).
+- Did **not** rebuild graph caching for the multi-stream case. `can_reuse_graph` returns false at `n_stream > 1` — the perf cost of this is what the next phase recovers.
+
+## Critical files (reference card)
+
+| Path | Role | Phase |
+|---|---|---|
+| `src/llama-context.h:37–170` | `struct llama_kv_cache` extension (`n_stream`, `kv_size_per_stream`, `v_heads`) | N1 |
+| `src/llama.cpp:1156–1429` | `llama_kv_cache_find_slot` per-stream allocator | N2.c |
+| `src/llama.cpp:1942–2204` | `_clear / _seq_rm / _seq_keep / _seq_add / _seq_add` per-stream awareness | N1 |
+| `src/llama.cpp:5439–5490` | `llama_decode_internal` qnext sub-batching extended to CONTIGUOUS_BLOCKS at n_stream>1 | N2 fixup |
+| `src/llama.cpp:586–625` | `can_reuse_graph` — guards graph reuse at `n_stream > 1` (next-phase work) | N2 |
+| `src/llama-build-context.cpp` (~40 K/V sites) | Stream-aware view/copy offsets `s * nb[3]` | N2.b |
+| `examples/server/server-context.cpp` `process_batch_tokens` | Per-stream dispatch (seq_id-run split) | N2.d |
+| `examples/server/server-context.cpp` `add_sampled_tokens` | Decode-side prefill gate **REMOVED** | N3 |
+| `specs/scheduler/batch_composition.allium` | Scheduler contracts | S1.a |
+| `specs/kv-cache/n_stream_layer.allium` | KV-layer contracts | S1.b |
+| `specs/multislot/BatchComposition.tla`, `StreamIsolation.tla` | TLA+ state machines | S2 |
+| `tests/spec/test-n-stream-kv-layout.cpp` | Binding RED test for N1 → GREEN after | S4 |
+| `tests/spec/test-batch-composition-gates.cpp` | 1296-config gate sweep | S4 |
+| `scripts/test-production-np-determinism.sh` | G3.a/b binding harness | gate |
+| `scripts/r5-probe-c4.sh` | G3.c/d Bug C absence harness | gate |
+| `scripts/test-pp-serialization.sh` | G3.g PP-serialization throughput | gate |
+
+## Token cost (final, per CLAUDE.md §8)
+
+Estimated 90–145 k in the original plan, 230–375 k including the spec layer. Actual closure span (S1 + N1 fixups + N2+N3 bundle + gate runs + override + cleanup) consumed roughly that — within the upper envelope. The 4D port's true scope landed close to the original (a) estimate of ~3000–5000 LoC (final diff: ~465 insertions / 150 deletions across `llama-context.h`, `llama.cpp`, `llama-build-context.cpp`, `server-context.cpp`, plus the new spec test).
+
+The byte-compatible-interim detour (N1 fixup #1 + #2) cost roughly the savings the shortcut promised — a wash, but instructive (see `feedback_n_stream_byte_compat_tradeoff`).

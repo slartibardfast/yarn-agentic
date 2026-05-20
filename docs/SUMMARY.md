@@ -20,8 +20,7 @@
 
 # N-stream KV cache (Bug C closure)
 
-- [PHASE_NSTREAM_KV — 4D port design + bisect history](PHASE_NSTREAM_KV.md)
-- [Closed: PHASE_NSTREAM_KV_4D — 4D K/V layout + per-stream dispatch](PHASE_NSTREAM_KV_4D.md)
+- [Closed: PHASE_NSTREAM_KV — 4D per-stream layout + Bug C structural closure](PHASE_NSTREAM_KV.md)
 - [Open: PHASE_NSTREAM_KV_PERF — recover -6.2 % TG-NP=8 regression](PHASE_NSTREAM_KV_PERF.md)
 
 # DFlash speculative decoding
