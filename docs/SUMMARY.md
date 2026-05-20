@@ -24,7 +24,7 @@
 # N-stream KV cache (Bug C closure)
 
 - [Closed: PHASE_NSTREAM_KV — 4D per-stream layout + Bug C structural closure](PHASE_NSTREAM_KV.md)
-- [Open: PHASE_NSTREAM_KV_PERF — recover -6.2 % TG-NP=8 regression](PHASE_NSTREAM_KV_PERF.md)
+- [Open: PHASE_NSTREAM_KV_PERF — recover regression + unlock dispatch ceiling (Tier 2 → Tier 3)](PHASE_NSTREAM_KV_PERF.md)
 
 # DFlash speculative decoding
 
