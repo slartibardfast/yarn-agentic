@@ -38,6 +38,16 @@ The following directly bears on this phase:
 
 The takeaway: **ik_llama.cpp has shipped the exact mechanism Tier 2 needs**, repeatedly, across four prior phases. Tier 2 is "do that once more, for the attention-read views."
 
+## Triangulation against PHASE_NSTREAM_KV closure + DFlash multi-slot expectations
+
+Three places where this phase touches load-bearing predecessor work:
+
+1. **Bug C closure mechanism — must be preserved by both Tier 2 and Tier 3.** PHASE_NSTREAM_KV's closure language: "Bug C (the mixed prefill+decode GEMM-vs-GEMV accumulation divergence) is closed structurally" because "each call sees a single-stream batch — mul_mat sees a uniform shape per call." Tier 2 doesn't change dispatch (still per-stream) — Bug C closure is untouched. Tier 3 unifies dispatch — must argue and verify that "uniform shape per call" still holds. See §"Tier 3 composition" below for Q1.
+
+2. **Open follow-ups carried by PHASE_NSTREAM_KV** — K-shift, defrag, v_trans guarded at `n_stream == 1`. PHASE_NSTREAM_KV_PERF inherits these. Tier 2 doesn't need to lift them (Tier 2 is graph-reuse only). Tier 3 lifts them as part of T3.f.
+
+3. **DFlash multi-slot composition** — Phase 5 (`common_speculative_draft_batched`) already batches the draft side across slots. Phase 6 test harness gates byte-identity at NP={1,2,4,8}. Tier 2 (graph reuse) is transparent to DFlash — no dispatch model change. Tier 3 (verify-side unification) puts the verify path in the same mental model as the already-unified draft side. See §"Tier 3 composition" Q3 below.
+
 ## Risks distilled from prior work
 
 These are direct lessons-learned that bind Tier 2 / Tier 3 scoping:
@@ -123,18 +133,23 @@ The 4.75× is real and reproducible — we measured it on our hardware 2026-05-1
 - **GP3.b** — `llama-batched-bench` TG NP=8 ≥ +15 % over baseline (≥ 31.9 t/s) if patching is correct. **Stretch binding** — if missed but GP3.a hit, Tier 2 closed-on-recovery and we evaluate why patching gain underperformed.
 - **GP3.c** — `scripts/test-pp-serialization.sh` wall ≤ 11 s (TG-overlap window restored).
 - **GP3.d** — `scripts/test-production-np-determinism.sh` byte-identity preserved, single + multi-GPU at NP={1,2,4,8}. Hard binding.
-- **GP3.e** — `bin/test-dflash-np-multislot` GREEN unchanged. Hard binding.
+- **GP3.e** — DFlash test suite GREEN unchanged: `bin/test-dflash-np-multislot` (Phase 6 driver), `bin/test-dflash-spec-batched-fanout` (Phase 5 orchestrator), `bin/test-dflash-batch-vs-serial` (Phase 4 kernel batched-vs-serial), `bin/test-dflash-closure` (8/8 prompts argmax-equivalent), `bin/test-dflash-np-invariance` (T7 kernel-level 4 seeds × N∈{1,2,4,8}). Hard binding — DFlash multi-slot composition with the dispatch change must not regress.
 - **GP3.f** — `scripts/r5-probe-c4.sh ITERS=20` = 0/20, single + multi-GPU. Bug C absence preserved. Hard binding.
 - **GP3.g** — **Warm-up determinism**: run same prompt 3× sequentially at NP=8 (R1, R2, R3), verify byte-identity across all three runs. Specifically addresses the "CUDA graph cache warm-up" suspect from P2 memory. Hard binding.
 - **GP3.h** — `scripts/validate-batch-composition-trace.py` against an NDJSON trace from `r5-probe-c4.sh` ITERS=20 — zero violations of `BatchComposition.tla` / `StreamIsolation.tla`. Spec layer preserved.
+- **GP3.n** — **MTP NP=1 production smoke**: run `LLAMA_MTP_FUSED=1` decode at `--parallel 1 --mtp --draft 3` on the production Qwen 3.6 27B GGUF. Token output byte-identical pre/post-phase. Throughput within ±1 % of current production NP=1 MTP baseline (~33.5 t/s). Confirms Tier 2's `update_cache_copies` extension is a no-op at NP=1 (where `_s = 0` always). Hard binding — current production must not regress.
 
 If GP3.b underperforms but the other gates pass: surface the diagnostic per `feedback_negative_results_land_cheap_when_honest`. Was patching correct? Did the disable counter fire? Did some other invalidation kick in? Instrument before deciding Tier 3 scope.
+
+**Workload coverage**: GP3.a–c gate vanilla TG/PP; GP3.d–h gate NPC + Bug C + spec + warm-up; GP3.e gates DFlash multi-slot; GP3.n gates MTP NP=1 production. All three workloads — vanilla, MTP, DFlash — bound.
 
 ## Binding gates (Tier 3 closure — provisional, locked at Tier 2 close)
 
 - **GP3.i** — `llama-batched-bench` TG NP=8 aggregate ≥ 100 t/s (~3.6× over current 27.73 t/s baseline). Anchored against vLLM measured 154.77 t/s — a 65 % approach is the conservative target. **Stretch**: 130 t/s (≥ 85 % of vLLM's number).
 - **GP3.j** — All Tier-2 gates remain GREEN.
-- **GP3.k** — `bin/test-fattn-per-slot-kv-dispatch-np-invariance` continues PASS (kernel-level NPC; PSKV unified-stream path).
+- **GP3.k** — `bin/test-fattn-per-slot-kv-dispatch-np-invariance` continues PASS (kernel-level NPC; PSKV unified-stream path under ne[1]>1 batched ubatch — the specific shape T9's drift signature flagged).
+- **GP3.l** — `bin/test-dflash-spec-batched-fanout` symmetric + asymmetric continue PASS under unified verify-side dispatch. Composition gate.
+- **GP3.m** — MTP fused path at NP>1: `test-spec-mtp-fused` (or equivalent) PASS under unified ubatch. Confirms `can_reuse_graph` Phase 37 #5 MTP fused branch composes with Tier 2's bailout drop.
 
 ## Implementation cards (Tier 2 — provisional, finalised at design lock)
 
@@ -146,15 +161,39 @@ If GP3.b underperforms but the other gates pass: surface the diagnostic per `fee
 6. **T2.f** — **Bench gate GP3.a + GP3.b**. If positive, full correctness battery (GP3.c–GP3.h) on the production 27B Qwen.
 7. **T2.g** — **Submodule bump + parent commit + push** per CLAUDE.md §5/§6.
 
+## Tier 3 composition with PHASE_NSTREAM_KV closure + DFlash multi-slot
+
+Before locking Tier 3 implementation, four composition questions need clear answers:
+
+**Q1. Does Tier 3 unification reopen Bug C?** PHASE_NSTREAM_KV.md (closure doc) is explicit that per-stream dispatch is the structural Bug C closure — "each call sees a single-stream batch — `mul_mat` sees a uniform shape per call." Tier 3 unifies dispatch back to one `llama_decode` per tick.
+
+*Answer*: No, because Bug C is "**mixed shape WITHIN a tick**", not "batched shape per tick". The original failing geometry was: tick T calls `mul_mat` with `[d, 1]` (slot 0 decode) then `mul_mat` with `[d, 210]` (slot 1 prefill) — two separate calls with different shapes, GEMV-vs-GEMM picked differently → ULP drift. Under Tier 3 unification, tick T calls `mul_mat` once with `[d, n_tokens_total]` — a single uniform shape per tick. Within-tick GEMM/GEMV pick is consistent. This is **more uniform than current per-stream dispatch** (which calls `mul_mat` N times at N different per-stream shapes). The KQ mask routes per-stream attention via ne[3] = n_stream axis; that's where stream isolation happens, not at the `mul_mat` level.
+
+Verification: GP3.f (`r5-probe-c4.sh ITERS=20` = 0/20) is the binding gate for "Bug C absence". If it passes after Tier 3, the structural claim holds.
+
+**Q2. Does Tier 3 reintroduce T9's NP=4/8 drift signature?** [[project_dflash_t9_np_validity_drift_signature]] (2026-05-14) identified a specific kernel boundary at NP=2→NP=4: "Likely candidates: FA mma_f16 tile transition (Turing m16n8k8, 8-wide tile; batch=4 first hits the next tile multiple)." This drift was empirically resolved by PHASE_NSTREAM_KV closure (per-stream FA inputs at ne[1]=1). Tier 3 puts `ne[1] > 1` back into FA via the unified ubatch.
+
+*Answer*: PSKV per-slot kernel handles this — the production path routes `GGML_OP_FLASH_ATTN_EXT_PER_SLOT_KV` to `ggml_cuda_flash_attn_ext_wmma_f16_case_pb1<256,256,8,half>` (parallel_blocks=1 pinned, fp32 accumulation throughout, no cross-warp reductions, per-row mask filtering — see [[project_fattn_per_slot_kv_p2_landed_kernel_only]]). The kernel was verified NPC at NP={1,2,4,8} pre-PHASE_NSTREAM_KV when ne[1] was sometimes >1; T9's drift was at the FA mma_f16 *original* path which is no longer the production route. **But this needs gate verification**: GP3.k (`test-fattn-per-slot-kv-dispatch-np-invariance` continues PASS) is the binding test.
+
+If Tier 3 produces T9-class drift, the path is to confirm whether the PSKV pb1 kernel is being dispatched (and not the legacy mma_f16 path) for the unified-ubatch shapes — instrument and verify before declaring impossibility.
+
+**Q3. How does Tier 3 compose with DFlash multi-slot?** DFlash Phase 5 added `common_speculative_draft_batched` — the **draft side** is already unified across slots in one batched `llama_dflash_draft_batch` call. The **verify side** (target forward on candidate tokens) currently uses the server's per-stream `process_batch_tokens` dispatch. Tier 3 unifies verify-side dispatch too — that's compositionally cleaner than current (both sides batched-across-slots).
+
+The DFlash multi-slot test gates (`test-dflash-np-multislot`, `test-dflash-spec-batched-fanout`, `test-dflash-batch-vs-serial`) will exercise verify-side under Tier 3 unification. GP3.e gates all of them GREEN.
+
+Risk: DFlash's kernel-level `n_slots_cap` distinction ([[drafter-forward-n-slots-cap]]) means its kernels expect bind-time capacity not dispatch-time fan-out. Tier 3's unified ubatch passes through DFlash unchanged because the DFlash kernel is invoked from `llama_dflash_draft_batch`, not from the generic decode path. Verify-side ubatch unification is downstream of DFlash kernel invocation. **They compose**.
+
+**Q4. How does Tier 2 compose with MTP fused graph reuse?** `can_reuse_graph` Phase 37 #5 allows n_tokens>1 reuse when `mtp_op_type == MTP_OP_DRAFT_GEN_FUSED` and step counts match. Tier 2 drops the n_stream>1 short-circuit. Both checks compose: at n_stream>1 with MTP fused, the path now reuses through the MTP fused branch AND patches per-stream view offsets via update_cache_copies. Verify: MTP fused at NP>1 continues to work — covered by the existing PHASE_NSTREAM_KV closure gates.
+
 ## Implementation cards (Tier 3 — sketch, locked at Tier 2 close)
 
-T3.a — Probe: read upstream PR #14363 `split_equal` semantics and unified ubatch graph builder changes. Map to ik_llama.cpp equivalents.
-T3.b — Server-side fusion in `process_batch_tokens`.
-T3.c — KQ mask builder: emit `[n_kv, n_tokens/n_stream, 1, n_stream]` shape.
-T3.d — `llm_build_kqv` / `build_std_attention` (multi-device): handle unified ubatch via existing PSKV per-slot kernel with proper `per_row_k_bound`.
-T3.e — Non-FA ops (Q/K/V proj, RMSNorm, MLP, output proj): verify shape-invariance across unified ubatch widths (P2 memory flagged these as divergence sources at NP>1 pre-PHASE_NSTREAM_KV — verify still OK post-Bug-C-closure).
-T3.f — Drop `n_stream==1` guards on `build_k_shift` / `build_defrag` / `v_trans`.
-T3.g — Bench gate GP3.i against vLLM's 154.77 t/s.
+T3.a — **Probe**: read upstream PR #14363 `split_equal` semantics and unified ubatch graph builder changes. Map to ik_llama.cpp equivalents. Specifically identify how upstream handles the (Q/K/V projection, RMSNorm, MLP, output proj) shape-invariance across the unified-batch dimension.
+T3.b — **Server-side fusion** in `process_batch_tokens` (`examples/server/server-context.cpp:4610`). Replace the seq_id-run split with a unified ubatch builder. Preserve sub-batching for INTERLEAVED patterns at n_stream>1 (the bench-path fix from `16b608d1`).
+T3.c — **KQ mask builder**: emit `[n_kv, n_tokens/n_stream, 1, n_stream]` shape. Per-stream row filtering via existing seq_id mask logic.
+T3.d — **FA dispatch verification**: confirm `GGML_OP_FLASH_ATTN_EXT_PER_SLOT_KV` is emitted by `llm_build_kqv` for the unified-ubatch shape and routes to the PSKV pb1 wrapper. The kernel handles n_stream at ne[3] via the per-slot mask + KV pointer arrays per slot. `per_row_k_bound` is plumbed (currently a no-op for correctness — mask handles bound enforcement; future perf opt for loop-tail trim).
+T3.e — **Non-FA shape-invariance audit**: Q/K/V projection matmuls, RoPE, RMSNorm, MLP, output projection. P2 memory flagged these as divergence sources at NP>1 pre-PHASE_NSTREAM_KV ("E2 NP=4 sequential showed run2 differing from run1+run3"). PHASE_NSTREAM_KV's per-stream dispatch resolved this empirically. Tier 3 puts these ops back at ne[1]>1 within a tick. Verify via GP3.j (all Tier-2 gates remain GREEN including NPC byte-identity).
+T3.f — **Drop `n_stream==1` guards** on `build_k_shift` / `build_defrag` / `v_trans` per PHASE_NSTREAM_KV's open-follow-up list. Required for full multi-slot ctx_shift + cache compaction; previously gated because of per-stream-dispatch impedance mismatch.
+T3.g — **Bench gate GP3.i** against vLLM's 154.77 t/s measurement.
 
 ## What's NOT in scope
 
