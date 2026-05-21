@@ -8574,3 +8574,47 @@ output because argmax dampens fp32-ULP noise. Recorded in L5 as
 reduction order in the prefill/large-tile MMQ path. Separate
 follow-up if anyone needs prefill-region byte-identity for
 non-argmax purposes (e.g. logit-level comparisons).
+
+---
+
+### 2026-05-21 — Cross-mmq_x dispatch byte-invariance closure
+
+Earlier today's audit (entry above) recorded a ne11=32 ULP-magnitude
+variance as "informational only" — argmax dampens 5e-6 noise so it
+didn't affect production text output.
+
+User pushed to close it properly: add tests, then fix. Done same day:
+
+Mechanism: `mmq.cuh:4974` had `split_k_factor = (mmq_x <= 16) ? 4 : 1`.
+ne11 ≤ 16 routed to `mul_mat_q_split_k<...,4>` (K split into 4
+chunks summed by fixup pass). ne11 > 16 routed to non-split
+`mul_mat_q` (K summed in a single sequential pass). Same operands,
+different fp32 reduction order, different bits.
+
+Fix: uniform `split_k_factor = 4` across all mmq_x. One-line change.
+The split-K kernel was already templated on mmq_x and split_k_factor;
+this just instantiates additional templates for mmq_x in {24,32,...,128}
+that were previously dead.
+
+New regression gate: `test-mulmat-mmq_x-dispatch-invariance.cpp`
+sweeps ne11 ∈ {1,8,16,24,32,40,48,56,64,72,80,96,128,256,512}.
+FAILed 12/15 cases on prior HEAD; PASSes 15/15 post-fix. Wired into
+`scripts/test-batch-shape-invariance.sh` as a sub-test.
+
+L5 (`test-mulmat-batch-shape-invariance`) ne11=32 case moved from
+informational to binding; now passes across all swept shapes.
+
+Perf: TG NP=8 = 24.14 t/s (vs 24.15 baseline = 0.04% delta), PP NP=8
+= 24.55 t/s (vs 24.56 baseline = 0.04% delta). Zero measurable cost.
+The original `mmq_x <= 16` restriction was an under-restriction —
+split-K's SM-occupancy lift applies at every mmq_x where the grid
+under-saturates the 72 SMs.
+
+Production NPC at NP={1,8} multi-GPU: PASS (`quick-pskv-npc-check`).
+Full batch-shape gate: 4/4 sub-tests PASS.
+
+Lesson for future audits: an "informational" finding is a deferred
+TODO that can almost always be closed cheaply if the mechanism is
+diagnosable. In this case it cost ~30k tokens of work to land a
+clean fix with zero perf regression. The "argmax dampens it" framing
+was true but lazy — the cleaner answer was to test, diagnose, fix.
