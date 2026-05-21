@@ -8304,3 +8304,47 @@ and feedback_bisect_before_revert): the CLI Run E bisect was
 correlation, not causation. The flag flip changed *something*
 downstream — likely how restore reads back state — but the save side
 itself is byte-clean.
+
+---
+
+### 2026-05-21 — P0.A.3 Suspect 4 (per_step_restore) falsified by K1' + L2
+
+After Suspect 2 was falsified earlier today, a code-read of the
+per_step_restore path identified Suspect 4: that the
+`per_step_restore(accepted_step)` machinery (`reconstruct_conv_state`
++ `per_step_ssm[il][step]` read + `s_l_shadow` conv-state base +
+`kv.cells[seq].pos` update + `seq_rm`) might diverge from a
+fresh-decode reference. Two binding tests landed on
+production/2026-q2-next (submodule SHA 1e78c18d):
+
+- K1' (`tests/dflash-speculative/test-deltanet-save-all-steps-intermediate.cpp`):
+  At production DeltaNet geometry, the CUDA kernel writes
+  per_step_ssm[k] correctly at every intermediate step, byte-equal
+  to what a fresh n_tokens=k+1 run produces. PASS at all k.
+- L2 (`tests/dflash-speculative/test-dflash-per-step-restore-byte-identity.cpp`):
+  At the libllama layer, a fresh 3-token decode + 1-token bonus
+  produces byte-identical bonus-decode logits to a 5-token
+  verify-batch (save_per_step_ssm=true) + restore(accepted_step=2)
+  + 1-token bonus. PASS, 248320 fp32 logits match.
+
+Five suspects now empirically falsified (cb_eval, cudaMallocAsync,
+save_per_step_ssm libllama, save_all_steps kernel last+intermediate,
+per_step_restore byte-identity). The CLI failure must involve EITHER
+the DFlash drafter pipeline (combine_features → inject_kv_fused →
+drafter_forward → drafter_lm_head) OR multi-cycle restore drift —
+both untested by L2 which exercises ONE save→restore cycle without
+the drafter pipeline.
+
+Side discovery: K1 (the prior LAST-state binding test) had a layout
+caveat — it built beta/g as ggml-contiguous (t-fast) rather than
+production's h-fast (post-permute). K1's PASS still held as
+"kernel save_all_steps branch is neutral" because both modes read
+the same non-production layout symmetrically. K1' explicitly slices
+beta/g in the kernel's coordinate system (slice_first_n_tokens_h_fast)
+to match production. The fix matters for K1', not for K1's specific
+claim.
+
+Lesson: when reading kernels that use precomputed strides
+(g_stride_batch = n_tokens * n_heads) rather than tensor->nb[], the
+test's buffer layout must match the kernel's expected stride math,
+not just the asserted ne[] shape.
