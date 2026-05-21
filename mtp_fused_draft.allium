@@ -346,7 +346,11 @@ invariant FusedDraftRespectsStreamPartition {
 --   LOAD_PROMPT contributes per tick), DecodeHoldGate, and
 --   BatchCompositionInvariant / MixedBatchProhibition. The
 --   verify ubatch that triggers a FusedDraftStep is admitted
---   only when these gates pass.
+--   only when these gates pass. At HEAD the fused draft tick is
+--   a single-slot decode operation (per the
+--   MTPFusedAtN_StreamLessThan2Or1 opt-out below), so it
+--   satisfies BatchCompositionInvariant trivially: one decode
+--   contribution, no LOAD_PROMPT slot in the same batch.
 --
 -- specs/kv-cache/n_stream_layer.allium
 --   Models the 4D per-stream KV layout the project is porting
@@ -355,6 +359,32 @@ invariant FusedDraftRespectsStreamPartition {
 --   becomes removable. The fused draft graph's KV writes
 --   continue to satisfy StreamPartition (per
 --   FusedDraftRespectsStreamPartition above).
+--
+-- specs/dispatch/unified_stream_dispatch.allium
+--   Tier 3 unified-stream dispatch. Under unified dispatch, the
+--   UniformShapePerTick contract guarantees every op — including
+--   the fused draft graph — sees one shape per call within a
+--   tick. The fused graph's per-MTP-step internal structure
+--   (N copies of build_qwen35_mtp wired in series) remains
+--   unchanged; what changes is that a single tick may span
+--   multiple streams, and the cross-stream composition of the
+--   fused draft is governed by
+--   specs/composition/mtp_fused_x_n_stream.allium below.
+--
+-- specs/composition/mtp_fused_x_n_stream.allium
+--   The MTP-fused × n_stream composition spec. At HEAD the
+--   MTPFusedAtN_StreamLessThan2Or1 contract makes the
+--   chain-residual path single-stream by construction: when
+--   the fused decoder dispatches under multi-slot batched
+--   conditions, the chain-residual arm is skipped (opt-out),
+--   so FusedDraftStep as specified here only runs in the
+--   single-stream regime. Cross-stream composition is a future
+--   extension and requires the MTPChainResidualPerStream
+--   contract — per-stream chain_residual indexing — before this
+--   spec's invariants extend to the multi-stream case. The
+--   KvWrittenAtPositionsPThroughPPlusN invariant above is
+--   already per-(seq_id, pos) and survives this future
+--   extension unmodified.
 --
 -- mtp_ubatch_hook.allium
 --   The companion spec — the per-ubatch MTP-KV update during
