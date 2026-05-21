@@ -425,7 +425,121 @@ lands. Total ladder cost: ~45 k tokens. Fix scope estimated at
 Tests stay GREEN once the fix lands — they become a regression
 gate, not a one-time diagnostic. Tests go on `production/2026-q2-next`.
 
+##### P0.A.3 test ladder L1 + K1 result — BOTH PASS, Suspect 2 FALSIFIED (2026-05-21)
+
+L1 + K1 both landed on `production/2026-q2-next` and **both PASS on
+HEAD** — the opposite of the predicted result. This **falsifies**
+Suspect 2 ("save_per_step_ssm / save_all_steps perturbs the verify
+decode"). The earlier CLI run E A/B was correlation, not causation:
+gating save_per_step_ssm OFF via `LLAMA_NO_SPEC_CKPT_SAVE` did change
+the CLI output, but the change isn't reproducible at the libllama
+layer OR the kernel layer in isolation.
+
+###### K1 result (kernel-direct, `test-deltanet-save-all-steps-last-state`)
+
+```
+[gate-A output] byte-identical: 10240 fp32 floats
+last_step_state first 8:   +0.039601  -0.087997  +0.089954  +0.155827  -0.134584  -0.037176  -0.020451  +0.113233
+final_state     first 8:   +0.039601  -0.087997  +0.089954  +0.155827  -0.134584  -0.037176  -0.020451  +0.113233
+[gate-B state] PASS — last per-step state (save_all_steps=true) byte-identical to final state (save_all_steps=false): 262144 fp32 floats
+[PASS] save_all_steps self-consistency: last per-step state == final-only state, byte-identical at production geometry
+```
+
+At production geometry (HEAD_DIM=128, H_V=16, H_K=2, n_tokens=5,
+n_seqs=1) the `ggml_delta_net` CUDA kernel produces **byte-identical**
+output rows AND last-step state across `save_all_steps ∈ {true,
+false}`. The `if (save_all_states)` branch in `delta-net.cu:163-184`
+does NOT perturb the per-step recurrence math at this geometry. The
+kernel is **exonerated** as the kernel-side cause.
+
+###### L1 result (libllama observational, `test-dflash-save-per-step-ssm-observational`)
+
+```
+[save-ssm] disarmed: prefill=12 rows, generated=32 tokens
+per_step_alloc:      CUDA0 per-step buffer =   364.69 MiB (max_tokens=5)
+per_step_alloc:      CUDA1 per-step buffer =   364.69 MiB (max_tokens=5)
+checkpoint_alloc_shadows:      CUDA0 split shadow buffer =    74.81 MiB
+checkpoint_alloc_shadows:      CUDA1 split shadow buffer =    74.81 MiB
+[save-ssm] armed: prefill=12 rows, generated=32 tokens
+[PASS] save_per_step_ssm is observationally equivalent to spec-none on the verify-batch decode: prefill=12 argmax rows match, generated=32 tokens match
+```
+
+At the libllama API surface, calling `llama_spec_ckpt_init(PER_STEP)
++ llama_spec_ckpt_save(seq=0)` (which sets
+`transformer_kv.save_per_step_ssm = true` AND allocates the 364.69
+MiB per-step buffers AND the 74.81 MiB shadow buffers AND performs
+the checkpoint save) **before** each verify-style 5-row decode
+produces a byte-identical per-row argmax sequence to the same decode
+with the flag never armed. Same prompt, same cparams, same kernel
+geometry as the CLI.
+
+The flag + buffer machinery is **exonerated** as the libllama-side
+cause.
+
+###### What this means for the diagnosis
+
+Three suspects are now falsified:
+
+| Suspect | Binding test | Result |
+|---|---|---|
+| cb_eval install (R5.4* matrix) | `test-dflash-extract-observational` | PASS — falsified 2026-05-20 |
+| cudaMallocAsync in combine/inject | run C (sync `cudaMalloc` swap) | FALSIFIED 2026-05-20 |
+| `save_per_step_ssm` / `save_all_steps` | L1 + K1 | FALSIFIED 2026-05-21 |
+
+The CLI failure must therefore come from the **interaction** of the
+DFlash drafter pipeline (combine_features → inject_kv_fused ×
+L_d → drafter_forward → sample-and-accept) with the verify decode,
+not from any single axis we have isolated so far. Specifically:
+neither save_per_step_ssm being TRUE in isolation, nor the kernel's
+per-step state writes, nor cb_eval's residual capture, perturb the
+verify decode by themselves.
+
+Run E from the prior bisect (CLI with `LLAMA_NO_SPEC_CKPT_SAVE`
+producing different degenerate output "...# How to # How to...")
+remains an empirical fact; the L1 PASS shows the gate it flipped
+isn't the proximate cause of the divergence. The likely real
+mechanism: the CLI's drafter pipeline produces *different inputs*
+to the verify decode depending on whether `save_per_step_ssm` is
+on — because `per_step_restore()` at the end of each cycle moves
+the recurrent state differently when per_step buffers exist vs
+when they don't. **Suspect 4: per_step_restore semantics under
+LLAMA_SPEC_CKPT_PER_STEP**, not the save side.
+
+###### Next steps
+
+The test ladder K2 + K3 lose their binding target (both were defined
+against the now-falsified Suspect 2). They will be re-targeted once
+the new root-cause hypothesis is named. L1 + K1 remain in the tree
+as regression gates — both should stay PASS forever.
+
+New diagnostic plan to surface in a follow-up edit to this section:
+- L2 — libllama observational that includes the FULL drafter pipeline
+  (combine_features + inject_kv_fused + drafter_forward) wrapped
+  around the verify decode, comparing spec-none vs DFlash-armed. This
+  is the binding observational that the original P0.A.3 matrix tried
+  to construct but did via a partial bisect.
+- R5.5 — CLI direct A/B with `LLAMA_NO_DFLASH_PER_STEP_RESTORE` (new
+  env-gated diagnostic at `src/llama.cpp:8510` skipping
+  `kv.per_step_restore(accepted_step)`). If this run flips back to
+  non-degenerate output while save_per_step_ssm stays TRUE, restore
+  is the perturber.
+
+L1 + K1 sources committed on this branch. Plan stays open.
+
 ##### P0.A.3 Suspect 2 result — `save_per_step_ssm = true` perturbs the verify decode (2026-05-20)
+
+> **SUPERSEDED 2026-05-21** by the L1 + K1 binding tests above (both
+> PASS on HEAD). The Run E correlation below was real but NOT causal:
+> isolating the save side at the libllama layer (L1) and at the
+> kernel layer (K1) shows the verify decode is byte-identical with
+> save_per_step_ssm armed vs disarmed. The CLI's Run E output
+> difference must come from how the drafter pipeline interacts with
+> per_step_restore() or with the alternative shadow-only path —
+> NOT from save_per_step_ssm itself. The "kernel-level bug" framing
+> in this section is wrong. New suspect (Suspect 4: per_step_restore
+> semantics) is named in the L1 + K1 result section above. Section
+> kept as audit trail; do not act on its "next steps" or the K2/K3
+> rows in the ladder.
 
 > **Suspect 2 confirmed at coarse grain.** A series of env-gated
 > diagnostic patches in `src/llama.cpp` spec_ckpt code produced
