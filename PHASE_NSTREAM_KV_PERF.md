@@ -1833,7 +1833,7 @@ This section supersedes the original Tier 1 and Tier 2 framings below. Both were
 
 **FA-probe diagnostic (2026-05-21):** environment-gated probe in the PSKV launcher hashed K/V/mask bytes at FA entry, with bailout env-toggleable. Compared NP=1 baseline vs NP=8 stream-0 under bailout-active and bailout-dropped at layer `flash_attn_per_slot_kv-1003`.
 
-Findings (full table in [`project_tier2_diagnostic_findings`](../.claude/projects/-home-llm-yarn-agentic/memory/project_tier2_diagnostic_findings.md), captured at ralph row 20 + commit `bcab99d`):
+Findings (full table in user-local memory `project_tier2_diagnostic_findings.md`, captured at ralph row 20 + commit `bcab99d`):
 
 - **Bailout-active NP=8 stream-0:** byte-identical to NP=1 across all hashes. Baseline holds.
 - **Bailout-dropped NP=8 stream-0:** K and V cache-byte hashes **diverge from bound=10 onwards**. Mask hash is **byte-identical to NP=1**. `per_row_k_bound[0]` is **byte-identical to NP=1**. K view `view_offs` is **correct per-stream** (verified directly: streams 1..7 show `K_off = stream_id × parent->nb[3]`).
@@ -1868,7 +1868,7 @@ Findings (full table in [`project_tier2_diagnostic_findings`](../.claude/project
 - Current production NP=8 aggregate TG: **27.73 t/s** (ledger row 7 baseline, hadamard-on profile). Today's same-shape `llama-batched-bench` measurement: **23.96 t/s** (no-hadamard CLI path — ~14% gap to baseline likely from clock state or hadamard contribution, not load-bearing for the A/B comparison).
 - Per-slot at NP=8: ~3.46 t/s.
 - NP=1 single-slot baseline: ~33.5 t/s (no contention).
-- **vLLM measured on the same hardware** (Q4 same quant, no Hadamard): **154.77 t/s aggregate at NP=8** (`data/gate0-np1-np8.json`, ralph row 11 derived from [`project_continuous_batching_vs_perslot_dispatch`](../.claude/projects/-home-llm-yarn-agentic/memory/project_continuous_batching_vs_perslot_dispatch.md)). Per-slot: 19.3 t/s.
+- **vLLM measured on the same hardware** (Q4 same quant, no Hadamard): **154.77 t/s aggregate at NP=8** (`data/gate0-np1-np8.json`, ralph row 11; details in user-local memory `project_continuous_batching_vs_perslot_dispatch.md`). Per-slot: 19.3 t/s.
 - **The vLLM gap is 5.6× aggregate, 5.6× per-slot.** vLLM achieves it on unified-batch dispatch. They don't have Hadamard or our Q4_0 KV; we don't lose those under Tier 3. The dispatch model is the difference, not the kernel quality.
 
 **Realistic projection for Tier 3 closure:**
