@@ -721,6 +721,112 @@ L3 source committed as a regression gate. The test FAILS on HEAD.
 It SHOULD continue to FAIL until the underlying batch-shape
 variance is fixed; do not chase the FAIL into the gate logic.
 
+##### P0.A.3 L3' width sweep — variance starts at n_tokens=2 (2026-05-21)
+
+L3' (`tests/dflash-speculative/test-dflash-verify-batch-width-sweep`)
+sweeps verify_bs ∈ {1, 2, 3, 4, 5, 6, 8} against the autoregressive
+baseline on production Qwen 3.6 27B q4_0 Hadamard dual-GPU.
+
+```
+=== L3' verify-batch width sweep ===
+verify_bs : mismatches / total
+  bs=1    : 0 / 1 PASS  (autoregressive control)
+  bs=2    : 1 / 2 FAIL
+  bs=3    : 1 / 3 FAIL
+  bs=4    : 2 / 4 FAIL
+  bs=5    : 2 / 5 FAIL
+  bs=6    : 3 / 6 FAIL
+  bs=8    : 4 / 8 FAIL
+First failing width = 2.
+```
+
+Variance starts at **n_tokens=2** — the smallest possible
+multi-token same-slot batch. Mismatches scale ~linearly with
+width (about half the rows in any batch), consistent with drift
+that accumulates through model layers as the batch passes
+through.
+
+###### Implication
+
+This is NOT a DFlash-specific bug. ANY same-slot multi-token decode
+on this target produces argmaxes that differ from 1-token
+autoregressive. The bug surface is "whatever code path activates
+when n_tokens > 1 but not at n_tokens = 1". The candidate set is
+narrow:
+
+1. **`build_fused_delta_net` graph-build conditional** at
+   `llama-delta-net.cpp:380-389`:
+   ```cpp
+   if (n_seq_tokens > 1) {
+       q_conv = ggml_permute(ctx0, q_conv, 0, 2, 1, 3);
+       k_conv = ggml_permute(ctx0, k_conv, 0, 2, 1, 3);
+       q_conv = ggml_l2_norm(ctx0, q_conv, eps_norm);
+       k_conv = ggml_l2_norm(ctx0, k_conv, eps_norm);
+   } else {
+       q_conv = ggml_l2_norm(ctx0, q_conv, eps_norm);
+       k_conv = ggml_l2_norm(ctx0, k_conv, eps_norm);
+       q_conv = ggml_permute(ctx0, q_conv, 0, 2, 1, 3);
+       k_conv = ggml_permute(ctx0, k_conv, 0, 2, 1, 3);
+   }
+   ```
+   The two branches run L2 norm on contiguous (n=1) vs strided
+   (n>1) inputs. If the L2 norm op uses different reduction
+   strategies for contiguous vs strided inputs, the fp32 results
+   may diverge. Strong suspect — the branch is gated exactly on
+   the threshold L3' identifies (n_seq_tokens > 1).
+
+2. **FA per-slot KV singlewarp kernel** at multi-token same-slot
+   dispatch. The production NPC gates verify concurrent multi-slot
+   single-token; they don't cover multi-token same-slot. The kernel
+   may have a different K-tile reduction order for n_tokens=2 vs
+   n_tokens=1 inputs.
+
+3. **`ggml_ssm_conv`** invariance across n_tokens. The conv1d
+   produces n_tokens outputs from n_tokens inputs + d_conv-1 cached
+   states. The output for token t in an n=N batch should equal the
+   output for token 0 in an n=1 batch with the same conv state +
+   input. Worth a focused unit test.
+
+###### Why MTP-IR appears to work in production
+
+MTP uses `n_seq_tokens > 1` verify batches in production
+(--draft 3 → verify_bs=4). If the variance hits MTP, why does
+production look fine? Three remaining hypotheses:
+
+- (a) MTP's drafter is trained on the target — it predicts what
+  the verify-batch would produce, not what autoregressive would.
+  Output sequence == verify-batch decode, which is coherent
+  (though different from autoregressive).
+- (b) Variance is small at MTP's typical shape and the user has
+  never compared to autoregressive ground truth.
+- (c) MTP has a workaround we haven't found.
+
+L3' rules out "shape-specific dispatch at verify_bs=5" — it's the
+n_tokens > 1 branch in general.
+
+###### Next: localising the divergent op
+
+L4 — per-layer intra-graph tensor capture at production target:
+- Decode 1-token autoregressive at position P (single token).
+- Decode 2-token verify batch at positions [P, P+1] (row 0 logits
+  match L3'/L1 result for first row).
+- Capture layer-wise hidden states for each path.
+- Diff layer-by-layer to find the first divergent layer.
+- Within that layer, diff op-by-op (RMS norm → q/k/v proj → conv1d
+  → L2 norm → delta_net → MLP) to find the divergent op.
+
+L4 cost: ~30k tokens (extends the existing extract_layers hook to
+capture more layers; reuses `llama_get_dflash_extract_data_seq`).
+
+A targeted shortcut: build the model with the `else` branch of
+`llama-delta-net.cpp:380-389` (n_seq_tokens > 1 path) FORCED for
+n=1 too — i.e., always permute first then L2 norm — and re-run L3'.
+If variance disappears, the graph-build conditional IS the cause.
+~5k tokens of diff + rebuild + re-run.
+
+L3' source committed as a regression gate. Test stays FAIL on
+HEAD until variance is fixed.
+
 ##### P0.A.3 Suspect 2 result — `save_per_step_ssm = true` perturbs the verify decode (2026-05-20)
 
 > **SUPERSEDED 2026-05-21** by the L1 + K1 binding tests above (both
