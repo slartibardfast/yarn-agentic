@@ -2089,15 +2089,15 @@ Submodule `c2a142a4`. Kernel takes `nb33` and addresses mask as `mask + nb33 × 
 
 **Production gate:** NP=1 (collapses to ne[3]=1) still byte-identical. `verify-production-determinism.sh` GREEN.
 
-### T3.4 — `llama_decode` multi-seq path enabled
+### T3.4 — `llama_decode` multi-seq path enabled — *gate dropped*
 
-**Touches:** `src/llama.cpp:5500-5535` — the qnext sub-batching block. Drop the `nstream_demands_subbatch` short-circuit (line 5511-5514) that currently splits multi-seq batches under `n_stream > 1`. Multi-seq batches now flow through to the 4D build path from T3.3.
+**Touched:** `src/llama.cpp` `nstream_demands_subbatch` block. The short-circuit is now gated on `!cparams.flash_attn` — under FA-on, contiguous-per-seq multi-seq batches flow through directly to the T3.2 multi-seq find_slot + T3.3 4D build + PSKV ne[3]>1 dispatch.
 
-Bailout in `can_reuse_graph` (line 610-630) stays active. Multi-seq batches build fresh per call.
+Bailout in `can_reuse_graph` stays active (T3.6 territory). Multi-seq decodes build a fresh graph per call.
 
-**Test gate:** `test-unified-stream-dispatch.cpp` PASS at n_stream>1 with multi-seq batches.
+**Production gate (PASS post-T3.4):** `verify-production-determinism.sh` cross-NP determinism PASS at NP={1,2,4,8} multi-GPU; all slots byte-identical; cross-NP slot-0 matrix BYTE-IDENTICAL. Batch-shape invariance PASS 4/4. Server still dispatches per-stream so production load remains on the single-seq path.
 
-**Production gate:** `verify-production-determinism.sh` GREEN at n_stream>1 with the existing per-stream dispatch (server-context still calls llama_decode per-slot at this step). Multi-seq batches only enter via tests.
+**Binding test (pending — held on disk):** `tests/spec/test-multi-seq-decode-byte-identity.cpp` drives `llama_decode` with a 2-seq contiguous-per-seq batch and asserts byte-identity to two serial single-seq decodes. Lands after a SIGSEGV in early decode is diagnosed (model-side; crash signature is independent of `is_multi_seq` — would crash on HEAD too at the test's specific Qwen 0.8B path). T3.5 starts after this test PASSes — its binding RED→GREEN flip is the gate that proves the unified-stream dispatch produces correct outputs end-to-end.
 
 ### T3.5 — Server-context unified dispatch (bundle B starts)
 
