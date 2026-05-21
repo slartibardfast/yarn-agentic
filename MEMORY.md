@@ -8442,3 +8442,62 @@ This is a real coverage gap.
 Seven binding tests + L3 + L3' now landed on production/2026-q2-next
 (submodule HEAD ~23a61016). L3 + L3' currently FAIL on HEAD as
 regression gates.
+
+---
+
+### 2026-05-21 — P0.A.3 CLOSED. DFlash CLI bug fixed via MMQ I=8 disable
+
+After ~8 binding tests across two days (cb_eval observational,
+cudaMallocAsync isolation, L1+K1+K1'+L2 save→restore chain
+exoneration, L3 + L3' batch-shape variance discovery, L4 per-layer
+localiser, L5 mul_mat kernel probe), the actual root cause of the
+DFlash CLI degeneracy was:
+
+**The MMQ I=8 split-K kernel (`mul_mat_q_split_k_i8` with
+`mma_int_C_I8J8` fragment) is byte-shape-invariant for OUTPUT
+column 0 only.** Columns ≥ 1 in a multi-token same-slot batch
+produce different fp32 bits than the same input vector would at
+column 0 of a single-token dispatch, max |Δ| ≈ 0.36 at production
+K=5120, N=8192.
+
+The bug chain:
+1. DFlash CLI verify decode = n_tokens=5 same slot.
+2. col-1+ output diverges from autoregressive 1-token decode at
+   the same effective context.
+3. Drift compounds through ~64 transformer layers (|Δ|=1 at layer
+   0 row 1 → 154 at layer 63 row 1).
+4. Argmax flips → drafter rejects/accepts wrong → bonus sequence
+   is degenerate.
+
+The MMQ I=8 path was added in PHASE 71-74 for sm_75 decode TG
+perf. The NPC verification at that time compared col 0 across
+concurrent multi-slot single-token (NP={1..8}). It did NOT
+exercise the col-j>0 path that single-slot multi-token speculative
+decoding uses. This was a real test-coverage gap — production
+NP-determinism tests verify cross-slot byte identity at n_tokens=1
+per slot, NOT cross-shape (n_tokens=1 vs n_tokens=2) for the same
+slot.
+
+**Fix**: Set `i8_shape_supported = false` in
+`launch_mul_mat_q` at `ggml/src/ggml-cuda/mmq.cuh:4986`. Restores
+batch-shape invariance for all output columns. Cost: some decode
+TG perf hit (I=8 was the occupancy optimization). To re-enable
+I=8, the col-j>0 FMA accumulation order must match col-0's — a
+non-trivial kernel rewrite.
+
+Production/2026-q2-next submodule HEAD: 8e233e9b. All 8 binding
+regression tests now PASS. dflash-speculative-simple produces
+coherent output ("The capital of Germany is Berlin. The capital
+of Italy is Rome...") with mean accept 2.30/4.
+
+Lesson reinforced (NPC test design): NP-determinism at n_tokens=1
+per slot is a SEPARATE invariant from batch-shape-invariance at
+n_tokens=N same slot. Both must be verified. The latter wasn't,
+and a perf optimization broke it silently.
+
+Process lesson: the diagnosis fell out of a CONSISTENT sequence
+of binding tests, each pushing the boundary inward. The
+"correlation, not causation" patterns at intermediate stages
+(cb_eval, save_per_step_ssm) didn't waste effort — each binding
+test left a regression gate behind, which now collectively prove
+where the bug ISN'T as well as where it WAS.
