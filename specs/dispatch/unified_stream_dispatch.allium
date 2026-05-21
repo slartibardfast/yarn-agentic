@@ -733,6 +733,46 @@ invariant StableTopologyAcrossDecodeTicks {
 --   GGML_CUDA_GRAPH_MAX = 128 entries. Verify at GP3.j: instrument
 --   ggml_cuda_get_graph_cache to count evictions over a 1000-decode
 --   steady-state run.
+--
+-- OQ-6: MTP fused × Tier 3 chain-residual D2D fast-path. Composition
+--   of this spec with [[mtp_fused_x_n_stream]]. At HEAD, MTP's
+--   chain_residual buffer (one tensor per fused step, allocated as
+--   ggml_tensor_2d [n_embd, 1] in src/llama.cpp:6088-6095) is
+--   structurally single-stream — multi-slot batched dispatch
+--   STRUCTURALLY SKIPS the arm at
+--   examples/server/server-context.cpp:3427-3430, falling back to
+--   the host-bounce path (D→H read of embeddings_ith → H→D
+--   set_draft_input_hidden_state). Closure recorded in
+--   [[mtp_fused_x_n_stream]] as MTPFusedAtN_StreamLessThan2Or1.
+--
+--   Under Tier 3 unified dispatch, MTP rides on top of the unified
+--   batch (UnifiedUbatchInvariant). The chain_residual tensor would
+--   then need an ne[3] axis — [n_embd, 1, 1, n_stream] — for the
+--   D2D fast-path to compose with unified dispatch. Without that,
+--   MTP at Tier 3 multi-slot falls through to host-bounce on every
+--   draft cycle. Direct copy cost is ~10-25 µs per cycle for n_embd
+--   = 5120; the larger cost is the implicit llama_synchronize
+--   barrier the host-bounce introduces (tens to low-hundreds of µs
+--   of GPU idle per cycle, depending on pipeline depth).
+--
+--   At np=8, ~24 cycles/sec → ~600 µs/sec direct + ~5 ms/sec
+--   pipeline → up to ~0.5 % of wall time recoverable.
+--
+--   Resolution: not part of the Tier 3 initial-form contract. The
+--   asymmetric case (MTPChainResidualPerStream extension) is
+--   tracked in [[mtp_fused_x_n_stream]] and lands separately, IF
+--   AND ONLY IF (a) MTP becomes the production multi-slot decode
+--   path AND (b) the ~0.5 % recoverable matters relative to the
+--   prevailing perf target. Bind at GP3.k: profile MTP fused-cycle
+--   wall time at np=8 once Tier 3 lands; if MTP draft-cycle host
+--   bounce shows up above the noise floor in nsys traces, open the
+--   per-stream chain extension as its own workstream.
+--
+--   The Tier-3 dispatch contracts above do NOT depend on this OQ
+--   resolving either way — UnifiedUbatchInvariant and
+--   UniformShapePerTick are independent of MTP arming. This OQ
+--   exists to ensure the perf interaction is not lost when MTP
+--   composition under Tier 3 is implemented.
 
 -- ============================================================
 -- Implementation notes
