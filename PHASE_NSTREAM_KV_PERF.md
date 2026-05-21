@@ -959,6 +959,111 @@ output. The TG NP=8 perf hit is significant but recoverable by:
 
 Decision: defer perf recovery to its own phase; ship correctness.
 
+##### P0.A.3 follow-on — NPC test-coverage audit + cross-shape SAME-SLOT gate (2026-05-21)
+
+The MMQ I=8 col-j>0 bug shipped through PHASE 71-74's NPC verification
+because the existing harness exercises only the cross-slot axis at
+n_tokens=1 per slot — every slot is col 0 of its own dispatch. The
+cross-shape SAME-SLOT axis (n_tokens=1 vs n_tokens=N for the same
+slot) was structurally untested.
+
+Closure:
+
+- `tests/dflash-speculative/test-mulmat-batch-shape-invariance.cpp`
+  (kernel-level, no model load): sweeps `ggml_mul_mat(Q4_0, F32)`
+  across (K, N) ∈ {prod-qkv 5120×8192, prod-model-dim 5120×5120,
+  small-square 2048×2048} × ne11 ∈ {1, 2, 5, 8, 16, 32} and asserts
+  every output column byte-identical to the ne11=1 reference.
+  Catches MMQ tile regressions in <60s.
+- `tests/dflash-speculative/test-dflash-verify-batch-width-sweep.cpp`
+  (libllama-level): sweeps verify_bs ∈ {1..8} at the libllama API
+  surface; argmax-equal across widths.
+- `tests/dflash-speculative/test-dflash-multi-cycle-restore-drift.cpp`
+  (libllama-level): verify-batch row-k argmax vs autoregressive at
+  the same effective context.
+- `scripts/test-batch-shape-invariance.sh` orchestrates the three
+  sub-tests above plus the cross-mmq_x dispatch test (below).
+- `scripts/verify-production-determinism.sh` chains the new gate
+  after the existing NPC harness; both must pass to ship.
+
+Result on the I=8-disabled HEAD: all four sub-tests PASS.
+
+##### P0.A.3 follow-on — cross-mmq_x dispatch byte invariance closed (2026-05-21)
+
+L5's cross-shape sweep surfaced a residual fp32 ULP divergence at
+ne11=32 (max |Δ| ~5e-6 at K=5120). Root cause traced to the MMQ
+dispatcher at `mmq.cuh:5168-5186` selecting a compile-time `mmq_x`
+tile size per ne11, and the split-K factor at `mmq.cuh:4974` being:
+
+```
+constexpr int split_k_factor = (mmq_x <= 16) ? 4 : 1;
+```
+
+Tiles for ne11 ≤ 16 routed to `mul_mat_q_split_k<...,4>` (K split
+into 4 chunks summed in fp32 by a fixup pass); tiles for ne11 > 16
+routed to plain `mul_mat_q` (K summed in a single sequential pass).
+Mathematically equivalent, bit-different by ULP magnitude.
+
+Test-first closure:
+
+- New kernel test
+  `tests/dflash-speculative/test-mulmat-mmq_x-dispatch-invariance.cpp`
+  sweeps ne11 ∈ {1, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 96, 128,
+  256, 512}, builds 512 single-column references at ne11=1, and
+  asserts every dispatch column byte-identical to its reference.
+  On HEAD pre-fix: FAILED 12/15 (PASS at ne11 ∈ {1,8,16}; FAIL at
+  every tile transition from ne11=24 upward). Confirms the
+  mechanism.
+
+Fix (one line):
+
+```diff
+-constexpr int split_k_factor = (mmq_x <= 16) ? 4 : 1;
++constexpr int split_k_factor = 4;
+```
+
+at `ggml/src/ggml-cuda/mmq.cuh:4974`. Unifies the K-axis reduction
+structure across every MMQ tile. The split-K kernel and fixup were
+already templated on `mmq_x` and `split_k_factor`, so this just
+instantiates additional templates for `mmq_x ∈ {24,32,...,128}`
+that were previously dead.
+
+Gates post-fix:
+
+| Test | Pre-fix | Post-fix |
+|---|---|---|
+| `test-mulmat-mmq_x-dispatch-invariance` ne11 ∈ {1..512} | 3/15 PASS | 15/15 PASS |
+| `test-mulmat-batch-shape-invariance` (ne11=32 promoted from informational to binding) | informational diff | binding PASS |
+| `quick-pskv-npc-check` NP={1,8} | PASS | PASS |
+| `test-batch-shape-invariance.sh` (4 sub-tests) | 3 PASS, 1 N/A | 4/4 PASS |
+
+Perf delta (llama-batched-bench, Qwen 3.6 27B q4_0 Hadamard,
+dual-GPU, c=4096, npp=200 ntg=64 npl=8):
+
+| Configuration | TG NP=8 (t/s) | PP NP=8 (t/s) |
+|---|---|---|
+| HEAD pre-fix (I=8 disabled, split_k_factor (mmq_x≤16) ? 4 : 1) | 24.15 | 24.56 |
+| HEAD post-fix (I=8 disabled, uniform split_k_factor=4) | 24.14 | 24.55 |
+| Δ | −0.04% | −0.04% |
+
+Inside measurement noise. G3.h binding gate is unaffected (the prior
+P0.A.3 I=8-disable cost of −12.95% vs the broken-but-fast pre-fix
+baseline still stands; that's the gate-relaxation conversation, not
+this fix).
+
+Why Option A (uniform split_k_factor=4) is free: the original
+`mmq_x ≤ 16` restriction was an under-restriction. Split-K's
+SM-occupancy lift applies at every mmq_x where the grid
+under-saturates TU102's 72 SMs. At very-large mmq_x where the grid
+is already saturated, the fixup-pass overhead (3 fp32 adds per
+output element + one tiny kernel launch) is dominated by the
+K-reduction work it parallelises. The bench confirms directly.
+
+Lesson banked in MEMORY: "informational" findings should be closed
+properly when the mechanism is diagnosable, not deferred behind an
+"argmax dampens it" rationale. ~30k tokens converted a known latent
+issue into a clean fix plus a permanent regression gate.
+
 ##### P0.A.3 Suspect 2 result — `save_per_step_ssm = true` perturbs the verify decode (2026-05-20)
 
 > **SUPERSEDED 2026-05-21** by the L1 + K1 binding tests above (both
