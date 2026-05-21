@@ -8348,3 +8348,56 @@ Lesson: when reading kernels that use precomputed strides
 (g_stride_batch = n_tokens * n_heads) rather than tensor->nb[], the
 test's buffer layout must match the kernel's expected stride math,
 not just the asserted ne[] shape.
+
+---
+
+### 2026-05-21 — P0.A.3 L3 binds batch-shape variance (model-level)
+
+L3 (`tests/dflash-speculative/test-dflash-multi-cycle-restore-drift`)
+exposes the real P0.A.3 mechanism. After five suspects were falsified,
+L3 was written to bind multi-cycle save→restore drift; the first
+run revealed something much sharper. The test was rewritten as a
+clean batch-shape-invariance probe and lands on production/2026-q2-next
+(submodule 320d5440):
+
+**Single 5-token verify decode produces DIFFERENT per-row argmaxes
+than 1-token-at-a-time autoregressive at the same effective context
+on production Qwen 3.6 27B q4_0 Hadamard dual-GPU.** 10/25 rows
+mismatched across 5 independent windows. No spec_ckpt, no DFlash
+drafter pipeline in the test — pure libllama batch-shape comparison.
+
+Implication: the DFlash CLI's degenerate output is at least partly
+explained by the verify-batch decoder producing sequences that
+diverge from autoregressive. The CLI's drafter supplies tokens;
+verify-batch accepts or rejects by its own argmax which differs
+from autoregressive; the bonus token sequence emitted is determined
+by verify-batch's preference. If verify-batch degenerates, the CLI
+degenerates.
+
+K1' verified the DeltaNet CUDA kernel itself is byte-equivalent
+across n_tokens, so the variance enters at a layer K1' doesn't
+exercise — most likely the FA per-slot KV singlewarp kernel's
+dispatch at n_tokens=5 same-slot (a path the production NPC gates
+don't cover, since they test concurrent multi-slot single-token
+decodes), or possibly the graph-build conditional at
+delta-net.cpp:380-389 (permute/L2-norm ordering branches on
+n_seq_tokens > 1).
+
+Production NP-determinism gates (G3.a/b) don't cover this case
+because they verify byte-identity across concurrent NP={1,2,4,8}
+single-token-per-slot dispatches. They do NOT exercise "one slot
+processes N tokens in one decode vs that same slot processing those
+N tokens one-at-a-time across N decodes". The cross-shape n=5↔n=1
+invariance was untested until L3.
+
+Open question: how does MTP-IR work in production at np=1 if
+verify-batch ≠ autoregressive? Hypotheses: (a) MTP uses a smaller
+verify-batch shape where variance is absent/smaller; (b) MTP also
+has the variance but the output sequence is coherent enough to
+pass user acceptance and never compared to autoregressive ground
+truth. L3' (sweep verify_bs ∈ {1..8}) would distinguish.
+
+Lesson: the production NPC gates verify cross-NP byte-identity at
+n_tokens=1 per slot. They do NOT verify cross-n_tokens byte-identity
+for the same slot. Two different invariants; one was assumed and
+not tested.
