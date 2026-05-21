@@ -8672,3 +8672,42 @@ flagged in the auto-memory under `feedback_np_cluster_partition_signature`.
 (P0.A.1, P0.A.2, P0.A.3, P0.A.4, P0.A.5). P0.B (spec / TLA+ / test
 surface expansion) is the remaining Tier-2 prerequisite per
 `PHASE_NSTREAM_KV_PERF.md`.
+
+## 2026-05-21 — NP=4 "stochastic" divergence was test contamination, not a real bug
+
+Amending the earlier P0.A.4 closure note that flagged a stochastic
+NP=4 failure during this session.
+
+**Mechanism (not a real bug):** I accidentally launched two
+`verify-production-determinism.sh` runs concurrently
+(`bau0n9ple` at 10:02:37 and `bvlepp0f3` at 10:03:30 without stopping
+the first). Both binaries claim `--device CUDA0,CUDA1` and run
+servers on port 18292 with `pkill -x llama-server` between phases.
+The two runs raced: while Run 1's NP=4 server was mid-decode, Run 2
+started its own NP=1 server on the same GPUs (and may have `pkill`-ed
+Run 1's server). Slots 0+2 of Run 1's NP=4 read corrupted KV / saw
+the wrong process's buffers; slots 1+3 happened to finish before the
+collision. Result: half-correct, half-Chinese-text output.
+
+**Confirmation:** `scripts/probe-np4-stochastic.sh 5` (purely
+sequential 5 iters of verify-production-determinism) passes 5/5
+byte-identical at NP={1,2,4,8}. No stochasticity when runs don't
+overlap.
+
+**Provenance for the diagnostic signature:** within-NP even/odd
+divergence (slots {0,2} ≢ slots {1,3} within one NP value) is NOT
+the classic dispatcher-branch cluster signature — it's the
+fingerprint of two NP=N server instances competing for the same
+GPU buffers. Half the slots' kernels happen to read from the other
+process's allocation, half read from their own. Distinct from the
+historical "cluster of NPs ≡ each other" partition described in
+auto-memory `feedback_np_cluster_partition_signature`.
+
+**Behavioral fix:** before launching any
+verify-production-determinism / llama-batched-bench / probe-style
+test, verify with `pgrep -f "verify-production\|llama-server"` and
+`TaskStop` any in-flight background runs. Per
+`feedback_no_overlapping_benchmarks`, this is a one-strike rule. A
+script-level safeguard (e.g. having verify-production-determinism
+claim the same `coord/gpu-*.lock` files the rest of the harness uses)
+would prevent the accidental version of this and is worth adding.
