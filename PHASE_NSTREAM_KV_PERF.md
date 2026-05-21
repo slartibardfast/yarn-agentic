@@ -233,6 +233,198 @@ Submodule commit:
 > Diagnostic env-gate at `src/llama.cpp:10072` REVERTED in working
 > tree. Not committed; nothing to revert in git history.
 
+##### P0.A.3 test ladder for `save_per_step_ssm` / `save_all_steps` binding (2026-05-21)
+
+> Now that A→D→E bisection narrowed the bug to the
+> `ggml_delta_net` kernel's `save_all_steps` parameter, this section
+> plans the test ladder that will bind the invariant at four
+> increasingly specific levels. Tests go in
+> `ik_llama.cpp/tests/dflash-speculative/`, plan stays here. All
+> tests are self-consistency comparisons (save_all_steps=true LAST
+> per-step state must byte-equal save_all_steps=false final state) —
+> no external reference values needed because the kernel runs the
+> same sequential recurrence either way.
+
+###### L1 — libllama observational: `test-dflash-save-per-step-ssm-observational.cpp`
+
+The cb_eval observational pattern, retargeted to `save_per_step_ssm`.
+Cheapest test in the ladder; binds the system-level invariant
+before drilling into the kernel.
+
+Setup:
+- Load Qwen 3.6 27B target, q4_0 KV, Hadamard ON, dual-GPU.
+- Tokenize a short prompt; call `llama_decode` of the whole prompt
+  as a single multi-token batch (the shape that triggers the bug).
+- Capture per-row argmax of the prefill logits.
+
+Two passes:
+1. Default — `save_per_step_ssm` left false.
+2. Armed — call `llama_spec_ckpt_init(ctx, LLAMA_SPEC_CKPT_AUTO, n_tokens+1)`
+   then `llama_spec_ckpt_save(ctx, 0)` BEFORE the decode. That sets
+   `save_per_step_ssm = true`. Call `llama_kv_cache_seq_rm` between
+   passes to clear cache. Same prompt, same seed, same cparams.
+
+Assertions:
+- `argmax_disarmed.size() == argmax_armed.size()`.
+- Byte-identical at every row. FAIL → save_per_step_ssm IS the
+  system-level perturbation (we already strongly suspect this from
+  the CLI A/B; L1 confirms at the libllama layer where the libllama
+  observational cb_eval test passed cleanly).
+- Mechanism check: assert `kv.save_per_step_ssm == true` after
+  step (2)'s spec_ckpt_save (binds that we actually exercised the
+  variable, per `feedback_verify_test_mechanism_before_trusting`).
+
+Predicted result: armed argmax DIFFERS from disarmed. Binding.
+
+Token cost: ~15 k.
+
+###### K1 — kernel-direct last-state equivalence: `test-deltanet-save-all-steps-last-state.cpp`
+
+The minimum binding test for the kernel-level invariant. Mirrors
+the existing `test-deltanet-shape-invariance.cpp` style (direct
+ggml_delta_net via CUDA backend, no llama_context, fp32 inputs).
+
+Geometry (production DeltaNet):
+- `HEAD_DIM = 128`, `H_V = 16`, `H_K = 2` (gqa_ratio=8).
+- `n_tokens = 5` (the production verify-batch shape).
+- `n_seqs = 1` (single-slot to start; K1 follow-up adds n_seqs=2).
+
+Inputs (deterministic, seeded):
+- Q, K: `[HEAD_DIM, n_tokens, H_K, n_seqs]`, fp32 random in [-0.5, 0.5].
+- V: `[HEAD_DIM, n_tokens, H_V, n_seqs]`, fp32 random.
+- G: `[n_tokens, 1, H_V, n_seqs]`, fp32 random.
+- Beta: `[1, n_tokens, H_V, n_seqs]`, fp32 random.
+- State: `[HEAD_DIM, HEAD_DIM*H_V, 1, n_seqs]`, fp32 random.
+
+Two graphs, same inputs:
+- `out_false = ggml_delta_net(..., save_all_steps=false)` — total size
+  `output_size + state_size`.
+- `out_true  = ggml_delta_net(..., save_all_steps=true)` — total size
+  `output_size + n_tokens * state_size`.
+
+After execution:
+- Extract `final_state = out_false[output_size .. output_size + state_size)`.
+- Extract `last_per_step = out_true[output_size + (n_tokens-1)*state_size
+  .. output_size + n_tokens*state_size)`.
+- Both views have `state_size = HEAD_DIM * HEAD_DIM * H_V * n_seqs` floats.
+
+Assertion: `final_state == last_per_step` byte-identical at fp32.
+
+Reporting on FAIL:
+- Print first-divergent index, both values, ulp diff.
+- Per-warp / per-head decomposition: which warp_id and head_id the
+  divergence is in. Helps the kernel-level fix target the right
+  loop iteration.
+
+Predicted result: FAIL at the first multi-step recurrence. The
+divergence will be at the LAST step of the state update.
+
+Token cost: ~12 k.
+
+###### K2 — per-iter bisect: `test-deltanet-save-all-steps-bisect.cpp`
+
+Smallest-n_tokens search. Confirms whether divergence appears at
+step 1 (the first multi-step iteration) or accumulates later. The
+result tells us how the compiler is rescheduling: if at step 1, the
+state update path is reordered by the `if (save_all_states)` branch
+itself; if at step >= 2, accumulation drift inside the per-step
+write.
+
+For `n_tokens ∈ {1, 2, 3, 4, 5, 8, 16}`:
+- Build and run BOTH save_all_steps modes.
+- Compare per_step_state[n_tokens-1] (from true) vs final_state
+  (from false).
+
+Report:
+- Smallest `n_tokens` where divergence appears.
+- For each n_tokens, ulp-distance of the most-divergent element.
+
+Two sub-cases inside the same test:
+- n_tokens=1: the per-step loop runs once. The save_all_states=true
+  path writes the state to per_step_state[0]; the save_all_states=false
+  path writes the SAME state to final_state. The two write
+  destinations are different memory regions but the SOURCE
+  (state_local register) is identical. Predicted: PASS at n_tokens=1.
+- n_tokens=2: the loop runs twice. State_local is updated at t=0,
+  then again at t=1. If the writes at t=0 (under save_all_states=true)
+  spill state_local to register-bank-different addresses, the t=1
+  recompute could see different scheduling. Predicted: FAIL at
+  n_tokens=2 if the bug is per-iteration scheduling.
+
+If K2 shows divergence ONLY at n_tokens >= 2, the smoking gun is in
+the per-iteration loop body's instruction scheduling.
+
+Token cost: ~10 k.
+
+###### K3 — output-token equivalence: `test-deltanet-save-all-steps-output-tokens.cpp`
+
+Comparing the per-token OUTPUT rows (the `out_base` writes, not
+state). The output rows are computed identically in both
+save_all_states modes (the `if (save_all_states)` branch only
+controls state writes, not output writes). If output rows
+DIFFER, the compiler is reordering operations in the state-update
+loop in ways that perturb FMA fusion / register usage, cascading
+into the output computation.
+
+Setup: identical to K1 (same inputs).
+
+Compare: `out_false[0 .. output_size)` vs `out_true[0 .. output_size)`.
+Should be byte-identical.
+
+Outcomes:
+- PASS: only state writes differ, output is clean. The bug is
+  isolated to the recurrent state path; the output is unaffected.
+  Fix is to align save_all_states=true's state writes with =false's
+  via explicit barrier / volatile / __syncthreads placement.
+- FAIL: output rows ALSO differ. The compiler is reordering the
+  shared state-update loop body. Fix is more invasive (force
+  identical instruction scheduling between modes; possibly by
+  always writing per-step states and then choosing the right offset
+  on the host side — removing the runtime branch from the kernel).
+
+Token cost: ~8 k.
+
+###### Closure binding (what "fix landed" means)
+
+The fix lands when ALL of the following hold:
+1. K1 PASS at production geometry (n_seqs=1 AND n_seqs=2).
+2. K2 PASS across n_tokens ∈ {1..16}.
+3. K3 PASS at production geometry.
+4. L1 PASS at the libllama level.
+5. `dflash-speculative-simple` at the documented prompt produces
+   non-degenerate output AND mean accept rate ≥ 1.0 — same gate as
+   PHASE_DFLASH.md T5 closure.
+6. `examples/dflash-speculative-simple` byte-identical-to-spec-none
+   on at least one prompt where spec-none and DFlash should agree
+   (every accepted token must match what spec-none would have
+   produced at the same position).
+
+Gate 5 is the user-visible "DFlash CLI no longer broken" signal.
+Gate 6 is the strict-binding "DFlash is observationally equivalent
+to spec-none" — the original P0.A.3 invariant before the matrix
+went astray.
+
+###### Sequencing
+
+L1 + K1 land together (cheapest, both bind the same invariant at
+different levels). If both PASS unexpectedly, save_per_step_ssm
+ISN'T the kernel-side cause and we re-open. If both FAIL as
+predicted, K2 + K3 follow to narrow the fix surface, then the fix
+lands. Total ladder cost: ~45 k tokens. Fix scope estimated at
+~30-60 k.
+
+###### What gets committed along the way
+
+- L1 + K1 sources, CMakeLists wiring, and an initial PASS/FAIL row
+  in this section: one commit.
+- K2 + K3 added once K1 has bound: separate commit.
+- The actual kernel fix: separate commit with its own subsection
+  here (mechanism + fix + before/after K1-K3 results).
+- MEMORY.md append-only entry on closure.
+
+Tests stay GREEN once the fix lands — they become a regression
+gate, not a one-time diagnostic. Tests go on `production/2026-q2-next`.
+
 ##### P0.A.3 Suspect 2 result — `save_per_step_ssm = true` perturbs the verify decode (2026-05-20)
 
 > **Suspect 2 confirmed at coarse grain.** A series of env-gated
