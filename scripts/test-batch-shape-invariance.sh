@@ -83,10 +83,17 @@ run_test() {
     fi
 }
 
-# Test 1: kernel-level MMQ batch-shape invariance.
+# Test 1a: kernel-level MMQ batch-shape invariance.
 # Single-GPU CUDA only (no model load), needs CUDA0 free.
 run_test "kernel-mulmat-batch-shape" \
     "test-mulmat-batch-shape-invariance" \
+    env CUDA_VISIBLE_DEVICES=0
+
+# Test 1b: kernel-level MMQ cross-mmq_x dispatch invariance.
+# Sweeps every dispatcher tile boundary from ne11=1 up to ne11=512;
+# binds the uniform-split_k_factor closure (mmq.cuh 2026-05-21).
+run_test "kernel-mulmat-mmq_x-dispatch" \
+    "test-mulmat-mmq_x-dispatch-invariance" \
     env CUDA_VISIBLE_DEVICES=0
 
 # Tests 2-3: libllama-level. Need target GGUF.
