@@ -8618,3 +8618,57 @@ TODO that can almost always be closed cheaply if the mechanism is
 diagnosable. In this case it cost ~30k tokens of work to land a
 clean fix with zero perf regression. The "argmax dampens it" framing
 was true but lazy — the cleaner answer was to test, diagnose, fix.
+
+
+## 2026-05-21 — P0.A.4 multi-slot DFlash SEGV closed
+
+Closed on `production/2026-q2-next`. Submodule commit `cad6b591`;
+parent commits `cad6b591` (server fix) and `a12609a` (regression
+gate + submodule bump).
+
+**Symptom (pre-fix):** at `--spec-type dflash --parallel 2`, the
+server crashes on the first verify cycle with
+`llama_get_logits_ith: invalid logits id 5, reason: batch.logits[5] != true`.
+
+**Root cause:** the per-stream split in `process_batch_tokens`
+issues one `llama_decode` per slot per tick (Bug C-safe). The engine
+resets `output_ids` on every `llama_decode` AND indexes it in the
+LOCAL frame `[0..n_tokens)` of the dispatched `batch_view`, not the
+GLOBAL frame of the combined `batch`. The in-loop call to
+`speculative_decoding_accept()` walked **all** slots using their
+GLOBAL `slot.i_batch_dft` indices — only the just-decoded slot's
+indices resolved against `output_ids`; every other slot hit
+`output_ids[N] = -1`. At np=2 with `--draft-max 4`, slot 1's
+`i_batch_dft[0] = 5` falls outside slot 0's just-decoded
+`output_ids` window, throwing on the first attempt to sample slot 1.
+
+**Fix:** signature change
+`speculative_decoding_accept(int32_t batch_offset, int run_seq_id)`
+plus a `slot.id == run_seq_id` filter in Phase A and an index
+translation (`g - batch_offset`) before any `llama_get_logits_ith` /
+`llama_decoder_get_embeddings_ith` call. The np=1 two-phase split is
+preserved trivially since `accepted` now holds at most one slot per
+call.
+
+**Regression test (new):** `scripts/test-server-multi-slot-dflash.sh`
+boots the production DFlash profile at `--parallel 2`, sends two
+concurrent `/v1/completions`, asserts both return coherent text.
+RED on pre-fix HEAD (curl 52, server log
+`batch.logits[5] != true`); GREEN post-fix.
+
+**Verified gates:**
+- `scripts/test-server-multi-slot-dflash.sh` — PASS post-fix.
+- `scripts/verify-production-determinism.sh` — PASS (NP={1,2,4,8}
+  all slots byte-identical to NP=1; cross-NP slot-0 matrix
+  byte-identical; batch-shape invariance gate 4/4 sub-tests PASS).
+
+**Stochastic NPC note:** one verify-production-determinism run
+during this session failed at NP=4 with a hard divergence (Chinese
+text + completely different output, not subtle drift); a subsequent
+run passed cleanly with the same binary. Worth keeping an eye on;
+flagged in the auto-memory under `feedback_np_cluster_partition_signature`.
+
+**Tier 2 entry condition is now strict:** all P0.A items closed
+(P0.A.1, P0.A.2, P0.A.3, P0.A.4, P0.A.5). P0.B (spec / TLA+ / test
+surface expansion) is the remaining Tier-2 prerequisite per
+`PHASE_NSTREAM_KV_PERF.md`.
