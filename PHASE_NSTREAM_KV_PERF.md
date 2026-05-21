@@ -2190,7 +2190,7 @@ Per CLAUDE.md §8:
 
 **Already spent (closed):**
 - **Phase 0.A** — DFlash server CLI verify-on-post-fold: ~110 k spent on landed fixes (MAL cap + stage end-trim) + falsification matrix. P0.A.3 deferred (~30-100 k, parallel workstream, does NOT gate T3 since production runs MTP not DFlash CLI).
-- **Phase 0.B** — spec/TLA+/test surface expansion: ~105-170 k spent. 5 .allium specs in tree (`scheduler/batch_composition`, `kv-cache/n_stream_layer`, `kv-cache/per_stream_read_view_patching`, `dispatch/unified_stream_dispatch`, `composition/mtp_fused_x_n_stream`). 7 property tests in `tests/spec/`. Some tests RED-bound to specific T3 cards.
+- **Phase 0.B** — spec/TLA+/test surface expansion: ~105-170 k spent. 4 .allium specs in tree post-T3.0 (`scheduler/batch_composition`, `kv-cache/n_stream_layer`, `dispatch/unified_stream_dispatch`, `composition/mtp_fused_x_n_stream`; `kv-cache/per_stream_read_view_patching` removed by T3.0 with its companion test as the Tier 2 read-view-patching contract no longer exists). 6 property tests in `tests/spec/` (one removed in T3.0). Some tests RED-bound to specific T3 cards.
 - **Tier 1 / Tier 2 closure** — diagnostic + perf A/B: ~50-80 k spent (FA-probe build/run/analyse, graphs ON-vs-OFF A/B, ledger rows 20-21, PHASE retrospective, mdBook update).
 
 **Remaining (Tier 3 bundles):**
