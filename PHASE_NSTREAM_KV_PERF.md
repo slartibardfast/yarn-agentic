@@ -2033,15 +2033,147 @@ Risk: DFlash's kernel-level `n_slots_cap` distinction ([[feedback_drafter_forwar
 
 **Q4. How does Tier 2 compose with MTP fused graph reuse?** `can_reuse_graph` Phase 37 #5 allows n_tokens>1 reuse when `mtp_op_type == MTP_OP_DRAFT_GEN_FUSED` and step counts match. Tier 2 drops the n_stream>1 short-circuit. Both checks compose: at n_stream>1 with MTP fused, the path now reuses through the MTP fused branch AND patches per-stream view offsets via update_cache_copies. Verify: MTP fused at NP>1 continues to work — covered by the existing PHASE_NSTREAM_KV closure gates.
 
-## Implementation cards (Tier 3 — sketch, locked at Tier 2 close)
+## Implementation cards (Tier 3 — refined 2026-05-21 post Tier 2 closure)
 
-T3.a — **Probe**: read upstream PR #14363 `split_equal` semantics and unified ubatch graph builder changes. Map to ik_llama.cpp equivalents. Specifically identify how upstream handles the (Q/K/V projection, RMSNorm, MLP, output proj) shape-invariance across the unified-batch dimension.
-T3.b — **Server-side fusion** in `process_batch_tokens` (`examples/server/server-context.cpp:4610`). Replace the seq_id-run split with a unified ubatch builder. Preserve sub-batching for INTERLEAVED patterns at n_stream>1 (the bench-path fix from `16b608d1`).
-T3.c — **KQ mask builder**: emit `[n_kv, n_tokens/n_stream, 1, n_stream]` shape. Per-stream row filtering via existing seq_id mask logic.
-T3.d — **FA dispatch verification**: confirm `GGML_OP_FLASH_ATTN_EXT_PER_SLOT_KV` is emitted by `llm_build_kqv` for the unified-ubatch shape and routes to the PSKV pb1 wrapper. The kernel handles n_stream at ne[3] via the per-slot mask + KV pointer arrays per slot. `per_row_k_bound` is plumbed (currently a no-op for correctness — mask handles bound enforcement; future perf opt for loop-tail trim).
-T3.e — **Non-FA shape-invariance audit**: Q/K/V projection matmuls, RoPE, RMSNorm, MLP, output projection. P2 memory flagged these as divergence sources at NP>1 pre-PHASE_NSTREAM_KV ("E2 NP=4 sequential showed run2 differing from run1+run3"). PHASE_NSTREAM_KV's per-stream dispatch resolved this empirically. Tier 3 puts these ops back at ne[1]>1 within a tick. Verify via GP3.j (all Tier-2 gates remain GREEN including NPC byte-identity).
-T3.f — **Drop `n_stream==1` guards** on `build_k_shift` / `build_defrag` / `v_trans` per PHASE_NSTREAM_KV's open-follow-up list. Required for full multi-slot ctx_shift + cache compaction; previously gated because of per-stream-dispatch impedance mismatch.
-T3.g — **Bench gate GP3.i** against vLLM's 154.77 t/s measurement.
+Sequenced as **two coherent bundles** per `feedback_oneshot_then_evaluate`:
+
+- **Bundle A (Steps 0–4) — infrastructure plumbing.** Lands without flipping dispatch. Bailout stays active so production (n_stream>1 single-seq per call) is unchanged at every intermediate step. Each step adds a property-test gate and keeps `verify-production-determinism.sh` GREEN at production shape. End of bundle: the 4D unified-batch path exists and is exercised by synthetic multi-seq tests, but server-context still dispatches per-stream.
+- **Bundle B (Steps 5–8) — the dispatch flip.** Server-context fusion + bailout drop + n_stream==1 guard lifts + DFlash composition + perf gate. One coherent commit (with sub-commits for traceability) that flips the world.
+
+### T3.0 — Remove Tier 2 scaffolding (cleanup)
+
+**Touches:**
+- `src/llama-context.h` — drop `CacheReadView` struct + `cache_read_views` vector.
+- `src/llama.cpp` — drop the per-stream read-view patch loop in `update_cache_copies()` (lines 782-795); drop the `[PARKED]` comment block at lines 610-629; keep the bailout (will be removed in T3.6).
+- `src/llama-build-context.cpp` — drop `ggml_set_read_view_indirect_slot(k, …)` / `ggml_set_read_view_indirect_slot(v, …)` calls in both `llm_build_kqv` and `build_std_attention` paths; drop the `ggml_set_fa_indirect_slots(cur, …)` calls; drop the `cache_read_views[idx].view = k/v` assignments.
+- `ggml/include/ggml.h` + `ggml/src/ggml.c` — drop `ggml_set_fa_indirect_slots` / `ggml_get_fa_K_indirect_slot` / `ggml_get_fa_V_indirect_slot` and the FA op_params[14]/[15] convention.
+- `ggml/src/ggml-cuda.cu` — drop the per-tick read-view-src-ptrs refresh hook (lines 4668-4720) and `graph->use_read_view_indirection` / `read_view_src_ptrs` / `read_view_src_ptrs_d` fields.
+- `ggml/src/ggml-cuda/graph.cuh` — drop matching fields.
+- `ggml/src/ggml-cuda/fattn-per-slot-kv-singlewarp-sm75.cu` — drop `src_ptr_table` / `K_slot_idx` / `V_slot_idx` kernel parameters + the indirection lookup path; keep `nb33` (T3.1 foundation).
+- `tests/spec/test-per-stream-read-view-patching.cpp` — re-purpose to assert the registry is GONE, OR delete entirely. The contract no longer exists.
+- `specs/kv-cache/per_stream_read_view_patching.allium` — mark superseded by `specs/dispatch/unified_stream_dispatch.allium` (or delete).
+
+**Keep:**
+- 4D K/V tensor layout `[head_dim, kvps, n_head_kv, n_stream]` (PHASE_NSTREAM_KV closure).
+- `cache_copies` WRITE-side per-stream patching (still load-bearing — CPY writes happen every tick regardless of dispatch model).
+- `v_heads` per-stream cursor; `kv_size_per_stream`, `n_stream` foundation fields.
+
+**Gate:** build clean. `verify-production-determinism.sh` NP={1,2,4,8} GREEN. DFlash test suite GREEN.
+
+### T3.1 — PSKV `nb33` mask addressing — *landed*
+
+Submodule `c2a142a4`. Kernel takes `nb33` and addresses mask as `mask + nb33 × seq + nb31 × tok`. At `ne[3]=1` collapses to legacy via `nb33 × 0 = 0`. Foundation for the unified-batch path.
+
+### T3.2 — `find_slot` multi-seq allocation
+
+**Touches:** `src/llama.cpp:1362` (`llama_kv_cache_find_slot`).
+
+**Semantics:** when `n_stream > 1` AND `batch.n_seq_id` is populated with multiple distinct seq_ids across tokens, allocate each token into its seq_id's stream slice. Today the function reads `batch.seq_id[0][0]` once and uses that as the stream_id for the whole batch (line 1421-1431). The refactor: group tokens by seq_id, allocate within each group's stream slice.
+
+**Token ordering assumption (OPEN — see Open Questions):** the implementation will assume tokens-per-seq contiguous in the batch (seq 0's all tokens, then seq 1's, then seq 2's, …). Upstream PR #14363's `split_equal` semantics confirm this convention.
+
+**Test gate:** `tests/spec/test-n-stream-kv-layout.cpp` extended (or new test in the same file) — synthetic multi-seq batch with known token positions → assert each cell's `pos` and `seq_id` match expected stream offsets.
+
+**Production gate:** `verify-production-determinism.sh` GREEN (single-seq path unchanged).
+
+### T3.3 — Build context 4D K/V/mask/Q
+
+**Touches:**
+- `src/llama-build-context.cpp` `llm_build_kqv` + `build_std_attention` — when batch is multi-seq AND `n_stream > 1`, build K/V as 3D views (already done — `ggml_view_3d` with stream offset). Q reshape to 4D `[head_dim, n_head, n_tok_per_seq, n_stream]`. FA op routes to PSKV (T3.1's nb33 handles ne[3]>1 mask addressing).
+- `src/llama-build-context.cpp` `build_inp_KQ_mask` (line 383) — emit `[n_kv, n_tok_per_seq, 1, n_stream]` 4D mask shape when multi-seq. Today the mask is 2D `[n_kv, n_tokens]` — needs widening with stream as the outermost dim.
+- `src/llama.cpp` `llama_set_inputs` mask-fill loop (line 4592-4791) — fill the 4D mask per-stream using `_kv_mask_base = stream_id × kvps`. Already partly done at line 4602 for the n_stream>1 case; refactor to iterate streams as the outermost loop.
+
+**Test gate:** synthetic 2-stream decode (one tick, 2 tokens, distinct seq_ids) produces byte-identical output to two serial per-stream decodes at the same starting state. `test-unified-stream-dispatch.cpp` flipped from RED to GREEN at this step.
+
+**Production gate:** NP=1 (collapses to ne[3]=1) still byte-identical. `verify-production-determinism.sh` GREEN.
+
+### T3.4 — `llama_decode` multi-seq path enabled
+
+**Touches:** `src/llama.cpp:5500-5535` — the qnext sub-batching block. Drop the `nstream_demands_subbatch` short-circuit (line 5511-5514) that currently splits multi-seq batches under `n_stream > 1`. Multi-seq batches now flow through to the 4D build path from T3.3.
+
+Bailout in `can_reuse_graph` (line 610-630) stays active. Multi-seq batches build fresh per call.
+
+**Test gate:** `test-unified-stream-dispatch.cpp` PASS at n_stream>1 with multi-seq batches.
+
+**Production gate:** `verify-production-determinism.sh` GREEN at n_stream>1 with the existing per-stream dispatch (server-context still calls llama_decode per-slot at this step). Multi-seq batches only enter via tests.
+
+### T3.5 — Server-context unified dispatch (bundle B starts)
+
+**Touches:** `examples/server/server-context.cpp:4610` area — `process_batch_tokens`. Replace the per-seq_id split + per-slot `llama_decode` loop with a unified ubatch builder that emits one `llama_decode` per tick containing all active slots' tokens.
+
+**Lifts:** the `DecodeHoldGate` in `add_sampled_tokens` (the Bug C fix early-return when any slot is LOAD_PROMPT). Under T3 unified dispatch, mixed prefill+decode in one ubatch is shape-uniform (one mul_mat at total-tokens shape per tick) — Bug C absence is structural, the gate becomes redundant. Verified by GP3.f.
+
+**Keeps:** the `PrefillSerialisationGate` in `batch_pending_prompt` (v1's `active_pp_slot_id` selection). This is a perf policy (one prefill per tick), independent of Bug C closure.
+
+**Production gate:** `verify-production-determinism.sh` GREEN at NP={1,2,4,8} single + multi-GPU.
+
+### T3.6 — Drop bailout + lift n_stream==1 guards
+
+**Touches:**
+- `src/llama.cpp:610-630` — delete the `if (transformer_kv.n_stream > 1) { … return false; }` bailout. With T3.5 in place, can_reuse_graph fires at multi-seq batches too. (Per the A/B, reuse delivers ~0%; this is a correctness step, not a perf step. Reuse just doesn't fight us anymore.)
+- `src/llama.cpp` `build_k_shift` / `build_defrag` / `v_trans` — lift the `GGML_ASSERT(n_stream == 1)` guards per PHASE_NSTREAM_KV's open-follow-up list. Required for multi-slot ctx_shift + cache compaction.
+
+**Production gate:**
+- `verify-production-determinism.sh` GREEN — full matrix.
+- `scripts/r5-probe-c4.sh ITERS=20` = 0/20 single + multi-GPU. **Hard binding** — Bug C absence under unified dispatch with the gate dropped.
+
+### T3.7 — DFlash composition
+
+**Touches:** (verify only — no source changes if T3.5 is clean).
+
+**Gates (all hard binding):**
+- `bin/test-dflash-np-multislot` (Phase 6 driver) GREEN.
+- `bin/test-dflash-spec-batched-fanout` (Phase 5 orchestrator) GREEN symmetric + asymmetric.
+- `bin/test-dflash-batch-vs-serial` (Phase 4 kernel batched-vs-serial) GREEN.
+- `bin/test-dflash-closure` (8/8 prompts argmax-equivalent vs vLLM) GREEN.
+- `bin/test-dflash-np-invariance` (T7 kernel-level, 4 seeds × N ∈ {1,2,4,8}) GREEN.
+
+If any fail: surface the diagnostic before treating as terminal. DFlash's draft side is already unified at the kernel level; verify-side unification under T3 should produce a *cleaner* mental model, not a regressed one.
+
+### T3.8 — Perf gate GP3.i
+
+**Bench config — production-realistic:** `llama-server` at NP=8 with `--k-cache-hadamard --v-cache-hadamard`, HTTP-driven `verify-production-determinism.sh`-style concurrent completion harness. Captures TG t/s aggregate including Hadamard overhead.
+
+**Bench config — vLLM-comparable:** `llama-batched-bench -npp 200 -ntg 64 -npl 8` dual RTX 6000 (no Hadamard — apples-to-apples with vLLM's 154.77 t/s measurement).
+
+**Gates:**
+- **GP3.i conservative**: TG NP=8 aggregate **≥ 100 t/s** (3.6× current 27.7 t/s baseline) on the vLLM-comparable config.
+- **GP3.i stretch**: **≥ 130 t/s** (4.7× current, ~85% of vLLM).
+- Production-realistic: TG NP=8 aggregate ≥ 90 t/s under Hadamard (allowing ~10% Hadamard tax).
+
+If conservative misses: the contingency is **Tier 4 (chunked-prefill admission)** — Sarathi-Serve splices new-request prefill into running-decode ubatches, eliminating prefill stalls. Closer to vLLM's continuous-batching scheduler. Defer to post-Tier-3 measurement; only worth it if prefill stalls measurably bound throughput.
+
+If T3 closes between conservative and stretch: declare GP3.i GREEN, evaluate further levers post-closure.
+
+---
+
+## Open questions and refinements
+
+These need closure during T3 execution; not blocking the bundle starts but should be answered as the relevant card lands.
+
+**OpenQ-A: Token ordering convention in the unified ubatch.** Tokens-per-seq contiguous (seq 0's all tokens, then seq 1's, etc.) or interleaved (token 0 of all seqs, then token 1, etc.)? **Resolves at T3.2 implementation.** Working assumption: tokens-per-seq contiguous, matching upstream PR #14363's `split_equal` semantics. Confirm by reading the upstream code; document the chosen convention in `specs/dispatch/unified_stream_dispatch.allium` as a contract.
+
+**OpenQ-B: Bench-with-Hadamard for production-realistic perf.** `llama-batched-bench` has no Hadamard flag (silently runs without). Production uses it. **Resolves at T3.8.** Options: (a) drive bench via `llama-server` HTTP for production parity, (b) extend `llama-batched-bench` with Hadamard flags, (c) measure both and report (we publish two numbers: vLLM-comparable + production-realistic). Recommend (a)+(c).
+
+**OpenQ-C: `defrag` and `ctx_shift` at n_stream>1.** Per-stream defrag is a per-stream cell shuffle; per-stream ctx_shift is a per-stream window slide. Effort may be larger than "lift the assertion". **Resolves at T3.6.** Scope: confirm the existing `build_k_shift` / `build_defrag` graph builders compose with the 4D layout, OR write per-stream variants. Token budget: 20-30 k if straightforward, +30-50 k if per-stream variants needed.
+
+**OpenQ-D: MMQ I=8 fixes under unified shapes.** PHASE_MMQ_Q4_0_AR16 closure baked the I=8 split-K disable + col-j > 0 fix. Those were validated at per-stream dispatch shapes (n_tokens=1). Under T3 unified at n_tokens = n_stream × n_tok_per_seq, mul_mat sees larger shapes. **Resolves at T3.3.** Test gate: P0.A.3 batch-shape invariance harness (`scripts/test-batch-shape-invariance.sh` or equivalent) at the unified shapes. If the fixes don't compose, the fallback is to keep per-stream dispatch ONLY for the multi-seq mul_mat (a partial unification that captures most of the win without the mul_mat risk).
+
+**OpenQ-E: T3 perf contingency if conservative target misses.** **Resolves at T3.8.** Levers identified in priority order:
+1. Tier 4 — chunked-prefill admission (Sarathi-Serve). Estimated +10-30% on prefill-heavy workloads.
+2. Re-open the PSKV singlewarp FA optimisation ralph loop (cancelled per `feedback_no_workarounds` history). At ne[3]>1 the kernel's ILP-2026-05-18 ratchet may have additional headroom.
+3. Profile via `nsys` + `ncu` to find the new dominant kernel under unified dispatch. Could be: output projection, FFN, KV cache CPY.
+4. Investigate whether vLLM's specific kernel fusions (RMSNorm + Q/K/V projection, etc.) close the remaining gap.
+
+**OpenQ-F: `mtp_op_type == MTP_OP_DRAFT_GEN_FUSED` composition at NP>1.** Phase 37 #5 in `can_reuse_graph` allows n_tokens>1 reuse under MTP fused. Under T3.6 the bailout drops; MTP fused at NP>1 enters the multi-seq unified path. `specs/composition/mtp_fused_x_n_stream.allium` covers the contract; `test-mtp-x-n-stream.cpp` is the gate. **Resolves at T3.6.** Track via GP3.m.
+
+**OpenQ-G: Sched intermediate-buffer aliasing concern from Tier 2 diagnostic.** Tier 2 found stream-interleaving-order-dependent K/V cache corruption (interleaving-order-dependent garbled outputs, hypothesised to be sched buffer aliasing across cross-tick stream switches). Under T3 the dispatch is ONE graph eval per tick covering all streams — no cross-tick switching. **The class of bug should not exist by construction.** But: confirm with the same FA-probe diagnostic re-run under T3.5 + T3.6 to byte-verify K/V cache contents match per-stream-correct expectations. Captured in the post-T3.6 verification (GP3.g warm-up determinism + GP3.f Bug C absence).
+
+**OpenQ-H: Stream-mid switching during a tick.** If two consecutive ticks process different sets of slots (slot A's request completes, slot B's starts mid-stream), does the second tick's graph reuse work cleanly? The graph topology depends on `n_stream` and per-stream `n_kv` bucketing; tick-to-tick changes in active-slot membership may trigger graph rebuild. **Resolves at T3.5.** This is a normal graph-cache hit/miss — should compose with the existing topology-keyed cache; no special handling needed.
+
+**OpenQ-I: When does Phase 0.B close formally?** 5 .allium specs + 7 property tests are in tree. Some of the property tests are RED (binding RED for T3 — they FAIL on HEAD and PASS after the matching T3 card lands). **Resolves at T3.4** (Bundle A close): all spec property tests GREEN at n_stream=1 production shape AND at synthetic multi-seq batches via the new code paths. **Closes formally at T3.6** (Bundle B close): all property tests GREEN at production n_stream=8 with full unified dispatch.
+
+---
 
 ## What's NOT in scope
 
@@ -2052,19 +2184,24 @@ T3.g — **Bench gate GP3.i** against vLLM's 154.77 t/s measurement.
 - vLLM/SGLang/LMDeploy pivot — ruled out on evidence above.
 - env-gated experimental knobs (per `feedback_bake_measurement_env_gates`).
 
-## Token estimate
+## Token estimate (refined 2026-05-21)
 
 Per CLAUDE.md §8:
 
-- **Phase 0.A** — DFlash server CLI verify-on-post-fold (wiring + profile already landed in `61a7e874`). **Actual cost ~110 k** for the two fixes that landed (MAL cap + stage end-trim) PLUS the falsification matrix that confirmed T5 as the root cause (cb_eval hook perturbs target's forward pass; ngram-simple at same verify-batch shape produces clean output byte-identical to spec-none). **Plus deferred:** 30-100 k for the P0.A.3 fix (preferred path: re-architect hidden-state capture without cb_eval, ~30-50 k). Tier 2 entry does NOT block on P0.A.3 — production runs MTP, not DFlash CLI.
-- **Phase 0.B** — Radical spec/TLA+/test surface expansion (5 Allium + 3 TLA+ + 5 property tests + trace harness ext.): **105-170 k tokens**. Must precede T2.a.
-- **Tier 2 refined** — read-view probe + cache_copies extension + bailout drop + warm-up gate harness + GP3.a-h verification: **60-100 k tokens**.
-- **Tier 3 refined** — server fusion + KQ-mask shape + graph builder uniform-batch + non-FA shape-invariance verify + GP3.i-m: **120-180 k tokens** (significantly less than the original "fresh FA kernel port" framing because the PSKV per-slot kernel is the prerequisite and it's already production).
-- Diagnosis if Tier 2 hits unexpected invalidation: 20-30 k per round, budget 2-3.
+**Already spent (closed):**
+- **Phase 0.A** — DFlash server CLI verify-on-post-fold: ~110 k spent on landed fixes (MAL cap + stage end-trim) + falsification matrix. P0.A.3 deferred (~30-100 k, parallel workstream, does NOT gate T3 since production runs MTP not DFlash CLI).
+- **Phase 0.B** — spec/TLA+/test surface expansion: ~105-170 k spent. 5 .allium specs in tree (`scheduler/batch_composition`, `kv-cache/n_stream_layer`, `kv-cache/per_stream_read_view_patching`, `dispatch/unified_stream_dispatch`, `composition/mtp_fused_x_n_stream`). 7 property tests in `tests/spec/`. Some tests RED-bound to specific T3 cards.
+- **Tier 1 / Tier 2 closure** — diagnostic + perf A/B: ~50-80 k spent (FA-probe build/run/analyse, graphs ON-vs-OFF A/B, ledger rows 20-21, PHASE retrospective, mdBook update).
 
-Total scope: **305-510 k tokens** for this phase's required path to Tier 3 closure (excludes the deferred P0.A.3 dedicated diagnostic phase, which is its own 100-300 k workstream and can run in parallel). The structural foundation (PHASE_NSTREAM_KV's 4D layout + the existing CUDA-graph patching infra + the PSKV per-slot FA kernel) carries most of the engineering risk; this phase is the dispatch refit *plus* the surface expansion that should have shipped with PHASE_NSTREAM_KV but didn't.
+**Remaining (Tier 3 bundles):**
+- **Bundle A (T3.0–T3.4)** — scaffolding removal + find_slot multi-seq + 4D build + multi-seq decode path: **80-120 k**. Each step adds a property-test gate; production NPC stays GREEN throughout.
+- **Bundle B (T3.5–T3.8)** — server-context unified dispatch + bailout drop + n_stream==1 guard lifts + DFlash composition + perf gate: **60-100 k**.
+- **Open-question resolution** (OpenQ-A through OpenQ-I) — surfaced inline at the relevant cards; budgeted within the bundle estimates above.
+- **Diagnosis budget** if any card hits unexpected NPC regression: 20-30 k per round, budget 2-3 rounds.
 
-Per `feedback_oneshot_then_evaluate`: Phase 0.A and 0.B can run in parallel as separate bundles. Tier 2 implements coherently after both close. Tier 3 implements coherently after Tier 2 closes. No partial intermediate landings.
+**Total remaining scope: 140-220 k tokens to Tier 3 closure.** Significantly less than the original 305-510 k estimate because (1) PSKV per-slot kernel is already production, (2) T3.1 nb33 foundation already landed, (3) spec layer substantially in place, (4) Tier 1 falsification frees us from engineering for graph reuse retention.
+
+Per `feedback_oneshot_then_evaluate`: Bundle A lands coherently (single commit, or logical sub-commits per card if NPC verification requires staged checkpoints). Bundle B lands coherently. No partial intermediate landings of the dispatch flip.
 
 ## Primary research sources
 
