@@ -827,6 +827,101 @@ If variance disappears, the graph-build conditional IS the cause.
 L3' source committed as a regression gate. Test stays FAIL on
 HEAD until variance is fixed.
 
+##### P0.A.3 L4 + L5 + FIX — MMQ I=8 batch-shape variance bound and resolved (2026-05-21)
+
+After L3' bound the variance threshold to n_tokens=2, the path
+forward was: localise the divergent op (L4) → kernel-direct
+isolation (L5) → fix.
+
+###### L4 — per-layer divergence localiser
+
+`test-dflash-per-layer-batch-shape-diff` captured `l_out-<il>` at
+every 4th layer of Qwen 3.6 27B for path A (two 1-token decodes
+at positions [P, P+1]) vs path B (one 2-token batch at the same
+positions). Result:
+
+| Layer | row 0 diffs | row 1 diffs | max \|Δ\| row 1 |
+|---|---|---|---|
+| 0 | 0/5120 | 5120/5120 | 1.027 |
+| 4 | 0/5120 | 5120/5120 | 4.112 |
+| 16 | 0/5120 | 5120/5120 | 3.531 |
+| 32 | 0/5120 | 5120/5120 | 10.06 |
+| 48 | 0/5120 | 5120/5120 | 7.48 |
+| 63 | 0/5120 | 5120/5120 | 154.4 |
+
+Row 0 byte-identical across all 17 sampled layers (the autoregressive
+control). Row 1 diverges at layer 0 already with |Δ|=1.0, compounding
+to |Δ|=154 by layer 63. The bug is INSIDE layer 0.
+
+###### L5 — kernel-direct mul_mat batch-shape probe
+
+`test-mulmat-batch-shape-invariance` ran `ggml_mul_mat(Q4_0 weight,
+F32 input)` at production dims (K=5120, N=8192) across ne11 ∈
+{1, 2, 8}. Result:
+
+| Comparison | diff | max \|Δ\| |
+|---|---|---|
+| y_n1(col-0 input) vs y_n2 col 0 vs y_n8 col 0 | 0 / 8192 | 0 |
+| y_n1(col-1 input) vs y_n2 col 1 | 8192 / 8192 | 0.363 |
+| y_n2 col 1 vs y_n8 col 1 | 0 / 8192 | 0 |
+
+**MMQ Q4_0 is byte-shape-invariant for OUTPUT column 0 only.**
+Columns ≥ 1 in a multi-token batch produce different fp32 bits than
+the same input vector at column 0 of a single-token dispatch. The
+existing `LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH` (now always-on per
+the `ggml-cuda.cu:2747-2754` comment) only guarantees column-0
+invariance.
+
+###### Diagnostic isolation: I=8 split-K kernel
+
+The MMQ I=8 split-K path (`mul_mat_q_split_k_i8` with `mma_int_C_I8J8`
+fragment) was added for sm_75 decode-shape TG perf (PHASE 71-74
+"MMQ I=8: NPC + perf verify"). The NPC verification compared col 0
+across concurrent NP={1..8} — it did NOT exercise the col j>0 path
+that the verify-batch decoder uses.
+
+Setting `i8_shape_supported = false` in `launch_mul_mat_q` (at
+`ggml/src/ggml-cuda/mmq.cuh:4986`) makes mul_mat fully
+batch-shape-invariant. L5 immediately PASSES across all columns.
+
+###### Closure: every binding test now PASSES
+
+After the fix on `production/2026-q2-next` (submodule HEAD `8e233e9b`):
+
+| Test | Pre-fix | Post-fix |
+|---|---|---|
+| L1 libllama save_per_step_ssm observational | PASS | PASS |
+| K1 ggml_delta_net save_all_steps last-state | PASS | PASS |
+| K1' ggml_delta_net intermediate per-step state | PASS | PASS |
+| L2 per_step_restore byte-identity | PASS | PASS |
+| L3 multi-cycle save→restore drift | FAIL | PASS |
+| L3' verify-batch width sweep ∈ {1..8} | FAIL | PASS |
+| L4 per-layer batch-shape diff (17 layers × 2 rows) | FAIL | PASS |
+| L5 mul_mat batch-shape invariance | FAIL | PASS |
+
+`dflash-speculative-simple` CLI on the production target (lm_head-f16):
+
+- Before: degenerate "...quick quick quick...", mean accept 0.29-1.91/4.
+- After: coherent — "The capital of France is Paris. The capital of
+  Germany is Berlin. The capital of Italy is Rome. The capital of
+  Spain is Madrid. The capital of Portugal is Lisbon. The capital of
+  Greece is Athens..." Mean accept 2.30/4. 33 tokens at 18.68 t/s.
+
+###### Trade-off: decode TG perf
+
+The I=8 path was added for sm_75 decode TG perf (~25% → ~56-100%
+theoretical occupancy bid). Falling back to regular MMQ costs some
+decode TG but restores correctness for speculative-decoding verify
+batches. The original NPC verification (PHASE 74) was a partial
+check that missed col-j>0 invariance — it should be re-run after
+this fix to confirm the regular MMQ path's NPC byte-identity is
+unaffected.
+
+To re-enable I=8 in the future, the kernel needs to be fixed so the
+col-j>0 FMA accumulation order matches col-0's. This is a
+non-trivial rewrite of the `mma_int_C_I8J8` fragment's K-loop and
+per-thread accumulator ownership.
+
 ##### P0.A.3 Suspect 2 result — `save_per_step_ssm = true` perturbs the verify decode (2026-05-20)
 
 > **SUPERSEDED 2026-05-21** by the L1 + K1 binding tests above (both
