@@ -8527,3 +8527,50 @@ Two paths for perf recovery:
    decode mul_mat cost.
 
 Decision: ship correctness; defer perf recovery to follow-up phase.
+
+---
+
+### 2026-05-21 — NPC test-coverage gap class identified + new gate landed
+
+P0.A.3's MMQ I=8 col-j>0 bug shipped through PHASE 71-74's NPC
+verification because the existing NPC harness only exercises one
+axis of byte-identity:
+
+  Existing coverage: cross-slot, n_tokens=1 per slot (=> MMQ col 0
+                     of each slot's own n=1 dispatch).
+  Missing coverage:  cross-shape, same slot
+                     (n_tokens=1 vs n_tokens=N => MMQ cols 0..N-1).
+
+Every PSKV/cuBLAS/MMQ NPC closure tagged "production NPC PASS" was
+verified on the cross-slot-n=1 axis only. The cross-shape axis was
+structurally untested.
+
+New gate: `scripts/test-batch-shape-invariance.sh`. Runs three
+sub-tests in cheap-to-expensive order:
+
+  1. `test-mulmat-batch-shape-invariance` (kernel-level, ~30s) —
+     sweeps ggml_mul_mat(Q4_0,F32) across 3 shapes × ne11 in
+     {1,2,5,8,16}. Catches MMQ-tile col-j>0 regressions before
+     any model is loaded. Q4_0 only; AR16 hits the same gate via
+     i8_type_supported.
+  2. `test-dflash-verify-batch-width-sweep` (libllama, ~30s) —
+     sweeps verify_bs in {1..8} at the libllama API surface.
+  3. `test-dflash-multi-cycle-restore-drift` (libllama, ~60s) —
+     compares verify-batch row-k argmax to autoregressive at the
+     same effective context. End-to-end logits-level gate.
+
+Wired into `scripts/verify-production-determinism.sh` after the
+existing cross-NP harness. Deploy-gate now covers both axes; both
+must pass to certify a build. `SKIP_SHAPE_GATE=1` available for
+emergency overrides.
+
+Audit finding worth recording: the extended L5 sweep surfaced a
+separate latent issue at ne11 = 32. Every output column shows
+~5e-6 fp32 variance vs the n=1 reference — three orders of
+magnitude smaller than the I=8 bug's ~0.36 max delta and bounded
+to a single mul_mat (doesn't compound). Doesn't affect text
+output because argmax dampens fp32-ULP noise. Recorded in L5 as
+"informational only"; NOT a P0 production concern. Likely fp32
+reduction order in the prefill/large-tile MMQ path. Separate
+follow-up if anyone needs prefill-region byte-identity for
+non-argmax purposes (e.g. logit-level comparisons).
