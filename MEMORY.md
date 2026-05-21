@@ -8401,3 +8401,44 @@ Lesson: the production NPC gates verify cross-NP byte-identity at
 n_tokens=1 per slot. They do NOT verify cross-n_tokens byte-identity
 for the same slot. Two different invariants; one was assumed and
 not tested.
+
+---
+
+### 2026-05-21 — P0.A.3 L3' narrows variance threshold to n_tokens=2
+
+L3' (`tests/dflash-speculative/test-dflash-verify-batch-width-sweep`)
+swept verify_bs ∈ {1, 2, 3, 4, 5, 6, 8} against autoregressive on
+production target. Result:
+
+- bs=1 (control): 0/1 mismatches, PASS.
+- bs=2: 1/2 FAIL. **First failing width.**
+- bs=3..8: FAIL with mismatch count scaling ~linearly with width.
+
+The bug surface is "any code path that activates when n_tokens > 1
+but not at n_tokens = 1". NOT DFlash-specific (not verify_bs=5).
+Affects MTP at any --draft > 0 and even tiny n=2 verify batches.
+
+Narrow candidate set:
+1. delta_net graph-build conditional at llama-delta-net.cpp:380-389
+   — branches on n_seq_tokens > 1, runs L2 norm on contiguous (n=1)
+   vs strided (n>1) tensors. fp32 reduction order may differ.
+2. FA per-slot KV singlewarp kernel multi-token same-slot dispatch.
+3. ggml_ssm_conv across n_tokens.
+
+Targeted shortcut: force the n>1 branch for n=1 (always
+permute-then-L2norm) and re-run L3'. If variance disappears, the
+graph-build conditional IS the cause. Otherwise the bug is in FA
+or another batch-shape-dependent op.
+
+Open question: why does production MTP-IR (uses verify_bs ≥ 2)
+appear to work? Hypotheses: drafter trained to match verify-batch
+preferences (not autoregressive); user never compared MTP output
+to autoregressive ground truth.
+
+Production NPC gates don't cover n_tokens=N same-slot vs n_tokens=1
+same-slot — they verify concurrent multi-slot single-token only.
+This is a real coverage gap.
+
+Seven binding tests + L3 + L3' now landed on production/2026-q2-next
+(submodule HEAD ~23a61016). L3 + L3' currently FAIL on HEAD as
+regression gates.
