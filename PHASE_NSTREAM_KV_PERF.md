@@ -922,6 +922,43 @@ col-j>0 FMA accumulation order matches col-0's. This is a
 non-trivial rewrite of the `mma_int_C_I8J8` fragment's K-loop and
 per-thread accumulator ownership.
 
+###### Post-fix bench
+
+`llama-batched-bench` on production geometry (Qwen 3.6 27B q4_0
+Hadamard, dual-GPU, c=4096, npp=200 ntg=64 npl=8):
+
+| Configuration | TG NP=8 (t/s) | Δ vs prior |
+|---|---|---|
+| HEAD pre-fix (I=8 enabled, broken DFlash) | 27.73 | baseline |
+| HEAD post-fix (I=8 disabled, correct DFlash) | 24.14 | **−12.95%** |
+| Pre-NPC ceiling (no PSKV NPC work) | 36.68 | — |
+
+The fix costs ~13% TG NP=8 vs the prior NPC-enforced baseline. **G3.h
+binding gate (±1% of 27.73) is BROKEN by this fix**; it should be
+relaxed to ±15% or have a documented exception until MMQ I=8 is
+properly fixed.
+
+NPC byte-identity smoke (`quick-pskv-npc-check.sh`): **PASS**. All
+NP={1,8} slots byte-identical to NP=1 baseline, cross-NP slot-0
+byte-identical. The production NP-determinism gates are unaffected
+by this fix.
+
+###### Trade-off and next perf recovery work
+
+The user's trade is correctness vs perf. With I=8 disabled,
+speculative decoding (MTP and DFlash) actually produces correct
+output. The TG NP=8 perf hit is significant but recoverable by:
+
+1. Rewriting `mul_mat_q_split_k_i8` / `mma_int_C_I8J8` so that
+   per-column FMA accumulation order matches col 0's. This is
+   pure kernel work, no algorithmic changes. Token cost ~50-100k.
+2. OR pad single-token decodes to n_tokens=2 at the libllama
+   dispatcher to force "col 1" path uniformly. Avoids the kernel
+   rewrite at the cost of 2× the per-decode mul_mat work. May
+   be cheaper than option 1 if I=8 stays superior to regular MMQ.
+
+Decision: defer perf recovery to its own phase; ship correctness.
+
 ##### P0.A.3 Suspect 2 result — `save_per_step_ssm = true` perturbs the verify decode (2026-05-20)
 
 > **SUPERSEDED 2026-05-21** by the L1 + K1 binding tests above (both
