@@ -8501,3 +8501,29 @@ of binding tests, each pushing the boundary inward. The
 (cb_eval, save_per_step_ssm) didn't waste effort — each binding
 test left a regression gate behind, which now collectively prove
 where the bug ISN'T as well as where it WAS.
+
+---
+
+### 2026-05-21 — P0.A.3 fix perf trade-off measured
+
+`llama-batched-bench` post-fix (I=8 disabled) on Qwen 3.6 27B q4_0
+Hadamard dual-GPU, c=4096, npp=200 ntg=64 npl=8:
+- TG NP=8 = **24.14 t/s** (vs prior 27.73 t/s baseline = **-12.95%**)
+- Pre-NPC ceiling reference: 36.68 t/s (no PSKV NPC work)
+
+NPC byte-identity smoke (`quick-pskv-npc-check.sh`): **PASS**. All
+NP={1,8} slots byte-identical to NP=1 baseline. Production
+determinism gates unaffected.
+
+Trade made: ~13% TG NP=8 perf hit for DFlash CLI correctness.
+G3.h binding gate (±1% of 27.73 t/s) is broken by this fix; needs
+relaxation or kernel rewrite to recover.
+
+Two paths for perf recovery:
+1. Rewrite `mma_int_C_I8J8` fragment so col-j>0 FMA order matches
+   col-0's. Pure kernel work. ~50-100k tokens.
+2. Pad single-token decodes to n_tokens=2 at libllama dispatcher
+   to force uniform col-1 path. Avoids kernel rewrite at 2× per-
+   decode mul_mat cost.
+
+Decision: ship correctness; defer perf recovery to follow-up phase.
