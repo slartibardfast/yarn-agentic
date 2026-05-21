@@ -2,8 +2,8 @@
 
 **Branch**: `production/2026-q2-next` (off submodule HEAD `16b608d1`).
 **Predecessor**: `PHASE_NSTREAM_KV.md` — closed 2026-05-20. Bug C structurally closed; decode-side prefill gate removed; 6 correctness gates green; **-6.2 % TG NP=8 regression carried over**.
-**Status**: Open. **Phase 0 prerequisites must land before Tier 2 work begins.** Direction tree below, post-prereq starting hypothesis locked to **Tier 2 refined** (extend existing `update_cache_copies` per-stream patching to the attention-read views).
-**Triangulated 2026-05-20** against prior CUDA-graph work, PSKV per-slot landing, P3.X NPC failures, PHASE45 D10 multi-slot work, and `feedback_n_stream_byte_compat_tradeoff`.
+**Status**: Open. **Tier 1 perf premise falsified, Tier 2 parked with intel captured (see retrospective 2026-05-21).** Active path: **Tier 3** unified-stream dispatch. Dominant perf lever is kernel batching at ne[3]=n_stream, NOT graph-reuse retention (A/B at production shape: cuda graphs ON vs OFF ≈ 0% Δ).
+**Triangulated 2026-05-20** against prior CUDA-graph work, PSKV per-slot landing, P3.X NPC failures, PHASE45 D10 multi-slot work, and `feedback_n_stream_byte_compat_tradeoff`. **Revised 2026-05-21** post Tier 2 FA-probe diagnostic and graphs-on-vs-off A/B.
 
 ## Why this phase exists — sharpened framing post-triangulation
 
@@ -1804,25 +1804,130 @@ P0.A and P0.B can run in parallel. P0.A is contained scope (verify post-fold DFl
 
 ---
 
+## Retrospective: Tier 1 + Tier 2 (2026-05-21) — revised hypothesis for Tier 3
+
+This section supersedes the original Tier 1 and Tier 2 framings below. Both were authored 2026-05-20 against premises that empirical work falsified one week later. The §"Direction tree" Tier 1/2 entries are preserved for audit but should be read with this retrospective in mind.
+
+### Tier 1 — falsified
+
+**Original premise (2026-05-20):** drop the `n_stream > 1` bailout, accept ~N cudaGraphInstantiate at warm-up, then ride cudaGraphExecUpdate for steady-state reuse. Estimated **+6.2% TG recovery** at NP=8.
+
+**Falsification (2026-05-21):** measured A/B at production bench shape (`llama-batched-bench -npp 200 -ntg 64 -npl 8` dual RTX 6000, back-to-back):
+
+| | T_PP s | S_PP t/s | T_TG s | S_TG t/s | total t/s |
+|---|---|---|---|---|---|
+| graphs ON | 65.638 | 24.38 | 21.371 | 23.96 | 24.27 |
+| graphs OFF (`GGML_CUDA_DISABLE_GRAPHS=1`) | 65.498 | 24.43 | 21.332 | 24.00 | 24.32 |
+
+**Δ ≈ 0% (graphs-off marginally faster, within noise).** Recorded in `data/ralph-nstream-kv-ledger.md` row 21 + commit `9f2a016`.
+
+**Why the original estimate was wrong:** the PSKV singlewarp kernel costs ~127 µs/call (ledger row 19, ncu). The cudaLaunchKernel + cudaGraphInstantiate overhead is ~5-10 µs per kernel. With 24 layers × multiple ops per layer at our model size, per-launch CPU cost is amortised below the noise floor. **There is no recovery to be had from preserving graph reuse at our shape.**
+
+**Net:** Tier 1 doesn't exist as a separable value-add lever. Don't sequence it.
+
+### Tier 2 — parked with intel
+
+**Original premise (2026-05-20):** patch the K/V attention-read views per-stream in `update_cache_copies()`, mirroring the existing CPY write-side patching, then drop the bailout. Estimated **+15-30% beyond Tier 1** from full reuse retention.
+
+**Status (2026-05-21):** scaffolding wired and committed (`030a0f04` … `d07e0e16` … `c2a142a4`); behaviourally inert because the bailout was restored after the mechanism failed to deliver NPC under bailout-dropped. Three indirection variants were tried; all produced identical divergent output. Root cause was not localised under the original diagnostic protocol.
+
+**FA-probe diagnostic (2026-05-21):** environment-gated probe in the PSKV launcher hashed K/V/mask bytes at FA entry, with bailout env-toggleable. Compared NP=1 baseline vs NP=8 stream-0 under bailout-active and bailout-dropped at layer `flash_attn_per_slot_kv-1003`.
+
+Findings (full table in [`project_tier2_diagnostic_findings`](../.claude/projects/-home-llm-yarn-agentic/memory/project_tier2_diagnostic_findings.md), captured at ralph row 20 + commit `bcab99d`):
+
+- **Bailout-active NP=8 stream-0:** byte-identical to NP=1 across all hashes. Baseline holds.
+- **Bailout-dropped NP=8 stream-0:** K and V cache-byte hashes **diverge from bound=10 onwards**. Mask hash is **byte-identical to NP=1**. `per_row_k_bound[0]` is **byte-identical to NP=1**. K view `view_offs` is **correct per-stream** (verified directly: streams 1..7 show `K_off = stream_id × parent->nb[3]`).
+- **All 8 slots produce uniquely garbled outputs under bailout-dropped** — interleaving-order-dependent corruption, not a uniform shared error.
+
+**What this tells us:**
+
+- The Tier 2 patching mechanism works at the LAYER it operates on: view offsets and data pointers are updated correctly per-tick, the read-view registry is well-formed, the FA op's op_params slot routing is consistent.
+- The bug is at the **K/V cache byte level at the correctly-addressed stream slice**. Some prior write put bad bytes into stream 0's slice between its bound=9 and bound=10 FA calls — but stream 0 didn't run in that interval. Streams 1..7 did.
+- The mask construction is sound (`set_inputs` reads `cells[]` via `_kv_mask_base = (head / kvps) * kvps`; `cells[].pos` and `cells[].seq_id` are consistent with bailout-active).
+- The most plausible mechanism (not directly confirmed; would require ggml-backend-sched-internal instrumentation):
+  - **Sched intermediate-buffer aliasing across cross-stream graph reuses.** The K-projection scratch buffer (or similar intermediate) has its allocation determined at graph-build time based on the single-stream execution that built the graph. When stream M reuses stream N's graph, the scratch buffer's lifetime overlaps with stream N's CPY-into-cache read, producing the wrong K cache contents.
+  - Alternative: cuda-stream ordering. CPY writes happen on one ggml-backend-sched-managed cuda stream, FA reads from another, without proper cross-stream synchronisation under reuse.
+- **The structural problem is that "graph reuse across stream switches" implicitly assumes the graph's buffer-lifetime contract still holds when the execution pattern changes.** It does not. Patching tensor pointers fixes the addressing layer but not the buffer-lifecycle layer.
+
+**Combined with Tier 1 falsification:** even if we had localised and fixed the corruption, Tier 2 would have bought ~0% perf (per the A/B). The original +15-30% estimate was anchored on Tier 1's +6.2% as a baseline; that baseline is also ~0%.
+
+**Decision:** park Tier 2. Keep the scaffolding committed as benign no-op (it's documented; T3 Step 1 will remove it). Do not pursue further root-cause work on the corruption — the bug is real but solving it has no value once Tier 3 lands.
+
+### Revised Tier 3 hypothesis — perf-anchored
+
+**Drop:** any reliance on graph reuse as a perf lever. The A/B falsifies this independently of any Tier 2/Tier 3 specifics.
+
+**Dominant lever: kernel batching at the ne[3] = n_stream axis.** Each kernel launch processes ~n_stream× more useful work per call. SM utilisation scales sublinearly with the batch dimension, but at our current per-slot decode (n_tokens=1, 1 CTA per attention head per layer per slot, ~64 CTAs total per layer) we are *extremely* under-utilising TU102's 72 SMs × 2 GPUs = 144 SMs. Going to ne[3]=8 multiplies the per-launch CTA count by 8 (or more, depending on layout) at no per-launch overhead cost.
+
+**Secondary lever: amortised host-side overhead.** `set_inputs` walks `cells[]` once per `llama_decode` to build the mask + per_row_k_bound; the sched setup runs per call; the graph topology hash + cache lookup runs per call. Even though *cuda-graph* cost is ~0%, these *host-side* costs are not free. Going from 8 `llama_decode` calls per tick to 1 reduces them 8×.
+
+**Tertiary: the Tier 2 corruption class is excluded by construction.** Tier 3 has no cross-tick graph reuse across stream switches because all streams run in one graph per tick. The implicit buffer-lifetime contract is honoured — buffers live for the duration of one execution, which now covers all streams.
+
+**Quantitative anchors:**
+
+- Current production NP=8 aggregate TG: **27.73 t/s** (ledger row 7 baseline, hadamard-on profile). Today's same-shape `llama-batched-bench` measurement: **23.96 t/s** (no-hadamard CLI path — ~14% gap to baseline likely from clock state or hadamard contribution, not load-bearing for the A/B comparison).
+- Per-slot at NP=8: ~3.46 t/s.
+- NP=1 single-slot baseline: ~33.5 t/s (no contention).
+- **vLLM measured on the same hardware** (Q4 same quant, no Hadamard): **154.77 t/s aggregate at NP=8** (`data/gate0-np1-np8.json`, ralph row 11 derived from [`project_continuous_batching_vs_perslot_dispatch`](../.claude/projects/-home-llm-yarn-agentic/memory/project_continuous_batching_vs_perslot_dispatch.md)). Per-slot: 19.3 t/s.
+- **The vLLM gap is 5.6× aggregate, 5.6× per-slot.** vLLM achieves it on unified-batch dispatch. They don't have Hadamard or our Q4_0 KV; we don't lose those under Tier 3. The dispatch model is the difference, not the kernel quality.
+
+**Realistic projection for Tier 3 closure:**
+- **Conservative target: 100 t/s aggregate** (3.6× current). Anchored to GP3.i.
+- **Stretch target: 130 t/s aggregate** (4.7× current, 85% of vLLM's measurement).
+- Both targets are sub-vLLM because we retain Hadamard + Q4_0 KV (small per-op cost), accept some MoE-vs-dense overhead, and don't assume we match vLLM's kernel-fusion depth on first cut.
+
+**Risk register for Tier 3:**
+
+1. **mul_mat GEMV → GEMM dispatch boundary at n_tokens=8.** The original Bug C was triggered by mixed shapes within a tick. Tier 3's per-tick batch is *uniform* shape — all tokens at ne[1]=n_tokens_per_tick. Within a tick, mul_mat is called once at this shape; the GEMM/GEMV pick is consistent. **More uniform than current per-slot dispatch** (which calls mul_mat 8× at 8 different per-stream shapes). Verified by GP3.f (`r5-probe-c4.sh` ITERS=20 = 0/20).
+2. **KQ_mask construction at 4D shape.** Mask must address `cells[stream_offset + i]` correctly. T2 diagnostic showed the existing per-stream mask code is byte-correct; T3 needs it at `[n_kv, n_tokens_per_seq, 1, n_stream]`. T3.c.
+3. **DFlash multi-slot composition under unified verify-side dispatch.** The draft side is already batched (Phase 5). Verify side currently uses per-stream dispatch; Tier 3 unifies it. Cleaner mental model, but the DFlash test gates (GP3.l) must pass.
+4. **T9 NP=4/8 drift signature.** Pre-PHASE_NSTREAM_KV ne[1]>1 attention had a mma_f16 tile-transition drift. PSKV per-slot kernel handles this — production routes to `wmma_f16_case_pb1<256,256,8,half>` with fp32 accumulation and parallel_blocks=1 pinned. Validated by GP3.k.
+
+**What this hypothesis is NOT betting on:**
+- It is NOT betting that graph reuse saves anything (falsified).
+- It is NOT betting that we can localise and fix the Tier 2 corruption.
+- It is NOT betting on persistent-kernel megakernels or any sm_75-incompatible vLLM lift.
+
+### What's left undone before Tier 3 begins
+
+**Tier 2 scaffolding** (committed, behaviourally inert because bailout is active). Tier 3 Step 1 (next session) removes:
+
+- `cache_read_views` registry in `src/llama-context.h` (the `CacheReadView` struct + vector).
+- `update_cache_copies` per-stream read-view patch loop in `src/llama.cpp:782-795`.
+- FA op `op_params[14]`/`[15]` K/V slot fields + `ggml_set_fa_indirect_slots` / `ggml_get_fa_K/V_indirect_slot` helpers in `ggml/include/ggml.h` and `ggml/src/ggml.c`.
+- PSKV kernel `src_ptr_table` / `K_slot_idx` / `V_slot_idx` parameters and the indirection path in `fattn-per-slot-kv-singlewarp-sm75.cu`.
+- ggml-cuda.cu per-tick read-view-src-ptrs refresh hook (lines 4668-4720).
+- Per-stream view registration in `llm_build_kqv` / `build_std_attention` (the `ggml_set_read_view_indirect_slot` calls).
+
+**The bailout itself** at `src/llama.cpp:610-630`. Tier 3 removes this (it becomes structurally unreachable — `n_stream > 1` simply means more rows in the unified ubatch).
+
+**T3 Step 1 (already landed at submodule `c2a142a4`):** PSKV singlewarp kernel takes `nb33` and addresses mask as `mask + nb33 × seq + nb31 × tok`. At `ne[3]=1` this collapses to legacy behaviour (`nb33 × 0 = 0`); at `ne[3]>1` it routes to the active stream's mask block. **Foundation for the unified-stream dispatch path is in place.**
+
+**Phase 0.B (Allium/TLA+ spec layer):** partial — review at Tier 3 start whether the existing spec contracts (`StreamPartition`, `MaskPerStream`, `PerStreamDispatch`, `BugCAbsenceByConstruction`, `DFlashCompatibility`) need extension for the unified-ubatch case. T3.a probe of upstream PR #14363's `split_equal` semantics may surface new contracts.
+
+**Phase 0.A (DFlash CLI fix):** orthogonal to Tier 3; doesn't block. Production runs MTP, not DFlash CLI.
+
+---
+
 ## Direction tree (refined and primary-sourced)
 
 | Tier | What | Expected gain | Effort | Risk |
 |------|------|---------------|--------|------|
-| 1 | Drop `can_reuse_graph` n_stream > 1 bailout + accept rebuild storm at first stream-switch | +6.2 % recovery (avoids the cudaGraphInstantiate, hits cudaGraphExecUpdate path) | ~1 day | Low |
-| **2** | **Patch attention-read view offsets per-stream in `update_cache_copies`** (mirroring the K/V write CPY patching that already ships) + drop the bailout | **+15-30 % beyond Tier 1** at NP=8 (full reuse, only update cost per stream) | **~1 week** | Low-Medium |
-| 3 | Unified-stream dispatch: one `llama_decode` per tick with N_stream tokens packed; use existing PSKV per-slot kernel | **Approaches vLLM's measured 154.77 t/s aggregate at NP=8** (4.75× over NP=1) | 3-5 weeks | Medium-High |
+| 1 | ~~Drop `can_reuse_graph` n_stream > 1 bailout + accept rebuild storm at first stream-switch~~ **FALSIFIED 2026-05-21** | ~~+6.2 % recovery~~ **~0%** (A/B confirms cuda graphs gain ≈ 0% at production shape) | n/a | n/a |
+| 2 | ~~Patch attention-read view offsets per-stream in `update_cache_copies`~~ **PARKED 2026-05-21** (mechanism wired but byte-corrupts K/V cache under bailout-dropped; intel captured) | ~~+15-30 %~~ **~0%** (since T1's baseline-recovery premise is false) | parked | parked |
+| **3** | **Unified-stream dispatch: one `llama_decode` per tick with all streams packed at ne[3]=n_stream; use existing PSKV per-slot kernel** | **Approaches vLLM's measured 154.77 t/s aggregate at NP=8** (4.75× over current 27.7 t/s baseline). Conservative 100 t/s, stretch 130 t/s. Dominant lever: kernel batching, NOT graph reuse. | 3-5 weeks | Medium-High |
 | 4 | + chunked-prefill admission ([Sarathi-Serve](https://arxiv.org/abs/2403.02310)) | small additional gain on prefill-heavy workloads | +2 weeks | Low after Tier 3 |
 | 5 | Full paged-KV port (V1 vLLM kernel, sm_70+) | Marginal beyond Tier 3 for our workload | 6+ months | Very high |
 
 **SKIP**: vLLM pivot (loses Q4_0 + Hadamard + Q4_0 KV — uniquely SoTA on sm_75; nothing else in the ecosystem can consume this weight stack); persistent-kernel megakernels (Luce sm_75 batch=1 only; Mirage Hopper-first).
 
-### Tier 1 — Drop the bailout
+### Tier 1 — Drop the bailout — **[FALSIFIED 2026-05-21; see Retrospective above]**
 
 Simplest possible change: delete `if (transformer_kv.n_stream > 1) { ... return false; }` at `src/llama.cpp:616`. First decode for each stream still triggers a cudaGraphInstantiate (because topology-hash hits an unpopulated entry), but subsequent decodes for the same stream hit the cache and route through `cudaGraphExecUpdate`. Net: ~N graph instantiations at warm-up (one per stream), then steady-state reuse.
 
 **Why this alone may not work**: the existing graph cache check compares `node->src[i]->data` against captured `src_address[i]`. For the **attention-read** view tensors in `llm_build_kqv`, the `data` pointer encodes the stream's offset and changes per stream. The check at `ggml-cuda.cu:4711-4717` returns false for src_address mismatch *unless* the op is `GGML_OP_CPY` or `GGML_OP_VIEW`. Whether the attention-read tensors register as `GGML_OP_VIEW` (legitimately tolerated) or as e.g. `GGML_OP_FLASH_ATTN_EXT_PER_SLOT_KV` (which would invalidate) needs source confirmation before locking the design. **T1.a is that probe.**
 
-### Tier 2 — Patch attention-read views in `update_cache_copies` (LOCKED STARTING HYPOTHESIS)
+### Tier 2 — Patch attention-read views in `update_cache_copies` — **[PARKED 2026-05-21; see Retrospective above]**
 
 Extension of the existing PHASE_NSTREAM_KV_4D N2.b patching, from CPY nodes to the attention-read view nodes in `llm_build_kqv`. Mechanism:
 
