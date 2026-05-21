@@ -8269,3 +8269,38 @@ vs intact. This is the experiment the earlier matrix should have run; it isolate
 cb_eval at the actual CLI level where the bug is observed. If the divergence
 SURVIVES disabling cb_eval, the mechanism is in the rest of the DFlash pipeline
 (very likely given the libllama-level falsification above).
+
+---
+
+### 2026-05-21 — P0.A.3 Suspect 2 falsified by L1 + K1 binding tests
+
+L1 (test-dflash-save-per-step-ssm-observational) and K1
+(test-deltanet-save-all-steps-last-state) both **PASS** on HEAD after
+landing on `production/2026-q2-next` (submodule SHA d9bc5dfa). The
+test ladder predicted both would FAIL because the CLI bisect's Run E
+("LLAMA_NO_SPEC_CKPT_SAVE=1") changed the degenerate output. The PASS
+result falsifies the "save_per_step_ssm perturbs the verify decode"
+hypothesis at both the libllama and kernel layers.
+
+- K1 binds the kernel-side claim: `ggml_delta_net` at production
+  geometry (HEAD_DIM=128, H_V=16, H_K=2, n_tokens=5, n_seqs=1)
+  produces byte-identical output rows AND last per-step state
+  across save_all_steps ∈ {true, false}.
+- L1 binds the libllama-side claim: `llama_spec_ckpt_init(PER_STEP)
+  + llama_spec_ckpt_save(0)` before a verify-style 5-row decode (the
+  CLI shape) produces byte-identical per-row argmax to the disarmed
+  control on Qwen 3.6 27B q4_0 Hadamard dual-GPU.
+
+The CLI's Run E output difference must therefore come from how the
+DFlash drafter pipeline interacts with `per_step_restore()` — the
+restore side, not the save side. Suspect 4 named: per_step_restore
+semantics under LLAMA_SPEC_CKPT_PER_STEP. Three previous suspects
+(cb_eval install, cudaMallocAsync in combine/inject,
+save_per_step_ssm) are all empirically falsified. The diagnosis is
+back to first principles; L1+K1 stay as regression tests.
+
+Lesson reinforced (per feedback_verify_test_mechanism_before_trusting
+and feedback_bisect_before_revert): the CLI Run E bisect was
+correlation, not causation. The flag flip changed *something*
+downstream — likely how restore reads back state — but the save side
+itself is byte-clean.
