@@ -608,6 +608,119 @@ the cause.
 
 K1' + L2 sources committed on this branch as regression gates.
 
+##### P0.A.3 L3 result — verify-batch ≠ autoregressive; BATCH-SHAPE VARIANCE bound (2026-05-21)
+
+L3 (`tests/dflash-speculative/test-dflash-multi-cycle-restore-drift`)
+was originally written to bind multi-cycle save→restore drift. The
+first run produced a much sharper signal: a SINGLE 5-token verify
+decode (no spec_ckpt, no DFlash pipeline) produces DIFFERENT per-row
+argmaxes than the equivalent 1-token autoregressive decode at the
+SAME effective context. The test was rewritten to a clean
+batch-shape-invariance probe.
+
+**Result: 10/25 rows mismatched across 5 windows × 5 tokens.**
+
+```
+[B w=0 pos=12] tokens=[ 13 271 248068 198 8160 ]
+              sampled_at=[ 271 271(!) 198 248046(!) 579 ]
+              expected  =[ 271 248068 198 8160     579 ] mismatches=2
+[B w=1 pos=17] tokens=[ 579 264 7047 1817 25 ]
+              sampled_at=[ 264 7047 1817 271(!)   271 ]
+              expected  =[ 264 7047 1817 25       271 ] mismatches=1
+[B w=2 pos=22] tokens=[ 271 16 13 220 2972 ]
+              sampled_at=[ 16 16(!) 271(!) 16(!) 2014 ]
+              expected  =[ 16 13 220 2972 2014 ]       mismatches=3
+[B w=3 pos=27] tokens=[ 2014 278 53983 2570 5396 ]
+              sampled_at=[ 53983(!) 53983 279(!) 332(!) 64700 ]
+              expected  =[ 278 53983 2570 5396 64700 ] mismatches=3
+[B w=4 pos=32] tokens=[ 64700 198 256 471 2570 ]
+              sampled_at=[ 198 256 471 471(!) 2640 ]
+              expected  =[ 198 256 471 2570 2640 ]    mismatches=1
+```
+
+Same model, same prompt, same KV cache contents at the start of
+each window, same seq_id. The model's forward at row k of an n=5
+multi-token batch produces a different argmax than the same model's
+forward at row 0 of an n=1 batch with the equivalent prefix. This
+is batch-shape variance at the **model** level, not the kernel
+level we've been chasing.
+
+###### Why this isn't ruled out by existing infrastructure
+
+The production NP-determinism gates (G3.a/b) verify byte-identity
+across concurrent NP={1, 2, 4, 8} dispatches — each slot processing
+ONE token per decode. They do NOT exercise the case "one slot
+processes 5 tokens in one decode vs. that same slot processing
+those 5 tokens one-at-a-time across 5 decodes". L1 + K1 + K1' + L2
+together verified the SAVE / RESTORE chain at the verify-batch
+shape — but always compared n=5 to n=5. Spec-none autoregressive
+runs at n=1. The cross-shape n=5↔n=1 invariance was untested.
+
+###### What this means for the CLI bug
+
+The DFlash CLI's degenerate output is at least partly explained by
+the verify-batch decoder producing different — possibly degenerate —
+argmaxes than autoregressive would. The CLI's drafter supplies
+tokens; verify-batch decides what's "right" by its own argmax, which
+deviates from autoregressive. Whatever sequence the verify-batch
+produces becomes the CLI output (via the accept/bonus loop). If
+that sequence is degenerate, the CLI degenerates.
+
+###### Why MTP appears to work despite the same variance
+
+MTP-IR uses the same verify-batch pattern at production np=1. Two
+possibilities, not yet distinguished:
+- MTP uses a SMALLER verify-batch shape (e.g. n=4 for --draft 3)
+  where batch-shape variance happens to be smaller / absent.
+- MTP also exhibits the variance but produces a coherent — though
+  non-autoregressive — token sequence, and that's been considered
+  acceptable production behaviour because drafter outputs match
+  the verify-batch's preference rather than autoregressive's.
+
+A focused follow-up test L3' would sweep verify-batch widths
+n_tokens ∈ {2, 3, 4, 5, 6, 8} against autoregressive at the same
+context, identifying the smallest n_tokens at which variance begins.
+
+###### Where the variance enters
+
+K1' verified the DeltaNet kernel is byte-equivalent across n_tokens
+at the kernel-direct level — same recurrence, same inputs, same
+output state. The variance must therefore enter at a layer that
+K1' didn't reach:
+- **The full-attention layers** (FA per-slot KV singlewarp kernel
+  or vanilla FA dispatch). The recent PSKV NPC work (PHASE 40-46
+  and friends) optimised this kernel for concurrent multi-slot
+  decode — not multi-token same-slot decode. The dispatcher may
+  route multi-token same-slot to a code path that wasn't covered
+  by NPC byte-identity tests.
+- **The graph-build conditional at delta-net.cpp:380-389**: the
+  permute/L2-norm ordering branches on `n_seq_tokens > 1`. K1'
+  bypassed the graph builder by calling ggml_delta_net directly.
+  At the FULL model forward, this branch fires differently for
+  n=5 vs n=1. The branch is alleged to be equivalent (line 380
+  comment), but it's a candidate.
+- **Norm / MLP ops with batch-shape-dependent dispatch** (RMS norm
+  reduction tile size, MLP FC kernel selection at small vs medium
+  n_tokens). Less likely but possible.
+
+###### Next binding diagnostics
+
+| Test | Binds | Cost |
+|---|---|---|
+| **L3'** sweep verify_bs ∈ {1..8} vs autoregressive | which n_tokens introduces variance | ~10k |
+| **L4** intra-graph tensor capture at FA layer N for n=5 vs n=1 | which op's output diverges | ~30k |
+| **L5** disable PSKV → fall back to vanilla FA + repeat L3 | tests whether the PSKV path is the cause | ~20k |
+
+L3' is the cheapest next step. If variance is present at n_tokens=2
+already, the bug surface is whatever code path activates for
+n_tokens > 1. If variance only appears at n_tokens=5 (DFlash's
+specific shape), the bug surface is shape-specific dispatch (likely
+a FA tile-size decision).
+
+L3 source committed as a regression gate. The test FAILS on HEAD.
+It SHOULD continue to FAIL until the underlying batch-shape
+variance is fixed; do not chase the FAIL into the gate logic.
+
 ##### P0.A.3 Suspect 2 result — `save_per_step_ssm = true` perturbs the verify decode (2026-05-20)
 
 > **SUPERSEDED 2026-05-21** by the L1 + K1 binding tests above (both
