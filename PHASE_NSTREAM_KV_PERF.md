@@ -2099,6 +2099,30 @@ Bailout in `can_reuse_graph` stays active (T3.6 territory). Multi-seq decodes bu
 
 **Binding test — folded into T3.5 verify gate (2026-05-21).** The standalone multi-seq decode test (`tests/spec/test-multi-seq-decode-byte-identity.cpp`, held untracked on disk) hits `delta_net::delta_net` `GGML_ASSERT((uint32_t) s < qnext_state_slots)` on every Qwen GGUF available — both Qwen 3.5 0.8B and the production Qwen 3.6 27B route through `build_qwen35` → `delta_net` (Qwen3-Next hybrid arch) and the bare test harness doesn't initialise `qnext_state_slots` the way the production server does. The new 4D build path under `is_multi_seq && kv.n_stream > 1` is also unreachable in the production code today — the server still splits per-seq before dispatch. T3.5 is what makes the server construct multi-seq batches; once it lands, `verify-production-determinism.sh` becomes the load-bearing binding test for the entire chain T3.3 + T3.4 + T3.5. T3.4 stays open against that joint gate.
 
+### T3.3-followup — K/V WRITE multi-seq via `ggml_set_rows` + per-device `n_head` fix — *reopen* 2026-05-21
+
+T3.3 was prematurely marked complete. T3.5 attempt surfaced two structural gaps:
+
+1. **`build_std_attention` multi-device split path** (`src/llama-build-context.cpp:2946`) uses the build-context member `n_head` (full from `hparams`) for the multi-seq Q reshape. Under graph-split with `n_device=2`, per-device Qcur is `[head_dim, n_head/2, n_tokens]`; the reshape requires per-device `n_head_q_local = split_wq->ne[1] / n_embd_head_k`, not the full `n_head`. Fix is local (one line / a few lines).
+2. **K/V WRITE path** still writes via a single 3D view at `kv_head_eff = kv.head + kv_head_offset`. Under multi-seq dispatch each seq writes to its own stream slice (different per-stream `head_local` values from T3.2's allocator). The current `ggml_cpy(Kcur, k_cache_view)` lays all tokens consecutively starting from one base offset — wrong for multi-seq.
+
+**Solution (per upstream PR #14363 design).** Integrate `ggml_set_rows` into the K/V WRITE path:
+- `ggml_set_rows` is already implemented in ik_llama.cpp (`ggml/src/ggml-cuda/set-rows.cu` covers F32/F16/BF16/Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/IQ4_NL — exact type parity with upstream).
+- Upstream `llama_kv_cache::cpy_k`/`cpy_v` reshape K cache to 2D `[n_embd_gqa, kv_size * n_stream]` for n_stream > 1 and emit `ggml_set_rows(k, k_cur, k_idxs)`. `k_idxs` carries per-token GLOBAL row indices: `idx[t] = stream(t) * kv_size_per_stream + head_local(t)`.
+- One scatter per layer per K/V replaces the per-stream `ggml_cpy`; multi-seq writes naturally land in their correct stream slices.
+
+**Touches:**
+- `src/llama-build-context.cpp` — `llm_build_kv_store` and `build_std_attention` K/V cpy sites replaced by `ggml_set_rows`; per-device `n_head` derived from `Qcur->ne[1]` or `split_wq->ne[1] / n_embd_head_k`.
+- `src/llama-context.h` / `src/llama-build-context.cpp` — new `inp_k_idxs` (and optionally `inp_v_idxs`) input tensor (shape `[n_tokens]`, `GGML_TYPE_I32` or `I64`), wired alongside `inp_KQ_mask`.
+- `src/llama.cpp` — `llama_set_inputs` populates `inp_k_idxs` from `batch.seq_id` + `cache.v_heads`; `update_cache_copies`'s per-stream view_offs patching becomes unused for the new path (kept on legacy path for n_stream==1 and the read-side views).
+
+**Gates (binding):**
+- Build clean; `bin/test-backend-ops` GREEN for SET_ROWS at F16, Q4_0 (already passing on HEAD if upstream's tests carried over; verify).
+- `verify-production-determinism.sh` GREEN at NP={1,2,4,8} multi-GPU **post-refactor without the T3.5 unification** (single-seq dispatch using the new write path must be byte-identical to T3.4).
+- After T3.5 re-applied: `verify-production-determinism.sh` GREEN at NP={1,2,4,8} multi-GPU **with** unified multi-seq dispatch.
+
+Token estimate: 40–80 k (write path refactor + index plumbing + dual-mode verification).
+
 ### T3.5 — Server-context unified dispatch (bundle B starts)
 
 **Touches:** `examples/server/server-context.cpp:4610` area — `process_batch_tokens`. Replace the per-seq_id split + per-slot `llama_decode` loop with a unified ubatch builder that emits one `llama_decode` per tick containing all active slots' tokens.
