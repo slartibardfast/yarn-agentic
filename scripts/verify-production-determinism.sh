@@ -57,13 +57,40 @@ export DEVICE="${DEVICE:-CUDA0,CUDA1}"
 export NP_LIST="${NP_LIST:-1 2 4 8}"
 export CTX_CHECKPOINTS="${CTX_CHECKPOINTS:-3}"
 bash "$HARNESS"
-rc=$?
+np_rc=$?
+
+# Cross-shape SAME-SLOT invariance gate.
+# The NP-determinism harness above covers cross-slot at n_tokens=1 per
+# slot. This second gate covers cross-shape (n_tokens=1 vs n_tokens=N)
+# for the SAME slot — the axis P0.A.3 (MMQ I=8 col-j>0) shipped through
+# because the original verification only exercised col 0. Both gates
+# must pass to certify the build for production.
+SHAPE_GATE="$HERE/test-batch-shape-invariance.sh"
+shape_rc=0
+if [ "${SKIP_SHAPE_GATE:-0}" = "1" ]; then
+    echo ""
+    echo "SKIPPING batch-shape invariance gate (SKIP_SHAPE_GATE=1)"
+elif [ -x "$SHAPE_GATE" ]; then
+    echo ""
+    bash "$SHAPE_GATE"
+    shape_rc=$?
+else
+    echo ""
+    echo "WARN: batch-shape gate not found at $SHAPE_GATE — skipping that axis."
+fi
 
 echo ""
-if [ "$rc" = "0" ]; then
-    echo "ACCEPTANCE: PASS — multi-slot determinism verified at DEVICE=$DEVICE, NP_LIST=\"${NP_LIST}\", CTX_CHECKPOINTS=$CTX_CHECKPOINTS"
+if [ "$np_rc" = "0" ] && [ "$shape_rc" = "0" ]; then
+    echo "ACCEPTANCE: PASS — cross-NP determinism AND cross-shape invariance verified at DEVICE=$DEVICE, NP_LIST=\"${NP_LIST}\", CTX_CHECKPOINTS=$CTX_CHECKPOINTS"
     echo "  Safe to flip profiles/active.sh -> qwen36-27b-x8-deterministic.sh"
+    exit 0
 else
-    echo "ACCEPTANCE: FAIL — do NOT flip the active profile."
+    if [ "$np_rc" != "0" ]; then
+        echo "ACCEPTANCE: FAIL — cross-NP determinism gate failed (rc=$np_rc)."
+    fi
+    if [ "$shape_rc" != "0" ]; then
+        echo "ACCEPTANCE: FAIL — cross-shape invariance gate failed (rc=$shape_rc)."
+    fi
+    echo "  Do NOT flip the active profile."
+    exit 1
 fi
-exit "$rc"
