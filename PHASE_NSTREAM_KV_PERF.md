@@ -526,6 +526,88 @@ New diagnostic plan to surface in a follow-up edit to this section:
 
 L1 + K1 sources committed on this branch. Plan stays open.
 
+##### P0.A.3 K1' + L2 result — kernel intermediates + per_step_restore both PASS; Suspect 4 falsified (2026-05-21)
+
+Followed up Suspect 4 (per_step_restore semantics) with two binding
+tests landed on `production/2026-q2-next`:
+
+- **K1'** (`test-deltanet-save-all-steps-intermediate`) — kernel-direct
+  test that `per_step_ssm[k]` from an `n_tokens=5` `save_all_steps=true`
+  run byte-equals the `final_state` from a fresh `n_tokens=k+1`
+  `save_all_steps=false` run, for ALL k ∈ {0, 1, 2, 3, 4}. **PASS at
+  every k**, 262144 fp32 floats per check. The kernel writes the
+  correct per-step state at every intermediate iteration; the
+  source data `per_step_restore` reads is bit-perfect.
+
+- **L2** (`test-dflash-per-step-restore-byte-identity`) — libllama
+  observational test on the load-bearing restore claim: a fresh
+  3-token decode + 1-token bonus must produce byte-identical
+  bonus-decode logits to a 5-token verify-batch (with
+  `save_per_step_ssm` armed) + `llama_spec_ckpt_restore(accepted_step=2)`
+  + 1-token bonus. **PASS**: 248,320 fp32 logits byte-identical at
+  pos P+3; argmax A=B=13. Both the recurrent-state stitch in
+  `kv.per_step_restore()` AND the KV-cache `seq_rm` AND the
+  `cells[seq_id].pos` update are observationally equivalent to a
+  clean (k+1)-token decode.
+
+###### K1 layout caveat — discovered during K1'
+
+While writing K1', it became clear that the original K1 happens to
+read its kernel-supplied beta/g tensors with a layout that doesn't
+match the production graph's permuted beta/g. The kernel uses
+precomputed strides (`g_stride_batch = n_tokens * n_heads`) that
+expect `h`-fast layout, but a default `ggml_new_tensor_4d` with
+`ne=[1, n_tokens, H_v, n_seqs]` is contiguous as `t`-fast. The
+discrepancy is symmetric across K1's `save_all=true` vs
+`save_all=false` runs (both read the same non-production layout
+identically), so K1's byte-identity claim ("kernel internal
+save_all_steps branch is neutral") still holds. K1' had to fix
+this by slicing beta/g in the kernel's coordinate system; the fix
+is documented inline as `slice_first_n_tokens_h_fast`.
+
+This caveat does NOT weaken K1's exoneration of "the save_all_steps
+branch perturbs the recurrence math." K1' establishes the stronger
+claim that the kernel's per-step writes match what a fresh decode
+would produce at every k under production-equivalent layouts.
+
+###### What remains
+
+Five suspects now empirically falsified for P0.A.3:
+
+| Suspect | Binding test | Result |
+|---|---|---|
+| 1. cb_eval install | `test-dflash-extract-observational` | PASS, 2026-05-20 |
+| 2. cudaMallocAsync (combine/inject) | run C sync swap | FALSIFIED 2026-05-20 |
+| 3. save_per_step_ssm (libllama) | L1 | PASS 2026-05-21 |
+| 3'. save_all_steps last-state | K1 | PASS 2026-05-21 |
+| 3''. save_all_steps intermediate | K1' | PASS 2026-05-21 |
+| 4. per_step_restore byte-identity | L2 | PASS 2026-05-21 |
+
+The combined L2 PASS at the libllama layer rules out the entire
+save-then-restore chain for an isolated 5-token verify with
+no DFlash pipeline. The CLI failure must therefore involve one
+or both of:
+
+- **The drafter pipeline interaction.** combine_features →
+  inject_kv_fused × L_d → drafter_forward → drafter_lm_head runs
+  during DFlash CLI but NOT in L2. Tests at this layer:
+  L3 ("multi-cycle save→restore loop with identity drafter, no
+  drafter pipeline") to distinguish multi-cycle drift from
+  drafter-pipeline interaction; L4 ("full DFlash drafter pipeline
+  with deterministic draft tokens, observational vs spec-none") to
+  bind the drafter pipeline's contribution.
+- **Multi-cycle state drift.** L2 tests ONE save→restore cycle.
+  The CLI runs many cycles in sequence. If the restored state
+  accumulates ULP drift cycle-over-cycle, byte-identity at cycle 1
+  doesn't preclude argmax flip by cycle N. L3 binds this.
+
+L3 is the cheapest next test (no drafter pipeline, just multi-cycle
+loop at libllama). ~20k tokens. If L3 PASSES, the bug needs the
+drafter pipeline (L4). If L3 FAILS, multi-cycle restore drift is
+the cause.
+
+K1' + L2 sources committed on this branch as regression gates.
+
 ##### P0.A.3 Suspect 2 result — `save_per_step_ssm = true` perturbs the verify decode (2026-05-20)
 
 > **SUPERSEDED 2026-05-21** by the L1 + K1 binding tests above (both
