@@ -2064,17 +2064,19 @@ Sequenced as **two coherent bundles** per `feedback_oneshot_then_evaluate`:
 
 Submodule `c2a142a4`. Kernel takes `nb33` and addresses mask as `mask + nb33 × seq + nb31 × tok`. At `ne[3]=1` collapses to legacy via `nb33 × 0 = 0`. Foundation for the unified-batch path.
 
-### T3.2 — `find_slot` multi-seq allocation
+### T3.2 — `find_slot` multi-seq allocation — *landed*
 
-**Touches:** `src/llama.cpp:1362` (`llama_kv_cache_find_slot`).
+**Touched:** `src/llama.cpp` `llama_kv_cache_find_slot`.
 
-**Semantics:** when `n_stream > 1` AND `batch.n_seq_id` is populated with multiple distinct seq_ids across tokens, allocate each token into its seq_id's stream slice. Today the function reads `batch.seq_id[0][0]` once and uses that as the stream_id for the whole batch (line 1421-1431). The refactor: group tokens by seq_id, allocate within each group's stream slice.
+**Semantics implemented:** when `n_stream > 1` AND the batch has tokens with multiple distinct primary seq_ids, scan-for-empty within each seq's stream slice and commit per-stream cells in a two-phase pass (scan-all-then-write). At `n_stream == 1` OR single-seq batches the path collapses byte-identically to the legacy single-arena allocator. Token convention is contiguous-per-seq (locked at OpenQ-A resolution).
 
-**Token ordering assumption (OPEN — see Open Questions):** the implementation will assume tokens-per-seq contiguous in the batch (seq 0's all tokens, then seq 1's, then seq 2's, …). Upstream PR #14363's `split_equal` semantics confirm this convention.
+**Test gate landed:** `tests/spec/test-n-stream-kv-layout.cpp::test_multi_seq_find_slot` — synthetic batch with 2 seqs × 4 tokens each (seq 0 at pos [10..13], seq 1 at pos [20..23]) → asserts each stream's allocated cells carry the expected pos and seq_id, isolates across streams, and that v_heads + cache.head advance correctly. PASS.
 
-**Test gate:** `tests/spec/test-n-stream-kv-layout.cpp` extended (or new test in the same file) — synthetic multi-seq batch with known token positions → assert each cell's `pos` and `seq_id` match expected stream offsets.
+`llama_kv_cache_find_slot` declaration exposed in `src/llama-context.h` for the property test. The function is internal-but-not-static so existing internal callers (`llama_decode_internal`, state load) remain unchanged.
 
-**Production gate:** `verify-production-determinism.sh` GREEN (single-seq path unchanged).
+`tests/CMakeLists.txt` sets `SKIP_RETURN_CODE 77` on the test so ctest reports skip cleanly when no model path is supplied.
+
+**Production gate:** `verify-production-determinism.sh` GREEN (single-seq path unchanged from HEAD).
 
 ### T3.3 — Build context 4D K/V/mask/Q
 
@@ -2151,7 +2153,7 @@ If T3 closes between conservative and stretch: declare GP3.i GREEN, evaluate fur
 
 These need closure during T3 execution; not blocking the bundle starts but should be answered as the relevant card lands.
 
-**OpenQ-A: Token ordering convention in the unified ubatch.** Tokens-per-seq contiguous (seq 0's all tokens, then seq 1's, etc.) or interleaved (token 0 of all seqs, then token 1, etc.)? **Resolves at T3.2 implementation.** Working assumption: tokens-per-seq contiguous, matching upstream PR #14363's `split_equal` semantics. Confirm by reading the upstream code; document the chosen convention in `specs/dispatch/unified_stream_dispatch.allium` as a contract.
+**OpenQ-A: Token ordering convention in the unified ubatch.** Tokens-per-seq contiguous (seq 0's all tokens, then seq 1's, etc.) or interleaved (token 0 of all seqs, then token 1, etc.)? **RESOLVED 2026-05-21 at T3.2 start: contiguous-per-seq with `split_equal` shape-uniform ubatches per tick.** Convention evidence converges: upstream PR #14363 `split_equal` semantics; `src/llama-delta-net.cpp:253-380` already consumes `[..., n_seq_tokens, n_seqs]` packing; PSKV kernel grid (`blockIdx.x = tok`, `blockIdx.z = seq`) is built for seq-outer 4D layout; T3.1 `nb33` mask addressing assumes `[n_kv, n_tok_per_seq, 1, n_stream]`. Variable `n_tok_per_seq` across streams within one tick is handled by splitting the batch into K shape-uniform ubatches (split_equal) — one `llama_decode` per ubatch. For the common all-decode case K=1.
 
 **OpenQ-B: Bench-with-Hadamard for production-realistic perf.** `llama-batched-bench` has no Hadamard flag (silently runs without). Production uses it. **Resolves at T3.8.** Options: (a) drive bench via `llama-server` HTTP for production parity, (b) extend `llama-batched-bench` with Hadamard flags, (c) measure both and report (we publish two numbers: vLLM-comparable + production-realistic). Recommend (a)+(c).
 
