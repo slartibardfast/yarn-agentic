@@ -1646,7 +1646,65 @@ The most likely mechanism: returning `true` on `ask=true` for `l_out-<il>` nodes
 
 Per `feedback_no_workarounds`, path 1 is the proper fix. Path 2 is a stop-gap if production needs DFlash CLI before path 1 lands. Path 3 is the most invasive (touches ggml backend).
 
-#### P0.A.4 — Multi-slot DFlash SEGV in `llama_sampling_prepare` [OPEN — bounded scope]
+#### P0.A.4 — Multi-slot DFlash SEGV in `llama_sampling_prepare` [CLOSED 2026-05-21]
+
+> **Closed 2026-05-21.** Reproduced clean on post-P0.A.3 HEAD with
+> `qwen36-27b-x2-dflash` profile + two concurrent `/v1/completions`:
+> server crashes during the first verify cycle with
+> `llama_get_logits_ith: invalid logits id 5, reason: batch.logits[5] != true`.
+>
+> Root cause: the per-stream split in `process_batch_tokens` (added
+> 2026-05-19 by `PHASE_NSTREAM_KV_4D` N2.d) issues one `llama_decode`
+> per slot per tick (Bug C-safe). The engine resets `output_ids` on
+> every `llama_decode` AND indexes it in the LOCAL frame
+> `[0..n_tokens)` of the dispatched `batch_view`, not the GLOBAL
+> frame of the combined `batch`. The in-loop call to
+> `speculative_decoding_accept()` walked **all** slots and read
+> their logits via `slot.i_batch_dft[k]` — which is recorded in the
+> GLOBAL frame. Only the most-recently-decoded slot's indices
+> resolved against `output_ids`; every other slot hit
+> `output_ids[N] = -1`, which the engine reports as
+> `batch.logits[N] != true`. At np=2 with `--draft-max 4`, slot 1's
+> i_batch_dft[0] = 5 falls outside slot 0's just-decoded `output_ids`
+> window, so the engine throws on the first attempt to sample for
+> slot 1.
+>
+> Fix (submodule commit `cad6b591`):
+>
+> - `examples/server/server-context.h` — signature change
+>   `speculative_decoding_accept(int32_t batch_offset, int run_seq_id)`.
+> - `examples/server/server-context.cpp:4161-` — filter Phase A's
+>   slot iteration by `slot.id == run_seq_id`; translate
+>   `i_batch_dft` from global to local frame
+>   (`g - batch_offset`) before any
+>   `llama_get_logits_ith` / `llama_decoder_get_embeddings_ith`
+>   call.
+> - `examples/server/server-context.cpp:4947` — call site passes
+>   `(i, run_seq_id)` from the per-stream loop's current iteration.
+>
+> The np=1 two-phase split (Phase A reads, Phase B mutates) is
+> preserved trivially: `accepted` now holds at most one slot per
+> call.
+>
+> Regression test (parent commit `a12609a`):
+> `scripts/test-server-multi-slot-dflash.sh` boots the production
+> DFlash profile at `--parallel 2`, sends two concurrent
+> `/v1/completions`, asserts both return coherent text. RED on
+> pre-fix HEAD (curl 52, server log
+> `batch.logits[5] != true`); GREEN post-fix.
+>
+> Gates post-fix:
+>
+> | Gate | Pre-fix | Post-fix |
+> |---|---|---|
+> | `test-server-multi-slot-dflash.sh` (np=2 DFlash smoke) | FAIL (server crash) | PASS |
+> | `verify-production-determinism.sh` NP={1,2,4,8} per-slot byte-identity | PASS | PASS |
+> | `verify-production-determinism.sh` cross-NP slot-0 matrix | PASS | PASS |
+> | `verify-production-determinism.sh` batch-shape invariance gate (4 sub-tests) | PASS | PASS |
+>
+> Original section preserved below as the diagnostic record.
+
+##### P0.A.4 historical diagnostic — original symptom record
 
 **Symptom at `--parallel 2`:**
 
@@ -1667,12 +1725,14 @@ This is independent of P0.A.3 and likely contained to the `add_sampled_tokens` m
 
 Tier 2 and Tier 3 do NOT depend on DFlash CLI working end-to-end. Production runs MTP `--draft 3` at np=1 today; MTP is the gated production path for both correctness (Bug C absence) and perf (the -6.2 % TG NP=8 regression we're trying to recover comes from per-stream graph rebuilds in the vanilla decode path, not from DFlash). **Tier 2's gate GP3.n binds on MTP NP=1 production smoke**, not on DFlash CLI smoke.
 
-Tier 2 entry condition therefore relaxes to:
+Tier 2 entry condition (updated 2026-05-21 after P0.A.3 + P0.A.4 closure):
 - ✅ P0.A.1 (MAL cap) — landed.
 - ✅ P0.A.2 (stage end-trim) — landed.
-- ⏸ P0.A.3 (output divergence) — documented; deferred to dedicated diagnostic phase.
-- ⏸ P0.A.4 (multi-slot SEGV) — documented; deferred (likely subsumed by P0.A.3 root cause).
+- ✅ P0.A.3 (output divergence) — CLOSED 2026-05-21 (MMQ I=8 disable + cross-mmq_x dispatch uniformity).
+- ✅ P0.A.4 (multi-slot SEGV) — CLOSED 2026-05-21 (per-stream-scoped `speculative_decoding_accept` + local-frame index translation).
 - ✅ P0.A.5 (production server boots clean on post-fold for the non-DFlash production profile) — verified.
+
+All P0.A items now strictly closed. P0.B is the remaining Tier-2 prerequisite.
 
 Gates GP3.e ("DFlash test suite GREEN") in Tier 2/3 bind at the libllama layer only — the `test-dflash-np-multislot` family in `tests/dflash-speculative/`, which already passes on current HEAD. Server-side DFlash gates are deferred with P0.A.3.
 
