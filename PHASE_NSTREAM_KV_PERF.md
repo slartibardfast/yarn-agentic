@@ -2388,6 +2388,72 @@ If T3 closes between conservative and stretch: declare GP3.i GREEN, evaluate fur
 
 ---
 
+## Tier 4 — chunked-prefill admission (Sarathi-Serve) — landed, gate-measured 2026-05-22
+
+T4 lifts the pre-T4 `active_pp_slot_id` PrefillSerialisationGate from the server scheduler and replaces it with multi-slot chunked-prefill admission. New per-tick token budget K (CLI `--prefill-chunk-budget K`, default `n_ubatch`) bounds total prefill admitted in any tick; fair per-slot quota `ceil(K / n_eligible_load_nonembedding)` distributes the budget across LOAD_PROMPT slots. Decode tokens for PROCESSING slots are admitted FIRST by `add_sampled_tokens` (DecodePriorityAdmission); prefill chunks are admitted afterwards. Slots not finishing prefill in one tick carry forward (PrefillCarryProgressesMonotonically). Specifications: `specs/scheduler/batch_composition.allium`, `specs/multislot/BatchComposition.tla`. Stub property test: `ik_llama.cpp/tests/spec/test-chunked-prefill-admission.cpp` (420 swept configs PASS). Trace producer + validator: per-tick `TickDispatch` emission moved from `process_batch_tokens` to `update_slots`; validator at `scripts/validate-batch-composition-trace.py`.
+
+### T4.A — Audit findings (2026-05-22)
+
+**A1 — Bug C non-regression argument holds structurally.** 4D KV layout (per-stream slabs at `ne[3] = n_stream`, uniform `mul_mat` shape per tick) closes Bug C regardless of admission policy. T4 only changes WHICH tokens are in the batch, not the per-tick `mul_mat` call shape. Empirically validated: `r5-probe-c4.sh ITERS=20 = 0/20 violations` under T4.
+
+**A2 — Three defensive-scaffold patterns called out + dropped pre-coherent-flip** (per `[[feedback_bake_measurement_env_gates]]`):
+- Bypass bool in original Bundle B plan — dropped, Bundle B collapsed to a single coherent flip.
+- TLA+ legacy regression mode (`DecodeHoldGateOn` constant + `LegacyAdmissionOK` action + third MC config) — dropped.
+- Trace validator backward-compat (legacy `prefill_slots` field, absent `budget_k` skip) — dropped; all TickDispatch fields now required.
+- `LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE` env knob in `batch_pending_prompt` — dropped (NP-determinism debug mode it gated is closed structurally now via T3 + 4D KV).
+
+**A3 — Trace semantics shift from per-dispatch to per-tick.** Under T3.5 split_equal grouping a tick is typically split into prefill-only and decode-only dispatch slices; per-slice tracing would falsely violate `DecodePriorityAdmission`. Per-tick tracing in `update_slots` captures the full batch composition once per tick and binds the validator's invariants correctly. New `tick_trace_state` struct on `server_context` carries the snapshot.
+
+### T4.M — Measurements
+
+**T4.6 — Correctness gate sweep:**
+
+- **GP4.j Bug C absence** (`r5-probe-c4.sh ITERS=20`): **0/20 PASS**.
+- **GP4.k NPC byte-identity** (`verify-production-determinism.sh NP={1,2,4,8}`): **PASS** — cross-NP byte-identity AND batch-shape invariance both verified. T3 FRAMING B closure re-confirmed under T4 (dispatch_multi_seq_count 64/64 = 100% during NP=8 segment).
+- **GP4.l DFlash composition** (test-dflash-np-multislot / test-dflash-closure / test-dflash-np-invariance): **3/3 PASS** — slot-0 byte-identical across N ∈ {1,2,4,8}, argmax-equivalent on all 8 prompts vs vLLM PR #40898, drafter_forward np-invariant across 4 seeds.
+- **GP4.m Trace invariants** (NP=8 + K=256 + 8-prompt 5s staggered, 481 records): **PASS** — TokenBudgetRespected, DecodePriorityAdmission, PerTokenFlagExclusivity, PrefillCarryProgresses all hold. 7 mixed ticks (decode + prefill same batch) exercised the new admission semantics empirically; max batch 110/256 tokens.
+- **GP4.n Kernel-level NPC** (test-fattn-per-slot-kv-dispatch-np-invariance): **PASS**.
+- **T4.1 unit test** (test-chunked-prefill-admission, 420 swept configs): **PASS**.
+
+**T4.7 — Perf gate** (locked clocks 1455 MHz, N=3 per config, ledger `data/t4-perf-gate-ledger.md`):
+
+| Config | Mean t/s | σ | CV | Δ vs C0 |
+|---|---|---|---|---|
+| C0 (T3.8 M3 pre-T4 baseline, steady arrival) | 26.49 | 0.037 | 0.14% | — |
+| C1-steady (T4 + same steady arrival) | 26.49 | 0.014 | 0.05% | 0.0% |
+| C1-staggered (T4 + 5s arrival offsets) | 21.62 | 0.016 | 0.07% | −18.4% |
+
+- **GP4.i.a (regression band, C1-steady ≥ C0×0.98 = 25.96):** **PASS** — zero regression.
+- **GP4.i.b (uplift binding, C1-staggered ≥ C0×1.20 = 31.79):** **FAIL** — 21.62 t/s, 18.4% below C0.
+- **GP4.i.c (variance, CV ≤ 1%):** **PASS** — 0.05% / 0.07%.
+
+### T4.E — Evaluation
+
+**Verdict: T4.6 GREEN, T4.7 FAIL on GP4.i.b. T4 correctness layer landed; perf justification gate measured negative.**
+
+**Why GP4.i.b structurally fails.** The gate target was aggregate t/s ≥ steady baseline × 1.20. Staggered arrival has a longer wall floor than steady on this metric — C0 = 26.49 t/s **is** the multi-slot kernel saturation throughput at NP=8 on RTX 6000 sm_75 for Qwen 3.6 27B Q4_0 with Hadamard. Staggered arrival under-utilises the multi-slot kernel during the ramp-up window (only slots 0–2 active for t = 0–10 s), so aggregate t/s is mechanically lower than steady. The gate as specified asked staggered to exceed steady on aggregate t/s, which is unreachable on this kernel at this NP — independent of T4 admission policy.
+
+**Where T4 admission DOES deliver:** workloads with **high prefill rate** (many short prompts in burst arrival) or **long prompts** (chunked admission keeps decode going during the prefill tail). M3-staggered with 200-token prompts at 5 s gaps is neither: prefill at PP ~60 t/s finishes in ~3.5 s, leaving 1.5 s slack before the next prompt arrives, so pre-T4 serialised prefill doesn't bottleneck the staggered workload either. T4 admission's value is structural (correctness gates GREEN; spec layer + admission scaffold + trace producer load-bearing for future work) but does not surface as a throughput uplift at this workload + model + hardware shape.
+
+**Hardware constraint reaffirmed.** vLLM's measured 154.77 t/s on the same hardware (single shared model) is the per-paged-KV ceiling. T4 does not close that gap; the next lever (Tier 5 paged KV, listed in Open questions) would target it but is out of scope for this PHASE doc. Per `[[project_continuous_batching_vs_perslot_dispatch]]` the vLLM uplift is paged-KV plus continuous batching combined; we have continuous batching now (T4) but not paged KV.
+
+**Per `[[feedback_oneshot_then_evaluate]]`:** "negative results land cheap when honest". GP4.i.b is closed FAIL with measurement of record. No follow-up cover. Per `[[feedback_no_workarounds]]` the perf gate target is not re-defined post-measurement to manufacture a PASS — the structural reason for the miss is documented and the deliverable scope stands.
+
+### T4.C — Closure
+
+- Spec layer: `specs/scheduler/batch_composition.allium`, `specs/multislot/BatchComposition.tla` (T4 form), `scripts/validate-batch-composition-trace.py` (T4 form), `ik_llama.cpp/tests/spec/test-chunked-prefill-admission.cpp`. All landed in commits `fa935eb`, `fc7d7f3`, `6ad6140`, submodule `0759c01c` + parent `9fb4e6e`, with cleanup commits `7635d04` + `35632f2`.
+- Coherent flip: submodule `e282d229` (T4 admission in `batch_pending_prompt`, CLI `--prefill-chunk-budget K`, per-tick TickDispatch trace), parent `eb426e0` (submodule bump).
+- T4.6 correctness gates all GREEN — see `data/t4-perf-gate-ledger.md` and per-test outputs.
+- T4.7 perf gate FAIL on GP4.i.b — see `data/t4-perf-gate-ledger.md`. Harness `scripts/bench-t4-m3-staggered.sh` (new) + `scripts/bench-t3.8-m3.sh` (reused for C1-steady).
+- MEMORY entry: `2026-05-22 — T4 chunked-prefill admission (Sarathi-Serve) coherent flip landed` (this file's MEMORY.md).
+- Auto-memory: `~/.claude/projects/-home-llm-yarn-agentic/memory/project_t4_bundle_a_landed.md` updated with the T4.6 + T4.7 results and lessons.
+
+**Production impact.** Production profile (`profiles/qwen36-27b-x2-dflash.sh`, NP=2 + DFlash) is **UNCHANGED**. T4 admission code is in-tree but its behaviour at default `--prefill-chunk-budget 0` (= n_ubatch = legacy chunk size) is byte-identical to pre-T4 admission policy under verify-production-determinism at NP={1,2,4,8}. No production action required from T4 closure.
+
+**Recommendation for next workstream.** T4.7 FAIL on aggregate t/s does NOT invalidate the admission scaffold — the spec layer and admission code are correct and ready for the workloads they're designed for. If a future workstream targets burst short-prompt arrival or long-prompt prefill (e.g., RAG with long retrieved context), T4 admission is the foundation. Otherwise paged KV (Tier 5) is the next lever for catching vLLM's 154 t/s ceiling.
+
+---
+
 ## Open questions and refinements
 
 These need closure during T3 execution; not blocking the bundle starts but should be answered as the relevant card lands.
