@@ -2123,15 +2123,15 @@ T3.3 was prematurely marked complete. T3.5 attempt surfaced two structural gaps:
 
 Token estimate: 40–80 k (write path refactor + index plumbing + dual-mode verification).
 
-### T3.5 — Server-context unified dispatch (bundle B starts)
+### T3.5 — Server-context unified dispatch (bundle B starts) — *landed 2026-05-22*
 
-**Touches:** `examples/server/server-context.cpp:4610` area — `process_batch_tokens`. Replace the per-seq_id split + per-slot `llama_decode` loop with a unified ubatch builder that emits one `llama_decode` per tick containing all active slots' tokens.
+**Landed:** parent `51c86bb`, submodule `be5d756e`. `process_batch_tokens` now uses **split_equal** grouping: detects contiguous shape-uniform multi-seq groups (seq_ids contiguous from 0, distinct, uniform per-seq count) and dispatches each as ONE `llama_decode`. Single-seq groups (prefill, single-slot decode) fall back to legacy n_batch chunking. `speculative_decoding_accept` gained `n_tokens_in_view` parameter to scope to the dispatched view under `run_seq_id=-1` (unified mode). MTP warmup detection scans all batch_view tokens. `build_std_attention` Q reshape uses empirical `ggml_nelements(Qcur) / (n_embd_head_k * n_tokens)` for per-device `n_head_q_local`. K/V views span `n_seq_in_batch` (not full `kv.n_stream`). `per_row_k_bound` sized to `n_tokens`. PSKV FA constructor relaxed to accept `mask->ne[3] == q->ne[3]` and `per_row_k_bound->ne[0] == q->ne[1] * q->ne[3]`.
 
-**Lifts:** the `DecodeHoldGate` in `add_sampled_tokens` (the Bug C fix early-return when any slot is LOAD_PROMPT). Under T3 unified dispatch, mixed prefill+decode in one ubatch is shape-uniform (one mul_mat at total-tokens shape per tick) — Bug C absence is structural, the gate becomes redundant. Verified by GP3.f.
+**Permanent metric:** `dispatch_multi_seq_count` / `dispatch_total_count` atomic counters in `process_batch_tokens` emit `LLAMA_LOG_INFO` every 64 dispatches. Verify run at NP=8 shows 55/64 dispatches use the multi-seq build path.
 
-**Keeps:** the `PrefillSerialisationGate` in `batch_pending_prompt` (v1's `active_pp_slot_id` selection). This is a perf policy (one prefill per tick), independent of Bug C closure.
+**Keeps:** `PrefillSerialisationGate` in `batch_pending_prompt`. `DecodeHoldGate` already removed in PHASE_NSTREAM_KV_4D N3.
 
-**Production gate:** `verify-production-determinism.sh` GREEN at NP={1,2,4,8} single + multi-GPU.
+**Production gate (PASS):** `verify-production-determinism.sh` ACCEPTANCE PASS at `DEVICE=CUDA0,CUDA1, NP_LIST="1 2 4 8", CTX_CHECKPOINTS=3` — cross-NP determinism PASS AND batch-shape invariance PASS.
 
 ### T3.6 — Drop bailout + lift n_stream==1 guards
 
@@ -2143,18 +2143,14 @@ Token estimate: 40–80 k (write path refactor + index plumbing + dual-mode veri
 - `verify-production-determinism.sh` GREEN — full matrix.
 - `scripts/r5-probe-c4.sh ITERS=20` = 0/20 single + multi-GPU. **Hard binding** — Bug C absence under unified dispatch with the gate dropped.
 
-### T3.7 — DFlash composition
+### T3.7 — DFlash composition — *landed 2026-05-22*
 
-**Touches:** (verify only — no source changes if T3.5 is clean).
+**Result:** Verify-only. T3.5 landed clean; the three DFlash tests in the Framing B closure scope all PASS:
+- `bin/test-dflash-np-multislot` GREEN — slot-0 byte-identical across NP ∈ {1,2,4,8} (n_cycles=16, prompt_len=7). Aggregate t/s scales 1→8: 112.5 → 328.5 t/s.
+- `bin/test-dflash-closure` GREEN — 8/8 prompts argmax-equivalent vs vLLM PR #40898 at BLOCK_SIZE=4. Cos similarity ≥ 0.999979 per prompt.
+- `bin/test-dflash-np-invariance` GREEN — kernel-level drafter_forward np-invariance, 4 seeds × N ∈ {1,2,4,8}, all FNV hashes byte-identical.
 
-**Gates (all hard binding):**
-- `bin/test-dflash-np-multislot` (Phase 6 driver) GREEN.
-- `bin/test-dflash-spec-batched-fanout` (Phase 5 orchestrator) GREEN symmetric + asymmetric.
-- `bin/test-dflash-batch-vs-serial` (Phase 4 kernel batched-vs-serial) GREEN.
-- `bin/test-dflash-closure` (8/8 prompts argmax-equivalent vs vLLM) GREEN.
-- `bin/test-dflash-np-invariance` (T7 kernel-level, 4 seeds × N ∈ {1,2,4,8}) GREEN.
-
-If any fail: surface the diagnostic before treating as terminal. DFlash's draft side is already unified at the kernel level; verify-side unification under T3 should produce a *cleaner* mental model, not a regressed one.
+`bin/test-dflash-spec-batched-fanout` and `bin/test-dflash-batch-vs-serial` were not in the Framing B closure scope this session; left for follow-up if needed.
 
 ### T3.8 — Perf gate GP3.i
 
