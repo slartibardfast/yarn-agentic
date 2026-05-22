@@ -250,3 +250,42 @@ acknowledgement that the perf gate (GP5.b) is at risk of structural FAIL.
 `[[feedback_oneshot_then_evaluate]]` — preserves the architecture for future
 work and surfaces the real lever direction without burning 150–230k on a
 mismatched premise.
+
+## 9. Outcome — Path C selected (2026-05-22)
+
+**User decision: Path C (override).** Verbatim reframe:
+
+> larger ctx sizes will come into play later so we must do this with complete
+> sincerity
+
+The override is **not** a dismissal of the probe finding. It accepts the
+finding (perf-uplift mechanism does not bind on current-workload) and reframes
+Tier 5's motivation: **structural feasibility for the high-ctx workloads that
+are coming**, not throughput uplift on production-current.
+
+Concretely:
+
+- ctx 1M / NP=8 Q4_0 contiguous = ~1.2 TB allocated; we have 48 GiB →
+  **contiguous layout cannot allocate**.
+- Paged layout allocates only actually-written blocks → typical ~10 GiB
+  footprint; **fits with room**.
+- The lever at high ctx is **feasibility, not throughput**.
+
+The PHASE doc's GP5.b is reframed from a numeric uplift gate to a feasibility
+gate (contiguous fails to allocate at ctx ≥ 1M NP=8; paged succeeds with
+finite TG). Numeric current-workload uplift target stays in the ledger as
+measurement, not hard gate (acknowledged at-risk of structural FAIL by the
+kernel bottleneck the probe identified).
+
+"Complete sincerity" discipline named explicitly: no shortcut specs, all 8
+property tests RED-bound, allocator OOM at high ctx is a first-class test
+(not edge case), DFlash + paging composition tested at high-ctx workload.
+
+**This document stays in tree** as the audit record:
+- Why the rule's perf-uplift mechanism didn't bind at current scale
+- Why the user overrode the rule for forward-looking infra
+- What the actual lever is for the 5.84× gap to vLLM (kernel-level, separate
+  workstream — Tier 5 does not claim to address it)
+
+See `PHASE_NSTREAM_KV_PERF.md` §"T5.0-probe outcome (2026-05-22)" for the
+full reframe.
