@@ -2229,22 +2229,22 @@ Token estimate: 40–80 k (write path refactor + index plumbing + dual-mode veri
 
 `v_trans` non-FA asserts (`src/llama-build-context.cpp:790`, `:3070`) **NOT lifted** — that path is genuinely incompatible with the 4D layout and gated on `--fa off` which production does not use. Asserts correctly document the constraint.
 
-#### T3.6.M — VRAM + reuse perf measurements
+#### T3.6.M — VRAM + reuse perf measurements — *landed 2026-05-22*
 
-- **VRAM probe (permanent):** extend the existing `~ggml_backend_cuda_context: have %d graphs` to include total bytes. Cheap, useful long-term.
-- **Reuse perf probe (gate-and-bake):** `LLAMA_PROBE_REUSE_TIMING=1` env-gated block in `llama_decode_internal` capturing per-decode `t_build_graph` (when miss) vs `t_dispatch`. Aggregated per 64 decodes. Captured under multi-seq NP=8 with bailout-dropped vs bailout-in-place. **Decision to keep or delete the probe TBD based on the data per `feedback_bake_measurement_env_gates`.**
+- **[x] VRAM probe (permanent)** — extended `~ggml_backend_cuda_context` log at `ggml/src/ggml-cuda.cu:667` to sum host-side bookkeeping (nodes / params / ggml_graph_properties / cpy_dest_ptrs vectors) plus device-side cpy `dest_ptrs` arrays across all cached graphs. cudaGraphExec_t binaries are opaque so are not counted — this is an under-count of true graph-pool VRAM, but it grows proportional to pool size which is the load-bearing signal. Sample (test-graph-reuse-set-rows, 0.8B, GRAPH split): `have 9 graphs (234 nodes, 60.4 KB host bookkeeping, 0.0 KB device dest_ptrs)`. test-kv-shift LAYER split shows the larger-per-graph shape: `have 3 graphs (1764 nodes, 455.5 KB host bookkeeping, 0.6 KB device dest_ptrs)`.
+- **[~] Reuse perf delta — MOOT and parked**. The original M card scoped this as "bailout-dropped vs bailout-in-place A/B". T3.6.I.b.2 (bailout drop) closed as a design decision (see I.b above + `src/llama.cpp:610-628` inline rationale): dropping the n_stream>1 bailout would expose a single-seq cross-stream bug in `build_std_attention` for no real reuse uplift, because the multi-seq dispatch path already trips the n_tokens>1 MTP gate (reason=2) before reaching the n_stream check. There is no "bailout-dropped" world to measure. **If future data motivates revisiting the bailout drop** (e.g. a single-seq cross-stream fix lands separately, or a workload emerges where the n_tokens>1 gate is no longer dominant), spin up a fresh perf probe at that point.
 
 #### T3.6 closure gates
 
-- `bash scripts/verify-production-determinism.sh` ACCEPTANCE PASS post-(c.2).
-- `r5-probe-c4 ITERS=20` = 0/20 (already verified post-T3.5 — **PASS captured 2026-05-22**).
-- `bin/test-kv-shift-per-stream` GREEN.
-- `bin/test-kv-defrag-per-stream` GREEN.
-- `bin/test-graph-reuse-set-rows` GREEN.
-- All 3 Allium specs `allium check` clean.
-- All 3 TLA+ modules `tlc -config MC.cfg` clean.
-- VRAM probe output captured + documented.
-- Reuse perf delta measured + decision logged.
+- ✅ `bash scripts/verify-production-determinism.sh` ACCEPTANCE PASS post-(c.2) — captured 2026-05-22 across NP={1,2,4,8} multi-GPU.
+- ✅ `r5-probe-c4 ITERS=20` = 0/20 — captured post-T3.5, 2026-05-22.
+- ✅ `bin/test-kv-shift-per-stream both` GREEN.
+- ✅ `bin/test-kv-defrag-per-stream both` GREEN.
+- ✅ `bin/test-graph-reuse-set-rows` GREEN (miss_reason != 6 bailout path closed; reason=1/2 on 1st/2nd call is the cross-tick MTP-gate path which is correct behaviour).
+- ✅ All 3 Allium specs `allium check` clean (0 errors; external-entity / unused-field warnings expected).
+- ✅ All 3 TLA+ modules `tlc -config MC.cfg` clean — KShiftPerStreamMC 3041 states, DefragPerStreamMC 304 states, GraphReuseSetRowsMC 54 states, no errors.
+- ✅ VRAM probe landed + sample output captured (T3.6.M above).
+- ✅ Reuse perf delta — closure rationale recorded (no bailout-dropped world to measure; see T3.6.M).
 
 **Token budget:** ~200–250k across audit + specs + tests + impl + measurements + closure.
 
