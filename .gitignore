@@ -19,9 +19,4 @@ specs/**/*_TTrace_*.tla
 specs/**/*_TTrace_*.bin
 
 # GPU coordination state (volatile, per-host)
-coord/gpu-*.state
-coord/gpu.lock
-coord/gpu.log
-coord/gpu.queue
-coord/abort
-coord/results/
+coord/
