@@ -8786,3 +8786,75 @@ the template for any future multi-stream graph builder.
 ≥ 100 t/s conservative / ≥ 130 t/s stretch on the vLLM-comparable
 config). Out of scope for the T3 correctness phase; addressed in a
 separate session.
+
+---
+
+## 2026-05-22 — PHASE_NSTREAM_KV_PERF T3.8 perf gate GP3.i — FAILED, theory falsified, Tier 4 justified
+
+T3.8 measurement of record landed on `production/2026-q2-next`. All
+three sub-gates FAIL:
+
+| Config | Mean t/s | CV | Gate | Result |
+|---|---|---|---|---|
+| M1 NP=1 ref (no spec-decode) | 24.04 | 0.11% | (sanity) | OK |
+| M2 NP=8 batched-bench no-Hadamard | 27.73 agg | 0.43% | ≥ 100 / ≥ 130 | FAIL (28% / 21%) |
+| M3 NP=8 server + Hadamard (T3.5 fires 93%) | 26.49 agg | 0.14% | ≥ 90 | FAIL (29%) |
+| M4 graphs-off | 27.84 | n/a | sanity vs M2 | graphs ≈0% confirmed |
+
+All under locked GPU clocks 1455 MHz; CV < 0.5% per config (single-shot
+numbers reliable under lock; 14% historical day-to-day variance in
+ledger rows 6 vs 21 was unlocked-clock confound).
+
+**Why the gate failed — the theory was wrong, not the implementation.**
+T3.5's unified-stream multi-seq dispatch fires at 93% rate in M3
+(`total=192 multi_seq=179`, byte-identical across 3 runs — scheduler is
+deterministic). Yet M2 (which hits QNEXT_SEQ_INTERLEAVED sub-batched
+fallback at `src/llama.cpp:5789` because `llama-batched-bench` builds
+token-major batches) ≈ M3 (T3.5 active) within Hadamard tax. **Unified
+multi-seq dispatch delivers ~0% additional throughput at decode shape
+on PSKV-singlewarp + Q4_0 KV + sm_75.** Same mechanism as the Tier 2
+CUDA-graphs-≈0% finding generalised to dispatch packing: at decode
+n_tokens=1-per-seq, kernel work is grid-parallel per-seq either way;
+launch/dispatch overhead amortises below per-kernel runtime; memory
+traffic dominates.
+
+The PHASE doc had estimated +3.6×–4.7× from "kernel batching, NOT graph
+reuse" (line 1918). This was the wrong theory of where the throughput
+is locked away.
+
+**Where the throughput actually is locked away:** prefill stalls. M2
+stall fraction = T_PP / (T_PP + T_TG) = 65.44s / 83.98s = **77.9%** at
+the bench shape. The PHASE doc Tier 4 trigger ("if conservative misses
+AND stall > 30%, Tier 4 justified") fires unambiguously.
+
+**vLLM's lever is Tier 4 (continuous batching / chunked-prefill
+admission)** — splicing new-request prefill into running-decode
+ubatches. That's PHASE doc OpenQ-C, never built. T3 closure does not
+address it. Tier 4 is the recommended next phase.
+
+**T3 correctness deliverables stay.** Multi-stream KV is necessary
+infrastructure for future ctx + parallelism scaling regardless of
+which throughput lever is pursued next; the audit-grade specs + tests
++ closure gates work; the VRAM probe is permanent measurement
+plumbing. Production profile (`profiles/active.sh`) unchanged this
+session — current production NP=2 + DFlash + Hadamard configuration
+is unaffected by the GP3.i FAIL.
+
+**Graph-pool VRAM data (from T3.6.M probe, captured during all four
+T3.8 configs):** pool grows with parallelism but bounded — ≤ 25 graphs
+/ ≤ 400 nodes / ≤ 110 KB host per device across M1/M2/M3/M4. No
+runaway under multi-stream + Hadamard. I.b.2 bailout-drop revisit
+doesn't have a VRAM-pressure justification.
+
+**Measurement of record:** `data/t3.8-perf-gate-ledger.md`. M3 harness:
+`scripts/bench-t3.8-m3.sh`.
+
+**Lessons.** (1) Locked GPU clocks are required for binding perf
+measurements on this host — verify `nvidia-smi --query-gpu=clocks.current.sm`
+== 1455 before any binding T3.x perf run. (2) `llama-batched-bench` does
+NOT exercise the server scheduler — its token-major batch layout hits
+the interleaved fallback; HTTP-driven server bench is the only way to
+bind T3.5-and-later server-side changes. (3) Don't propose dispatch-
+packing or scheduler-grouping work as a throughput lever for Qwen 3.6
+27B Q4_0 KV PSKV-singlewarp at sm_75; it costs ~zero relative to per-
+kernel runtime, T3 proves it empirically.
