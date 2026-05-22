@@ -2,7 +2,7 @@
 
 **Branch**: `production/2026-q2-next` (off submodule HEAD `16b608d1`).
 **Predecessor**: `PHASE_NSTREAM_KV.md` — closed 2026-05-20. Bug C structurally closed; decode-side prefill gate removed; 6 correctness gates green; **-6.2 % TG NP=8 regression carried over**.
-**Status**: Open. **Tier 1 perf premise falsified, Tier 2 parked with intel captured (see retrospective 2026-05-21).** Active path: **Tier 3** unified-stream dispatch. Dominant perf lever is kernel batching at ne[3]=n_stream, NOT graph-reuse retention (A/B at production shape: cuda graphs ON vs OFF ≈ 0% Δ).
+**Status**: Open. **Tier 1 perf premise falsified, Tier 2 parked with intel captured (2026-05-21). Tier 3 unified-stream dispatch landed (T3.8 perf gate FAIL — saturates at multi-slot kernel ceiling 26.49 t/s). Tier 4 chunked-prefill admission landed coherent-flip (T4.7 perf gate honest FAIL — staggered ≤ steady on aggregate t/s, structurally). Tier 5 paged-KV scoped 2026-05-22** — targets vLLM's measured 154.77 t/s ceiling (5.84× over current C0). Tier 5 plan section below; Bundle A entry gated on the T5.0 scope-lock checklist.
 **Triangulated 2026-05-20** against prior CUDA-graph work, PSKV per-slot landing, P3.X NPC failures, PHASE45 D10 multi-slot work, and `feedback_n_stream_byte_compat_tradeoff`. **Revised 2026-05-21** post Tier 2 FA-probe diagnostic and graphs-on-vs-off A/B.
 
 ## Why this phase exists — sharpened framing post-triangulation
@@ -1917,7 +1917,7 @@ Findings (full table in user-local memory `project_tier2_diagnostic_findings.md`
 | 2 | ~~Patch attention-read view offsets per-stream in `update_cache_copies`~~ **PARKED 2026-05-21** (mechanism wired but byte-corrupts K/V cache under bailout-dropped; intel captured) | ~~+15-30 %~~ **~0%** (since T1's baseline-recovery premise is false) | parked | parked |
 | **3** | **Unified-stream dispatch: one `llama_decode` per tick with all streams packed at ne[3]=n_stream; use existing PSKV per-slot kernel** | **Approaches vLLM's measured 154.77 t/s aggregate at NP=8** (4.75× over current 27.7 t/s baseline). Conservative 100 t/s, stretch 130 t/s. Dominant lever: kernel batching, NOT graph reuse. | 3-5 weeks | Medium-High |
 | 4 | + chunked-prefill admission ([Sarathi-Serve](https://arxiv.org/abs/2403.02310)) | small additional gain on prefill-heavy workloads | +2 weeks | Low after Tier 3 |
-| 5 | Full paged-KV port (V1 vLLM kernel, sm_70+) | Marginal beyond Tier 3 for our workload | 6+ months | Very high |
+| **5** | **Paged-KV — block-table indirection generalising T3's `inp_kv_idxs` + SET_ROWS** | **Targets vLLM's measured 154.77 t/s ceiling** (5.84× over post-T4 26.49 t/s steady-state). Dominant lever: removes per-stream contiguous-slab pre-allocation, lifts the structural floor that T4 hit. | **Scoped 2026-05-22 — see §"Tier 5 — Paged KV" below.** 140–220 k tokens estimated. | Medium-High |
 
 **SKIP**: vLLM pivot (loses Q4_0 + Hadamard + Q4_0 KV — uniquely SoTA on sm_75; nothing else in the ecosystem can consume this weight stack); persistent-kernel megakernels (Luce sm_75 batch=1 only; Mirage Hopper-first).
 
@@ -1960,9 +1960,234 @@ d. **Verify against vLLM's measured 154.77 t/s.** The empirical anchor exists; t
 
 Defer to post-Tier-3 measurement. Splices new request prefill chunks into the same fused ubatch as running decodes (Sarathi-Serve). Mechanism well-understood; only worth it if prefill stalls measurably bound throughput.
 
-### Tier 5 — Paged KV
+### Tier 5 — Paged KV (scoped 2026-05-22 post-T4 closure)
 
-Skip. For a single-server NP=8 workload with broadly similar sequence lengths the per-stream contiguous layout we have is functionally equivalent and avoids the indirection cost.
+**Status**: scoped, not started. Replaces the pre-T4 "Skip" dismissal — the dismissal's premise ("Tier 3 closes the gap") is empirically falsified.
+
+#### Why now — the framing flip
+
+The pre-T4 framing argued Tier 5 was marginal because Tier 3 was projected to reach vLLM's 154.77 t/s. T3+T4 measurement of record:
+
+| Config | Aggregate t/s NP=8 | Source |
+|---|---|---|
+| Pre-Tier-3 baseline | 27.73 | row 6 of ralph ledger |
+| Tier 3 closed (T3.8 M3) | 27.7 / 26.5 (M2/M3) | GP3.i ledger |
+| Tier 4 C0/C1-steady (production-comparable, locked clocks) | **26.49** | T4.7 ledger |
+| vLLM NP=8 (same hardware, 2026-05-12) | **154.77** | `data/gate0-np1-np8.json` |
+| Gap | **5.84×** | — |
+
+T4 closure named the cause: **C0 is the multi-slot kernel saturation throughput on RTX 6000 sm_75 for Qwen 3.6 27B Q4_0 + Hadamard**. T3's unified-stream dispatch packed 8 streams into one tick (dispatch_multi_seq_count 64/64 = 100%); that ceiling is the new floor. T4's chunked-prefill admission landed correctness-clean and added structural value but produced no aggregate uplift — staggered ≤ steady by construction (T4.E).
+
+**The remaining 5.84× lives below the dispatch layer.** Three candidate locations: (a) per-stream slab pre-allocation (current cache layout forces head pre-positioning before token arrival → wasted KV; cache pressure forces shorter effective contexts under multi-tenant load; defrag costs spread across decode); (b) write-path indirection cost (T3 has it via `inp_kv_idxs` + SET_ROWS but only on the multi-seq path; single-seq still goes through `ggml_cpy` with patched view offsets); (c) kernel-fusion gaps (vLLM fuses RMSNorm + Q/K/V projection). Tier 5 targets (a) and (b). Kernel-fusion (c) is a separate phase if Tier 5 underdelivers.
+
+#### Hardware ground truth — sm_75 paged-KV feasibility
+
+Paged attention on Turing is unusual but not blocked. The mechanism is generic CUDA — block-table dereference per (token, head) is one extra load per attention iteration. vLLM's V1 PA kernel uses `__shfl_sync` warp primitives available since sm_70 and does NOT require Tensor Cores, FA2, or sm_86+ features. Our PSKV singlewarp kernel already has the right shape (one warp per row, gridDim.z = n_seqs); the only mechanical change on the read side is replacing `K_base = K_direct + nb13*seq + nb12*head_kv` with `K_base = block_pool + block_table[seq][block_idx] * block_bytes`. The block-table lookup is L1-cache-friendly (one I32 per token per attention iteration) — no DRAM penalty in steady state.
+
+The dismissal cost argument ("indirection cost") was tested empirically by upstream vLLM: PagedAttention V1 vs the unpaged FA2 baseline on A100 measured ~3% kernel-time overhead with 5–10× memory efficiency. On our hardware (sm_75, no FA2 baseline) the comparison is unpaged-PSKV-singlewarp vs paged-PSKV-singlewarp; the indirection load is one extra `ld.shared` per ILP iteration (the block table fits in shared memory). Expected kernel-time delta: 0–5%.
+
+#### Mechanism — generalise what T3 already wired
+
+T3.3-followup landed `ggml_set_rows` + `inp_kv_idxs` as the multi-seq WRITE path. Today `inp_kv_idxs[t] = stream(t) * kvs_per_stream + head_local(t)` — a flat index into a 2D K-cache reshape. **Tier 5's mechanism**: replace that formula with `inp_kv_idxs[t] = block_table[seq(t)][block_idx(t)] * block_size + token_in_block(t)`, where `block_table` is a per-stream array of block IDs (variable-length, allocated lazily as the stream grows) and `block_pool` is a flat 2D `[n_embd_gqa, total_blocks * block_size]` arena shared across all streams.
+
+The mechanism collapses cleanly at the existing single-seq path: with one stream and `block_size = kvs_per_stream`, every stream owns exactly one block, the block-table is trivial, `block_table[0][0] * block_size = 0`, and the resulting indices equal today's `head_local(t)`. NPC byte-identity is structural at n_stream==1.
+
+On the READ side, the PSKV singlewarp kernel takes a new `block_table` tensor (shape `[max_blocks_per_seq, n_seq]`, dtype I32). Inside the K-loop, every iteration of `k ∈ [0, ne11)` computes `block_id = block_table[seq][k / block_size]` once per block boundary (compiler hoists via ILP grouping); within a block the existing `nb11` walk is unchanged. At `block_size ≥ ILP_W (=4)` the block-boundary check fires once per 4-iteration ILP group. **Critically**: the K-loop walks valid positions in canonical k-order regardless of block layout — Bug C absence is preserved by construction (same fp32 accumulation chain).
+
+Block size choice — **block_size = 64** (locks 64 tokens × `n_embd_gqa` bytes per block):
+- Aligns with n_kv bucketing (Phase 36 Step 5): already-bucketed shapes stay aligned.
+- Matches Q4_0 block boundary at head_dim=256 (each Q4_0 block covers 32 elements → 8 blocks per K row → 64 tokens × 8 blocks = 512 Q4_0 blocks per KV block; integer count, no straddling).
+- Fits in L1: at Q4_0, one KV block = 64 × 256 × 0.5 bytes = 8 KiB. Two blocks fit in L1 simultaneously per SM (TU102 L1 = 64 KiB shared across data + SMEM).
+- Fragmentation envelope: with NP=8 and avg context ≈ 200 tokens, expected blocks/stream ≈ 4; total ≈ 32 blocks; pool sized for `n_ctx_total / block_size` = 24576/64 = 384 blocks at our production config — comfortable.
+
+#### Surfaces (from 2026-05-22 source-read map)
+
+| # | File | Function/lines | Change class |
+|---|---|---|---|
+| 1a | `src/llama.cpp` | `llama_kv_cache_find_slot` 1358-1579 | **REDESIGN** — per-block freelist allocator replaces per-stream cursor; two-phase scan-then-commit pattern stays |
+| 1b | `src/llama.cpp` | `llama_kv_cache_cell_max` 1582-1605 | CHANGE — block-walk replaces cell-walk; FA pad semantics preserved |
+| 2a | `src/llama-build-context.cpp` | `llm_build_kqv` 1908-2008 | CHANGE — K/V views become 2D `[head_dim, total_blocks×block_size]` + new block_table input |
+| 2b | `src/llama-build-context.cpp` | `llm_build_kv_store` 873-985 | LEVERAGE — already SET_ROWS for multi-seq (T3); generalise to all writes |
+| 3a | `src/llama.cpp` | `update_cache_copies` 643-781 | **REMOVE** — per-stream view-offset patching dies with paged layout |
+| 4a | `ggml/src/ggml-cuda/fattn-per-slot-kv-singlewarp-sm75.cu` | K/V base ptr 99-100 | CHANGE — block-table dereference |
+| 4b | same | K-loop 138-148 | CONDITIONAL-CHANGE — branch on block boundary once per ILP group |
+| 5b | same | grid + mask 85,90,95 | STAY — `nb33*seq` mask addressing is paging-neutral (T3.1 foundation) |
+| 6a | `src/llama.cpp` | `llama_set_k_shift` 4384-4421 | CHANGE — per-block delta array replaces per-cell delta |
+| 6b | `src/llama.cpp` | `llama_kv_cache_defrag_internal` 6686 | CHANGE — block-coalesce + block-table rewrite |
+| 7a | `src/llama.cpp` | `inp_kv_idxs` populator 5115-5156 | **REPURPOSE** — emit block-physical indices instead of flat 2D-reshape indices |
+| 7b | `src/llama-build-context.cpp` | SET_ROWS dispatch 873-897 | LEVERAGE — already the indirection path; deprecate the CPY fallback at T5 |
+
+Surfaces 5b, 6c stay untouched. Surface 3a goes away entirely (paging makes per-stream view-offset patching meaningless; the block table IS the indirection).
+
+#### Bundles — Bundle A (allocator + WRITE) and Bundle B (READ + kernel)
+
+Per `feedback_oneshot_then_evaluate`: each bundle lands coherently with NPC verification at each bundle boundary. Production stays GREEN throughout — Bundle A's WRITE path collapses byte-identically at n_stream==1; Bundle B's READ path only activates on the new kernel signature.
+
+**Bundle A — Allocator + WRITE path (T5.1–T5.4).** Lands without touching the kernel. Block allocator + block table + repurposed `inp_kv_idxs` + SET_ROWS-everywhere. CPY fallback removed.
+
+**Bundle B — READ path + kernel flip (T5.5–T5.8).** PSKV singlewarp kernel takes block_table tensor; K-loop branches on block boundary; build-context emits 2D K/V views + block_table input. T4 admission composes (chunked prefill admits into block-granular slots).
+
+#### Implementation cards (Tier 5)
+
+##### T5.1 — Block allocator + block table data structures
+
+**Touches:**
+- `src/llama-context.h` — new `kv_block_table` struct: `std::vector<std::vector<int32_t>> per_seq_blocks` (block IDs per seq), `std::vector<int32_t> free_list`, `int32_t block_size`, `int32_t total_blocks`. Replace `v_heads[n_stream]` cursor.
+- `src/llama.cpp` — new `kv_block_alloc()` / `kv_block_free()` primitives; `find_slot` rewrites to acquire blocks lazily from `free_list` and append to `per_seq_blocks[seq]`.
+- `src/llama.cpp` — `kv_cache_init` allocates the flat pool (`block_pool`) and free list.
+
+**Convention**: block size = 64 (constant; not configurable in T5 — `feedback_no_workarounds`). Allocation strategy = first-fit on the free list (LIFO for L1-cache locality of recently-freed blocks).
+
+**Test gate**: new `tests/spec/test-kv-block-allocator.cpp` — sweep allocate/free patterns at multi-seq (8 seqs × variable lengths), assert no double-allocation, no leak, deterministic block IDs across runs at same alloc pattern. PASS at land.
+
+**Production gate**: build clean. `verify-production-determinism.sh` GREEN at NP={1,2,4,8} — the new allocator must be byte-equivalent to the old per-stream cursor at n_stream==1 single-seq workloads (which means: every seq allocates exactly the blocks it would have occupied under the contiguous layout, in order).
+
+##### T5.2 — Repurpose `inp_kv_idxs` to emit physical block-table indices
+
+**Touches:**
+- `src/llama.cpp` `llama_set_inputs` lines 5115-5156 — formula change. New: `idx[t * n_head_kv + h] = block_table[seq(t)][t / block_size] * block_size + (t % block_size) * n_head_kv + h`. (Layout: blocks are laid out as `[block_size, n_head_kv]` packed; one block contains 64 tokens × n_head_kv heads contiguously.)
+- `src/llama-build-context.cpp` — K/V cache reshape becomes `ggml_view_2d(k_cache, [n_embd_gqa, total_blocks * block_size], …)`; the SET_ROWS index tensor is exactly `inp_kv_idxs`.
+
+**Test gate**: extend `test-multi-seq-decode-byte-identity` to assert byte-identity vs serial per-seq decodes under the new index formula. Must PASS at land (post-Bundle A).
+
+**Production gate**: `verify-production-determinism.sh` GREEN. Single-seq path runs through SET_ROWS with the new formula and must still be byte-identical to T4.
+
+##### T5.3 — Delete the CPY fallback path in WRITE
+
+**Touches:**
+- `src/llama-build-context.cpp` `llm_build_kv_store` — drop the `ggml_cpy(Kcur, k_cache_view)` / `ggml_cpy(Vcur, v_cache_view)` lines and their per-stream view construction. Single SET_ROWS dispatch handles every n_stream value.
+- `src/llama.cpp` `update_cache_copies` lines 643-781 — function body collapses to a no-op or is removed entirely; callers drop the call.
+
+**Risk**: this is a destructive code removal — the old path was the multi-year-tested production path before T3. Verify exhaustively before deletion (per `[[feedback_verify_test_mechanism_before_trusting]]`).
+
+**Production gate**: full DFlash suite GREEN; `verify-production-determinism.sh` GREEN NP={1,2,4,8} 3× consecutive runs (R1=R2=R3 byte-identical, addresses the warm-up class). r5-probe-c4 ITERS=20 = 0/20.
+
+##### T5.4 — Bundle A close — allocator + WRITE path landed
+
+**Gate (binding):**
+- All correctness gates from T3.6/T4.6 GREEN under the new write path.
+- New: `test-kv-block-allocator` GREEN; multi-seq decode byte-identity GREEN with paged write.
+- Perf check (non-binding at Bundle A): `llama-batched-bench` NP=8 TG within ±2% of T4 C1-steady 26.49 t/s. Paging WRITE alone should not change perf meaningfully; if it regresses, diagnose before Bundle B.
+
+##### T5.5 — PSKV kernel: take `block_table` tensor, K/V base via block dereference
+
+**Touches:**
+- `ggml/src/ggml-cuda/fattn-per-slot-kv-singlewarp-sm75.cu` — kernel signature adds `const int32_t * __restrict__ block_table` and `const int block_size`. Inside, replace `K_base = K_direct + nb13*seq + nb12*head_kv` with `K_block_id = block_table[seq * max_blocks_per_seq + (k / block_size)]`; `K_base = K_direct + K_block_id * block_size * nb11 + nb12*head_kv`. Same for V.
+- K-loop ILP block: hoist the block-table lookup outside the ILP_W=4 inner loop; only recompute when `(k & (block_size - 1)) == 0`. At block_size=64 and ILP_W=4 the lookup fires once per 16 ILP groups — negligible.
+- `ggml/include/ggml.h` + `ggml/src/ggml.c` — `GGML_OP_FLASH_ATTN_EXT_PER_SLOT_KV` gains a new src slot `src[6] = block_table`. Document the contract in the op header comment.
+
+**NPC binding**: kernel must produce byte-identical output to today's PSKV at n_stream==1 single-seq workloads where `block_table[0] = [0, 1, 2, …]` (trivial identity mapping). Test via the FA-probe diagnostic pattern from Tier 2 retrospective (re-instrumented for this purpose).
+
+##### T5.6 — Build context: 2D K/V cache views + block_table input
+
+**Touches:**
+- `src/llama-build-context.cpp` `llm_build_kqv` — drop the per-stream 4D offset construction (lines 1988-2007). K/V views become `ggml_view_2d(k_cache, [n_embd_gqa, total_blocks * block_size], …)` with no stream offset. New `inp_block_table` graph input (shape `[max_blocks_per_seq, n_stream]`, dtype I32).
+- `src/llama-build-context.cpp` `build_inp_KQ_mask` — mask shape stays `[n_kv, n_tok_per_seq, 1, n_stream]` (T3.3 form); no change.
+- `src/llama.cpp` `llama_set_inputs` — populator for `inp_block_table` from the allocator's `per_seq_blocks` vector.
+
+**Gate**: synthetic multi-seq decode byte-identical vs T4 (paged kernel produces same output as contiguous kernel at trivial block table).
+
+##### T5.7 — Drop the n_stream==1 contiguous-layout pretence
+
+After T5.5+T5.6 the kernel path is uniformly paged. The "n_stream==1 contiguous-slab" shortcut in find_slot/cell_max/k_shift/defrag goes away — every path is paged. K-shift and defrag rewrite per T5 surfaces 6a, 6b.
+
+**Touches:**
+- `src/llama.cpp` `llama_set_k_shift` — build per-block delta from `per_seq_blocks` + per-cell pos metadata.
+- `src/llama.cpp` `llama_kv_cache_defrag_internal` — block-coalesce: walk `free_list`, identify holes in `block_pool`, and emit a remap that updates `per_seq_blocks` indices in lockstep with a CPY of moved blocks.
+
+**Gate**: existing K-shift and defrag tests (test-cy-* family) GREEN. New `test-kv-block-defrag.cpp` asserts a synthetic fragmented pool defrags to contiguous-by-block without changing per-seq logical contents.
+
+##### T5.8 — Perf gate — Tier 5 closure
+
+**Binding gates (analogous to GP4.i.*):**
+- **GP5.a (regression band)**: `llama-batched-bench` NP=8 TG steady-arrival ≥ 26.49 × 0.95 = 25.17 t/s (allow 5% kernel indirection overhead in worst case). Hard binding.
+- **GP5.b (uplift binding)**: `llama-batched-bench` NP=8 TG **multi-tenant variable-length workload** ≥ 60 t/s. **This is the gate paged-KV is designed for**: heterogeneous seq lengths (e.g., 4 seqs at 100 tok + 4 at 800 tok), where the contiguous layout wastes ~50% of allocated KV. Target derivation: vLLM's 154.77 t/s gain is 80% (PA) × 20% (cont.batch.) by their own ablation; we have continuous batching (T3+T4) so the remaining ~80% (~123 t/s of vLLM's number) is the paging lever. Conservative target: 60 t/s = 2.26× over C0 = ~40% of vLLM's measured. Stretch target: 100 t/s = 3.77× = ~65% of vLLM. Hard binding on the 60 t/s number; 100 t/s is a stretch report-only.
+- **GP5.c (variance)**: CV ≤ 1% across N=3 runs. Hard binding.
+- **GP5.d (correctness preserved)**: all T4.6 gates GREEN under paged path. Hard binding.
+- **GP5.e (warm-up)**: R1=R2=R3 byte-identical at NP=8. Hard binding.
+- **GP5.f (DFlash composition)**: full DFlash suite GREEN. Hard binding.
+
+**Workload definitions** (locked at T5.0 — DO NOT redefine post-measurement per `[[feedback_no_workarounds]]`):
+- **M1 — steady, uniform.** 8 seqs × 200 tokens × identical arrival. Comparable to T4's C1-steady. Baseline check.
+- **M2 — staggered, heterogeneous.** 8 seqs × {100, 200, 400, 800, 100, 200, 400, 800} tokens × 5s arrival offsets. **Primary perf shape — paged KV is designed for this.**
+- **M3 — burst arrival, short prompts.** 16 short prompts in 2s window. Tests block recycling under high churn.
+
+Bench harness: `scripts/bench-t5-paged.sh` (new), reuses T4's locked-clocks (1455 MHz N=3) and llama-server HTTP driver pattern.
+
+#### Open questions (Tier 5)
+
+**OpenQ-T5-A: Block size — 64 vs 16.** Locked at 64 in §"Mechanism" above for the alignment reasons. If T5.5 kernel measurement shows lookup overhead > 5%, drop to 128 (halves the lookup frequency). DO NOT explore 16 (Q4_0 alignment breaks, fragmentation increases). **Resolves at T5.5 nsys measurement.**
+
+**OpenQ-T5-B: Defrag policy.** Lazy (defrag only when allocation fails) or proactive (defrag every N decode ticks). Default: lazy, with a heartbeat assertion that fragmentation never exceeds 20% (asserts per `llama_kv_cache_defrag_internal`'s existing soft cap). Proactive defrag is a follow-up phase if measurement shows fragmentation-induced latency spikes. **Resolves at T5.7.**
+
+**OpenQ-T5-C: Q4_0 KV cache block boundaries.** Q4_0 packs 32 elements per "Q4_0 block" with a half-precision scale. At head_dim=256 each K row = 8 Q4_0 blocks. Block-size=64 KV tokens × 8 Q4_0 blocks/row × 18 bytes/Q4_0 block = 9216 bytes per K-block. Layout in memory: `[block_size=64, n_head_kv, n_embd_per_head=256]` with the inner dim Q4_0-packed. **Confirm at T5.1** that the existing Q4_0 quantize_row_q4_0 produces output compatible with this block-major layout (it should — it operates on contiguous F32 input regardless of higher-dimensional structure).
+
+**OpenQ-T5-D: K-shift under paging.** K-shift updates RoPE position embeddings for tokens whose absolute position changed (context-window slide). Under contiguous layout this is a per-position rewrite. Under paged it's per-cell across blocks. Verify that the existing `inp_K_shift_per_stream` mechanism extends to per-block-delta tensors without breaking the per-(device, stream) input pattern from T3.6 K-shift closure. **Resolves at T5.7.**
+
+**OpenQ-T5-E: Allocator scheduling — should the server preemptively reserve blocks for slots that haven't started prefill?** No (per `[[feedback_no_workarounds]]`): blocks are allocated on first write only. Slots that don't run consume zero KV. This is the structural win over contiguous layout. **Locked at T5.1.**
+
+**OpenQ-T5-F: PSKV ILP composition.** Current PSKV ILP_W=4 walks 4 K rows per inner iteration. At block_size=64 the block-boundary check fires every 16 ILP groups (4 × 16 = 64). Confirm via ncu that the compiler hoists the block-table lookup correctly; if not, manually unroll. **Resolves at T5.5 ncu.**
+
+**OpenQ-T5-G: Bundle A perf check semantics.** Bundle A close (T5.4) runs steady-arrival M1 only and expects ≈ 26.49 t/s. The full M2 perf gate runs at T5.8. If Bundle A regresses M1 by > 2%, halt before Bundle B and diagnose. **Resolves at T5.4 bench.**
+
+#### Binding gates (Tier 5 closure — locked at scope-lock 2026-05-22)
+
+- **GP5.a–GP5.f**: as above. All hard-binding.
+- **GP5.NPC**: `scripts/verify-production-determinism.sh` GREEN at NP={1,2,4,8} multi-GPU (the standing correctness contract). Hard binding.
+- **GP5.Bug-C**: `scripts/r5-probe-c4.sh ITERS=20 = 0/20` (Bug C absence preserved). Hard binding.
+- **GP5.spec**: All Tier 5 .allium / TLA+ property tests GREEN (specs to be drafted in T5.0 alongside allocator implementation; pattern from T4: `specs/kv-cache/paged_block_allocator.allium`, `specs/kv-cache/PagedKVInvariants.tla`).
+
+#### Token estimate (Tier 5)
+
+Per CLAUDE.md §8 — estimate in tokens, not days.
+
+- **T5.0** — scope-lock + spec layer (.allium + TLA+ + property tests RED-bound to T5.1–T5.5): **20–30 k**.
+- **Bundle A (T5.1–T5.4)** — allocator + block-table + WRITE-path + CPY-fallback removal: **50–80 k**. Largest single risk is T5.3 (removing the legacy path); budget 1–2 verification rounds.
+- **Bundle B (T5.5–T5.8)** — kernel paging + build-context 2D views + n_stream==1 shortcut removal + K-shift/defrag rewrite + perf gate: **60–100 k**. Largest risks are T5.5 (kernel NPC at the new signature) and T5.7 (K-shift/defrag block-aware rewrites).
+- **Diagnosis budget** if any card surfaces unexpected NPC regression or perf cliff: **20–30 k per round, budget 2–3 rounds**.
+
+**Total scoped estimate: 140–220 k tokens to Tier 5 closure.** Comparable to Tier 3's Bundle A+B closure cost. Significantly smaller than the pre-T4 "6+ months / Very high" framing because T3's `inp_kv_idxs` + SET_ROWS scaffolding does the heavy lifting on the WRITE side — Tier 5 is "generalise that one more step, plus paint the same indirection onto the READ side."
+
+#### Risks (Tier 5)
+
+1. **Kernel-time indirection overhead > 5%.** Mitigation: OpenQ-T5-A drop to block_size=128. If still > 5%, escalate to OpenQ-T5-F manual unroll. Worst case: Tier 5 closes with the regression-band gate (GP5.a) at 25.17 t/s and the multi-tenant uplift (GP5.b) at 60 t/s — perf gate **still passes if M2 is the workload of record**.
+2. **Bug C resurfaces under paging.** Mitigation: GP5.Bug-C is hard-binding. The mechanism reason Bug C closes structurally under paging is the same as under T3 — `mul_mat` sees one uniform shape per tick because the dispatch model is unchanged from T3+T4 (one decode/tick covering all streams). Paging only changes K/V addressing, not call shape.
+3. **Q4_0 KV block-boundary issue.** Mitigation: OpenQ-T5-C confirms at T5.1. If quantize_row_q4_0 produces incompatible output, Bundle A pre-emptively splits Q4_0 packing into a paged-aware variant (cost: +20–40 k in Bundle A).
+4. **Defrag latency cliff under high churn (M3 workload).** Mitigation: OpenQ-T5-B locks lazy defrag at T5.7; proactive defrag is a follow-up. GP5.b binds on M2, not M3 — M3 is report-only at Tier 5 closure.
+5. **K-shift correctness regression under block-strided position deltas.** Mitigation: OpenQ-T5-D resolves at T5.7 with the existing test-cy-* suite. T3.6 K-shift closure work (per `[[project_t3_6_kshift_graph_split_closure]]`) is the load-bearing prior infrastructure.
+6. **CPY fallback removal (T5.3) breaks an unintended path.** Mitigation: 3× sequential R1=R2=R3 (GP5.e) catches warm-up regressions; full DFlash suite + verify-production-determinism at NP={1,2,4,8} multi-GPU catches structural regressions. Per `[[feedback_verify_test_mechanism_before_trusting]]` — confirm test legs actually differ before trusting "no regression."
+7. **Token estimate breach.** If Bundle A exceeds 80k tokens (budget upper bound), halt and re-scope. Per CLAUDE.md §8: decision pivots are the dominant cost. Bundle A risk concentrated in T5.3 — if T5.3 surfaces a load-bearing legacy path, lift Bundle A pause and design around it before continuing.
+
+#### Non-goals (Tier 5)
+
+- **Kernel-fusion gaps (lever c).** RMSNorm + Q/K/V fusion is a separate phase if Tier 5 underdelivers. Listed as Phase 6 / next-workstream.
+- **Block-table-aware speculative decoding.** DFlash composition is binding (GP5.f) but DFlash's own block-table semantics (drafter sees its own KV via the same paging path) stay byte-equivalent to current behaviour; no new DFlash work.
+- **Cross-server KV sharing.** Single-server-only.
+- **Variable block sizes per layer.** All layers share block_size=64.
+- **Online block-size tuning.** Locked at compile-time constant; tuning is a follow-up phase.
+- **vLLM PA kernel port.** We build paging on top of PSKV singlewarp (production NPC-preserved), NOT port vLLM's kernel. See `[[feedback_kernel_replacements_must_be_sota_sm75]]` — any kernel replacement requires worked register allocations + ncu measurement; we're not doing that work inside Tier 5.
+
+#### Composition with prior phases
+
+- **Tier 3 (`inp_kv_idxs` + SET_ROWS)**: generalised, not replaced. The Tier 5 WRITE path is "Tier 3 with a new formula for the index."
+- **Tier 4 (chunked-prefill admission)**: composes transparently. T4 decides WHICH tokens enter the batch; T5 decides WHERE each token's K/V lives. Independent layers.
+- **PSKV singlewarp ILP (2026-05-18)**: kernel changes are additive (new src slot + block-table dereference inside the existing K-loop). ILP, register budget, occupancy preserved by construction (no new live values per thread).
+- **DFlash multi-slot (Phases 1–6)**: drafter and verify paths both go through the same paged KV. The DFlash multi-slot closure tests (test-dflash-np-multislot etc.) bind composition.
+- **K-shift GRAPH-split closure (T3.6, 2026-05-22)**: per-(device, stream) inp_K_shift pattern extends to per-block delta arrays without changing the per-device/per-stream allocation model.
+
+#### Scope-lock checklist (T5.0 entry)
+
+Before T5.1 begins:
+
+- [ ] `specs/kv-cache/paged_block_allocator.allium` drafted (allocator invariants, no-double-allocation, deterministic-block-IDs).
+- [ ] `specs/kv-cache/PagedKVInvariants.tla` drafted (block-table consistency, byte-identity-at-trivial-mapping).
+- [ ] `tests/spec/test-kv-block-allocator.cpp` stub RED-bound to T5.1.
+- [ ] `tests/spec/test-paged-byte-identity-trivial-mapping.cpp` stub RED-bound to T5.5.
+- [ ] `data/t5-perf-gate-ledger.md` created with M1/M2/M3 workload definitions locked.
+- [ ] PHASE_NSTREAM_KV_PERF.md MEMORY entry for T4 closure + Tier 5 scope-lock pushed.
+- [ ] User review of this plan section.
+
+Once these are ✓, Bundle A (T5.1–T5.4) is cleared to start.
 
 ## Why we don't pivot to vLLM (despite the measured 4.75×)
 
@@ -2534,6 +2759,12 @@ Continuous batching (Tier 3 anchor):
 - [Sarathi-Serve chunked prefill (OSDI '24)](https://arxiv.org/abs/2403.02310)
 - [vLLM Anatomy 2025](https://vllm.ai/blog/2025-09-05-anatomy-of-vllm)
 - [SGLang scheduler internals](https://deepwiki.com/sgl-project/sglang/4.2-token-sampling-and-generation)
+
+Paged KV (Tier 5 anchor):
+- [vLLM / PagedAttention V1 kernel](https://github.com/vllm-project/vllm/tree/main/csrc/attention) — block-table indirection + paged_attention_v1 kernel reference
+- [vLLM PagedAttention design doc](https://docs.vllm.ai/en/latest/design/paged_attention.html) — block-size selection, KV cache layout
+- [SGLang radix-attention](https://lmsys.org/blog/2024-01-17-sglang/) — block-level KV sharing; informs OpenQ-T5-B (defrag policy)
+- ik_llama.cpp `set_rows.cu` + `inp_kv_idxs` (already in-tree): the WRITE-side indirection that Tier 5 generalises
 
 sm_75 / Turing constraints:
 - [vLLM #38918 — no working attention backend on Turing](https://github.com/vllm-project/vllm/issues/38918)
