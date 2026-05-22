@@ -1,0 +1,13 @@
+N_RUNS=3
+N_PREDICT=200
+N_PARALLEL=8
+agg_tps_per_run: 26.522718731319465 26.449627489059086 26.489381614200404
+mean=26.49 stddev=0.037 cv=0.14%
+dispatch_multi_seq_count lines from server logs:
+VRAM probe lines (~ggml_backend_cuda_context):
+~ggml_backend_cuda_context: have 11 graphs (326 nodes, 84.1 KB host bookkeeping, 0.1 KB device dest_ptrs)
+~ggml_backend_cuda_context: have 22 graphs (400 nodes, 103.2 KB host bookkeeping, 0.1 KB device dest_ptrs)
+~ggml_backend_cuda_context: have 11 graphs (326 nodes, 84.1 KB host bookkeeping, 0.1 KB device dest_ptrs)
+~ggml_backend_cuda_context: have 22 graphs (400 nodes, 103.2 KB host bookkeeping, 0.1 KB device dest_ptrs)
+~ggml_backend_cuda_context: have 11 graphs (326 nodes, 84.1 KB host bookkeeping, 0.1 KB device dest_ptrs)
+~ggml_backend_cuda_context: have 22 graphs (400 nodes, 103.2 KB host bookkeeping, 0.1 KB device dest_ptrs)

@@ -1,0 +1,9 @@
+--- /home/llm/yarn-agentic/data/npc-r5-baseline/run-20260519T182906/np4-slot0.txt	2026-05-19 18:30:29.275852287 +0000
++++ /home/llm/yarn-agentic/data/npc-r5-baseline/run-20260519T182906/np8-slot0.txt	2026-05-19 18:31:23.532469436 +0000
+@@ -1,2 +1,2 @@
+- code generation, they also fundamentally statistical pattern matchers rather than systems with genuine understanding. The field continues to evolve rapidly, with ongoing debates about the nature of machine intelligence and the potential for artificial general intelligence.
+-The history of artificial intelligence began in earnest with the work of Alan Turing, who in 1950
+\ No newline at end of file
++ code generation, though they remain probabilistic systems that can produce inaccurate outputs. The field continues to evolve rapidly, with ongoing research into alignment, safety, and interpretability.
++The history of artificial intelligence began in earnest with the work of Alan Turing, who in 1950 published the influential paper Computing and Intelligence
+\ No newline at end of file

@@ -1,0 +1,12 @@
+PROBE p4-multigpu-np1-nohada
+  env: HADAMARD=0
+  np_list: 1
+  iters: 3
+  prompt_len: 1079
+
+  iter 1: RESULT: PASS — all slots at NP in {1} byte-identical to NP=1, and all cross-NP slot-0 byte-identical  np1_sha=70b3b5c08dbbb1d8...
+  iter 2: RESULT: PASS — all slots at NP in {1} byte-identical to NP=1, and all cross-NP slot-0 byte-identical  np1_sha=70b3b5c08dbbb1d8...
+  iter 3: RESULT: PASS — all slots at NP in {1} byte-identical to NP=1, and all cross-NP slot-0 byte-identical  np1_sha=70b3b5c08dbbb1d8...
+
+  PASS: 3/3
+  Unique NP=1 SHAs: 1/3
