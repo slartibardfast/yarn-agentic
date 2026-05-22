@@ -2133,7 +2133,10 @@ Token estimate: 40–80 k (write path refactor + index plumbing + dual-mode veri
 
 **Production gate (PASS):** `verify-production-determinism.sh` ACCEPTANCE PASS at `DEVICE=CUDA0,CUDA1, NP_LIST="1 2 4 8", CTX_CHECKPOINTS=3` — cross-NP determinism PASS AND batch-shape invariance PASS.
 
-### T3.6 — Bailout drop + multi-stream K-shift / defrag — *audit-grade, scoped 2026-05-22*
+### T3.6 — Bailout drop + multi-stream K-shift / defrag — *CLOSED 2026-05-22*
+
+**[x]** All sub-cards landed: A (audit), S (specs), T (synthetic tests), I.b (SET_ROWS pass-through + bailout-drop design decision), I.c1.x2 (multi-stream K-shift LAYER + GRAPH), I.c2 (multi-stream defrag LAYER + GRAPH + generic CUDA Q→Q cpy), M (graph-pool VRAM probe). Closure-gates section below fully ✅. See `~/.claude/projects/-home-llm-yarn-agentic/memory/project_t3_6_full_grid_closure.md` for the per-piece commit-hash trail. Next blocker on this PHASE doc is **T3.8** (perf gate GP3.i).
+
 
 **Path:** T3.6-full per the audit grade. Audit (T3.6.A) complete; revealed three HIGH-severity risks that necessitate proper specs + synthetic tests before any code change.
 
