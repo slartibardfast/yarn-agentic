@@ -14,6 +14,10 @@ __pycache__/
 rapidcheck/
 cuda-graph-probe-*/
 
+# TLC counterexample trace dumps (auto-generated during model checking)
+specs/**/*_TTrace_*.tla
+specs/**/*_TTrace_*.bin
+
 # GPU coordination state (volatile, per-host)
 coord/gpu-*.state
 coord/gpu.lock
