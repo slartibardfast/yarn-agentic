@@ -8919,3 +8919,57 @@ and decode into distinct dispatch slices. (2) Per-slot quota +
 global K cap is sufficient for T4 fairness in steady-state staggered
 arrival; full round-robin redistribution of leftover budget is
 deferred until T4.7 perf gate reveals utilization gaps.
+
+## 2026-05-22 — T4.7 perf gate measured: GP4.i.a PASS, GP4.i.b FAIL (honest)
+
+T4.7 ran under locked clocks 1455 MHz, N=3 per config. Ledger
+`data/t4-perf-gate-ledger.md`.
+
+  C0 (T3.8 M3 pre-T4 baseline): 26.49 t/s (already on record)
+  C1-steady (T4 + same steady arrival): 26.49 t/s — zero regression
+  C1-staggered (T4 + 5s arrival offsets): 21.62 t/s — 18.4% below C0
+
+**GP4.i.a PASS:** C1-steady ≥ C0×0.98. T4 admission introduces zero
+regression on the steady-arrival production workload.
+
+**GP4.i.b FAIL:** C1-staggered 21.62 t/s vs target 31.79 t/s (C0×1.20).
+The target was structurally unachievable on aggregate-t/s — C0 IS the
+multi-slot kernel saturation throughput at NP=8 on RTX 6000 sm_75 for
+Qwen 3.6 27B Q4_0 with Hadamard. Staggered arrival mechanically has
+a longer wall-time floor (only slots 0–2 active during ramp-up = 0–10s)
+than steady (all 8 slots active from t=0), so staggered aggregate is
+always ≤ steady aggregate on this kernel + this NP. T4 admission
+delivers no aggregate-t/s uplift here.
+
+**GP4.i.c PASS:** CV 0.05% / 0.07%, well within the 1% locked-clocks
+discipline.
+
+**Where T4 admission DOES deliver:** workloads with high prefill rate
+(burst short-prompt arrival) or long prompts (chunked admission keeps
+decode going during the prefill tail). M3-staggered with 200-token
+prompts at 5s gaps exercises neither — prefill at PP ~60 t/s finishes
+in ~3.5s of the 5s gap, so pre-T4 serialised prefill doesn't bottleneck
+either. T4's value at this workload is structural (correctness layer
+GREEN, spec layer + admission scaffold + trace producer load-bearing
+for future workloads).
+
+**Verdict closed honestly per feedback_oneshot_then_evaluate.** Spec
+layer + admission code stays in tree; production profile
+`qwen36-27b-x2-dflash.sh` UNCHANGED (T4 default `--prefill-chunk-budget
+0` defaults to n_ubatch = legacy chunk size, byte-identical at
+NP={1,2,4,8} under GP4.k verify). Per feedback_no_workarounds the
+gate is NOT re-defined post-measurement to manufacture a PASS; the
+structural reason is named in the ledger and PHASE doc closure section.
+
+**Lessons.** (1) Aggregate-t/s perf gates on staggered workloads need
+to specify what's being uplifted against — exceeding steady-arrival
+baseline on aggregate-t/s is mechanically impossible (steady is max
+utilisation); the right comparison is staggered-pre-T4 vs staggered-
+post-T4, OR a different metric (latency, TBT, TTFT). The plan target
+(staggered ≥ steady × 1.20) was a hope, not a calculation; honest
+measurement falsifies it. (2) Tier 5 paged KV is the next lever for
+catching vLLM's 154 t/s ceiling on this hardware; T4 admission is not
+the route there. (3) M3-staggered's 5s gaps don't stress the
+admission policy — for a workload that actually exercises chunked
+admission (long prompts or burst short prompts) future T4.7-equivalent
+gates would be more binding.
