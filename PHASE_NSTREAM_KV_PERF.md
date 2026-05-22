@@ -2260,7 +2260,44 @@ Token estimate: 40–80 k (write path refactor + index plumbing + dual-mode veri
 
 `bin/test-dflash-spec-batched-fanout` and `bin/test-dflash-batch-vs-serial` were not in the Framing B closure scope this session; left for follow-up if needed.
 
-### T3.8 — Perf gate GP3.i — *audit-grade restructure 2026-05-22*
+### T3.8 — Perf gate GP3.i — *FAIL on gate, theory falsified, Tier 4 justified — 2026-05-22*
+
+**Verdict:** GP3.i fails on all three sub-gates. Honest measurement of record captured in `data/t3.8-perf-gate-ledger.md`:
+
+| Config | Mean t/s | CV | Gate | Result |
+|---|---|---|---|---|
+| M1 NP=1 ref (no spec-decode) | 24.04 | 0.11% | (sanity) | OK |
+| M2 NP=8 batched-bench no-Hadamard | 27.73 aggregate | 0.43% | ≥ 100 conservative / ≥ 130 stretch | **FAIL (28% / 21% of gate)** |
+| M3 NP=8 server + Hadamard | 26.49 aggregate | 0.14% | ≥ 90 production-realistic | **FAIL (29% of gate)** |
+| M4 graphs-off A/B | 27.84 | n/a | (sanity vs M2) | confirms graphs ≈0% at our shape |
+
+**Root cause of the FAIL — the theory was wrong, not the implementation:**
+
+T3.5's unified-stream multi-seq dispatch is firing at 93% rate in M3 (dispatch counter `total=192 multi_seq=179`, byte-identical across the three M3 runs). The dispatch is delivered, exercised, and deterministic. But M2 (which hits the QNEXT_SEQ_INTERLEAVED sub-batched fallback because `llama-batched-bench` builds a token-major batch — see T3.8.A finding A2-extended) ≈ M3 (T3.5 active) within Hadamard tax. **Unified multi-seq dispatch delivers ~0% additional throughput at decode shape on PSKV-singlewarp + Q4_0 KV + sm_75.**
+
+The PHASE doc's direction-tree estimated +3.6×–4.7× from "kernel batching, NOT graph reuse" (line 1918). This assumption did not hold: at decode n_tokens=1-per-seq the kernel work is grid-parallel per-seq either way; launch/dispatch overhead amortises below per-kernel runtime; memory traffic dominates and isn't reduced by packing. Same generalisation as Tier 2's CUDA-graphs ≈0% finding, now extended to dispatch packing.
+
+**Why vLLM still gets 154.77 t/s on the same hardware:** vLLM's lever is **continuous batching / chunked-prefill admission** (`project_continuous_batching_vs_perslot_dispatch`), splicing new-request prefill into running-decode ubatches. That is **PHASE doc Tier 4 / OpenQ-C** — never lifted, never built. T3 closure does not address it.
+
+**Tier 4 justification triggers fire:** M2 stall fraction = 65.44s / 83.98s = **77.9%** (overwhelmingly prefill-bound at the bench shape); conservative gate misses by 3.6×. Both conditions for the PHASE doc Tier 4 trigger are met.
+
+**What T3 actually delivered:**
+
+- Correctness foundation for multi-stream KV at NP>1 with `--fa on` (T3.0–T3.7, audit-grade with specs + TLA+ + tests).
+- T3.5 unified-stream dispatch firing at 93% rate on the server path (no regression).
+- T3.6 K-shift / defrag working under both LAYER and GRAPH split with generic CUDA Q→Q cpy support.
+- T3.6.M permanent VRAM probe (graph-pool growth bounded < 25 graphs / < 400 nodes / < 110 KB host per device across all M-configs — no runaway).
+- All correctness gates (verify-production-determinism, NPC, DFlash composition, kv-shift/defrag/graph-reuse per-stream tests) GREEN.
+
+**What T3 did NOT deliver:** the throughput uplift the GP3.i gate was targeting. The gate's underlying theory was incorrect; the right lever (Tier 4) is a separate phase.
+
+**Branch state at T3.8 closure:** clean; production profile (`profiles/active.sh`) unchanged. Do **NOT** revert T3 changes — they are correctness infrastructure required for future ctx + parallelism scaling regardless of which throughput lever is pursued next. Roll forward to Tier 4 in a fresh phase.
+
+See `data/t3.8-perf-gate-ledger.md` for the full per-run capture, dispatch-counter values, VRAM probe data, variance analysis, and Tier 4 decision rationale.
+
+---
+
+### T3.8 — Perf gate GP3.i (audit-grade restructure, 2026-05-22 — prefatory; see verdict above)
 
 Following the audit-grade pattern established by T3.6, T3.8 splits into A/S/M/E/C sub-cards rather than running benches blind. Findings from T3.8.A drove the restructure.
 
