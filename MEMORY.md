@@ -8711,3 +8711,78 @@ test, verify with `pgrep -f "verify-production\|llama-server"` and
 script-level safeguard (e.g. having verify-production-determinism
 claim the same `coord/gpu-*.lock` files the rest of the harness uses)
 would prevent the accidental version of this and is worth adding.
+
+---
+
+## 2026-05-22 — PHASE_NSTREAM_KV_PERF T3.6 CLOSED (full grid)
+
+T3.6 ("Drop bailout + lift n_stream==1 guards") closed across the full
+audit grid on `production/2026-q2-next`. PHASE_NSTREAM_KV_PERF.md T3.6
+closure-gates section is fully ✅.
+
+**Landed pieces (in order of commit):**
+
+- **T3.6.T** — synthetic tests RED on T3.5 HEAD (sub `687fb039`).
+- **T3.6.I.b.1** — SET_ROWS pass-through in `update_cache_copies`
+  (sub `4210e5b8`). Lets multi-seq K/V WRITE coexist with graph
+  reuse.
+- **T3.6.I.b.2** — **NOT landed; closed as design decision.** Dropping
+  the `n_stream > 1` bailout at `src/llama.cpp:629` would expose a
+  single-seq cross-stream bug in `build_std_attention` (single-seq K
+  view bakes `kqv_stream_id * nb[3]` into its offset and is not
+  reuse-safe across streams) while yielding zero real reuse uplift
+  (multi-seq dispatch already trips the n_tokens>1 MTP gate at
+  reason=2 before reaching this check). Inline rationale at
+  `src/llama.cpp:610-628`.
+- **T3.6.I.c1 → c1.x → c1.x2** — multi-stream `build_k_shift` (subs
+  `583c279d`, `b62765be`, `69027ced`). Per-(device, stream)
+  `inp_K_shift` inputs pinned via
+  `ggml_backend_sched_set_tensor_backend` + `backend_override` on the
+  intermediate F32 tmp tensor. K-shift is now correct under both
+  LAYER and GRAPH split on Qwen 3.6 27B production target with the
+  IMROPE gate lifted (aligning with upstream `b768f0843f` which
+  distinguishes IMROPE from MROPE-only gating).
+- **T3.6.I.c2** — multi-stream `build_defrag` (sub `1c84345d`). Per-
+  stream outer loop in `llama_kv_cache_defrag_internal` resolves F3;
+  3D-per-stream views in `build_defrag` resolve F4. Generic CUDA
+  `cpy_q_q_same_type` kernel (parameterized at runtime by `qk` and
+  `block_bytes`) added so Q→Q same-type non-contiguous block copies
+  stay on CUDA instead of falling back to CPU (which segfaulted
+  reading CUDA-resident data). Covers Q4_0, Q4_0_AR16, Q8_0, Q4_1,
+  Q5_0, Q5_1, Q6_0, IQ4_NL.
+- **T3.6.M** — graph-pool VRAM probe (sub `8eb74b5a`). Permanent log
+  line at `~ggml_backend_cuda_context` teardown:
+  `have N graphs (M nodes, X KB host bookkeeping, Y KB device
+  dest_ptrs)`. Reuse-perf-delta sub-task moot per I.b.2 closure (no
+  bailout-dropped world to A/B against).
+
+**Closure gates (all green 2026-05-22):**
+
+- `verify-production-determinism.sh` ACCEPTANCE PASS at NP={1,2,4,8}
+  multi-GPU.
+- `r5-probe-c4 ITERS=20` = 0/20.
+- `test-kv-shift-per-stream both` GREEN under LAYER and GRAPH.
+- `test-kv-defrag-per-stream both` GREEN under LAYER and GRAPH.
+- `test-graph-reuse-set-rows` GREEN (miss_reason != 6 bailout path
+  closed).
+- All three Allium specs (`k_shift_per_stream`, `defrag_per_stream`,
+  `n_stream_layer`) `allium check` clean (0 errors).
+- All three TLA+ MC modules (`KShiftPerStreamMC` 3041 states,
+  `DefragPerStreamMC` 304 states, `GraphReuseSetRowsMC` 54 states)
+  `tlc` clean.
+- DFlash composition tests (`test-dflash-np-multislot`,
+  `test-dflash-np-invariance`, `test-dflash-closure`) GREEN.
+
+**Why T3.6 closure matters:** with T3.5's split_equal unified-stream
+dispatch in place, T3.6 was the load-bearing block that let
+multi-stream KV inputs actually exercise the graph-builder paths
+without crashing or silently corrupting. The audit-grade pattern that
+emerged — per-(device, stream) inputs pinned via
+`ggml_backend_sched_set_tensor_backend` + `backend_override` on
+intermediate tensors + 3D-per-stream views into `splits[id]` — is now
+the template for any future multi-stream graph builder.
+
+**Next blocker on PHASE doc:** T3.8 (perf gate GP3.i — NP=8 aggregate
+≥ 100 t/s conservative / ≥ 130 t/s stretch on the vLLM-comparable
+config). Out of scope for the T3 correctness phase; addressed in a
+separate session.
