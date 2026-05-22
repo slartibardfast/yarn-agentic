@@ -2027,6 +2027,101 @@ Per `feedback_oneshot_then_evaluate`: each bundle lands coherently with NPC veri
 
 **Bundle B — READ path + kernel flip (T5.5–T5.8).** PSKV singlewarp kernel takes block_table tensor; K-loop branches on block boundary; build-context emits 2D K/V views + block_table input. T4 admission composes (chunked prefill admits into block-granular slots).
 
+#### Spec + test layer (lands at T5.0; tests RED-bound to specific cards)
+
+Mirrors the T3/T4 pattern: Allium spec for the API/invariant surface, TLA+ for the protocol-level model, property tests in `tests/spec/` RED-bound to specific cards that turn them GREEN.
+
+##### Allium specs (entity contracts + invariants)
+
+- **`specs/kv-cache/paged_block_allocator.allium`** — new at T5.0.
+  - **Entities**: `BlockPool` (flat arena, `n_blocks × block_size × n_embd_gqa` bytes), `BlockTable` (per-seq `vector<int32_t>` of physical block IDs), `FreeList` (LIFO stack of unused block IDs).
+  - **Operations**: `alloc_block(seq) → block_id | OUT_OF_BLOCKS`, `free_seq(seq)` (returns all blocks for seq to free list), `defrag()` (block coalesce + table rewrite).
+  - **Invariants**:
+    - `BlockUniquelyOwned` — at most one seq's `BlockTable` references any given `block_id` at any time.
+    - `FreeListDisjoint` — `FreeList ∩ ⋃_seq BlockTable[seq] = ∅`.
+    - `AllocLazy` — a seq holds zero blocks until its first write; the seq's `BlockTable.size() == ⌈written_tokens / block_size⌉`.
+    - `DeterministicAtFixedSequence` — `alloc_block` calls with the same prior alloc/free history return the same block_id (test-mechanism for NPC).
+    - `IdentityMappingAtSingleSeq` — when `n_stream == 1` and only seq 0 has ever allocated, `BlockTable[0] == [0, 1, 2, …]` (this is the byte-identity lever vs current contiguous layout).
+  - **Contracts**: `alloc_block` post: block_id ∈ [0, n_blocks); `free_seq` post: BlockTable[seq].empty() ∧ all freed IDs ∈ FreeList.
+
+- **`specs/kv-cache/paged_write_path.allium`** — new at T5.0.
+  - **Entities**: `KVWriteOp` (SET_ROWS-with-paged-indices), the prior `KVWriteOpLegacy` (CPY + view-offset, marked SUPERSEDED).
+  - **Contract `PagedKVWriteEquivToLegacyAtIdentity`** — for any decode tick where the block table is the identity mapping, the in-memory bytes after `KVWriteOp` are byte-equal to the bytes after `KVWriteOpLegacy`. **This is the binding contract for T5.3's CPY-fallback removal.**
+  - **Invariant `WriteIndexInBounds`** — `∀ t ∈ batch: inp_kv_idxs[t] < total_blocks × block_size × n_head_kv`.
+  - **Invariant `WriteIndexUnique`** — `∀ t1 ≠ t2 ∈ batch: inp_kv_idxs[t1] ≠ inp_kv_idxs[t2]` (no two tokens scatter to the same cell — required for SET_ROWS correctness).
+
+- **`specs/kv-cache/paged_read_path.allium`** — new at T5.0.
+  - **Entity**: `FAReadOp` extended with `block_table` src slot (src[6]).
+  - **Contract `PagedFAReadEquivToContiguousAtIdentity`** — when `block_table[seq] == [seq * blocks_per_stream, seq * blocks_per_stream + 1, …]` (the trivial contiguous-equivalent mapping), the PSKV singlewarp kernel produces byte-identical output to the current (Tier 4) kernel. **Binding contract for T5.5 kernel NPC.**
+  - **Invariant `KLoopCanonicalOrder`** — for any block_table, the K-loop iterates positions in `[0, ne11)` in canonical order (block-boundary crossings DO NOT permute k-order within a block; cross-block transitions occur at k ≡ 0 mod block_size). **Bug C absence by construction.**
+  - **Invariant `MaskAddressingPreserved`** — `nb33 * seq` mask offset (T3.1 foundation) is paging-neutral.
+
+- **`specs/kv-cache/paged_kshift_defrag.allium`** — new at T5.0.
+  - **Entity `KShiftPerBlock`** — generalises T3.6's per-(device, stream) `inp_K_shift` to a per-block delta tensor.
+  - **Contract `KShiftAtTrivialMappingEquivLegacy`** — when block_table is identity, the per-block K-shift produces byte-identical position rotations to the legacy per-stream K-shift.
+  - **Contract `DefragPreservesLogicalContents`** — for any fragmented block-pool state, `defrag()` produces a new pool where reading any seq's logical positions yields byte-identical data to the pre-defrag read.
+
+##### TLA+ specs (protocol-level model + invariants)
+
+- **`specs/kv-cache/PagedKVAllocator.tla`** — new at T5.0.
+  - **State**: `block_pool ∈ Seq([owner: Seq ∪ {FREE}, gen: Nat])`, `block_table ∈ [Seq → Seq(Nat)]`, `free_list ∈ Seq(Nat)`.
+  - **Actions**: `Alloc(seq)`, `FreeSeq(seq)`, `Defrag`, `WriteTokens(seq, n)`.
+  - **Invariants**: `BlockUniquelyOwned`, `FreeListDisjoint`, `AllocLazy`, `DefragPreservesOwnership` (logical owner of each block_id-of-record unchanged across `Defrag`).
+  - **Temporal property**: `EventuallyAllocSucceedsUnlessFull` — `(◇⟨Alloc(seq)⟩) ∨ (#allocated == n_blocks)`.
+
+- **`specs/kv-cache/PagedKVAllocatorMC.tla` + `.cfg`** — model-check config.
+  - **Constants**: `n_blocks = 8`, `n_seq = 3`, `block_size = 4`, `max_writes_per_seq = 12`.
+  - **Bounded action sequences** to surface fragmentation, double-free, leak, and defrag-correctness corner cases. Asserts the four invariants + the temporal property.
+
+- **`specs/kv-cache/PagedKVByteIdentity.tla`** — new at T5.0.
+  - **State**: parametrised on `Mode ∈ {Contiguous, Paged}`. Models the K/V read pipeline as a state machine over `(seq, head, token_pos, k_loop_iter)`.
+  - **Invariant `ByteIdentityAtTrivialMapping`** — when `Mode = Paged` AND `block_table` is the identity mapping, the sequence of K-row reads exactly matches `Mode = Contiguous`. **This is the formal version of the surfaces-summary "collapses byte-identically at n_stream==1" claim.**
+  - **MC config**: same .tla skeleton; constants for ne11 ∈ {1, 16, 64, 128} and block_size = 64.
+
+##### Property tests (in `ik_llama.cpp/tests/spec/`) — RED-bound to T5 cards
+
+| Test | Path | Binds | RED→GREEN at |
+|---|---|---|---|
+| **test-kv-block-allocator** | `tests/spec/test-kv-block-allocator.cpp` | `paged_block_allocator.allium` — all four invariants + DeterministicAtFixedSequence | T5.1 |
+| **test-paged-write-index-formula** | `tests/spec/test-paged-write-index-formula.cpp` | `paged_write_path.allium::WriteIndexInBounds` + `WriteIndexUnique` for synthetic multi-seq batches (8 seqs × 4 tok, mixed lengths) | T5.2 |
+| **test-paged-write-byte-identity-at-identity** | `tests/spec/test-paged-write-byte-identity-at-identity.cpp` | `paged_write_path.allium::PagedKVWriteEquivToLegacyAtIdentity` — drives one decode with paged WRITE vs identity-mapped legacy WRITE, asserts byte-equal K/V cache bytes post-write | T5.3 (the load-bearing test for CPY-fallback removal) |
+| **test-paged-byte-identity-trivial-mapping** | `tests/spec/test-paged-byte-identity-trivial-mapping.cpp` | `paged_read_path.allium::PagedFAReadEquivToContiguousAtIdentity` — drives PSKV kernel with identity block_table, asserts byte-identical output vs pre-paging PSKV | T5.5 |
+| **test-paged-multi-seq-byte-identity** | `tests/spec/test-paged-multi-seq-byte-identity.cpp` | extends the existing `test-multi-seq-decode-byte-identity` (now in tree, commit ae5dee44) with paged dispatch — 2 seqs identical prompts, byte-identical to two serial single-seq decodes | T5.6 |
+| **test-paged-kshift-byte-identity** | `tests/spec/test-paged-kshift-byte-identity.cpp` | `paged_kshift_defrag.allium::KShiftAtTrivialMappingEquivLegacy` — runs K-shift under paged identity mapping vs legacy, asserts byte-identical position rotations across all blocks | T5.7 |
+| **test-paged-defrag-preserves-contents** | `tests/spec/test-paged-defrag-preserves-contents.cpp` | `paged_kshift_defrag.allium::DefragPreservesLogicalContents` — fragments the pool, runs defrag, asserts per-seq reads byte-identical pre/post | T5.7 |
+| **test-paged-allocator-determinism** | `tests/spec/test-paged-allocator-determinism.cpp` | NPC-binding — run the same alloc/free trace 3× in a fresh process, assert identical block_id sequences across runs. Catches non-deterministic allocator state (hash-map iteration order etc.) | T5.1 + post-Bundle-A gate |
+
+##### Trace producer + validator (Tier 5 dispatch tracing)
+
+Mirrors T4's `TickDispatch` + `validate-batch-composition-trace.py`. New per-tick trace event `BlockAllocEvent` emitted from the allocator:
+
+- **Producer**: `src/llama.cpp` `kv_block_alloc()` and `kv_block_free()` emit `BlockAllocEvent { tick, seq, block_id, op ∈ {ALLOC, FREE, DEFRAG_MOVE}, prev_block_id (DEFRAG_MOVE only) }` to NDJSON trace.
+- **Validator**: `scripts/validate-paged-allocator-trace.py` — replays the trace and asserts:
+  - `BlockUniquelyOwned` at every tick.
+  - `FreeListDisjoint` at every tick.
+  - `AllocLazy` — no ALLOC for a seq with zero pending tokens.
+  - `DefragPreservesOwnership` — every DEFRAG_MOVE preserves the (seq, logical_pos) → (physical block_id, offset) mapping for the seq's logical sequence.
+- **Binding**: gate T5.4 + T5.8 closure runs the validator over a 60s production-shape session (NP=8, mixed prompts including chunked-prefill admissions from T4). Validator must report `OK` with zero violations.
+
+##### Spec/test infrastructure parity with T3+T4
+
+All seven property tests follow the existing `tests/spec/` conventions:
+- Skip-77 return code when `LLAMA_TEST_TARGET` unset.
+- Common harness pattern from `test-multi-seq-decode-byte-identity` (already in tree).
+- Registered in `ik_llama.cpp/tests/CMakeLists.txt` under the same `GGML_CUDA + LLAMA_TEST_TARGET` gate as T3/T4 tests.
+- TLC model-check configs run in CI via the existing `scripts/run-tla-check.sh` pattern (TBD if not in tree; otherwise add at T5.0).
+
+##### Spec+test landing order at T5.0
+
+1. Draft 4 .allium specs (paged_block_allocator, paged_write_path, paged_read_path, paged_kshift_defrag).
+2. Draft 3 .tla specs (PagedKVAllocator{.tla, MC.tla, MC.cfg}, PagedKVByteIdentity{.tla, MC.tla, MC.cfg}).
+3. Stub 8 property tests as RED (all FAIL on HEAD — assert against the not-yet-built paged path).
+4. Wire all 8 tests into `tests/CMakeLists.txt` under the existing gate pattern.
+5. Stub the trace producer (NDJSON emission code path, env-gated `LLAMA_T5_TRACE`) + the validator script.
+6. Commit the spec+test layer **as one coherent commit** before any T5.1 implementation work. This is the "scope-lock landed" commit — it makes the binding contracts visible in git history.
+
+**Token estimate for T5.0 (refined with spec+test enumeration): 30–40 k** (up from earlier 20–30k). The 4 .allium + 3 .tla + 8 property test stubs + 1 trace producer + 1 validator is the load-bearing surface — drafting it is the cheap-phase work that prevents Bundle A scope creep.
+
 #### Implementation cards (Tier 5)
 
 ##### T5.1 — Block allocator + block table data structures
@@ -2141,12 +2236,12 @@ Bench harness: `scripts/bench-t5-paged.sh` (new), reuses T4's locked-clocks (145
 
 Per CLAUDE.md §8 — estimate in tokens, not days.
 
-- **T5.0** — scope-lock + spec layer (.allium + TLA+ + property tests RED-bound to T5.1–T5.5): **20–30 k**.
+- **T5.0** — scope-lock + spec+test layer (4 .allium + 3 .tla + 8 property test stubs RED-bound + trace producer + validator + perf ledger): **30–40 k** (refined post spec+test enumeration).
 - **Bundle A (T5.1–T5.4)** — allocator + block-table + WRITE-path + CPY-fallback removal: **50–80 k**. Largest single risk is T5.3 (removing the legacy path); budget 1–2 verification rounds.
 - **Bundle B (T5.5–T5.8)** — kernel paging + build-context 2D views + n_stream==1 shortcut removal + K-shift/defrag rewrite + perf gate: **60–100 k**. Largest risks are T5.5 (kernel NPC at the new signature) and T5.7 (K-shift/defrag block-aware rewrites).
 - **Diagnosis budget** if any card surfaces unexpected NPC regression or perf cliff: **20–30 k per round, budget 2–3 rounds**.
 
-**Total scoped estimate: 140–220 k tokens to Tier 5 closure.** Comparable to Tier 3's Bundle A+B closure cost. Significantly smaller than the pre-T4 "6+ months / Very high" framing because T3's `inp_kv_idxs` + SET_ROWS scaffolding does the heavy lifting on the WRITE side — Tier 5 is "generalise that one more step, plus paint the same indirection onto the READ side."
+**Total scoped estimate: 150–230 k tokens to Tier 5 closure** (refined post spec+test enumeration; the 10k uplift covers the expanded T5.0 surface). Comparable to Tier 3's Bundle A+B closure cost. Significantly smaller than the pre-T4 "6+ months / Very high" framing because T3's `inp_kv_idxs` + SET_ROWS scaffolding does the heavy lifting on the WRITE side — Tier 5 is "generalise that one more step, plus paint the same indirection onto the READ side."
 
 #### Risks (Tier 5)
 
@@ -2177,17 +2272,38 @@ Per CLAUDE.md §8 — estimate in tokens, not days.
 
 #### Scope-lock checklist (T5.0 entry)
 
-Before T5.1 begins:
+Before T5.1 begins, T5.0 lands **as one coherent commit** containing the full spec+test surface:
 
-- [ ] `specs/kv-cache/paged_block_allocator.allium` drafted (allocator invariants, no-double-allocation, deterministic-block-IDs).
-- [ ] `specs/kv-cache/PagedKVInvariants.tla` drafted (block-table consistency, byte-identity-at-trivial-mapping).
-- [ ] `tests/spec/test-kv-block-allocator.cpp` stub RED-bound to T5.1.
-- [ ] `tests/spec/test-paged-byte-identity-trivial-mapping.cpp` stub RED-bound to T5.5.
+**Allium specs** (4):
+- [ ] `specs/kv-cache/paged_block_allocator.allium` — entities, ops, 5 invariants, alloc/free/defrag contracts.
+- [ ] `specs/kv-cache/paged_write_path.allium` — KVWriteOp + PagedKVWriteEquivToLegacyAtIdentity (load-bearing for T5.3) + WriteIndex{InBounds, Unique}.
+- [ ] `specs/kv-cache/paged_read_path.allium` — FAReadOp src[6]=block_table, PagedFAReadEquivToContiguousAtIdentity (load-bearing for T5.5) + KLoopCanonicalOrder + MaskAddressingPreserved.
+- [ ] `specs/kv-cache/paged_kshift_defrag.allium` — KShiftPerBlock + KShiftAtTrivialMappingEquivLegacy + DefragPreservesLogicalContents.
+
+**TLA+ specs + MC configs** (3):
+- [ ] `specs/kv-cache/PagedKVAllocator.tla` + `PagedKVAllocatorMC.{tla, cfg}` — 4 invariants + EventuallyAllocSucceedsUnlessFull.
+- [ ] `specs/kv-cache/PagedKVByteIdentity.tla` + `PagedKVByteIdentityMC.{tla, cfg}` — ByteIdentityAtTrivialMapping parametrised on Mode ∈ {Contiguous, Paged}.
+
+**Property tests** (8, all RED-bound, all wired into `ik_llama.cpp/tests/CMakeLists.txt`):
+- [ ] `tests/spec/test-kv-block-allocator.cpp` → T5.1
+- [ ] `tests/spec/test-paged-allocator-determinism.cpp` → T5.1
+- [ ] `tests/spec/test-paged-write-index-formula.cpp` → T5.2
+- [ ] `tests/spec/test-paged-write-byte-identity-at-identity.cpp` → T5.3
+- [ ] `tests/spec/test-paged-byte-identity-trivial-mapping.cpp` → T5.5
+- [ ] `tests/spec/test-paged-multi-seq-byte-identity.cpp` → T5.6
+- [ ] `tests/spec/test-paged-kshift-byte-identity.cpp` → T5.7
+- [ ] `tests/spec/test-paged-defrag-preserves-contents.cpp` → T5.7
+
+**Trace producer + validator** (1 pair):
+- [ ] `BlockAllocEvent` NDJSON emission stubbed in `src/llama.cpp` (env-gated `LLAMA_T5_TRACE`).
+- [ ] `scripts/validate-paged-allocator-trace.py` — replays trace, asserts BlockUniquelyOwned + FreeListDisjoint + AllocLazy + DefragPreservesOwnership.
+
+**Perf ledger + memory + review**:
 - [ ] `data/t5-perf-gate-ledger.md` created with M1/M2/M3 workload definitions locked.
 - [ ] PHASE_NSTREAM_KV_PERF.md MEMORY entry for T4 closure + Tier 5 scope-lock pushed.
 - [ ] User review of this plan section.
 
-Once these are ✓, Bundle A (T5.1–T5.4) is cleared to start.
+Once all of these are ✓ AND the T5.0 commit lands, Bundle A (T5.1–T5.4) is cleared to start. The spec+test layer being committed first is what makes the binding contracts visible in `git log` from the start of implementation, per the same pattern as T3/T4.
 
 ## Why we don't pivot to vLLM (despite the measured 4.75×)
 
