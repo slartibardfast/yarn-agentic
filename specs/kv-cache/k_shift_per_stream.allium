@@ -165,6 +165,52 @@ contract KShiftIsolation {
         -- PHASE_NSTREAM_KV_PERF.md T3.6.A audit.
 }
 
+-- KShiftPerDeviceInputs — under split_mode == GRAPH (CUDA_Split
+-- buffer type for the KV cache), inp_K_shift is allocated as a
+-- 2D collection of per-(device, stream) input tensors, each
+-- pinned to its consuming CUDA backend. The legacy single
+-- inp_K_shift tensor + per-stream views path is incorrect under
+-- multi-device split: ggml_backend_sched_copy_inputs leaf-copy
+-- allocation produces NULL backend assignments on freshly-built
+-- graphs under reset multi-device scheduler, leading to
+-- cudaMemcpyPeerAsync crashes.
+contract KShiftPerDeviceInputs {
+    invoke: (cache: KVCache, n_device: Integer) -> List<List<KShiftInput>>
+
+    @invariant PinnedToConsumingBackend
+        -- For every (device d, stream s) input tensor t:
+        --   t was created with ggml_set_input,
+        --   t's backend assignment via
+        --     ggml_backend_sched_set_tensor_backend(sched, t, backends[d])
+        --   matches the d-th CUDA backend in lctx.backends (which
+        --   is ordered [CUDA0, CUDA1, ..., CPU]).
+        -- This eliminates the cross-device input cpy path that
+        -- crashed cudaMemcpyPeerAsync under the legacy shared-
+        -- input pattern.
+
+    @invariant ReplicatedAcrossDevices
+        -- For every stream s, the deltas at index s*kvps + p (for
+        -- p in [0, kvps)) are written to ALL n_device input
+        -- tensors at position [d][s]. This is the populator
+        -- contract: per-stream content is identical across
+        -- devices, but per-stream-content differs from other
+        -- streams.
+
+    @invariant PopulatorUsesBackendTensorSet
+        -- llama_set_k_shift uses ggml_backend_tensor_set(t,
+        -- staging, 0, nbytes) for each per-(device, stream)
+        -- tensor — not direct t->data memcpy. The inputs may
+        -- reside on CUDA device buffers (not host-pinned) so
+        -- direct memcpy would write to host memory that the
+        -- device kernel never sees.
+
+    @guidance
+        -- Under split_mode == LAYER (or single-device), n_device
+        -- == 1 and the contract collapses to a per-stream vector.
+        -- The build_k_shift code path is unified; the per-device
+        -- outer loop runs once with d=0 and works correctly.
+}
+
 -- KShiftRoPEEquivalent — post-shift K bytes are equivalent to
 -- rebuilding K with RoPE applied at the new positions. This is
 -- the algebraic correctness statement: the shift is not just
@@ -193,6 +239,47 @@ contract KShiftRoPEEquivalent {
         -- byte-identical K (modulo the rope kernel's
         -- floating-point determinism). The per-stream loop runs
         -- n_stream rope calls; each is a no-op rotation.
+}
+
+-- KShiftIntermediatePinnedToSplitDevice — under graph-split,
+-- any intermediate compute tensor in the K-shift graph (the F32
+-- cast of a quantized K view, the rotated tmp, the cpy-back
+-- destination) MUST live on the SAME device as the K split it
+-- processes. The naive "first backend supporting layer's buft"
+-- pattern always picks backends[0] under CUDA_Split (every CUDA
+-- backend reports supporting CUDA_Split), which puts tmp on
+-- CUDA0 regardless of where the K split lives. Cast/rope/cpy
+-- then crosses device boundaries on the K-cache side.
+contract KShiftIntermediatePinnedToSplitDevice {
+    invoke: (k_split: KSlice, tmp_tensor: KSlice, device_id: Integer) -> Boolean
+
+    @invariant TmpPinnedToSplitDevice
+        -- For every K split being processed on device d, the
+        -- intermediate tmp tensor produced by ggml_cast(K_view,
+        -- F32) is pinned via ggml_backend_sched_set_tensor_backend
+        -- to lctx.backends[d]. The downstream rope and cpy-back
+        -- ops inherit this device assignment from tmp.
+
+    @invariant NoBuftMatchLoop
+        -- The legacy
+        --   for (auto * backend : lctx.backends) {
+        --       if (ggml_backend_supports_buft(backend,
+        --             lctx.model.buft_layer[il].buft)) {
+        --           ggml_backend_sched_set_tensor_backend(...);
+        --           break;
+        --       }
+        --   }
+        -- is NOT used under graph-split. It would always select
+        -- backends[0] for CUDA_Split's buft. Under
+        -- non-split (LAYER), this loop is still valid (the
+        -- layer's buft is the specific device's buft).
+
+    @guidance
+        -- ik_llama.cpp/src/llama-build-context.cpp:build_k_shift
+        -- implements this via a build_one_rope lambda that takes
+        -- a backend_override parameter. The split branch passes
+        -- lctx.backends[id]; the non-split branch passes nullptr
+        -- (legacy buft-match loop is used).
 }
 
 -- ============================================================
