@@ -8858,3 +8858,64 @@ bind T3.5-and-later server-side changes. (3) Don't propose dispatch-
 packing or scheduler-grouping work as a throughput lever for Qwen 3.6
 27B Q4_0 KV PSKV-singlewarp at sm_75; it costs ~zero relative to per-
 kernel runtime, T3 proves it empirically.
+
+## 2026-05-22 — T4 chunked-prefill admission (Sarathi-Serve) coherent flip landed
+
+T4 lands the chunked-prefill admission scheduler in
+`batch_pending_prompt` (ik_llama.cpp submodule `e282d229`, parent
+bump `eb426e0`). Replaces the pre-T4
+`active_pp_slot_id` PrefillSerialisationGate with a per-tick token
+budget K (CLI `--prefill-chunk-budget K`, default `n_ubatch`) and
+fair-share per-slot quota `ceil(K / n_eligible_load_nonembedding)`.
+Decode tokens are admitted FIRST by `add_sampled_tokens` (decode
+priority); prefill chunks are admitted afterwards bounded by the
+per-slot quota and the global K cap. Slots that don't finish their
+prefill in one tick stay LOAD_PROMPT with advancing `n_past_prompt`
+(PrefillCarryProgressesMonotonically). Drops the
+`LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE` env knob in
+`batch_pending_prompt` per `feedback_bake_measurement_env_gates`.
+
+NDJSON trace producer moved from per-dispatch (in
+`process_batch_tokens`) to per-tick (in `update_slots`) so the
+TickDispatch record captures the FULL tick batch composition once
+per tick. Under T3.5 split_equal grouping a tick is typically split
+into prefill-only and decode-only dispatches; per-slice tracing
+would falsely violate `DecodePriorityAdmission`. Per-tick tracing
+binds the validator's invariants correctly. New
+`tick_trace_state` struct on `server_context` holds
+`prefill_counts: slot_id -> count`, `decode_slots`, `processing_set`
+and `loading_prompt_set` snapshots, and `budget_k`.
+
+T4.6 correctness gate sweep — ALL GREEN:
+- GP4.j r5-probe-c4 ITERS=20:                     0/20 PASS
+- GP4.k verify-production-determinism NP={1,2,4,8}: PASS
+- GP4.l DFlash composition (multislot/closure/np-inv): 3/3 PASS
+- GP4.m trace validation (NP=8, K=256, 8-prompt staggered, 481 records):
+        PASS — 7 mixed ticks exercised; max batch 110/256 tokens
+- GP4.n kernel NPC fattn-per-slot-kv-dispatch:    PASS
+- T4.1 test-chunked-prefill-admission (CPU stub): 420 swept configs PASS
+
+T3 FRAMING B closure RE-CONFIRMED under T4:
+- verify-production-determinism PASS at NP={1,2,4,8} multi-GPU
+- dispatch_multi_seq_count 64/64 = 100% during np=8 segment
+- DFlash composition: 3/3 PASS
+
+Bug C non-regression argument empirically held: T4 admission only
+changes WHICH tokens are in the batch, not the per-tick mul_mat call
+shape; structural closure via 4D KV layout per
+`unified_stream_dispatch.allium` is unaffected. 7 mixed ticks
+(prefill+decode same batch) in GP4.m without violation prove the
+proposition.
+
+Production profile (`qwen36-27b-x2-dflash.sh`) NOT changed this
+session — T4 perf gate (T4.7, task #212) is the next decision point
+for whether to promote chunked admission to production NP. The T4
+correctness layer is now in place; the perf measurement remains.
+
+**Lessons.** (1) Per-tick trace semantics (not per-dispatch) are
+required for the T4 invariants — `DecodePriorityAdmission` is a
+tick-level property, and T3.5 split_equal already separates prefill
+and decode into distinct dispatch slices. (2) Per-slot quota +
+global K cap is sufficient for T4 fairness in steady-state staggered
+arrival; full round-robin redistribution of leftover budget is
+deferred until T4.7 perf gate reveals utilization gaps.
