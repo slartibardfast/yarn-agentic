@@ -308,16 +308,19 @@ invariant KvWritesAreExactlyNSteps {
 -- this spec. The two interact as follows.
 
 -- A FusedDraftStep invocation only occurs when its parent
--- verify ubatch was admitted by the scheduler. Under v1's
--- PrefillSerialisationGate + the DecodeHoldGate, that means no
--- slot is in LOAD_PROMPT at the moment of dispatch (per
--- BatchCompositionInvariant in the scheduler spec). The
--- draft round itself does not need to re-enforce these gates;
--- it inherits them from the parent dispatch.
+-- verify ubatch was admitted by the scheduler. Under Tier 4
+-- chunked-prefill admission, the parent ubatch may contain
+-- both decode tokens (from PROCESSING slots) AND prefill chunks
+-- (from LOAD_PROMPT slots). The MTP fused KERNEL still requires
+-- all its consumed tokens to be decode-shaped — the draft round
+-- reads only the is_decode slice of the parent ubatch. The
+-- BatchCompositionInvariant in batch_composition.allium binds
+-- the per-tick admission shape; this local invariant binds the
+-- draft round's per-token-kind constraint.
 invariant FusedDraftRoundsRunOnPureDecodeBatches {
     for round in DraftRoundsViaFusedPath:
         round.parent_ubatch.matches(BatchCompositionInvariant)
-            and round.parent_ubatch.all_tokens_are_decode
+            and round.consumed_tokens.all(t => t.is_decode)
 }
 
 -- When the n_stream KV 4D port (specs/kv-cache/n_stream_layer.allium)
@@ -341,23 +344,23 @@ invariant FusedDraftRespectsStreamPartition {
 -- ============================================================
 
 -- specs/scheduler/batch_composition.allium
---   Governs the slot state machine, PrefillSerialisationGate
---   (v1's active_pp_slot_id selection — at most one slot in
---   LOAD_PROMPT contributes per tick), DecodeHoldGate, and
---   BatchCompositionInvariant / MixedBatchProhibition. The
---   verify ubatch that triggers a FusedDraftStep is admitted
---   only when these gates pass. At HEAD the fused draft tick is
---   a single-slot decode operation (per the
---   MTPFusedAtN_StreamLessThan2Or1 opt-out below), so it
---   satisfies BatchCompositionInvariant trivially: one decode
---   contribution, no LOAD_PROMPT slot in the same batch.
+--   Governs the slot state machine and (under Tier 4) the
+--   chunked-prefill admission contracts: TokenBudgetPerUbatch,
+--   DecodePriorityAdmission, ChunkedPrefillAdmission,
+--   PrefillCarryProgressesMonotonically. The verify ubatch that
+--   triggers a FusedDraftStep is admitted under those contracts;
+--   the MTP fused KERNEL then reads only the is_decode slice of
+--   the parent ubatch (per FusedDraftRoundsRunOnPureDecodeBatches
+--   above). At HEAD the fused draft path is single-stream
+--   per MTPFusedAtN_StreamLessThan2Or1.
 --
 -- specs/kv-cache/n_stream_layer.allium
---   Models the 4D per-stream KV layout the project is porting
---   to. Once that layout lands, PerStreamDispatch makes
---   MixedBatchProhibition automatic and the DecodeHoldGate
---   becomes removable. The fused draft graph's KV writes
---   continue to satisfy StreamPartition (per
+--   Models the 4D per-stream KV layout. The structural closure
+--   it provides (per-stream slabs) is what enables Tier 4 to
+--   admit mixed prefill+decode batches safely — the upstream
+--   mul_mat sees a uniform [d, n_total] shape per tick
+--   regardless of admission mode. The fused draft graph's KV
+--   writes continue to satisfy StreamPartition (per
 --   FusedDraftRespectsStreamPartition above).
 --
 -- specs/dispatch/unified_stream_dispatch.allium

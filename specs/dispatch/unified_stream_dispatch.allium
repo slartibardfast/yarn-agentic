@@ -71,11 +71,14 @@
 --     out for the n_stream==1 guards on build_k_shift / build_defrag
 --     / v_trans).
 --   - Scheduler-level batch composition rules (prefill vs decode).
---     Owned by specs/scheduler/batch_composition.allium; Tier 3
---     PRESERVES BatchCompositionInvariant and MixedBatchProhibition
---     unchanged — a unified decode-tick batch contains only decode
---     tokens (one per active stream); a prefill stream takes its
---     own prefill tick.
+--     Owned by specs/scheduler/batch_composition.allium. Tier 3
+--     dispatched pure-decode or pure-prefill ticks; Tier 4
+--     (chunked-prefill admission) supersedes that mode and allows
+--     mixed admission under a per-tick token budget K. The Tier 3
+--     unified-stream dispatch (ne[3] = n_active_streams, uniform
+--     mul_mat shape) is INDEPENDENT of admission mode — Bug C
+--     absence holds structurally regardless of which tokens are
+--     in the ubatch.
 --   - CUDA-graph cache mechanism. Owned by
 --     specs/graphs/cuda_graph_reuse.allium. Tier 3's stable
 --     topology (one shape per tick) is strictly better for that
@@ -568,16 +571,15 @@ contract PreservesBugCAbsence {
 
     @invariant BatchCompositionInvariantHoldsAtUnifiedTick
         -- BatchCompositionInvariant from
-        -- specs/scheduler/batch_composition.allium states every
-        -- llama_decode batch is either pure-prefill or
-        -- pure-decode, never mixed. Tier 3 preserves this: a
-        -- unified decode-tick batch contains only decode tokens
-        -- (one per active stream, by
-        -- AdmissionRequiresDecodeReady); a prefill stream takes
-        -- its own prefill tick (by
-        -- PrefillTickIsSeparate). The
-        -- MixedBatchProhibition invariant in that spec lifts
-        -- unchanged to the unified-tick boundary.
+        -- specs/scheduler/batch_composition.allium (redefined at
+        -- Tier 4) states every llama_decode batch satisfies the
+        -- chunked-prefill admission shape: tokens.count <= K
+        -- AND per-token flag exclusivity. Tier 3 unified
+        -- dispatch preserves this regardless of which tokens
+        -- are admitted — the ne[3] = n_active_streams structure
+        -- and per-stream slab kernel inputs do not depend on
+        -- whether each stream contributes prefill or decode
+        -- tokens this tick.
 
     @guidance
         -- Pending Tier 3: this contract is the load-bearing
@@ -612,18 +614,18 @@ invariant PerTickUniformShape {
         slices.all(s => s.token_count = batch.per_stream_token_count)
 }
 
--- The unified-batch-is-single-mode property. Every UnifiedBatch is
--- either pure-decode (every slice has is_decode = true and no slice
--- has is_prefill = true) or pure-prefill (every slice has
--- is_prefill = true and no slice has is_decode = true). Mirrors
--- BatchCompositionInvariant from batch_composition.allium, lifted
--- to the unified batch boundary.
-invariant UnifiedBatchCompositionMode {
+-- The unified-batch admission-mode property. Under Tier 3 this was
+-- a pure/pure disjunction (pure-decode or pure-prefill); Tier 4
+-- supersedes it with the chunked-prefill admission shape from
+-- batch_composition.allium's redefined BatchCompositionInvariant.
+-- The per-slice flag exclusivity stays: any individual slice is
+-- either decode or prefill, never both. The whole-batch
+-- pure/pure constraint does NOT hold under Tier 4 — a single
+-- unified batch may contain decode slices and prefill slices.
+invariant UnifiedBatchSliceFlagExclusivity {
     for batch in UnifiedBatches:
         let slices = SlicesOf(batch)
-        slices.count = 0
-            or slices.all(s => s.is_decode)
-            or slices.all(s => s.is_prefill)
+        slices.all(s => not (s.is_decode and s.is_prefill))
 }
 
 -- The ne[3]-axis identity property. For any unified-tick FA
@@ -862,11 +864,16 @@ invariant StableTopologyAcrossDecodeTicks {
 -- ============================================================
 
 -- specs/scheduler/batch_composition.allium
---   The scheduler-layer Bug C closure. Tier 3 PRESERVES its
---   BatchCompositionInvariant and MixedBatchProhibition unchanged.
---   The DecodeHoldGate stays in force at mixed-phase ticks (OQ-1);
---   the PrefillSerialisationGate stays in force at multi-prefill
---   ticks (OQ-4).
+--   The scheduler-layer admission contract. Under Tier 4 this spec
+--   was rewritten to express chunked-prefill admission
+--   (TokenBudgetPerUbatch + DecodePriorityAdmission +
+--   ChunkedPrefillAdmission + PrefillCarryProgressesMonotonically).
+--   Bug C absence — formerly defended by that spec's
+--   MixedBatchProhibition + DecodeHoldGate — is now delegated to
+--   THIS spec's BugCAbsenceUnderUnifiedDispatch /
+--   PreservesBugCAbsence (the structural kernel-input-shape
+--   closure). Under Tier 4, mixed prefill+decode admission is
+--   allowed and Bug C absence holds regardless.
 --
 -- specs/kv-cache/n_stream_layer.allium
 --   The 4D per-stream KV layout. Tier 3 builds on this; ne[3] of

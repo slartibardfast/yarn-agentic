@@ -75,10 +75,13 @@
 --   - The per-stream KV layout itself (StreamPartition,
 --     PerStreamAllocator). Owned by
 --     specs/kv-cache/n_stream_layer.allium.
---   - The batch composition (mixed prefill+decode prohibition).
---     Owned by specs/scheduler/batch_composition.allium; THIS
---     spec's contracts MUST NOT VIOLATE
---     BatchCompositionInvariant in the multi-slot opt-out form.
+--   - The batch composition (chunked-prefill admission shape under
+--     Tier 4). Owned by specs/scheduler/batch_composition.allium;
+--     THIS spec's contracts MUST NOT VIOLATE the redefined
+--     BatchCompositionInvariant (TokenBudgetPerUbatch +
+--     per-token flag exclusivity). MTP fused decode admits
+--     decode-only tokens, which is one valid shape under the
+--     chunked-prefill admission contract.
 
 -- ============================================================
 -- External entities — per-context fused-decoder state
@@ -780,10 +783,12 @@ invariant Tier3UnifiedDispatchInheritsHEADOptOut {
 --   per-stream extension (MTPChainResidualPerStream) lands.
 --
 -- specs/scheduler/batch_composition.allium
---   The scheduler-level Bug C closure. THIS spec's contracts
---   must NOT violate BatchCompositionInvariant or
---   MixedBatchProhibition. The MTP fused decode runs inside a
---   pure-decode batch (per mtp_fused_draft.allium's
+--   The scheduler-level admission contracts (chunked-prefill
+--   admission under Tier 4). THIS spec's contracts must NOT
+--   violate the redefined BatchCompositionInvariant
+--   (TokenBudgetPerUbatch + per-token flag exclusivity). The
+--   MTP fused decode contributes is_decode tokens per
+--   DecodePriorityAdmission (per mtp_fused_draft.allium's
 --   FusedDraftRoundsRunOnPureDecodeBatches); THIS spec's
 --   multi-slot opt-out does not alter that property.
 --

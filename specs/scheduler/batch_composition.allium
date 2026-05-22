@@ -1,38 +1,57 @@
 -- allium: 3
 -- specs/scheduler/batch_composition.allium
 --
--- Scope: the slot state machine and two scheduler gates that close
--- Bug C in the current shared-pool KV model. The contracts here
--- describe what the server's per-tick batch assembly may NOT
--- produce, and the two gating decisions in
--- examples/server/server-context.cpp that uphold the invariant.
+-- Scope: the slot state machine and the chunked-prefill admission
+-- contracts that compose a single per-tick batch from decode +
+-- prefill contributions. Under Tier 4 (chunked-prefill admission,
+-- Sarathi-Serve), a single Batch may contain BOTH decode tokens
+-- (from PROCESSING slots) and prefill chunks (from one or more
+-- LOAD_PROMPT slots), subject to a token-budget K and a
+-- decode-first admission ordering.
 --
--- Why this spec exists: Bug C — slot 0's decode token batched with
--- slot 1's full prefill in one llama_decode call — fires a
--- downstream mul_mat GEMV-vs-GEMM accumulation-order divergence
--- that produces wrong sampled tokens (~3e-3 per-element drift at
--- layer 0, see PHASE_NSTREAM_KV.md update (e) and (g)). The
--- kernel-level fix is infeasible (would require rewriting all
--- CUDA mul_mat to enforce GEMV-equivalent accumulation at every
--- batch size, with major perf cost). The closure that landed is
--- scheduler-level: prevent the mixed batch from ever forming.
--- This spec pins that closure as a contract so it cannot quietly
--- regress under future scheduler refactors.
+-- Why this spec exists: PHASE_NSTREAM_KV_PERF T3.8 (closed FAIL
+-- 2026-05-22) measured M2 prefill-stall fraction at 77.9% — the
+-- per-stream dispatch unification from Tier 3 closed Bug C
+-- structurally (via the 4D KV layout, `unified_stream_dispatch`),
+-- but throughput at NP=8 is locked away by prefill stalls, not
+-- dispatch packing. Tier 4 admits prefill chunks into the same
+-- llama_decode ubatch as running decodes — the lever vLLM uses
+-- to reach 154.77 t/s on the same hardware. This spec pins the
+-- admission contracts so they cannot quietly regress.
+--
+-- @guidance
+--     -- Bug C closure is DELEGATED to specs/dispatch/
+--     -- unified_stream_dispatch.allium. The Tier 3 per-stream
+--     -- 4D KV layout (ne[3] = n_stream) and uniform mul_mat
+--     -- shape per tick are what make mixed prefill+decode
+--     -- batches safe: every ubatch sees a single [d, n_total]
+--     -- mul_mat call regardless of which slots contribute
+--     -- tokens. The pre-Tier-3 scheduler invariants
+--     -- (MixedBatchProhibition, AtMostOnePrefillSlotPerBatch,
+--     -- DecodeHoldImpliedByPendingPrefill) were defence-in-depth
+--     -- that pre-dated the structural closure; under Tier 4
+--     -- they are removed. The empirical Bug-C-absence test
+--     -- (scripts/r5-probe-c4.sh) remains the binding gate.
 --
 -- Includes:
 --   - External entities for the server scheduler objects
 --     (Slot, Tick, Batch, BatchToken).
 --   - Enumerations for slot_state (matching slot_state in
 --     server-context.h:14) and slot_command (server-context.h:21).
---   - Contracts for the two gating decisions:
---     PrefillSerialisationGate (v1, batch_pending_prompt) and
---     DecodeHoldGate (Bug C fix, add_sampled_tokens).
---   - System-wide invariants binding the slot lifecycle, the
---     batch composition rule, and the MixedBatchProhibition
---     property the downstream mul_mat path depends on.
+--   - Contracts for the chunked-prefill admission policy:
+--     TokenBudgetPerUbatch, DecodePriorityAdmission,
+--     ChunkedPrefillAdmission, PrefillCarryProgressesMonotonically.
+--   - SlotLifecycle covering the existing IDLE↔PROCESSING
+--     transitions plus the implicit carry-across-ticks state
+--     (a Slot stays at command=load_prompt while
+--     n_past_prompt < n_prompt_tokens).
+--   - System-wide BatchCompositionInvariant redefined as the
+--     conjunction of the admission contracts (so downstream
+--     specs that already cross-reference the name continue to
+--     bind on the new semantics).
 --   - Open questions naming the choices the implementation
---     deferred (steady-state TG overlap recovery via per-stream
---     dispatch).
+--     deferred (Sarathi-Serve K-budget tuning, per-stream
+--     scheduling under heterogeneous slot priorities).
 --
 -- Excludes:
 --   - The DFlash draft graph and the per-ubatch MTP-KV hook;
@@ -41,19 +60,15 @@
 --     ONE draft round / ubatch produces given the batch shape
 --     this spec governs.
 --   - The KV cache layout itself (per-stream cells, slot↔cells
---     mapping). Owned by specs/kv-cache/n_stream_layer.allium
---     once the 4D port lands; today's shared-pool model has no
---     dedicated spec because Bug C closure does not depend on its
---     details.
+--     mapping). Owned by specs/kv-cache/n_stream_layer.allium.
 --   - The numerical bound between NP=1 and NP>1 slot output.
 --     Owned by the perf-determinism harness
---     (scripts/test-production-np-determinism.sh) and the related
---     specs/deltanet/*. The current spec only asserts batch
---     COMPOSITION; numerical equivalence is downstream.
+--     (scripts/verify-production-determinism.sh) and
+--     specs/deltanet/*.
 --   - The qnext_analyze_seq_pattern engine routing inside
 --     llama_decode. Owned by qnext_multislot_dispatch.allium.
---     That spec governs what the engine does given a batch; THIS
---     spec governs which batches the server may assemble.
+--     That spec governs what the engine does given a batch;
+--     THIS spec governs which batches the server may assemble.
 
 -- ============================================================
 -- External entities — server scheduler objects
@@ -61,41 +76,47 @@
 
 -- A server_slot, the per-session worker the HTTP layer assigns
 -- arriving requests to. Lives at
--- ik_llama.cpp/examples/server/server-context.h:37-100.
+-- ik_llama.cpp/examples/server/server-context.h:37-232. The
+-- n_past_prompt field at line 60 advances by the number of
+-- prefill tokens admitted in each Tick; the slot stays at
+-- command=load_prompt across Ticks until n_past_prompt reaches
+-- n_prompt_tokens, at which point ProcessingOnPrefillComplete in
+-- SlotLifecycle fires.
 external entity Slot {
     id: Integer
     state: SlotState
     command: SlotCommand
     released: Boolean
+    n_prompt_tokens: Integer
     n_prompt_tokens_processed: Integer
+    n_past_prompt: Integer
 }
 
--- One update_slots() cycle. Each Tick produces at most one
--- llama_batch and at most one llama_decode call. The two gates
--- run inside update_slots — add_sampled_tokens at
--- server-context.cpp:3194 (decode-side), then
--- batch_pending_prompt at 3626 (prefill-side) — to assemble the
--- Batch that this Tick will dispatch.
+-- One update_slots() cycle (server-context.cpp:5078-5173). Each
+-- Tick produces at most one llama_batch and at most one
+-- llama_decode call. Under Tier 4 the admission loop in
+-- batch_pending_prompt (rewritten by T4.4) assembles the Batch
+-- by first admitting decode tokens from PROCESSING slots, then
+-- admitting prefill chunks from LOAD_PROMPT slots
+-- round-robin, both subject to a per-Tick token budget K.
 external entity Tick {
     index: Integer
 }
 
--- The llama_batch assembled in one Tick. May be empty (no slots
--- contributed), pure-prefill (one slot's prompt tokens), or
--- pure-decode (one decode token from each active PROCESSING
--- slot). The load-bearing property (MixedBatchProhibition) is
--- that it is NEVER both.
+-- The llama_batch assembled in one Tick. May be empty, pure-
+-- prefill, pure-decode, or — under Tier 4 — a mix of decode
+-- tokens (one per active PROCESSING slot) and prefill chunks
+-- (from one or more LOAD_PROMPT slots).
 external entity Batch {
     tick: Tick
     n_tokens: Integer
 }
 
 -- One token in a Batch. is_prefill is true when the token was
--- contributed by batch_pending_prompt (a slot in
--- IDLE+LOAD_PROMPT). is_decode is true when contributed by
--- add_sampled_tokens (a slot in PROCESSING). Mutually exclusive
--- per-token; the spec asserts they are also mutually exclusive
--- across the whole Batch.
+-- contributed by the admission loop's prefill phase (a slot in
+-- IDLE+LOAD_PROMPT). is_decode is true when contributed by the
+-- decode phase (a slot in PROCESSING). Mutually exclusive
+-- per-token (PerTokenFlagExclusivity below).
 external entity BatchToken {
     batch: Batch
     slot: Slot
@@ -121,119 +142,175 @@ config {
     -- Maximum parallel slots the server may run. Mirrors
     -- --parallel N at start time, n_seq_max in cparams. The
     -- contracts hold for any value in [1, max_parallel_slots].
-    -- The production geometry runs at 2 today; the spec is
-    -- portable across 1..8.
     max_parallel_slots: Integer = 8
+
+    -- Per-Tick token budget K. The admission loop will not
+    -- assemble a Batch with more than K tokens. Wired to the
+    -- --prefill-chunk-budget CLI (T4.5); defaults to
+    -- n_ubatch (cparams.n_ubatch) which collapses Tier 4 to
+    -- legacy behaviour at the largest Sarathi K. Range
+    -- [1, n_ubatch]; K = 0 is rejected at CLI parse.
+    prefill_chunk_budget: Integer = 512
 }
 
 -- ============================================================
 -- Contracts
 -- ============================================================
 
--- The PrefillSerialisationGate — v1's at-most-one-prefill rule
--- in batch_pending_prompt. Lives at
--- ik_llama.cpp/examples/server/server-context.cpp:3626 (function
--- entry) with the active_pp_slot_id selection at 3644-3681.
---
--- This is a PERFORMANCE policy, NOT a Bug C fix on its own. On
--- our hardware concurrent multi-slot prefill is ~4.8x slower
--- per-sequence than serial prefill due to attention-mask
--- blow-up at large n_tokens (commit 67878813). The gate enforces
--- the cheaper schedule. Bug C closure depends ALSO on the
--- DecodeHoldGate below; v1 alone is insufficient (measured: 20/20
--- failure post-v1 without the decode-side gate, see
--- PHASE_NSTREAM_KV.md (e)).
-contract PrefillSerialisationGate {
-    invoke: (slots: Set<Slot>, tick: Tick) -> Set<Slot>
+-- TokenBudgetPerUbatch — the Sarathi-Serve admission cap. Every
+-- Batch this spec governs has at most K tokens, where K is the
+-- per-server prefill_chunk_budget config. The admission loop
+-- (server-context.cpp:batch_pending_prompt post-T4.4) consumes
+-- the budget in two phases (decode then prefill); the cap is
+-- the bound that gives chunked prefill its name.
+contract TokenBudgetPerUbatch {
+    invoke: (slots: Set<Slot>, tick: Tick, k: Integer) -> Batch
 
-    @invariant AtMostOneSlotContributesPrefillPerTick
-        -- Within one Tick, at most one Slot may contribute prefill
-        -- tokens to the Batch. Implementations select the slot
-        -- that is mid-prefill (state=idle, command=load_prompt,
-        -- n_prompt_tokens_processed > 0) first; if no slot is
-        -- mid-prefill, the first slot in iteration order whose
-        -- (state, command) = (idle, load_prompt) is chosen. The
-        -- selection is stable within a Tick.
+    @invariant BatchSizeBoundedByK
+        -- For any Tick t and the Batch produced from it,
+        -- BatchTokensOf(batch).count <= k. The bound binds
+        -- regardless of how many slots are PROCESSING or
+        -- LOAD_PROMPT.
 
-    @invariant NonSelectedPrefillSlotsAreSkipped
-        -- Slots in (idle, load_prompt) that are not the active
-        -- prefill slot for THIS Tick do not contribute any
-        -- BatchToken to this Tick's Batch. They remain in
-        -- (idle, load_prompt) and are eligible for selection in a
-        -- subsequent Tick.
+    @invariant KMatchesConfig
+        -- The k parameter to invoke equals the server's
+        -- prefill_chunk_budget at the start of the Tick. K does
+        -- not vary intra-Tick.
 
-    @invariant ProcessingSlotsUnaffected
-        -- The gate does not change the eligibility of slots in
-        -- state=processing. Whether their decode tokens enter
-        -- the Batch is governed by the DecodeHoldGate below.
+    @invariant KAtLeastOne
+        -- k >= 1 at all times. The CLI rejects K = 0; the
+        -- contract has no edge case to handle for an empty
+        -- budget.
 
     @guidance
-        -- This gate is independent of Bug C correctness — it is
-        -- a perf choice for our specific kernel suite. If a future
-        -- platform's mul_mat can run parallel multi-slot prefill
-        -- cheaply, the gate may be relaxed. Removing it does NOT
-        -- by itself re-open Bug C, because the DecodeHoldGate
-        -- (paired with this one) is what enforces the
-        -- MixedBatchProhibition.
+        -- K is a latency knob: smaller K bounds time-between-
+        -- tokens (TBT) for active decoding slots by limiting
+        -- the prefill work per Tick. Production policy for K
+        -- is out of scope for this spec — only the contract
+        -- the policy must respect.
 }
 
--- The DecodeHoldGate — the Bug C closure rule in
--- add_sampled_tokens. Lives at
--- ik_llama.cpp/examples/server/server-context.cpp:3194 (function
--- entry); the gate body is the loop at 3205-3209 that
--- early-returns when any slot is (idle, load_prompt).
---
--- This IS the Bug C fix. Without it, when slot A finishes
--- prefilling and transitions to processing, slot B's still-
--- pending prefill lands in the same Batch as slot A's first
--- decode token — a mixed prefill+decode geometry that triggers
--- the downstream mul_mat GEMV-vs-GEMM accumulation order
--- divergence. The pre-fix stochastic 13% failure rate and the
--- v1-only 100% failure rate are both eliminated by adding this
--- gate. See PHASE_NSTREAM_KV.md update (e) for the bisect.
-contract DecodeHoldGate {
-    invoke: (slots: Set<Slot>, tick: Tick) -> Set<Slot>
+-- DecodePriorityAdmission — decodes are admitted before
+-- prefill chunks in any Tick that contains both. The admission
+-- loop (server-context.cpp post-T4.4) iterates PROCESSING slots
+-- first, adds one decode token per slot (consuming budget),
+-- then iterates LOAD_PROMPT slots round-robin filling the
+-- remainder.
+contract DecodePriorityAdmission {
+    invoke: (slots: Set<Slot>, tick: Tick, k: Integer) -> Batch
 
-    @invariant DecodeHeldWhilePrefillPending
-        -- If any Slot in `slots` has (state, command) =
-        -- (idle, load_prompt), the gate returns an empty set:
-        -- NO Slot contributes decode tokens to this Tick's Batch.
-        -- The implementation early-returns from
-        -- add_sampled_tokens before any decode-token assembly.
+    @invariant EveryProcessingSlotAdmittedIfBudgetSuffices
+        -- For any Tick where the count of PROCESSING slots is
+        -- at most k, every PROCESSING slot contributes exactly
+        -- one BatchToken with is_decode = true to the Tick's
+        -- Batch. Prefill admission consumes only the residual
+        -- budget after decode.
 
-    @invariant DecodeAdmittedWhenNoPrefillPending
-        -- If no Slot has (state, command) = (idle, load_prompt),
-        -- every Slot in state=processing whose decode token is
-        -- ready contributes one BatchToken with is_decode=true,
-        -- subject to the per-slot draft-batch contracts in
-        -- mtp_fused_draft.allium for slots in speculative mode.
+    @invariant DecodeAdmittedBeforePrefillTokens
+        -- If a Batch contains any BatchToken with
+        -- is_prefill = true, then every PROCESSING slot whose
+        -- decode token would have been admitted under the
+        -- legacy decode-only path is also present as an
+        -- is_decode token in the same Batch. Prefill chunks
+        -- never bump decode tokens out of a Tick when budget
+        -- is available.
 
-    @invariant BoundedStallByPrefillDuration
-        -- A Slot in state=processing stalls for at most one
-        -- prefill-duration when this gate fires. The gate has no
-        -- multi-tick memory; the next Tick where no Slot is
-        -- (idle, load_prompt) admits decode normally.
+    @invariant DecodeNeverHeldByPrefill
+        -- The Tier 3 / pre-Tier-4 DecodeHoldGate
+        -- (server-context.cpp:3196-3206) is gone: a Slot in
+        -- (idle, load_prompt) does NOT cause PROCESSING slots
+        -- to stall. The whole point of Tier 4 is to remove
+        -- this stall.
 
     @guidance
-        -- This gate undoes v1's "TG-overlap preserved" intent
-        -- (67878813 commit message): decodes now stall during any
-        -- prefill, not just during the SAME slot's prefill. The
-        -- cost is bounded by prefill duration per arrival;
-        -- measured as ~6 s on test-pp-serialization.sh wall time
-        -- vs the pre-fix theoretical lower bound. For sporadic-
-        -- arrival workloads this is acceptable. For steady-
-        -- arrival workloads, the recovery path is the n_stream KV
-        -- port (PHASE_NSTREAM_KV_4D.md) — per-stream dispatch
-        -- makes mixed batches impossible by construction, at
-        -- which point this gate becomes redundant and is removed.
+        -- Decode-first matches Sarathi-Serve §3.2 and the
+        -- vLLM continuous-batching scheduler. The intuition:
+        -- decodes are short and latency-sensitive, prefill is
+        -- bulky and amortises over chunks; admitting decode
+        -- first bounds TBT under any prefill load.
+}
+
+-- ChunkedPrefillAdmission — when a LOAD_PROMPT slot's remaining
+-- prefill exceeds the residual budget for prefill (after decode
+-- admission), the unfit tail carries to the next Tick. The slot
+-- stays in command=load_prompt; n_past_prompt advances by the
+-- admitted count only.
+contract ChunkedPrefillAdmission {
+    invoke: (slot: Slot, tick: Tick, prefill_budget_residual: Integer) -> Slot
+
+    @invariant AdmittedCountBoundedByResidual
+        -- For a LOAD_PROMPT slot in a Tick, the number of
+        -- prefill tokens admitted is
+        -- min(prefill_budget_residual,
+        --     slot.n_prompt_tokens - slot.n_past_prompt). At
+        -- most that many BatchTokens with is_prefill = true,
+        -- batch.slot = this slot are produced.
+
+    @invariant SlotPersistsInLoadPromptUntilDone
+        -- If after the Tick's admission
+        -- slot.n_past_prompt < slot.n_prompt_tokens, the Slot
+        -- remains at (idle, load_prompt). It is eligible for
+        -- continued admission in subsequent Ticks via the
+        -- round-robin LOAD_PROMPT iteration.
+
+    @invariant RoundRobinFairness
+        -- When multiple LOAD_PROMPT slots compete for the
+        -- residual prefill budget in a Tick, the admission
+        -- loop visits them in slot.id order. Each round of
+        -- the round-robin admits at most one chunk per slot
+        -- before re-visiting. The contract does NOT mandate
+        -- equal per-slot admission per Tick; only that no
+        -- LOAD_PROMPT slot is starved while another's chunks
+        -- are still being added.
+
+    @guidance
+        -- Carry across Ticks is implicit in the existing slot
+        -- state: n_past_prompt advances by the admitted count
+        -- per Tick (the existing increment at
+        -- server-context.cpp:3949 already does this). T4
+        -- introduces no new slot field; only the admission
+        -- loop's policy changes.
+}
+
+-- PrefillCarryProgressesMonotonically — a liveness contract
+-- ensuring no LOAD_PROMPT slot is permanently stalled. Across
+-- any non-empty sequence of Ticks, a LOAD_PROMPT slot's
+-- n_past_prompt is non-decreasing, and reaches n_prompt_tokens
+-- in finitely many Ticks (transitioning to PROCESSING via
+-- SlotLifecycle.ProcessingOnPrefillComplete).
+contract PrefillCarryProgressesMonotonically {
+    invoke: (slot: Slot, ticks: List<Tick>) -> Slot
+
+    @invariant MonotonicNPastPromptAcrossTicks
+        -- For a Slot at (idle, load_prompt) across any
+        -- consecutive pair of Ticks (t_i, t_{i+1}),
+        -- slot.n_past_prompt[t_{i+1}] >=
+        -- slot.n_past_prompt[t_i]. The slot never loses
+        -- prefill progress.
+
+    @invariant CompletesInFiniteTicks
+        -- Provided the server continues to issue Ticks and
+        -- the per-tick token budget K >= 1, any LOAD_PROMPT
+        -- slot reaches n_past_prompt = n_prompt_tokens in at
+        -- most ceiling(n_prompt_tokens / 1) = n_prompt_tokens
+        -- Ticks (worst case: one prefill token per Tick when
+        -- competing slots saturate budget). The bound is
+        -- pessimistic; typical K admits dozens of chunks per
+        -- Tick.
+
+    @guidance
+        -- The contract excludes "stalled forever" pathologies
+        -- but does NOT bound TBT for any particular slot. SLO
+        -- shaping (e.g., "prefill must complete within 10
+        -- Ticks") is policy and lives outside this spec.
 }
 
 -- The lifecycle a Slot moves through across Ticks. Lives at
 -- ik_llama.cpp/examples/server/server-context.cpp:534-538 (the
 -- is_idle / is_available predicates), 578-582 (release path),
 -- 1714 (LOAD_PROMPT assignment from incoming task), 3106-3107
--- (post-decode idle transition), 3953 (PROCESSING transition
--- after prefill completes).
+-- (post-decode idle transition), 3949 (n_past_prompt advance),
+-- 3953 (PROCESSING transition after prefill completes).
 contract SlotLifecycle {
     invoke: (slot: Slot) -> Slot
 
@@ -248,10 +325,21 @@ contract SlotLifecycle {
         -- until the prefill completes; command carries the
         -- "work pending" signal.
 
+    @invariant LoadPromptCarriesAcrossTicksUnderChunking
+        -- Under Tier 4, a Slot may persist at
+        -- (idle, load_prompt) across many Ticks while its
+        -- prefill is admitted in chunks. The transition to
+        -- PROCESSING fires only when
+        -- n_past_prompt = n_prompt_tokens, which may take
+        -- ceil(n_prompt_tokens / per_tick_prefill_budget)
+        -- Ticks. During this carry, the slot is eligible for
+        -- selection by ChunkedPrefillAdmission each Tick.
+
     @invariant ProcessingOnPrefillComplete
-        -- When batch_pending_prompt has contributed the final
-        -- chunk of the Slot's prompt to a Batch, the Slot
-        -- transitions to (state=processing, command=none).
+        -- When the admission loop has contributed the final
+        -- chunk of the Slot's prompt (n_past_prompt reaches
+        -- n_prompt_tokens), the Slot transitions to
+        -- (state=processing, command=none).
         -- n_prompt_tokens_processed reaches n_prompt_tokens at
         -- this point.
 
@@ -262,40 +350,14 @@ contract SlotLifecycle {
 
     @invariant ReleasedFlagSetByReleasePathOnly
         -- The `released` field becomes true only via the explicit
-        -- release path; it is never set by the prefill or decode
-        -- gates. The flag carries one-Tick visibility to the HTTP
+        -- release path; it is never set by the admission loop.
+        -- The flag carries one-Tick visibility to the HTTP
         -- layer that the Slot just finished a task.
 }
 
 -- ============================================================
 -- Invariants — system-wide
 -- ============================================================
-
--- The load-bearing property the whole spec exists to assert. For
--- any Batch the server dispatches in any Tick, no two
--- BatchTokens within that Batch carry one prefill flag and one
--- decode flag. The Batch is either pure-prefill (every token
--- has is_prefill=true) or pure-decode (every token has
--- is_decode=true) — never mixed.
-invariant MixedBatchProhibition {
-    for batch in Batches:
-        for a in BatchTokensOf(batch):
-            for b in BatchTokensOf(batch):
-                a != b implies not (a.is_prefill and b.is_decode)
-}
-
--- Companion to MixedBatchProhibition: a positive statement that
--- every Batch belongs to exactly one of the two pure categories
--- (or is empty). Implementations may dispatch a Batch of one
--- prefill chunk or a Batch of paired decode tokens but never a
--- mix.
-invariant BatchCompositionInvariant {
-    for batch in Batches:
-        let tokens = BatchTokensOf(batch)
-        tokens.count = 0
-            or tokens.all(t => t.is_prefill)
-            or tokens.all(t => t.is_decode)
-}
 
 -- A per-token consistency rule: a BatchToken is exactly one of
 -- prefill or decode (or neither, in some degenerate cases the
@@ -306,124 +368,164 @@ invariant PerTokenFlagExclusivity {
         not (t.is_prefill and t.is_decode)
 }
 
--- The slot-state side of MixedBatchProhibition: if any Slot is
--- in (idle, load_prompt) at the start of a Tick, the Tick's
--- Batch contains no decode tokens (the DecodeHoldGate fired).
-invariant DecodeHoldImpliedByPendingPrefill {
+-- Redefined for Tier 4: every Batch satisfies the conjunction
+-- of the admission contracts. Downstream specs (in particular
+-- mtp_fused_draft.allium and unified_stream_dispatch.allium)
+-- reference this name as the load-bearing "the batch is shaped
+-- correctly" predicate; the body is now the chunked-prefill
+-- admission shape rather than the pre-Tier-4 pure-prefill OR
+-- pure-decode disjunction.
+invariant BatchCompositionInvariant {
     for batch in Batches:
-        let tick = batch.tick
-        let slots = SlotsAtTickStart(tick)
-        slots.any(s => s.state = idle and s.command = load_prompt)
-            implies BatchTokensOf(batch).all(t => not t.is_decode)
+        let tokens = BatchTokensOf(batch)
+        let k = batch.tick.config_prefill_chunk_budget
+        tokens.count <= k
+            and tokens.all(t => not (t.is_prefill and t.is_decode))
 }
 
--- The prefill-side companion: at most one Slot's tokens appear
--- with is_prefill=true in any given Batch. Lifts
--- PrefillSerialisationGate.AtMostOneSlotContributesPrefillPerTick
--- to a system-wide property.
-invariant AtMostOnePrefillSlotPerBatch {
+-- The decode-priority side of the admission policy, lifted to a
+-- system-wide property: in any Batch that contains prefill
+-- tokens, every PROCESSING slot whose decode-token was ready at
+-- the start of the Tick contributes a decode BatchToken to the
+-- same Batch (subject to budget being able to admit them all).
+invariant DecodeAdmittedWhenPrefillAdmitted {
     for batch in Batches:
-        BatchTokensOf(batch)
-            .where(t => t.is_prefill)
-            .map(t => t.slot)
-            .distinct
-            .count <= 1
+        let tokens = BatchTokensOf(batch)
+        let tick = batch.tick
+        let processing_slots = SlotsAtTickStart(tick)
+            .where(s => s.state = processing)
+        let prefill_count = tokens.where(t => t.is_prefill).count
+        prefill_count > 0
+            implies processing_slots.all(p =>
+                tokens.any(t => t.is_decode and t.slot = p))
 }
 
 -- ============================================================
 -- Open Questions
 -- ============================================================
 
--- OQ-1: At what arrival rate does the DecodeHoldGate's TG-stall
---   become unacceptable? The current workload is sporadic single-
---   user requests; the stall is bounded by one prefill duration
---   per arrival. The PHASE_NSTREAM_KV_4D.md plan targets the
---   n_stream port (per-stream dispatch) as the recovery
---   path. Spec records the open question; resolution comes when
---   N3 of that plan lands and the gate can be removed.
+-- OQ-1: Production-policy K. The contracts hold for any K in
+--   [1, n_ubatch]; the production value (set via
+--   --prefill-chunk-budget) is policy, not spec. T4.7's perf
+--   gate measures sensitivity to K; the chosen production value
+--   will be recorded in MEMORY.md, not here. Spec records the
+--   open question for future cross-reference.
 --
--- OQ-2: Should the BatchCompositionInvariant be relaxed to allow
---   prefill chunks from MULTIPLE slots in one Batch under the
---   per-stream dispatch model? Once per-stream graph dispatch is
---   in place, mixed batches become impossible at the dispatch
---   level — but the invariant phrased per-Batch becomes vacuous
---   if every Batch is single-slot. Either restate as a per-
---   stream invariant or retire when n_stream lands. Plan file
---   (S1.b) covers the n_stream side.
+-- OQ-2: Heterogeneous slot priorities. The round-robin in
+--   ChunkedPrefillAdmission.RoundRobinFairness is FIFO over
+--   slot.id; it does not weight by arrival time, prompt length,
+--   or SLA class. If a future scheduler introduces priority,
+--   either restate the fairness invariant or factor it into a
+--   dedicated priority spec. Plan file references this in the
+--   T4 Out-of-scope section.
 --
--- OQ-3: Does the SLOT_COMMAND_RELEASE intermediate state need
---   its own lifecycle clause? Today it appears in slot_command
---   (server-context.h:24) but is transient (a few lines before
---   the release path clears it). Spec models it as a possible
---   value but does not constrain its lifetime. If a future
---   refactor uses it for cross-tick book-keeping, revisit.
+-- OQ-3: DFlash composition under chunked admission. T4.6's
+--   GP4.l hard-binds DFlash composition (multi-slot,
+--   batch-vs-serial byte-identical, closure tests, NP-invariance).
+--   If a DFlash-specific carve-out is needed (e.g., the verify
+--   ubatch must stay pure-decode because the DFlash kernel
+--   assumes no mid-prefill rows), surface as a new contract here
+--   and constrain the admission loop accordingly. Empirically
+--   open until T4.6 binds.
+--
+-- OQ-4: MTP fused × T4. The MTP-fused decode path runs N decode
+--   tokens per slot per Tick (the draft-then-verify cycle). The
+--   admission loop must treat MTP fused slots as contributing
+--   multiple decode BatchTokens per Tick, not one. Verify the
+--   per-PROCESSING-slot decode count in DecodePriorityAdmission
+--   is interpreted as "all of this slot's decode tokens for this
+--   Tick" rather than "one per slot" once T4.4 wiring lands.
+--   Resolves at T4.6 via the existing MTP-fused composition
+--   tests.
 
 -- ============================================================
 -- Implementation notes
 -- ============================================================
 
--- Code-side anchors (paths from yarn-agentic root):
+-- Code-side anchors (paths from yarn-agentic root, current as
+-- of T3.8 close 2026-05-22; T4 will move some of these):
 --   ik_llama.cpp/examples/server/server-context.h:14-17
 --     — enum slot_state.
 --   ik_llama.cpp/examples/server/server-context.h:21-25
 --     — enum slot_command.
---   ik_llama.cpp/examples/server/server-context.h:37-100
---     — struct server_slot, including released / state / command
---       / n_prompt_tokens_processed.
+--   ik_llama.cpp/examples/server/server-context.h:37-232
+--     — struct server_slot, including n_prompt_tokens,
+--       n_prompt_tokens_processed, n_past_prompt, n_decoded.
 --   ik_llama.cpp/examples/server/server-context.cpp:1714
 --     — LOAD_PROMPT assignment from incoming task.
---   ik_llama.cpp/examples/server/server-context.cpp:3194-3209
---     — add_sampled_tokens entry + DecodeHoldGate body.
---   ik_llama.cpp/examples/server/server-context.cpp:3626-3681
---     — batch_pending_prompt entry + PrefillSerialisationGate
---       (active_pp_slot_id selection).
+--   ik_llama.cpp/examples/server/server-context.cpp:3196-3206
+--     — DecodeHoldGate body, removed in PHASE_NSTREAM_KV_4D N3;
+--       Tier 4 confirms it stays gone.
+--   ik_llama.cpp/examples/server/server-context.cpp:3623-3664
+--     — batch_pending_prompt entry + the
+--       active_pp_slot_id PrefillSerialisationGate; removed in
+--       T4.4 and replaced by the admission scaffold.
+--   ik_llama.cpp/examples/server/server-context.cpp:3949
+--     — n_past_prompt advance per admitted chunk (load-bearing
+--       for ChunkedPrefillAdmission carry).
+--   ik_llama.cpp/examples/server/server-context.cpp:5078-5173
+--     — update_slots tick sequence.
 --
 -- Black-box helpers used inline in the invariants above (not in
 -- `deferred` per project convention — they have no separate
 -- .allium spec):
 --   BatchTokensOf, SlotsAtTickStart, Batches, BatchTokens.
+--   batch.tick.config_prefill_chunk_budget is the per-Tick
+--   snapshot of the server's K config (unchanged within a Tick).
 --
--- Test infrastructure to drive from this spec via allium:propagate
--- (planned as S4 in /home/llm/.claude/plans/cached-crunching-tiger.md):
---   - Property test that drives concurrent multi-slot prefill
---     against the server and asserts no Batch contains both
---     prefill and decode tokens. Should reproduce Bug C
---     deterministically when the DecodeHoldGate is disabled, and
---     verify the gate restores PASS.
---   - State-machine test that walks the SlotLifecycle transitions
---     and asserts the BatchCompositionInvariant after each
---     simulated arrival/Tick.
+-- Test infrastructure to drive from this spec:
+--   - tests/spec/test-chunked-prefill-admission.cpp (T4.1):
+--     synthetic 8-slot mixed-state Batch; assert all four
+--     invariants hold; per-slot output byte-identical to a
+--     serial-admission baseline.
+--   - scripts/validate-batch-composition-trace.py (T4.0.c):
+--     NDJSON trace validator; replaces the pre-Tier-4
+--     MixedBatchProhibition / AtMostOnePrefillSlotPerBatch
+--     checks with TokenBudgetRespected /
+--     DecodePriorityAdmission / PrefillCarryProgresses.
+--   - specs/multislot/BatchComposition.tla (T4.0.b): TLA+ model
+--     with DecodeHoldGateOn = FALSE (Tier 4 mode).
 
 -- ============================================================
 -- Related specs
 -- ============================================================
 
+-- specs/dispatch/unified_stream_dispatch.allium
+--   The Tier 3 closure. Owns the structural Bug C absence
+--   property (BugCAbsenceUnderUnifiedDispatch,
+--   PreservesBugCAbsence). THIS spec delegates Bug C closure
+--   to that one; the admission contracts here only govern
+--   WHICH tokens are in the Batch, not the mul_mat shape they
+--   produce (which is uniform per Tick regardless).
+--
 -- mtp_fused_draft.allium
 --   Covers ONE draft round's KV writes and DraftToken
---   production. Does NOT cover the scheduler gate that decides
---   which slots contribute to the round's batch. THIS spec
---   governs that gate. Composition: a Slot in state=processing
---   with speculative mode active contributes via the
---   FusedDraftStep contract of mtp_fused_draft.allium, but only
---   when DecodeHoldGate admits it.
+--   production. The
+--   FusedDraftRoundsRunOnPureDecodeBatches local invariant in
+--   that spec asserts the draft KERNEL still runs on a
+--   decode-shaped sub-batch (it cannot consume prefill rows).
+--   Composition: a PROCESSING slot in speculative mode
+--   contributes is_decode BatchTokens via the
+--   DecodePriorityAdmission contract here; the kernel-side
+--   draft round consumes them via the FusedDraftStep
+--   contract there.
 --
 -- mtp_ubatch_hook.allium
---   Covers per-ubatch MTP-KV updates during the verify forward.
---   Operates downstream of llama_decode; the batch shape THIS
---   spec governs determines the ubatch shape that one sees.
+--   Covers per-ubatch MTP-KV updates during the verify
+--   forward. Operates downstream of llama_decode; the batch
+--   shape THIS spec governs determines the ubatch shape that
+--   one sees.
 --
 -- qnext_multislot_dispatch.allium
 --   Covers the engine's per-block dispatch when one Batch
---   contains multiple seq_ids (CONTIGUOUS_BLOCKS pattern). With
---   the BatchCompositionInvariant in this spec, a Batch can
---   still be multi-seq (multiple slots' decodes paired in one
---   call). qnext_multislot_dispatch.allium then governs how the
---   engine splits the batch by seq_id for the per-block linear-
---   attn dispatch.
+--   contains multiple seq_ids (CONTIGUOUS_BLOCKS pattern).
+--   With T4's chunked-prefill admission, a Batch can be a
+--   mix of seq_ids spanning both PROCESSING and LOAD_PROMPT
+--   slots. qnext_multislot_dispatch.allium then governs how
+--   the engine splits the batch by seq_id for the per-block
+--   linear-attn dispatch.
 --
--- specs/kv-cache/n_stream_layer.allium (forthcoming, S1.b)
---   The 4D per-stream KV layout that will eventually make the
---   DecodeHoldGate redundant. When that spec lands and the port
---   is implemented, this spec's DecodeHoldGate contract is
---   marked retired and the gate code in add_sampled_tokens is
---   removed.
+-- specs/kv-cache/n_stream_layer.allium
+--   The 4D per-stream KV layout that made the
+--   pre-Tier-4 DecodeHoldGate redundant by closing Bug C
+--   structurally. T4 builds on that closure.
