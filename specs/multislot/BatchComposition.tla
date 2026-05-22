@@ -9,43 +9,36 @@
 (* slot with pending_decode), then admitting prefill chunks from             *)
 (* LOAD_PROMPT slots round-robin, subject to a per-tick token budget K.      *)
 (*                                                                            *)
-(* DecodeHoldGateOn constant controls regression-mode model checking:         *)
-(*                                                                            *)
-(*   - DecodeHoldGateOn = FALSE: Tier 4 admission (the primary mode).        *)
-(*     Decodes and prefills can be admitted in the SAME tick, subject to    *)
-(*     budget K. Decode-priority: every DecodeEligible slot is admitted     *)
-(*     before any prefill chunk takes budget.                                *)
-(*                                                                            *)
-(*   - DecodeHoldGateOn = TRUE: pre-T4 regression. The legacy DecodeHoldGate*)
-(*     is restored: if any slot is LOAD_PROMPT, no decode tokens are        *)
-(*     admitted this tick. The pre-T4 MixedBatchProhibition holds. Used    *)
-(*     to verify the new safety properties degrade correctly under the     *)
-(*     legacy gate.                                                          *)
-(*                                                                            *)
 (* The load-bearing safety properties:                                       *)
 (*                                                                            *)
 (*   - TokenBudgetRespected: total tokens admitted per Tick <= K.            *)
 (*                                                                            *)
-(*   - DecodeNeverHeldByPrefill: under Tier 4, no DecodeEligible slot is    *)
-(*     dropped from a Tick just because some other slot is LOAD_PROMPT.      *)
+(*   - DecodePriorityAdmission: if any prefill chunk was admitted, every    *)
+(*     decode-eligible PROCESSING slot is also in batch_decodes.            *)
 (*                                                                            *)
-(*   - PerTokenFlagExclusivity: at the slot level, a slot is in at most one*)
-(*     of (batch_decodes, prefill admitted > 0) — structurally true since   *)
-(*     SlotState (IDLE+LOAD_PROMPT) and PROCESSING are disjoint.            *)
+(*   - PerTokenFlagExclusivity: a slot contributes prefill OR decode in a   *)
+(*     given tick, never both. Structurally true since (IDLE+LOAD_PROMPT)   *)
+(*     and PROCESSING are disjoint.                                          *)
+(*                                                                            *)
+(* The Legacy* invariants (LegacyMixedBatchProhibition,                      *)
+(* LegacyAtMostOnePrefillSlotPerBatch, LegacyDecodeHoldImplied…) restate    *)
+(* the pre-T4 batch composition rules unconditionally. Under T4 admission   *)
+(* these DO NOT hold; BatchCompositionMC_no_gate.cfg asserts them as        *)
+(* invariants expecting violations, proving the spec binds (the T4 model   *)
+(* explicitly produces what legacy admission forbade).                       *)
 (*                                                                            *)
 (* Liveness:                                                                  *)
 (*                                                                            *)
 (*   - EventualProgress: every LOAD_PROMPT slot eventually reaches          *)
-(*     PROCESSING. PrefillCarryProgressesMonotonically guarantees           *)
-(*     n_prompt_done is non-decreasing, so under WF(Tick) any started      *)
-(*     prefill drains.                                                       *)
+(*     PROCESSING. PrefillCarryProgresses guarantees n_prompt_done is      *)
+(*     non-decreasing, so under WF(Tick) any started prefill drains.        *)
 (*                                                                            *)
 (* CODE REFS (paths from /home/llm/yarn-agentic, current as of T3.8 close): *)
 (*   ik_llama.cpp/examples/server/server-context.cpp:3196-3206              *)
-(*     DecodeHoldGate (already removed pre-T4; T4 confirms it stays gone)   *)
+(*     legacy DecodeHoldGate (already removed pre-T4; T4 keeps it gone)    *)
 (*   ik_llama.cpp/examples/server/server-context.cpp:3623-3664              *)
-(*     batch_pending_prompt (T4.4 will replace the active_pp_slot_id        *)
-(*     PrefillSerialisationGate with the admission scaffold)                *)
+(*     batch_pending_prompt (T4 coherent flip replaces the                  *)
+(*     active_pp_slot_id PrefillSerialisationGate with the admission loop) *)
 (*   ik_llama.cpp/examples/server/server-context.cpp:3949                   *)
 (*     n_past_prompt advance (load-bearing for ChunkedPrefillAdmission)    *)
 (*****************************************************************************)
@@ -55,8 +48,7 @@ CONSTANTS
     Slots,            \* set of slot ids (e.g. {s0, s1, s2})
     MaxStep,          \* bound on global tick counter for finite MC
     MaxPromptLen,     \* upper bound on a prompt's token count
-    MaxBudget,        \* per-tick token budget K (prefill_chunk_budget)
-    DecodeHoldGateOn  \* TRUE = pre-T4 regression mode; FALSE = T4 admission
+    MaxBudget         \* per-tick token budget K (prefill_chunk_budget)
 
 VARIABLES
     slot_state,            \* [Slots -> {"IDLE", "PROCESSING"}]
@@ -99,12 +91,11 @@ IsLoadingPrompt(s) ==
 LoadingPromptSlots == { s \in Slots : IsLoadingPrompt(s) }
 
 \* A slot is decode-eligible iff PROCESSING with a pending sample. Under
-\* DecodeHoldGateOn = TRUE the gate further suppresses eligibility while
-\* any prefill is pending.
+\* T4 admission, the LOAD_PROMPT presence does NOT suppress eligibility —
+\* that's the whole point of dropping the pre-T4 DecodeHoldGate.
 DecodeEligible(s) ==
     /\ slot_state[s] = "PROCESSING"
     /\ pending_decode[s]
-    /\ (~DecodeHoldGateOn \/ LoadingPromptSlots = {})
 
 DecodeEligibleSlots == { s \in Slots : DecodeEligible(s) }
 
@@ -154,22 +145,16 @@ ArrivePrompt(s, n) ==
 ----------------------------------------------------------------------------
 (* Action: Tick — assemble and dispatch one llama_decode batch.              *)
 (*                                                                           *)
-(* Under Tier 4 (DecodeHoldGateOn = FALSE):                                  *)
+(* Tier 4 admission semantics:                                               *)
 (*   - batch_decodes := DecodeEligibleSlots (every eligible slot admitted   *)
 (*     before prefill, provided the count <= MaxBudget; if not, the model  *)
 (*     picks any admission satisfying the budget cap and the priority      *)
-(*     rule — abstracts away the round-robin policy as a non-deterministic *)
+(*     rule — abstracts the round-robin policy as a non-deterministic       *)
 (*     choice constrained by the invariants).                                *)
-(*   - batch_prefill_count[s] in [0, RemainingPrefill(s)] for each LOAD_PROMPT*)
-(*     slot, with the sum + |batch_decodes| <= MaxBudget.                   *)
+(*   - batch_prefill_count[s] in [0, RemainingPrefill(s)] for each          *)
+(*     LOAD_PROMPT slot, with sum + |batch_decodes| <= MaxBudget.            *)
 (*   - n_prompt_done advances by batch_prefill_count[s].                    *)
 (*   - decode slots have pending_decode cleared.                             *)
-(*                                                                           *)
-(* Under DecodeHoldGateOn = TRUE (regression):                              *)
-(*   - if any slot is LOAD_PROMPT, batch_decodes := {} (the legacy hold).  *)
-(*   - prefill admission is restricted to AT MOST ONE slot (the legacy    *)
-(*     PrefillSerialisationGate); pick the lowest-id LOAD_PROMPT slot      *)
-(*     (continuation-first is captured by n_prompt_done > 0 tie-break).    *)
 (*****************************************************************************)
 
 \* T4-mode admission: pick any (bp, bd) satisfying the budget + priority + bounds.
@@ -188,26 +173,10 @@ T4AdmissionOK(bp, bd) ==
     /\ \/ TotalAdmittedTokens(bp, bd) > 0
        \/ (DecodeEligibleSlots = {} /\ LoadingPromptSlots = {})
 
-\* Legacy-mode admission (DecodeHoldGateOn = TRUE): pre-T4 semantics.
-LegacyAdmissionOK(bp, bd) ==
-    /\ bp \in [Slots -> 0..MaxBudget]
-    /\ bd \subseteq Slots
-    /\ \A s \in Slots: bp[s] <= RemainingPrefill(s)
-    /\ \A s \in Slots: bp[s] > 0 => IsLoadingPrompt(s)
-    \* Legacy PrefillSerialisationGate: at most one slot has bp[s] > 0.
-    /\ Cardinality({ s \in Slots : bp[s] > 0 }) <= 1
-    \* Legacy DecodeHoldGate: when any slot is LOAD_PROMPT, no decode admitted.
-    /\ (LoadingPromptSlots # {} => bd = {})
-    /\ (LoadingPromptSlots = {} => bd = DecodeEligibleSlots)
-    /\ \/ TotalAdmittedTokens(bp, bd) > 0
-       \/ (DecodeEligibleSlots = {} /\ LoadingPromptSlots = {})
-
 Tick ==
     /\ step_count < MaxStep
     /\ \E bp \in [Slots -> 0..MaxBudget], bd \in SUBSET Slots:
-         /\ (IF DecodeHoldGateOn
-             THEN LegacyAdmissionOK(bp, bd)
-             ELSE T4AdmissionOK(bp, bd))
+         /\ T4AdmissionOK(bp, bd)
          /\ batch_prefill_count' = bp
          /\ batch_decodes' = bd
          /\ n_prompt_done' = [s \in Slots |->
@@ -305,29 +274,12 @@ BatchCompositionInvariant ==
     /\ TokenBudgetRespected
     /\ PerTokenFlagExclusivity
 
-\* DecodePriorityAdmission — when under Tier 4 (DecodeHoldGateOn = FALSE),
-\* the admission loop admits all decode-eligible slots before any prefill
-\* chunks take budget. Encoded as: if any prefill is admitted, every
-\* decode-eligible slot is also in batch_decodes.
+\* DecodePriorityAdmission — the admission loop admits all decode-
+\* eligible slots before any prefill chunks take budget. If any prefill
+\* was admitted, every decode-eligible slot is also in batch_decodes.
 DecodePriorityAdmission ==
-    ~DecodeHoldGateOn =>
-        ((\E s \in Slots: batch_prefill_count[s] > 0)
-         => (DecodeEligibleSlots \subseteq batch_decodes))
-
-\* DecodeNeverHeldByPrefill captures the action-level property that
-\* under Tier 4 a LOAD_PROMPT slot does NOT cause PROCESSING slots'
-\* decode admission to be suppressed. The pre-T4 DecodeHoldGate is
-\* encoded in T4AdmissionOK vs LegacyAdmissionOK in Tick; this state-
-\* level invariant is the same claim re-expressed: when prefill was
-\* admitted alongside decode-eligible slots, the decodes were also
-\* admitted (i.e., decode was not held back). Equivalent to
-\* DecodePriorityAdmission above; kept here as a named property for
-\* the trace validator's mirror check.
-DecodeNeverHeldByPrefillAtAdmission ==
-    ~DecodeHoldGateOn =>
-        (((\E s \in Slots: batch_prefill_count[s] > 0)
-          /\ DecodeEligibleSlots # {})
-         => DecodeEligibleSlots \subseteq batch_decodes)
+    (\E s \in Slots: batch_prefill_count[s] > 0)
+        => (DecodeEligibleSlots \subseteq batch_decodes)
 
 \* ChunkedPrefillBoundedByRemaining — admitted prefill count per slot
 \* never exceeds the remaining prompt (post-action; checked at the
@@ -361,15 +313,14 @@ SlotStateConsistency ==
             (slot_command[s] \in {"NONE", "LOAD_PROMPT"}
              /\ (~pending_decode[s]))
 
-\* Legacy regression invariants — unconditional restatements of the
-\* pre-T4 PrefillSerialisationGate + DecodeHoldImpliedByPendingPrefill
-\* properties. Under DecodeHoldGateOn = TRUE the LegacyAdmissionOK
-\* semantics enforce these structurally; under DecodeHoldGateOn = FALSE
-\* (T4 mode), these properties DO NOT hold — that's what makes T4
-\* different from legacy. The no_gate.cfg config asserts them as
-\* INVARIANTS under T4 mode expecting violations: the counterexample
-\* trace demonstrates the T4 admission explicitly produces what legacy
-\* admission used to forbid.
+\* Legacy invariants — unconditional restatements of the pre-T4
+\* PrefillSerialisationGate + DecodeHoldImpliedByPendingPrefill
+\* properties. Under T4 admission these DO NOT hold — that's what makes
+\* T4 different from legacy. The no_gate.cfg config asserts them as
+\* INVARIANTS expecting violations: the counterexample trace demonstrates
+\* the T4 admission explicitly produces what legacy admission used to
+\* forbid (mixed batches, multi-slot prefill in one tick, decode admitted
+\* alongside pending prefill).
 LegacyMixedBatchProhibition ==
     ~((\E s \in Slots: batch_prefill_count[s] > 0)
       /\ batch_decodes # {})
