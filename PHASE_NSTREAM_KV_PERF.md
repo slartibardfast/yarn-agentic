@@ -2195,7 +2195,13 @@ Token estimate: 40–80 k (write path refactor + index plumbing + dual-mode veri
 
 #### T3.6.I — Implementation (in order, each commit GREEN-gated)
 
-- **T3.6.I.b** — Bailout drop (`src/llama.cpp:615`) + `update_cache_copies` SET_ROWS pass-through (4 branches in `src/llama.cpp:629–749`). Test 3 turns GREEN. Verify production NPC GREEN.
+- **[~] T3.6.I.b — SET_ROWS pass-through + bailout drop** *(partial, 2026-05-22)*
+  - **[x] T3.6.I.b.1 — SET_ROWS pass-through in `update_cache_copies`** (4 branches in `src/llama.cpp:629–749`) landed at submodule commit `4210e5b8`. All 4 cpy-branches now treat `GGML_OP_SET_ROWS` as pass-through. Defensive (dead code under current bailout; ready for the I.b.2 drop). Verify-production-determinism PASS post-change at NP={1,2,4,8}.
+  - **[ ] T3.6.I.b.2 — Bailout drop with `prev->kqv_stream_id` gating.** The audit's F9 finding was incomplete: `build_std_attention`'s single-seq branch (`src/llama-build-context.cpp:1821-1826`) bakes `kqv_stream_id * nb[3]` into the K view's offset. Single-seq decodes on a multi-stream context are NOT reuse-safe across streams. Verify-production-determinism FAILED at slots != 0 under NP={4,8} when the bailout was dropped naively; reverted. The proper drop requires:
+    - Track `prev->kqv_stream_id` (or equivalent) on the cached graph.
+    - Gate reuse on `prev->kqv_stream_id == current kqv_stream_id` for single-seq decodes.
+    - For multi-seq decodes (4D K view at offset 0, ne[3]=n_seq_in_batch), reuse is offset-safe; the existing n_tokens > 1 MTP gate fires first anyway, so the n_stream bailout drop yields no real uplift there until the MTP gate is also revisited.
+  - Test 3 (`test-graph-reuse-set-rows`) stays RED on this submodule (binding on the I.b.2 work).
 - **T3.6.I.c1** — `build_k_shift` per-stream loop (`src/llama-build-context.cpp:170–242`). Test 1 turns GREEN. Verify production NPC GREEN.
 - **T3.6.I.c2** — `llama_kv_cache_defrag_internal` per-stream outer loop + `build_defrag` 3D-view per-stream inner. Test 2 turns GREEN. Verify production NPC GREEN.
 
