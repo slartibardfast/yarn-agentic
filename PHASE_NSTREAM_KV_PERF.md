@@ -2133,15 +2133,92 @@ Token estimate: 40–80 k (write path refactor + index plumbing + dual-mode veri
 
 **Production gate (PASS):** `verify-production-determinism.sh` ACCEPTANCE PASS at `DEVICE=CUDA0,CUDA1, NP_LIST="1 2 4 8", CTX_CHECKPOINTS=3` — cross-NP determinism PASS AND batch-shape invariance PASS.
 
-### T3.6 — Drop bailout + lift n_stream==1 guards
+### T3.6 — Bailout drop + multi-stream K-shift / defrag — *audit-grade, scoped 2026-05-22*
 
-**Touches:**
-- `src/llama.cpp:610-630` — delete the `if (transformer_kv.n_stream > 1) { … return false; }` bailout. With T3.5 in place, can_reuse_graph fires at multi-seq batches too. (Per the A/B, reuse delivers ~0%; this is a correctness step, not a perf step. Reuse just doesn't fight us anymore.)
-- `src/llama.cpp` `build_k_shift` / `build_defrag` / `v_trans` — lift the `GGML_ASSERT(n_stream == 1)` guards per PHASE_NSTREAM_KV's open-follow-up list. Required for multi-slot ctx_shift + cache compaction.
+**Path:** T3.6-full per the audit grade. Audit (T3.6.A) complete; revealed three HIGH-severity risks that necessitate proper specs + synthetic tests before any code change.
 
-**Production gate:**
-- `verify-production-determinism.sh` GREEN — full matrix.
-- `scripts/r5-probe-c4.sh ITERS=20` = 0/20 single + multi-GPU. **Hard binding** — Bug C absence under unified dispatch with the gate dropped.
+#### T3.6.A — Audit findings (read-only, 2026-05-22)
+
+- **F1** — `inp_K_shift` populator (`src/llama.cpp:4356–4366`) is per-cell flat: `data[i] = cells[i].delta`. Cell `i` is in stream `s = i / kvps` at local pos `p = i % kvps`. Flat layout already matches the per-(stream, pos) view.
+- **F2 (HIGH)** — `ggml_rope_ext` requires `b` 1D with size `a->ne[2]`. A single 4D rope on K view `[head_dim, n_head_kv, kvps, n_stream]` would broadcast the SAME deltas across all streams. WRONG when seqs have different per-cell deltas. **Resolution:** Option (i) — per-stream loop in `build_k_shift`. n_stream rope calls per layer; k_shift is rare so overhead is bounded.
+- **F3 (HIGH)** — `llama_kv_cache_defrag_internal` hole-fill (`src/llama.cpp:6661+`) walks `cells[]` flat and pulls cells "from the end" without stream awareness. Under n_stream>1 this would move a cell from stream `s` into another stream's slice. **Per-stream outer loop is mandatory, not optional.**
+- **F4 (HIGH)** — `build_defrag`'s 2D `[n_embd_k_gqa, nm]` view (`src/llama-build-context.cpp:313–321`) assumes flat `[n_embd_k_gqa, n_kv]` layout. Under 4D `[head_dim, kvps, n_head_kv, n_stream]`, n_head_kv is NOT contiguous with head_dim. **3D-view-per-layer rewrite required** (head_dim contiguous; per-head stride via parent `nb[2]`; per-position stride via parent `nb[1]`; per-stream offset via `s * nb[3]`).
+- **F5** — `cache_copies` sizing (`src/llama.cpp:755–762`) is `2*splits*n_layer` or `2*n_layer`. MTP-safe: `update_cache_copies` adjusts iteration count via `model.mtp ? n_layer : n_layer - nextn_predict_layers`. Set_rows pass-through landing in `cache_copies[2*il+0/1]` does not interfere with MTP.
+- **F6** — Graph reuse with set_rows is safe: `inp_kv_idxs` is `ggml_set_input`-marked; data is uploaded fresh every `llama_set_inputs`. Topology hash includes input tensor shapes; n_tokens mismatch → fresh build (no staleness).
+- **F7 (VRAM)** — `GGML_CUDA_GRAPH_MAX = 128` FIFO. Worst-case +16 multi-seq entries × ~5MB ≈ +80MB. Irrelevant against 24GB.
+- **F8 (MEDIUM)** — Prior "~0% from reuse" A/B was single-seq dispatch. Multi-seq cgraph has different op count; CPU host build cost may differ. **Microprobe required** (T3.6.M) before declaring perf-neutral.
+- **F9** — Dropping the n_stream>1 bailout in `can_reuse_graph` doesn't create false positives. Remaining miss reasons (embd, graph_reuse off, n_kv bucket, n_outputs, mtp_op_type, update_cache_copies) still gate correctly.
+- **F10 (HIGH)** — Neither `r5-probe-c4` (`--no-context-shift`) nor `verify-production-determinism.sh` exercises k_shift or defrag. **Synthetic tests (T3.6.T) are the only binding evidence for the c1/c2 paths.**
+
+#### T3.6.S — Allium + TLA+ specifications
+
+1. **`specs/kv-cache/k_shift_per_stream.allium` + `specs/kv-cache/KShiftPerStream.tla`**
+   - `KShiftAppliesPerCell` — `inp_K_shift[s*kvps + p]` is the rotation delta for stream `s`, local pos `p`.
+   - `KShiftIsolation` — applying a shift to stream `s` cells does not modify stream `s' != s`'s K bytes.
+   - `KShiftRoPEEquivalent` — post-shift K equals pre-shift K with RoPE applied per the new positions.
+   - TLC `MC.cfg` with `n_stream ∈ {2, 4}`, `kvps ∈ {4, 8}`.
+
+2. **`specs/kv-cache/defrag_per_stream.allium` + `specs/kv-cache/DefragPerStream.tla`**
+   - `DefragNoCrossStream` — no cell moves cross stream boundaries.
+   - `DefragCompactsPerStream` — post-defrag, each stream has cells `[0, used_per_stream)` non-empty contiguously.
+   - `DefragPreservesKVBytes` — K and V byte data follow cell metadata moves byte-for-byte.
+   - TLC `MC.cfg` with `n_stream ∈ {2, 4}`, `kvps ∈ {4, 8}`.
+
+3. **`specs/dispatch/graph_reuse_set_rows.allium` + `specs/dispatch/GraphReuseSetRows.tla`**
+   - `SetRowsInputRefresh` — `inp_kv_idxs` data is refreshed by `llama_set_inputs` between any two graph executions.
+   - `ReuseShapeStability` — cached graphs keyed by `(n_tokens, n_seq_in_batch, n_tok_per_seq, n_kv_bucket)`; shape mismatch → cache miss.
+   - `BugCAbsenceUnderReuse` — reusing a multi-seq graph with refreshed `inp_kv_idxs` produces byte-identical output to a fresh build at the same shape.
+   - TLC `MC.cfg` with bounded reuse cycles.
+
+**Gate:** `allium check` clean on all 3 specs; `tlc -parse` clean on all 3 modules; TLC runs on each `MC.cfg` complete without invariant violations.
+
+#### T3.6.T — Synthetic tests (RED first, GREEN after impl)
+
+1. **`tests/spec/test-kv-shift-per-stream.cpp`**
+   - n_stream=4 cache; populate streams with known F32 patterns recoverable on dequant.
+   - `llama_kv_cache_seq_add(seq_id=2, p0=10, p1=30, delta=+5)`; `llama_kv_cache_update`.
+   - Assertions: streams 0/1/3 byte-identical pre/post; stream 2 cells [10, 30) RoPE-rotated to new positions.
+   - **RED on T3.5 HEAD** (assert n_stream==1 fires).
+
+2. **`tests/spec/test-kv-defrag-per-stream.cpp`**
+   - n_stream=2 cache; populate both streams.
+   - `llama_kv_cache_seq_rm(seq_id=0, p0=5, p1=10)` to create stream-0 hole.
+   - `llama_kv_cache_defrag` + `llama_kv_cache_update`.
+   - Assertions: stream 0 compacted, stream 1 byte-identical pre/post.
+   - **RED on T3.5 HEAD**.
+
+3. **`tests/spec/test-graph-reuse-set-rows.cpp`**
+   - n_stream=4 cache; run identical multi-seq decode twice.
+   - Inspect `g_can_reuse_last_miss_reason`: first call MISS (no prev), second call HIT (reason=0 post-(b)).
+   - Outputs byte-identical.
+   - **RED on T3.5 HEAD** (reason=6 from n_stream>1 bailout); GREEN after T3.6.I.b.
+
+#### T3.6.I — Implementation (in order, each commit GREEN-gated)
+
+- **T3.6.I.b** — Bailout drop (`src/llama.cpp:615`) + `update_cache_copies` SET_ROWS pass-through (4 branches in `src/llama.cpp:629–749`). Test 3 turns GREEN. Verify production NPC GREEN.
+- **T3.6.I.c1** — `build_k_shift` per-stream loop (`src/llama-build-context.cpp:170–242`). Test 1 turns GREEN. Verify production NPC GREEN.
+- **T3.6.I.c2** — `llama_kv_cache_defrag_internal` per-stream outer loop + `build_defrag` 3D-view per-stream inner. Test 2 turns GREEN. Verify production NPC GREEN.
+
+`v_trans` non-FA asserts (`src/llama-build-context.cpp:790`, `:3070`) **NOT lifted** — that path is genuinely incompatible with the 4D layout and gated on `--fa off` which production does not use. Asserts correctly document the constraint.
+
+#### T3.6.M — VRAM + reuse perf measurements
+
+- **VRAM probe (permanent):** extend the existing `~ggml_backend_cuda_context: have %d graphs` to include total bytes. Cheap, useful long-term.
+- **Reuse perf probe (gate-and-bake):** `LLAMA_PROBE_REUSE_TIMING=1` env-gated block in `llama_decode_internal` capturing per-decode `t_build_graph` (when miss) vs `t_dispatch`. Aggregated per 64 decodes. Captured under multi-seq NP=8 with bailout-dropped vs bailout-in-place. **Decision to keep or delete the probe TBD based on the data per `feedback_bake_measurement_env_gates`.**
+
+#### T3.6 closure gates
+
+- `bash scripts/verify-production-determinism.sh` ACCEPTANCE PASS post-(c.2).
+- `r5-probe-c4 ITERS=20` = 0/20 (already verified post-T3.5 — **PASS captured 2026-05-22**).
+- `bin/test-kv-shift-per-stream` GREEN.
+- `bin/test-kv-defrag-per-stream` GREEN.
+- `bin/test-graph-reuse-set-rows` GREEN.
+- All 3 Allium specs `allium check` clean.
+- All 3 TLA+ modules `tlc -config MC.cfg` clean.
+- VRAM probe output captured + documented.
+- Reuse perf delta measured + decision logged.
+
+**Token budget:** ~200–250k across audit + specs + tests + impl + measurements + closure.
 
 ### T3.7 — DFlash composition — *landed 2026-05-22*
 
