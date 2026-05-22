@@ -65,11 +65,10 @@ NDJSON record schema (one JSON object per line):
      "processing_set_at_start_of_tick": [S, ...],
      "budget_k": K}
 
-    Backwards-compat: if "prefill_counts" is absent but "prefill_slots"
-    is present, treat each listed slot as having count=1. Pre-T4 trace
-    producers emit the legacy form; T4 producers (post-T4.2) emit
-    prefill_counts. The validator accepts both for the transition
-    window.
+    All TickDispatch fields are REQUIRED under T4. Missing
+    prefill_counts, processing_set_at_start_of_tick, or budget_k
+    is a schema error (exit 2) — this catches trace-producer
+    regressions loudly rather than silently relaxing the validator.
     {"action": "CompletePrefill",   "tick": N, "slot": S}
     {"action": "Release",           "tick": N, "slot": S}
     {"action": "CaptureGraph",      "tick": N,
@@ -184,41 +183,37 @@ def validate(
 
         if action == "TickDispatch":
             n_ticks += 1
-            # Backwards-compat: accept either "prefill_counts" (T4 form)
-            # or "prefill_slots" (legacy form treated as count=1 per slot).
-            prefill_counts_raw = rec.get("prefill_counts")
-            if prefill_counts_raw is None:
-                legacy_prefill_slots = list(rec.get("prefill_slots", []))
-                prefill_counts: dict[int, int] = {
-                    int(s): 1 for s in legacy_prefill_slots
-                }
-            else:
-                prefill_counts = {
-                    int(s): int(c) for s, c in prefill_counts_raw.items()
-                }
-            decode_slots = list(rec.get("decode_slots", []))
-            processing_set = list(
-                rec.get("processing_set_at_start_of_tick", [])
-            )
-            # Budget K from TickDispatch header. Absent in legacy traces;
-            # default to a value that won't trigger the cap (skip the
-            # check in that case via a sentinel).
-            budget_k = rec.get("budget_k")
+            # T4 required fields — hard-fail on absence so trace-producer
+            # regressions surface loudly.
+            for required in ("prefill_counts", "decode_slots",
+                             "processing_set_at_start_of_tick", "budget_k"):
+                if required not in rec:
+                    print(
+                        f"schema error line {lineno}: TickDispatch missing "
+                        f"required field {required!r}: {rec!r}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+            prefill_counts: dict[int, int] = {
+                int(s): int(c) for s, c in rec["prefill_counts"].items()
+            }
+            decode_slots = list(rec["decode_slots"])
+            processing_set = list(rec["processing_set_at_start_of_tick"])
+            budget_k = int(rec["budget_k"])
 
             # TokenBudgetRespected — sum of prefill counts + decode set
             # cardinality bounded by K.
-            if budget_k is not None:
-                total_tokens = sum(prefill_counts.values()) + len(decode_slots)
-                if total_tokens > int(budget_k):
-                    violations.append(Violation(
-                        invariant="TokenBudgetRespected",
-                        tick=tick,
-                        detail=(
-                            f"sum(prefill_counts)={sum(prefill_counts.values())} + "
-                            f"len(decode_slots)={len(decode_slots)} = "
-                            f"{total_tokens} > budget_k={budget_k}"
-                        ),
-                    ))
+            total_tokens = sum(prefill_counts.values()) + len(decode_slots)
+            if total_tokens > budget_k:
+                violations.append(Violation(
+                    invariant="TokenBudgetRespected",
+                    tick=tick,
+                    detail=(
+                        f"sum(prefill_counts)={sum(prefill_counts.values())} + "
+                        f"len(decode_slots)={len(decode_slots)} = "
+                        f"{total_tokens} > budget_k={budget_k}"
+                    ),
+                ))
 
             # PerTokenFlagExclusivity — no slot in both prefill_counts
             # (count > 0) and decode_slots.
