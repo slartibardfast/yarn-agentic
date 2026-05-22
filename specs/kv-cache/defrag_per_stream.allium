@@ -281,6 +281,43 @@ invariant DefragViewIs3DPerStream {
             DefragCpyView(il, s).is_3d_with_head_dim_contiguous()
 }
 
+-- DefragPerDeviceCpyEmission — under graph-split, build_defrag
+-- emits per-device cpy ops on `kl_extra->splits[d]` /
+-- `vl_extra->splits[d]` so each device sees only its own K/V
+-- split. src and dst views both reference the same per-device
+-- split tensor; the cpy op lives on that device naturally with
+-- no cross-device data movement. The legacy single-tensor cpy
+-- path (asserting n_stream == 1) is gated off under
+-- n_stream > 1.
+contract DefragPerDeviceCpyEmission {
+    invoke: (kv_cache: KVCache, ids: List<Integer>) -> List<CellMove>
+
+    @invariant ViewsReferencePerDeviceSplit
+        -- For each emitted cpy(src_view, dst_view) under graph-
+        -- split: src_view->view_src == dst_view->view_src ==
+        -- kl_extra->splits[d] for some device d. Never the
+        -- parent stub tensor (kv_self.k_l[il] with extra set).
+        -- Same for V via vl_extra->splits[d].
+
+    @invariant CpyOpStaysOnSplitDevice
+        -- The cpy op consumes only views of one device's split.
+        -- The scheduler places it on that device's backend
+        -- without any cross-device cpy. No `backend_override`
+        -- is required (unlike build_k_shift's intermediate
+        -- F32 tmp) because defrag is pure tensor-to-tensor
+        -- movement with no intermediate compute tensor.
+
+    @invariant CUDACpySupportsQQSameType
+        -- The CUDA backend supports same-type quantized cpy with
+        -- non-contiguous strides via the generic
+        -- cpy_q_q_same_type kernel (runtime-parameterized by qk +
+        -- block_bytes; covers Q4_0, Q4_0_AR16, Q8_0, Q4_1, Q5_0,
+        -- Q5_1, Q6_0, IQ4_NL). ggml_backend_cuda_supports_op
+        -- advertises this so the scheduler keeps the op on CUDA
+        -- (not falling back to CPU, which can't read CUDA-resident
+        -- KV data).
+}
+
 -- ============================================================
 -- Open Questions
 -- ============================================================
