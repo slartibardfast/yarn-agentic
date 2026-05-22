@@ -2,22 +2,33 @@
 """
 validate-batch-composition-trace.py
 
-S5 — NDJSON trace validator for the Bug C closure scheduler invariants.
+T4 — NDJSON trace validator for the chunked-prefill admission scheduler
+invariants.
 
 Reads an NDJSON file (or stdin) produced by llama-server when run with
 LLAMA_TRACE_NDJSON_DIR=<dir> set, and verifies the invariants from
 /home/llm/yarn-agentic/specs/scheduler/batch_composition.allium and
-/home/llm/yarn-agentic/specs/multislot/BatchComposition.tla:
+/home/llm/yarn-agentic/specs/multislot/BatchComposition.tla (T4 form):
 
-  - BatchCompositionInvariant: every Tick's batch is either pure-prefill
-    or pure-decode, never mixed.
-  - MixedBatchProhibition: stronger token-level form of the above.
-  - AtMostOnePrefillSlotPerBatch: PrefillSerialisationGate's singleton
-    property.
-  - DecodeHoldImpliedByPendingPrefill: if any slot in LOAD_PROMPT when a
-    Tick fires, the Tick's decode set is empty.
-  - PrefillContinuationPriority: when continuation candidates exist, the
-    contributing prefill slot has n_prompt_tokens_processed > 0.
+  - BatchCompositionInvariant: every Tick's batch satisfies the budget
+    cap (sum of prefill chunk counts + len(decode set) <= K) AND
+    per-token flag exclusivity (no slot contributes both prefill and
+    decode in the same Tick).
+  - TokenBudgetRespected: per-tick total tokens <= budget_k from
+    the TickDispatch record header.
+  - DecodePriorityAdmission: if any prefill chunk was admitted in a
+    Tick, every PROCESSING slot listed in processing_set_at_start_of_tick
+    is also in decode_slots.
+  - PrefillCarryProgresses: across consecutive Ticks where a slot id S
+    appears in prefill_counts with count > 0, the slot's
+    cumulative n_prompt_processed is monotonically non-decreasing
+    (carry never regresses).
+  - PerTokenFlagExclusivity: a slot is in EITHER prefill_counts with
+    count > 0 OR decode_slots, never both.
+
+The pre-Tier-4 MixedBatchProhibition / AtMostOnePrefillSlotPerBatch /
+DecodeHoldImpliedByPendingPrefill checks are gone; under T4 those
+properties do NOT hold (mixed batches are explicitly admitted).
 
 P0.B.S5 extension — graph-cache events from
 /home/llm/yarn-agentic/specs/graphs/cuda_graph_reuse.allium and
@@ -49,8 +60,16 @@ NDJSON record schema (one JSON object per line):
     {"action": "ContributeDecode",  "tick": N, "slot": S,
      "loading_prompt_set": [S, ...]}
     {"action": "TickDispatch",      "tick": N,
-     "prefill_slots": [S, ...], "decode_slots": [S, ...],
-     "loading_prompt_set_at_start_of_tick": [S, ...]}
+     "prefill_counts": {S: count, ...}, "decode_slots": [S, ...],
+     "loading_prompt_set_at_start_of_tick": [S, ...],
+     "processing_set_at_start_of_tick": [S, ...],
+     "budget_k": K}
+
+    Backwards-compat: if "prefill_counts" is absent but "prefill_slots"
+    is present, treat each listed slot as having count=1. Pre-T4 trace
+    producers emit the legacy form; T4 producers (post-T4.2) emit
+    prefill_counts. The validator accepts both for the transition
+    window.
     {"action": "CompletePrefill",   "tick": N, "slot": S}
     {"action": "Release",           "tick": N, "slot": S}
     {"action": "CaptureGraph",      "tick": N,
@@ -116,6 +135,12 @@ def validate(
     captured_dtype: dict[int, str] = {}
     cache_order: list[int] = []
 
+    # PrefillCarryProgresses tracking: per-slot last-seen
+    # n_prompt_processed across the trace. Updated from ContributePrefill
+    # records (which carry n_prompt_processed: K_prior + n_tokens admitted
+    # this tick). Used to assert monotonic non-decrease across ticks.
+    slot_last_n_prompt_processed: dict[int, int] = {}
+
     # WarmUpRunIndex partitioning: list[list[dict]] indexed by run_index.
     # records_per_run[i] = records observed during run i (excluding the
     # WarmUpRunIndex markers themselves).
@@ -159,43 +184,101 @@ def validate(
 
         if action == "TickDispatch":
             n_ticks += 1
-            prefill = list(rec.get("prefill_slots", []))
-            decode = list(rec.get("decode_slots", []))
-            loading = list(
-                rec.get("loading_prompt_set_at_start_of_tick", [])
+            # Backwards-compat: accept either "prefill_counts" (T4 form)
+            # or "prefill_slots" (legacy form treated as count=1 per slot).
+            prefill_counts_raw = rec.get("prefill_counts")
+            if prefill_counts_raw is None:
+                legacy_prefill_slots = list(rec.get("prefill_slots", []))
+                prefill_counts: dict[int, int] = {
+                    int(s): 1 for s in legacy_prefill_slots
+                }
+            else:
+                prefill_counts = {
+                    int(s): int(c) for s, c in prefill_counts_raw.items()
+                }
+            decode_slots = list(rec.get("decode_slots", []))
+            processing_set = list(
+                rec.get("processing_set_at_start_of_tick", [])
             )
+            # Budget K from TickDispatch header. Absent in legacy traces;
+            # default to a value that won't trigger the cap (skip the
+            # check in that case via a sentinel).
+            budget_k = rec.get("budget_k")
 
-            # BatchCompositionInvariant + MixedBatchProhibition.
-            if prefill and decode:
-                violations.append(Violation(
-                    invariant="MixedBatchProhibition",
-                    tick=tick,
-                    detail=(
-                        f"prefill_slots={prefill} and decode_slots={decode} "
-                        "in the same Tick"
-                    ),
-                ))
+            # TokenBudgetRespected — sum of prefill counts + decode set
+            # cardinality bounded by K.
+            if budget_k is not None:
+                total_tokens = sum(prefill_counts.values()) + len(decode_slots)
+                if total_tokens > int(budget_k):
+                    violations.append(Violation(
+                        invariant="TokenBudgetRespected",
+                        tick=tick,
+                        detail=(
+                            f"sum(prefill_counts)={sum(prefill_counts.values())} + "
+                            f"len(decode_slots)={len(decode_slots)} = "
+                            f"{total_tokens} > budget_k={budget_k}"
+                        ),
+                    ))
 
-            # AtMostOnePrefillSlotPerBatch.
-            if len(prefill) > 1:
-                violations.append(Violation(
-                    invariant="AtMostOnePrefillSlotPerBatch",
-                    tick=tick,
-                    detail=f"prefill_slots={prefill} has cardinality > 1",
-                ))
+            # PerTokenFlagExclusivity — no slot in both prefill_counts
+            # (count > 0) and decode_slots.
+            decode_set = set(int(s) for s in decode_slots)
+            for s, c in prefill_counts.items():
+                if c > 0 and s in decode_set:
+                    violations.append(Violation(
+                        invariant="PerTokenFlagExclusivity",
+                        tick=tick,
+                        detail=(
+                            f"slot={s} appears in both prefill_counts "
+                            f"(count={c}) and decode_slots"
+                        ),
+                    ))
 
-            # DecodeHoldImpliedByPendingPrefill.
-            if loading and decode:
-                violations.append(Violation(
-                    invariant="DecodeHoldImpliedByPendingPrefill",
-                    tick=tick,
-                    detail=(
-                        f"loading_prompt_set_at_start_of_tick={loading} "
-                        f"non-empty AND decode_slots={decode} non-empty"
-                    ),
-                ))
+            # DecodePriorityAdmission — if any prefill admitted, every
+            # PROCESSING slot at tick start is in decode_slots.
+            any_prefill = any(c > 0 for c in prefill_counts.values())
+            if any_prefill and processing_set:
+                missing_decodes = [
+                    s for s in processing_set if int(s) not in decode_set
+                ]
+                if missing_decodes:
+                    violations.append(Violation(
+                        invariant="DecodePriorityAdmission",
+                        tick=tick,
+                        detail=(
+                            f"prefill admitted (sum="
+                            f"{sum(prefill_counts.values())}) but PROCESSING "
+                            f"slots {missing_decodes} from "
+                            f"processing_set_at_start_of_tick are NOT in "
+                            f"decode_slots={decode_slots}"
+                        ),
+                    ))
 
             contrib_counter["TickDispatch"] += 1
+
+        elif action == "ContributePrefill":
+            # PrefillCarryProgresses — monotonic non-decrease of per-slot
+            # n_prompt_processed across the trace. Each ContributePrefill
+            # carries n_prompt_processed (post-tick value: prior + this
+            # tick's admission count).
+            slot = rec.get("slot")
+            n_tokens = rec.get("n_tokens", 0)
+            n_prompt_processed = rec.get("n_prompt_processed")
+            if slot is not None and n_prompt_processed is not None:
+                slot_id = int(slot)
+                last = slot_last_n_prompt_processed.get(slot_id)
+                if last is not None and int(n_prompt_processed) < last:
+                    violations.append(Violation(
+                        invariant="PrefillCarryProgresses",
+                        tick=tick,
+                        detail=(
+                            f"slot={slot_id} n_prompt_processed regressed "
+                            f"from {last} to {n_prompt_processed} "
+                            f"(this tick admitted {n_tokens} tokens)"
+                        ),
+                    ))
+                slot_last_n_prompt_processed[slot_id] = int(n_prompt_processed)
+            contrib_counter[action] += 1
 
         elif action == "CaptureGraph":
             topo = rec["topology_hash"]
@@ -309,8 +392,17 @@ def validate(
                 ))
             contrib_counter["EvictGraphCacheEntry"] += 1
 
-        elif action in ("ContributePrefill", "ContributeDecode",
-                         "ArrivePrompt", "CompletePrefill", "Release"):
+        elif action in ("ContributeDecode",
+                         "ArrivePrompt", "Release"):
+            contrib_counter[action] += 1
+
+        elif action == "CompletePrefill":
+            # Reset carry tracking when the slot transitions to
+            # PROCESSING — subsequent prompt arrivals on the same slot id
+            # start fresh.
+            slot = rec.get("slot")
+            if slot is not None:
+                slot_last_n_prompt_processed.pop(int(slot), None)
             contrib_counter[action] += 1
 
         else:
