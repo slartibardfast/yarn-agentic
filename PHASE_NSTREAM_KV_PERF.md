@@ -2062,6 +2062,95 @@ Per the T1 falsification lesson (cuda graphs ON/OFF A/B confirmed 0% Δ — T1's
 
 **Token estimate**: 10–15 k (instrument + run + writeup).
 
+#### T5.0-probe outcome (2026-05-22) — falsification + Path C override
+
+**Probe ran analytically** (`data/t5-probe-findings.md`) and **falsified the
+implicit perf-uplift mechanism on current workload**:
+
+- Structural KV waste % at production NP=2 ctx=524288 ≈ **99.4%** (slab=256K
+  per slot vs typical ~1.5K usage). Trivially trips the ≥30% rule.
+- BUT composition with the T4 finding (`C0 IS multi-slot kernel saturation`)
+  shows the perf-uplift mechanism the decision rule assumes (high waste →
+  cache reclamation → throughput) does not bind at current concurrency:
+  kernel is the binding constraint at NP=8; paging adds indirection cost
+  rather than removing a constraint; VRAM is not capacity-bound (48 GiB
+  aggregate, KV ~15 GiB at production).
+- The 5.84× gap to vLLM is plausibly kernel-level (FA2 vs PSKV singlewarp,
+  token-major dispatch, fusions) — not K/V layout.
+
+**Per the probe's §8, user selected Path C (proceed with override)** with the
+explicit reframe: **"larger ctx sizes will come into play later so we must do
+this with complete sincerity"**.
+
+The reframe shifts Tier 5's motivation from *throughput uplift on current
+workload* to **structural feasibility at the high-ctx workloads that are
+coming**. The economics flip at high ctx:
+
+- ctx 1M / NP=8 Q4_0: per-stream slab = 128K tokens × ~0.6 GB/1K (Q4_0) × 2
+  (K+V) ≈ **~150 GB allocated per slot** under contiguous layout.
+- 8 slots × 150 GB = ~1.2 TB needed; we have 48 GiB. **Contiguous layout
+  cannot allocate this workload.**
+- Under paging, only actually-written blocks consume VRAM. Typical usage
+  ~1–10K tokens per slot at first → ~10 GiB actual KV footprint; fits with
+  room.
+- **The lever at high ctx is feasibility, not throughput.** A workload
+  the contiguous layout cannot serve at all becomes one paging serves
+  comfortably.
+
+**Workload reframe — what Tier 5 is FOR**:
+
+- **NOT** a perf-uplift on production-current (NP=2 ctx=524288 → 26.49 t/s
+  is kernel-bound; paging won't move it).
+- **IS** the structural lever for upcoming workloads where the
+  per-stream-slab pre-allocation becomes the OOM constraint:
+  - ctx 1M+ with multi-tenant concurrency (LiteLLM expansion, long-context
+    agentic sessions, RAG-heavy workflows)
+  - High concurrency at moderate ctx (NP≥16 in the same VRAM by reclaiming
+    waste)
+  - Future shared-prefix workloads (system-prompt caching across requests)
+
+**Gate semantics under the reframe**:
+
+- **GP5.a (regression band)** stands as written — production-comparable
+  workload at current ctx must not regress > 2% (5% in worst-case kernel
+  indirection per Risk #1). Hard binding.
+- **GP5.b (uplift binding)** is **reframed from throughput-uplift to
+  feasibility**:
+  - New form: `llama-batched-bench` at a **high-ctx feasibility workload**
+    (ctx ≥ 1M, NP=8) — contiguous layout fails to allocate; paged layout
+    succeeds and produces non-zero TG. Throughput target deferred (any
+    finite TG > 0 t/s closes feasibility; the kernel-limited number lands
+    in the ledger as measurement-of-record, not as a gate).
+  - The numeric uplift target on current-ctx workload (`53 t/s` from the
+    rule) **is acknowledged at-risk of structural FAIL by the kernel
+    bottleneck**. It stays in the ledger as a measurement, not a hard
+    gate. If T5 ships and current-workload TG is ≤ 27 t/s (kernel-bound),
+    this is recorded honestly per `[[feedback_oneshot_then_evaluate]]`.
+- **GP5.c–GP5.f, GP5.NPC, GP5.Bug-C, GP5.spec, GP5.kernel** stand as
+  written — correctness gates do not change under the reframe.
+
+**"Complete sincerity" discipline**: the user named this explicitly. Tier 5
+is now infrastructure for upcoming workloads — building it half-way is
+worse than not building it (we'd ship something that doesn't lever today
+AND doesn't work at high ctx tomorrow). Discipline:
+
+- No shortcut specs. All 4 .allium contracts + 3 .tla triplets land with
+  binding invariants (not "interesting properties").
+- All 8 property tests land RED-bound to specific implementation cards;
+  none deferred as "future work".
+- Allocator OOM behaviour at high ctx is a first-class test (not an edge
+  case) — paging's whole point is to handle this.
+- DFlash + paging composition tested under high-ctx workload, not just
+  current production ctx.
+- Defrag latency cliff (OpenQ-T5-B / Risk #4) tested under heterogeneous
+  high-ctx churn, not just M3-equivalent.
+- Falsification trace preserved: `data/t5-probe-findings.md` stays in tree
+  as the audit record of why the rule's perf-uplift mechanism didn't
+  bind at current scale + why the user overrode for forward-looking infra.
+
+**Token estimate under the reframe**: unchanged (165–255k). The reframe
+shifts where the value lands, not how much code is written.
+
 #### Bundles — Bundle A (allocator + WRITE) and Bundle B (READ + kernel)
 
 Per `feedback_oneshot_then_evaluate`: each bundle lands coherently with NPC verification at each bundle boundary. Production stays GREEN throughout — Bundle A's WRITE path collapses byte-identically at n_stream==1; Bundle B's READ path only activates on the new kernel signature.
