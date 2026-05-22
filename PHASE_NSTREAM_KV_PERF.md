@@ -2260,7 +2260,81 @@ Token estimate: 40–80 k (write path refactor + index plumbing + dual-mode veri
 
 `bin/test-dflash-spec-batched-fanout` and `bin/test-dflash-batch-vs-serial` were not in the Framing B closure scope this session; left for follow-up if needed.
 
-### T3.8 — Perf gate GP3.i
+### T3.8 — Perf gate GP3.i — *audit-grade restructure 2026-05-22*
+
+Following the audit-grade pattern established by T3.6, T3.8 splits into A/S/M/E/C sub-cards rather than running benches blind. Findings from T3.8.A drove the restructure.
+
+#### T3.8.A — Audit findings (read-only, 2026-05-22)
+
+**Baseline provenance (verified via grep + ledger reads):**
+
+- **27.73 t/s** at `llama-batched-bench -npp 200 -ntg 64 -npl 8` dual RTX 6000 — `data/ralph-nstream-kv-ledger.md` row 6, captured 2026-05-20 02:55Z, **pre-PSKV-Bug-C-closure**. Production server with Hadamard at same NP captured 27.73 also (PHASE doc ref).
+- **23.96 t/s** at the *exact same bench config* — `data/ralph-nstream-kv-ledger.md` row 21, captured 2026-05-21 18:45Z (T2 graphs-on, no T3 yet). Row 21 note: "possibly clock state or session noise."
+- **154.77 t/s** vLLM measured on same hardware (Q4 same quant, no Hadamard) — `data/gate0-np1-np8.json` 2026-05-12; project memory `project_continuous_batching_vs_perslot_dispatch`.
+- **33.5 t/s** NP=1 single-slot baseline (no contention, no spec-decode).
+
+**A1 — Day-to-day variance is ~14% at identical bench config.** Ledger rows 6 vs 21 disagree by 13.6% on what should be a deterministic measurement. Root cause not characterised — clock state, thermal, system load, or other. **Single-shot T3.8 benches cannot bind the GP3.i gates** (100 t/s and 130 t/s are within the noise band of the baseline). N≥3 runs per config required; report mean ± stddev.
+
+**A2 — `llama-batched-bench` bypasses T3.5 server dispatch.** Source at `examples/batched-bench/batched-bench.cpp:175-186` builds the multi-seq TG batch directly via `common_batch_add(batch, 0, pp+i, {j}, true)` then calls `llama_decode`. T3.5's server-side `process_batch_tokens` split_equal grouping is NOT exercised; `dispatch_multi_seq_count` will not increment under this bench. The bench DOES exercise T3.3 (per-(token,head) row indices), T3.4 (n_stream demands_subbatch gate drop), T3.6 (K-shift/defrag multi-stream support) because `llama_decode` is the entry point those changes modified. **For T3.5 attribution, an HTTP-driven server bench is required separately.**
+
+**A3 — Gate framing inconsistency.** Current gates state "≥ 100 t/s (3.6× over 27.7 t/s baseline)" but the bench config (no Hadamard) measures against the **23.96 t/s baseline**, not 27.73. Corrected framing:
+- Conservative ≥ 100 t/s = **4.17× over batched-bench baseline** (23.96 t/s)
+- Stretch ≥ 130 t/s = **5.43× over batched-bench baseline**, ~85% of vLLM (154.77)
+- The "3.6× / 4.7×" framing only applies if anchored against the Hadamard-on production-server number, which the bench does not measure.
+
+**A4 — DFlash spec-decode is orthogonal.** Production profile (`profiles/active.sh`) runs `--spec-type dflash --draft-max 4 --parallel 2`. `llama-batched-bench` runs no spec-decode at `-npl 8`. Mixing the numbers misleads. Three distinct measurements are valid: (a) batched-bench no-spec-decode (vLLM-comparable), (b) HTTP-driven server with Hadamard + DFlash (production-realistic), (c) NP=1 single-slot reference. T3.8 reports all three.
+
+**A5 — Graph-pool VRAM probe must be captured per-bench.** Now that T3.6.M is permanent, each bench run emits `~ggml_backend_cuda_context: have N graphs (...)`. Capture this to inform whether graph reuse is meaningfully exercised under each config — feeds the future I.b.2 revisit decision.
+
+**A6 — Tier 4 (chunked-prefill admission) contingency clarity.** PHASE doc says "if conservative misses, contingency is Tier 4." But the conservative target ≥ 100 t/s is roughly **2× the row-21 baseline + the kernel-level uplift T3.3/T3.4/T3.6 deliver**. If we miss conservative, it could be (i) the kernel uplift wasn't as large as hoped, (ii) prefill stalls bound at NP=8, (iii) variance dominated. **The Tier 4 decision needs prefill-stall % data**, not just an aggregate t/s miss. T3.8.E should compute prefill-stall fraction from `T_PP / (T_PP + T_TG)` per run.
+
+**A7 — Concurrency hygiene.** Per `feedback_no_overlapping_benchmarks` (one-strike rule) and `feedback_no_concurrent_verify_runs`: every bench launch must `pgrep -f "verify-production|llama-server|llama-batched"` first and abort if any other GPU consumer is running. The `coord/gpu-*.state` flow used by T3.6.M is the right pattern; reuse it.
+
+#### T3.8.S — Methodology checklist
+
+Lightweight (not full Allium — bench methodology, not behaviour). Locked here for the M sub-card to bind against.
+
+- **Per-config gate binding:**
+  - C1 (vLLM-comparable, batched-bench no-Hadamard): TG mean ≥ 100 t/s (conservative) / ≥ 130 t/s (stretch), with stddev/mean < 5%.
+  - C2 (production-realistic, HTTP-driven server with Hadamard, NP=8): TG aggregate mean ≥ 90 t/s.
+  - C3 (NP=1 reference, batched-bench `-npl 1`): TG mean ≈ 33.5 t/s ± 10% (sanity floor — if not, the bench environment is wrong).
+- **N per config:** ≥ 3 back-to-back runs, same shell session, no other GPU consumers, same `~/.cache/` warm-state.
+- **Capture per run:** TG t/s (S_TG and total), T_PP / T_TG (for stall %), VRAM probe line, `dispatch_multi_seq_count` (server runs only), NPC quick-check.
+- **Bench environment freeze:** `pgrep -af "llama-|verify-"` snapshot pre-launch; `coord/gpu-*.state` claimed for entire bench window; commit clean (`git status` clean for tracked files).
+- **What kills a run:** any concurrent GPU consumer detected, OOM, NPC quick-check failure, `llama_decode rc != 0`.
+- **Variance handling:** if stddev/mean ≥ 5%, increase N to 5 and report; if still high, flag clock-state instability and re-measure under `nvidia-smi -lgc` lock if necessary.
+
+#### T3.8.M — Measurements (the bench bundle)
+
+Four configs (run in this order):
+
+- **M1 — C3 NP=1 reference (5 min):** `llama-batched-bench -npp 200 -ntg 64 -npl 1` × 3 runs. Validates environment + isolates kernel cost per slot without contention.
+- **M2 — C1 vLLM-comparable (15 min):** `llama-batched-bench -npp 200 -ntg 64 -npl 8` no Hadamard × 3 runs. Binds GP3.i conservative/stretch gates.
+- **M3 — C2 production-realistic (20 min):** HTTP-driven `llama-server` NP=8 with `--k/v-cache-hadamard`, concurrent completion harness (extend `verify-production-determinism.sh` with t/s capture) × 3 runs. Captures full T3 stack (incl. T3.5 dispatch).
+- **M4 — C1 graphs-off A/B (optional, 5 min):** `GGML_CUDA_DISABLE_GRAPHS=1` × 1 run for sanity vs ledger row 21 graphs-on/off Δ.
+
+Each run captures the row format already in `data/ralph-nstream-kv-ledger.md`. Append to a new ledger `data/t3.8-perf-gate-ledger.md`.
+
+#### T3.8.E — Evaluation
+
+- **Gate verdict:** binary pass/fail vs C1 mean against conservative + stretch.
+- **Uplift attribution:** (C1 - C3) tells kernel-side throughput delta; (C2 server - C1 bench) tells T3.5 server-scheduler delta.
+- **Prefill-stall %:** `T_PP / (T_PP + T_TG)` per run. If > 30% AND C1 misses conservative, Tier 4 contingency is justified. If < 15% AND C1 misses, Tier 4 won't help.
+- **Graph-pool data:** node-counts and host-bytes per teardown, informs I.b.2 revisit.
+- **Variance characterization:** stddev/mean across N=3+ — sets the floor for what gate-band claims are credible.
+
+#### T3.8.C — Closure
+
+- PHASE doc with the numbers + variance bands + gate verdict.
+- MEMORY entry: result, variance, surprises, Tier 4 decision.
+- Ledger committed.
+- Branch left clean.
+
+**Token budget:** ~80–120k across audit + methodology + 4 configs × N runs + evaluation + writeup.
+
+---
+
+### T3.8 — Perf gate GP3.i (original spec, superseded by audit-grade restructure above)
 
 **Bench config — production-realistic:** `llama-server` at NP=8 with `--k-cache-hadamard --v-cache-hadamard`, HTTP-driven `verify-production-determinism.sh`-style concurrent completion harness. Captures TG t/s aggregate including Hadamard overhead.
 
