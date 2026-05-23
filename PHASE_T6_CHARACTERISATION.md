@@ -234,6 +234,77 @@ Anchors T7+ planning. Format: one PHASE doc like this one. Until T6.10 is commit
 
 ---
 
+## T6.3 — DFlash characterisation (CLOSED)
+
+Closure record. Ran 2026-05-23 across four axes per the T6.1 follow-on. Tier 6 binding-evidence summary; full details at `data/t6.3-sweeps-20260523T230111/SUMMARY.md` + `data/t6.3-nsys-dflash-20260523T225622/summary.md` + the matrix prod-baseline `per-prompt-acceptance.md`.
+
+### Axes
+
+- **Axis 1 (offline)** — per-prompt acceptance histogram on the matrix prod-baseline cell, decomposed by prompt content.
+- **Axis 2 (sweep)** — `draft_max` ∈ {2,3,5,6} at NP=8 (dm=4 already measured at matrix prod-baseline).
+- **Axis 3 (sweep)** — NP sensitivity at NP ∈ {1,2,4} × DFlash {on, off}; NP=8 cells from the matrix.
+- **Axis 4 (trace)** — nsys decode trace with DFlash on, NP=8, draft_max=4. Drafter forward kernel attribution.
+
+### Findings
+
+**1. Acceptance is content-dominated (axis 1).** Per-prompt acceptance ranges **0.392 (King Lear plot summary) → 0.808 (haiku)**, mean 0.529, range 0.416. Structured / code / haiku at top; open-ended natural-language prose at bottom. The matrix-reported aggregate 0.42 was the cumulative dflash-stat figure (includes warmup + intermediate states); per-task mean is 0.529.
+
+**2. `draft_max=2` is the throughput sweet spot at NP=8 (axis 2).** Acceptance is monotonically decreasing in dm (0.732 at dm=2 → 0.502 at dm=6). Throughput peaks at dm=2: 11.58 t/s (+5% over dm=4 default). dm=4 is not the optimum but the gap is small.
+
+| draft_max | t/s | Δ vs dm=4 | accept_mean |
+|---:|---:|---:|---:|
+| 2 | 11.58 | +5.0% | 0.732 |
+| 3 | 11.21 | +1.6% | 0.610 |
+| 4 (default) | 11.03 | — | 0.529 |
+| 5 | 11.27 | +2.2% | 0.533 |
+| 6 | 10.59 | -4.0% | 0.502 |
+
+**Critically:** even at the dm=2 optimum, DFlash-on (11.58) is **-43% vs no-DFlash (20.45)**. Tuning draft_max does NOT recover DFlash to net-positive on gate0.
+
+**3. DFlash is net-negative at EVERY measured NP (axis 3).** The penalty narrows slightly at lower NP (less slot-contention) but never crosses to net-positive.
+
+| NP | DFlash on t/s | DFlash off t/s | Δ |
+|---:|---:|---:|---:|
+| 1 | 11.46 | 18.32 | **-37.4%** |
+| 2 | 12.99 | 20.69 | **-37.2%** |
+| 4 | 11.14 | 20.58 | **-45.9%** |
+| 8 | 11.03 | 20.45 | **-46.1%** |
+
+The no-DFlash side is near-flat across NP (~18–21 t/s) — 2 production slots are kernel-saturated regardless of how many client prompts queue. The DFlash side hovers ~11–13 t/s because drafter+verify is the per-token bottleneck. **Lower concurrency does not help DFlash** — the cost is absolute, not contention-driven.
+
+**4. Drafter forward = 17.8% of GPU time (axis 4).** nsys trace at NP=8 dm=4 with DFlash on shows `mul_mat_f16_pinned_kernel_wmma` (drafter forward, F16 weights) at **17.8%** — the new dominant cost not present in the T6.2 no-DFlash trace. Target `mul_mat_q_split_k<Q4_0>` drops 31.0% → 13.3% (DFlash absorbs target steps), but drafter's 17.8% addition exceeds those savings at 0.42 (cum-stat) / 0.53 (per-task) acceptance.
+
+| kernel | T6.2 (no DFlash) | T6.3 (DFlash on) |
+|---|---:|---:|
+| `ncclDevKernel_AllReduce_Sum_f32_RING_LL` | 25.6% | 26.5% |
+| `mul_mat_q_split_k<Q4_0>` (target matmul) | 31.0% | 13.3% |
+| `mul_mat_f16_pinned_kernel_wmma` (drafter) | — | **17.8%** |
+| `cutlass_75_wmma_tensorop_h161616gemm` (f16, lm_head) | 8.3% | 12.2% |
+| `flash_attn_per_slot_kv_singlewarp_kernel` (target FA) | 3.2% | 2.1% |
+| `<unnamed>::attention_kernel` (drafter FA) | — | 1.3% |
+
+### Headline closure
+
+**DFlash is net-negative across all measured axes at gate0-shape workload.** The "DFlash is a win" narrative from T3/T5 closures was workload-locked to bench-t3.8-m3 (identical-prompt × short × NP=2). It does not generalise. Drafter forward cost (17.8% of GPU time) exceeds verify-savings at the content-dominated acceptance distribution gate0 exercises.
+
+The production profile (`qwen36-27b-x2-dflash.sh`) shipping DFlash ON is a downstream decision; T6.3 records the cost surface honestly, per T6 discipline.
+
+### Artefacts
+
+- `data/t6.3-sweeps-20260523T230111/SUMMARY.md` — aggregator with all 10 cells + per-axis findings.
+- `data/t6.3-sweeps-20260523T230111/cell-*/cell.json` — 10 schema-conformant cells (4 draft_max + 6 NP).
+- `data/t6.3-sweeps-20260523T230111/cell-*-dflash/per-prompt-acceptance.{json,md}` — per-prompt acceptance for every DFlash-on cell.
+- `data/t6.3-nsys-dflash-20260523T225622/{bench.nsys-rep,summary.md}` — nsys decode trace + kernel attribution under DFlash.
+- `data/t6.1-matrix-fixed-20260523T211929/cell-prod-baseline/per-prompt-acceptance.md` — axis 1 detail for the baseline cell.
+- `scripts/run-t6.3-sweeps.sh`, `scripts/run-t6.3-nsys-dflash.sh`, `scripts/analyze-dflash-accept-per-prompt.py`, `scripts/aggregate-t6.3.py`.
+
+### Subtasks not done by T6.3 (named, not deferred-as-cover)
+
+- **T6.3.b** — re-measure axes 2+3 after NVLink install (2026-05-24). AllReduce currently dominates at 26.5%; NVLink reduces small-message latency dramatically. Drafter share and dm=2 sweet spot may shift. Belongs to T6.3 follow-up because the measurement axis is the same.
+- **T6.3.c** — characterise DFlash on identical-prompt short workload (bench-t3.8-m3 shape) to quantify the **upper-bound** acceptance ceiling on this drafter/target pair. Bounds where DFlash net-helps. Not done by T6.3 because the matrix and gate0 sweep both target server-shape mixed workload; the identical-prompt regime is a different axis.
+
+---
+
 ## Disciplines
 
 **Understanding is the goal.** T6 is not an optimization tier and not a justify-what-we-shipped tier. The goal is to produce a cost surface and behavioural envelope for each feature dense enough that any future T7+ work has a measured baseline to argue against. Whether to keep a feature on/off in production is a downstream decision informed by T6's data; T6 itself does not advocate for any feature's continued inclusion or removal. Per-feature deep-dives (T6.3–T6.9) run **regardless** of T6.1's binary on/off outcome — the data is load-bearing for future profiling either way.
