@@ -173,19 +173,46 @@ Sketch only — finalised after T6.0 lands:
 
   **DFlash on/off in T6.1 answers "is DFlash a net win at this workload"** as a single binary; T6.3 (below) is the conditional deeper sweep that only fires *if* T6.1's DFlash cell shows a net positive uplift.
 
-- **T6.2 nsys + ncu deep-dive.** At production NP=8 shape (and at the configuration T6.1 surfaces as fastest). What kernel dominates? What's the per-CTA cost breakdown? Where does the 6.37× gap to vLLM (from T6.0.a) actually go — is it precision (~2× ceiling), attention kernel cost, dispatcher overhead, or scheduler/admission latency?
+- **T6.2 nsys + ncu deep-dive (kernel-level, orthogonal to features).** At production NP=8 shape (and at the configuration T6.1 surfaces as fastest). What kernel dominates? What's the per-CTA cost breakdown? Where does the 6.37× gap to vLLM (from T6.0.a) actually go — is it precision (~2× ceiling), attention kernel cost, dispatcher overhead, or scheduler/admission latency?
 
-- **T6.3 DFlash characterisation (unconditional).** Runs regardless of T6.1's DFlash on/off outcome — the data is load-bearing for future profiling work either way. The framing shifts based on T6.1 (optimization-aimed if net positive, autopsy-aimed if net negative), but the **measurements are the same set**: `draft_max` ∈ {2,3,4,5,6,8}, drafter model variants, acceptance-rate distribution by prompt shape (short/code/long/varied/multi-turn), per-step kernel cost breakdown of drafter forward + verify + LM-head, VRAM cost of drafter + per-slot scratch, scaling with NP. The resulting cost surface lets any future spec-decoding improvement be measured against a baseline, AND tells us specifically why DFlash didn't help (if T6.1 said it didn't) — kernel cost dominates? Acceptance rate too low at gate0 shape? Drafter too large vs verify savings?
+### T6.3–T6.9 — Per-feature deep-dives (all unconditional)
 
-  A separate orthogonal decision — "should DFlash stay on in the production profile by default?" — is what T6.1's binary cell answers; T6.3 informs *that* decision but is not gated by it.
+Each load-bearing feature gets its own characterisation card. **All run regardless of T6.1's binary on/off outcome** — the data is load-bearing for future profiling either way. The framing shifts based on T6.1 (optimization-aimed if T6.1 says net positive; autopsy-aimed if net negative), but the measurement set is unchanged.
 
-- **T6.4 Closure synthesis.** A single "ik_llama post-T5 — what works, what doesn't, what to attack next" document. Anchors T7+.
+The "should this stay on by default in the production profile?" decision is what T6.1's binary cell answers; the per-feature deep-dives below inform that decision but are not gated by it.
+
+- **T6.3 DFlash characterisation.** `draft_max` ∈ {2,3,4,5,6,8}, drafter model variants, acceptance-rate distribution by prompt shape (short/code/long/varied/multi-turn), per-step kernel cost breakdown (drafter forward + inject_kv_fused + verify + LM-head), VRAM cost of drafter + per-slot scratch, NP scaling. The cost surface lets future spec-decoding improvements be measured against a baseline, and tells us specifically why DFlash didn't help if T6.1 said it didn't (kernel cost dominates? Acceptance rate too low at gate0? Drafter too large vs verify savings?).
+
+- **T6.4 T4 chunked-prefill admission characterisation.** `--prefill-chunk-budget` sweep ∈ {0 (= ubatch), 128, 256, 512, 1024, 2048}, NP ∈ {2,4,8}, fire pattern ∈ {steady, staggered_5s, staggered_10s, mixed}. The C0/C1-steady vs C1-staggered ceiling difference (T4.7 found C1-staggered structurally below steady) gets re-measured with current builds. Per-slot latency distribution under each setting. Answers "what chunk budget actually maximises throughput at realistic arrival" and "is the staggered penalty still ~24% (T4.7) or has T5 work moved that number".
+
+- **T6.5 T5.9 paged BACKING characterisation.** `--kv-pool-blocks` sweep ∈ {auto, auto/2, auto/4, auto/8, auto/16, auto/32} at NP=8, plus block_size sensitivity (currently fixed at 64). Fragmentation distribution measured via the trace producer over a heterogeneous workload (variable-length seqs, free-and-realloc churn). Admission gate fire rate at each sizing. Answers "what's the right default pool size for production NP=2" and "where does the trace-producer-reported fragmentation actually cluster, and is 0.1 still the right defrag threshold given that distribution".
+
+- **T6.6 T5.9.E defrag characterisation.** `defrag_thold` sweep ∈ {-1 (off), 0.05, 0.1 (current default), 0.25, 0.5, 0.9}, measured aggregate t/s + per-slot p99 latency + defrag-pass latency distribution + defrag-pass frequency. Heterogeneous workload to drive actual fragmentation (currently the bench-t3.8-m3 workload reports fragmentation ~1.0 throughout — does that hold under varied prompt lengths?). Answers "is 0.1 the right default, or should it be tighter/looser" and "what's the latency cliff cost when defrag fires mid-decode".
+
+- **T6.7 Per-slot-kv FA dispatch characterisation.** Kernel cost via `ncu` (registers, occupancy, per-CTA µs) at production shape. K-shape sensitivity (different `q->ne[1]`/`k->ne[1]` ratios). Dispatch-selection rate (how often does the PSKV predicate fire vs the legacy `ggml_flash_attn_ext` path at production)? The T3.5 dispatch-counter measurement was 55/64 at T3 close — characterise post-T5.9 to see if that's stable. Answers "is the PSKV kernel still net-positive vs legacy at current builds" and "where is its register/occupancy budget against the sm_75 ceiling".
+
+- **T6.8 Hadamard K/V transform characterisation.** Quantisation-recovery accuracy at different K shapes (NMSE vs no-transform reference). Per-step transform cost (matrix-multiply overhead). Behavioural envelope at non-Q4_0 KV types (Q4_K_M, Q8_0, F16) — does Hadamard still net-help, or is it only worthwhile at Q4_0? Answers "is Hadamard's perf cost vs Q4_0 accuracy recovery the right trade at production" and "should we recommend it at other KV quantisations".
+
+- **T6.9 T3 unified-stream dispatch characterisation.** `n_seq_in_batch` distribution measurement at realistic workloads (how often does the multi-seq dispatcher actually fire vs single-seq fallback?). Dispatch counter at NP={2,4,8} × {steady, staggered, mixed}. The `split_equal` shape-uniform-ubatch assumption — how often does the batch get split into K>1 ubatches per tick, and what's the cost? Answers "is T3's unified-stream dispatcher actually amortising at the workloads we run, or are most batches single-seq anyway".
+
+### T6.10 — Closure synthesis
+
+A single "ik_llama post-T5 — what works, what doesn't, what to attack next" document. Synthesises:
+
+- T6.1 binary matrix (each feature net-positive/net-negative/no-op at gate0).
+- T6.2 kernel-level dominant-cost finding.
+- T6.3–T6.9 per-feature behavioural envelopes and cost surfaces.
+- A ranked T7 backlog (what's worth attacking, with measured upside, in priority order).
+
+Anchors T7+ planning. Format: one PHASE doc like this one. Until T6.10 is committed, T6 is `[ ]`.
 
 ---
 
 ## Disciplines
 
-Per CLAUDE.md §8 ("negative results land cheap when honest, expensive when rationalised") — every cell records its actual measurement. If a feature contributes negatively, that result lands. If a feature is no-op at current workload, that result lands. The closure synthesis at T6.4 is honest by construction or T6 has not closed.
+**Understanding is the goal.** T6 is not an optimization tier and not a justify-what-we-shipped tier. The goal is to produce a cost surface and behavioural envelope for each feature dense enough that any future T7+ work has a measured baseline to argue against. Whether to keep a feature on/off in production is a downstream decision informed by T6's data; T6 itself does not advocate for any feature's continued inclusion or removal. Per-feature deep-dives (T6.3–T6.9) run **regardless** of T6.1's binary on/off outcome — the data is load-bearing for future profiling either way.
+
+Per CLAUDE.md §8 ("negative results land cheap when honest, expensive when rationalised") — every cell records its actual measurement. If a feature contributes negatively, that result lands. If a feature is no-op at current workload, that result lands. The closure synthesis at T6.10 is honest by construction or T6 has not closed.
 
 Per CLAUDE.md §4 — gaps named in the wrong place (e.g., "we should also measure X but didn't") become subtasks under the relevant T6.x checkbox, not deferrals.
 
