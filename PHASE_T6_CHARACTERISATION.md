@@ -62,7 +62,7 @@ Apples-with-known-precision-mismatch ratio (NP=8 no-spec both sides):
 
 **T6.0.a closes with framing locked.** The gap is **6.37× at apples-comparable NP=8 no-spec on a varied-prompt workload**, with the precision-mismatch caveat persistent regardless of when vLLM is re-measured. Whatever T6.1+ surfaces as the dominant bottleneck, it has to explain a 6.37× factor, not 5.84×, and it can't blame the precision difference for more than a fraction of that gap (int4 vs BF16+Q4_0 KV ≈ 2× bandwidth difference at best).
 
-### T6.0.b — Lock the measurement schema
+### T6.0.b — Lock the measurement schema (CLOSED)
 
 Single JSON shape per ablation cell. Every downstream T6 cell populates this same shape; the matrix is then aggregable, diffable, and survives across sessions / authors.
 
@@ -145,9 +145,9 @@ Schema rules:
 - **Engine build is a commit hash, not a date.** Date-stamped builds drift; commits anchor.
 - **VRAM fields are MIB int, not strings.** Aggregable across cells.
 - **`fire_pattern` is enum-like.** "concurrent" = all prompts at t=0; "staggered_Ns" = N seconds apart; "sequential" = one at a time.
-- **Schema lives at `specs/t6-characterisation-cell.allium`** as a small allium contract so cells that fail to bind are caught at validate time, not at aggregate time. (To add at T6.0.b close.)
+- **Schema lives at `specs/t6-characterisation-cell.allium`** as a small allium contract so cells that fail to bind are caught at validate time, not at aggregate time. Landed: 5 contracts (SchemaShapeBound, EnumValuesRespected, BuildIsCommitHash, BindingClocksLocked, AggregatesDerivedFromPerRequest) over 8 external entities (CharacterisationCell with nested CellModel / CellConfig / CellClocks / CellWorkload / CellResults / CellPerRequest / CellInstrumentation). `allium check` GREEN (0 errors). The two existing T6.0.a cells in data/ are pre-schema and will be re-emitted at T6.1 setup time using the schema; the cross-engine-bench.sh harness already writes schema-compatible JSON.
 
-Token budget: ~10-15k. Writing the schema + the allium contract + one example cell as a sanity check.
+Token budget: ~10-15k. Closed at lower end.
 
 ---
 

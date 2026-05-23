@@ -1,0 +1,351 @@
+-- allium: 3
+-- specs/t6-characterisation-cell.allium
+--
+-- Scope: T6 characterisation tier — the JSON shape produced by
+-- every ablation cell (T6.1 binary matrix, T6.2 kernel deep-dive,
+-- T6.3-T6.9 per-feature characterisation cards).
+--
+-- This spec is the schema contract for one measurement cell. It
+-- exists so that:
+--   1. cells from different authors / sessions / engines are
+--      mechanically aggregable (every field present, same names,
+--      uniform value domains);
+--   2. drift between the PHASE_T6 documentation and the cells
+--      actually produced is caught at validate time, not at
+--      aggregate time;
+--   3. T6.10 closure synthesis can join across cells without
+--      bespoke parsers per cell.
+--
+-- The contract binds the JSON written to data/t6-cell-<id>/cell.json
+-- by scripts/cross-engine-bench.sh (and any sibling future
+-- harness). PHASE_T6_CHARACTERISATION.md §T6.0.b is the
+-- human-readable rendering of this same shape; this spec is the
+-- machine-checkable record.
+--
+-- Excludes:
+--   - The aggregation / matrix-build logic (T6.10 work).
+--   - The cross-engine measurement harness itself
+--     (scripts/cross-engine-bench.sh; this spec binds its
+--      output, not its mechanics).
+--   - The specific feature ablation choices (PHASE_T6 §T6.1
+--      table; the schema is feature-agnostic).
+
+-- ============================================================
+-- External entities — one CharacterisationCell is one row of the
+-- T6 matrix or one card in T6.3-T6.9.
+-- ============================================================
+
+-- The model under test. Captured at cell-creation time so cells
+-- from different model swaps are distinguishable.
+external entity CellModel {
+    path: String
+    weights_dtype: String
+    n_params: Integer
+    n_layers: Integer
+    n_head_kv: Integer
+}
+
+-- The engine + feature configuration in effect at measurement.
+-- This is the cell's "on/off" axis surface — every feature in
+-- the T6.1 matrix maps to one or more fields here.
+external entity CellConfig {
+    ctx_per_slot: Integer
+    parallel: Integer
+    batch_size: Integer
+    ubatch_size: Integer
+    kv_type_k: String
+    kv_type_v: String
+    k_cache_hadamard: Boolean
+    v_cache_hadamard: Boolean
+    flash_attn: Boolean
+    dflash: Boolean
+    draft_max: Integer
+    kv_pool_blocks: Integer
+    defrag_thold: Decimal
+    ctx_checkpoints: Integer
+    cache_ram: Integer
+    device: String
+    split_mode: String
+    tensor_split: String
+}
+
+-- Clocks state at measurement. T6 requires locked clocks for
+-- every binding measurement; cells produced under unlocked
+-- clocks are explicitly marked.
+external entity CellClocks {
+    gpu_mhz: Integer
+    locked: Boolean
+}
+
+-- The workload that produced the measurement. Cross-cell
+-- comparison REQUIRES identical workload — workload mismatch
+-- is what produced the 5.84× vs 6.37× framing error closed in
+-- T6.0.a.
+external entity CellWorkload {
+    label: String
+    prompt_count: Integer
+    max_tokens: Integer
+    temp: Decimal
+    seed: Integer
+    fire_pattern: String
+    ignore_eos: Boolean
+}
+
+-- One per-request datum within a cell's results. The cell holds
+-- a List<CellPerRequest>; aggregate statistics in CellResults
+-- are derived from this list.
+external entity CellPerRequest {
+    idx: Integer
+    ttft_s: Decimal
+    decode_s: Decimal
+    tokens: Integer
+}
+
+-- The aggregate measurement outcome.
+external entity CellResults {
+    wall_secs: Decimal
+    total_input_toks: Integer
+    total_output_toks: Integer
+    tok_per_sec_aggregate: Decimal
+    tok_per_sec_per_slot_mean: Decimal
+    tok_per_sec_per_slot_p50: Decimal
+    tok_per_sec_per_slot_p99: Decimal
+    ttft_s_mean: Decimal
+    ttft_s_p50: Decimal
+    ttft_s_p99: Decimal
+    tpot_s_mean: Decimal
+}
+
+-- Instrumentation counters captured from server-side state at
+-- the end of the cell run. These are the levers T6.3-T6.9 use
+-- to explain "why" beyond aggregate throughput.
+external entity CellInstrumentation {
+    defrag_events: Integer
+    admission_events_503: Integer
+    admission_events_413: Integer
+    dispatch_multi_seq_count: Integer
+    vram_kv_buffer_mib: Decimal
+    vram_compute_buffer_mib: Decimal
+    graph_pool_size: Integer
+}
+
+-- The cell itself, top-level.
+external entity CharacterisationCell {
+    cell_id: String
+    timestamp: String
+    engine: String
+    engine_build: String
+    model: CellModel
+    config: CellConfig
+    clocks: CellClocks
+    workload: CellWorkload
+    results: CellResults
+    per_request: List<CellPerRequest>
+    instrumentation: CellInstrumentation
+    notes: String
+}
+
+-- ============================================================
+-- Config
+-- ============================================================
+
+config {
+    -- TLC bounds. Production cells produce 8-32 per_request
+    -- entries; the matrix has ~30 cells total. For TLC we keep
+    -- small bounded values to keep state space finite.
+    max_per_request_entries: Integer = 8
+    max_cells_in_aggregation: Integer = 4
+
+    -- Engine enum domain. Cells with engine outside this set
+    -- fail validation. New engines extend this list with the
+    -- T6.10 closure adding any further entries.
+    valid_engines: Set<String> = {"ik_llama", "vllm"}
+
+    -- Fire-pattern enum domain.
+    valid_fire_patterns: Set<String> =
+        {"concurrent", "staggered_Ns", "sequential"}
+
+    -- Clock target for binding cells. Cells at other gpu_mhz
+    -- are not invalid but are explicitly marked unsuitable for
+    -- gate-binding aggregation in T6.10.
+    binding_clock_mhz: Integer = 1455
+}
+
+-- ============================================================
+-- Contracts
+-- ============================================================
+
+-- SchemaShapeBound — every field in CharacterisationCell is
+-- present and typed per the entity definition. Cells with
+-- missing fields, extra fields, or type mismatches fail this
+-- contract. This is the "uniform shape, aggregable" guarantee.
+contract SchemaShapeBound {
+    invoke: (cell: CharacterisationCell) -> Boolean
+
+    @invariant AllTopLevelFieldsPresent
+        -- The 12 top-level fields (cell_id, timestamp, engine,
+        -- engine_build, model, config, clocks, workload,
+        -- results, per_request, instrumentation, notes) are
+        -- ALL present. Absence is breach; "null" sentinels
+        -- belong inside nested entities (e.g. ttft_s_mean may
+        -- be a sentinel for "engine doesn't report", but the
+        -- KEY is present).
+
+    @invariant NestedEntitiesNonNull
+        -- model, config, clocks, workload, results,
+        -- instrumentation are each present as nested objects
+        -- (never substituted with `null` at the top level).
+        -- per_request is present as a list (may be empty if
+        -- the engine doesn't emit per-request data, but the
+        -- KEY is present).
+
+    @guidance
+        -- Implementation: cross-engine-bench.sh emits a
+        -- Python dict that goes through json.dump with default
+        -- settings — no missing keys by construction. Validators
+        -- run schema-shape-bound at aggregate time
+        -- (T6.10 closure) and at write time
+        -- (scripts/cross-engine-bench.sh post-write check).
+}
+
+-- EnumValuesRespected — fields with a finite valid domain
+-- (engine, fire_pattern) hold values from that domain. Cells
+-- with values outside the enum fail validation.
+contract EnumValuesRespected {
+    invoke: (cell: CharacterisationCell) -> Boolean
+
+    @invariant EngineInDomain
+        -- cell.engine ∈ valid_engines.
+
+    @invariant FirePatternInDomain
+        -- cell.workload.fire_pattern ∈ valid_fire_patterns.
+
+    @guidance
+        -- The enum domains live in `config` for TLC bound-ness
+        -- and so that future engines / fire patterns are added
+        -- via an explicit config edit (audit-grade — extending
+        -- the enum lives in git history rather than implicit
+        -- acceptance).
+}
+
+-- BuildIsCommitHash — engine_build is a git commit hash, not a
+-- date stamp. Date-stamped builds drift; commits anchor. Closes
+-- a documentation/measurement provenance gap.
+contract BuildIsCommitHash {
+    invoke: (cell: CharacterisationCell) -> Boolean
+
+    @invariant EngineBuildIsHashShape
+        -- cell.engine_build matches a hex shape (length ≥ 7,
+        -- characters in [0-9a-f]). Long-form (40 chars) and
+        -- short-form (7+) both accepted. Date stamps (e.g.,
+        -- "2026-05-23") and freeform tags (e.g., "v1.0") fail.
+
+    @guidance
+        -- This contract intentionally accepts ANY hex shape so
+        -- that engines with non-git build tags (vLLM wheel
+        -- builds) can still produce a synthetic short hash
+        -- derived from their build artifact. The cells'
+        -- aggregator interprets the field as opaque-but-stable;
+        -- the contract just locks "this is a hash, not a
+        -- name".
+}
+
+-- BindingClocksLocked — cells used as binding evidence for
+-- T6 gates run at locked clocks at the binding clock target.
+-- Cells at other clock states are not invalid (e.g. T6 may
+-- explicitly characterise unlocked-clocks behaviour) but
+-- aggregator joins flagged "binding-evidence" exclude them.
+contract BindingClocksLocked {
+    invoke: (cell: CharacterisationCell) -> Boolean
+
+    @invariant LockedFlagSetWhenLocked
+        -- cell.clocks.locked = TRUE
+        --   => cell.clocks.gpu_mhz = binding_clock_mhz.
+        -- A cell that claims locked clocks but reports a
+        -- different gpu_mhz is internally inconsistent —
+        -- almost certainly a measurement bug, not deliberate.
+
+    @invariant LockedRequiredForGateBinding
+        -- Cells emitted under coord/gpu BUSY (see operational
+        -- constraints in MEMORY.md) MUST set
+        -- cell.clocks.locked = TRUE. The harness contract is:
+        -- the only way to write a cell with locked = FALSE is
+        -- to explicitly intend that, naming the deviation in
+        -- cell.notes.
+
+    @guidance
+        -- T6.1 binding matrix cells: locked = TRUE at 1455 MHz.
+        -- T6.2 nsys/ncu: locked = TRUE (kernel-level profiling
+        -- needs locked clocks for reproducibility).
+        -- T6.3-T6.9: per-feature deep-dives default to locked;
+        -- a card may explicitly use locked = FALSE if the
+        -- characterisation IS the clock sensitivity (e.g.,
+        -- thermal envelope characterisation card).
+}
+
+-- AggregatesDerivedFromPerRequest — when per_request is non-
+-- empty, the aggregate statistics in results are derivable from
+-- it. Cells where aggregate stats contradict the per-request
+-- list have a measurement-pipeline bug.
+contract AggregatesDerivedFromPerRequest {
+    invoke: (cell: CharacterisationCell) -> Boolean
+
+    @invariant TokenCountsSum
+        -- cell.results.total_output_toks =
+        --   SUM over r in cell.per_request: r.tokens.
+        -- Cells where the aggregate doesn't match the sum have
+        -- either a bookkeeping bug in the harness or a stale
+        -- aggregate field. Either way the cell is unsafe for
+        -- T6.10 aggregation.
+
+    @invariant TtftAggregatesConsistentWithPerRequest
+        -- cell.per_request is non-empty
+        --   => cell.results.ttft_s_p50 is the 50th-percentile
+        --      of {r.ttft_s : r ∈ cell.per_request} (within a
+        --      tolerance of 1ms for floating-point binning).
+
+    @guidance
+        -- Empty per_request is allowed (vLLM wheel builds may
+        -- not expose per-request TTFT in the same shape); in
+        -- that case the aggregate fields are the only source
+        -- of truth and this contract reduces to "fields are
+        -- present and non-NaN".
+}
+
+-- ============================================================
+-- Composition with the T6 plan + cross-spec references
+-- ============================================================
+
+-- Cross-references:
+--
+--   SchemaShapeBound
+--     <- PHASE_T6_CHARACTERISATION.md §T6.0.b
+--        (human-readable JSON shape; this contract binds the
+--         shape mechanically)
+--     <- scripts/cross-engine-bench.sh
+--        (the harness writing the schema-conformant JSON;
+--         contract-failures here surface as harness bugs)
+--
+--   EnumValuesRespected
+--     <- valid_engines + valid_fire_patterns in config
+--        (explicit, audit-grade enum extension via git diff)
+--
+--   BuildIsCommitHash
+--     <- ik_llama.cpp submodule HEAD at measurement time
+--        (the production source-of-truth for engine_build)
+--
+--   BindingClocksLocked
+--     <- /home/llm/CLAUDE.md operational constraints
+--        (locked clocks 1455 MHz required for binding measurement;
+--         coord/gpu BUSY/IDLE state machine)
+--     <- MEMORY.md
+--        (feedback-no-concurrent-verify-runs +
+--         feedback-no-overlapping-benchmarks — locked clocks
+--         is the mechanical lever that makes serialised
+--         measurement comparable)
+--
+--   AggregatesDerivedFromPerRequest
+--     <- scripts/cross-engine-bench.sh aggregate computation
+--        (the harness writes the aggregates; this contract
+--         locks the aggregate IS consistent with the underlying
+--         data)
