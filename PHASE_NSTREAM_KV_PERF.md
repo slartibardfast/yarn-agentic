@@ -3119,6 +3119,19 @@ State-save under user override (ctx-checkpoints + cache-reuse + prompt-cache res
 
 **Tier 5 status: CLOSED at T5.9.** All T5 binding gates GREEN; paged BACKING delivers the user override's high-ctx feasibility capability (ctx 1M NP=8 NP=8 admits at finite t/s; admission emits 503 + Retry-After cleanly; server stays up).
 
+### T5.9.E — Closure-audit honest notes (2026-05-23)
+
+Post-closure audit (per CLAUDE.md §4 "no follow-up cover") surfaced five gaps. Two were fixed in-place at closure:
+
+- **Gap (2): trace producer didn't emit pool_capacity header.** Fixed by adding `llama_paged_kv_trace_emit_pool_header(N, B)` called from `llama_kv_cache_init` after `paged.init`. `PoolBoundsRespected` invariant now binds without manual file fixup. Validator output: "OK: 129 events validated; all allocator invariants hold". Sub commit `bc36867`.
+- **Gap (3): 500 "Input prompt is too big" collided semantically with 503 "Service Unavailable" at the bigctx admission surface.** Fixed by adding `ERROR_TYPE_PAYLOAD_TOO_LARGE` mapping to HTTP 413, then routing the "prompt physically can't fit per-slot cap" path through it. Net effect: 413 means "permanent — don't retry as-is"; 503 means "transient — retry after a few seconds". Sub commit `05cd946`.
+
+Three remain as honest acknowledgements rather than action items:
+
+- **Gap (4): `find_slot` admission pre-check is dead code at production AUTO mode.** `seed_identity_per_stream` pre-allocates each stream's `nbps` blocks at init, so `hyp_owned[s] = nbps` and `hyp_n_free = 0` from the start. The deficit loop's `needed - hyp_owned[sid]` is ≤ 0 as long as `written ≤ nbps × BLOCK_SIZE_TOKENS` (i.e., as long as the stream stays within its per-stream slice — which it always does under AUTO). So the pool-exhausted branch never fires at production. The 503 wiring exercises only at `--kv-pool-blocks N` user override. This is *intended* per the user-locked "zero behaviour change at production" angle, but it means a regression in the admission code path would only surface in feasibility-bench runs, not in production CI. Worth flagging for future maintainers.
+- **Gap (5): `build_defrag` per-position-via-block_table rework is only exercised by `test-paged-defrag-preserves-contents` (a small synthetic allocator test).** Production runs with `defrag_thold = -1.0f` (defrag disabled in steady state), so the new arithmetic was never run on a 64-layer model at production sizes. If a future workload enables defrag at scale, the first run is the empirical test. Mitigation: the unit test does exercise the per-(seq, position) byte-offset formula and asserts byte equality; the production-scale risk is multi-layer composition (e.g., layer-to-layer accounting in the caller-applied byte-move via T3.6 generic CUDA Q→Q same-type cpy), not the formula itself.
+- **State-save deferral remains uncharacterised.** The note above (deferral #4) says "future T5.9.X or T6 iteration can rework the state-save reader through block_table indirection". That sentence was speculative — I never analysed `llama_data_write_buffer::get_tensor_data_split` end-to-end to estimate effort. Honest answer: don't know if it's a small or large rework. Production AUTO mode is byte-equivalent to T5.8, so state-save works there; bigctx sibling profile disables it via `--ctx-checkpoints 0 --cache-ram 0`. Whether bigctx state-save is worth fixing depends on whether bigctx becomes a real production workload, which is itself open.
+
 ---
 
 ## Open questions and refinements
