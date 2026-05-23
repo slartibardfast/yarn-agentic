@@ -219,6 +219,29 @@ FreeOrOwned ==
 \* PagedKVByteIdentity.tla.
 DefragPreservesOwnership == TRUE
 
+\* PoolBoundsRespected — every block id in any block_table is in
+\* [0, NBlocks). The bound is implicit in TypeOK (Seq(0..(NBlocks-1)))
+\* but expressed here explicitly as defence-in-depth for T5.9 paged
+\* BACKING. Composes with paged_kv_pool_sizing.allium::PoolBoundsRespected.
+PoolBoundsRespected ==
+    \A s \in Seqs:
+        \A i \in 1..Len(block_table[s]):
+            block_table[s][i] \in 0..(NBlocks-1)
+
+\* PoolExhaustionRecorded — when a WriteTokens action cannot allocate
+\* enough blocks, an OOB entry is appended to alloc_history. The
+\* model's WriteTokens action (line 123-128) already implements this;
+\* this invariant checks it bound.
+PoolExhaustionRecorded ==
+    \* Whenever Len(free_list) < deficit during a WriteTokens, the
+    \* alloc_history records OOB. Captured as: if any seq has
+    \* written_tokens > 0 but its block_table is empty, then OOB
+    \* must appear in alloc_history (the only way that state is
+    \* reachable in this model).
+    \A s \in Seqs:
+        (written_tokens[s] > 0 /\ Len(block_table[s]) = 0)
+            => (\E i \in 1..Len(alloc_history): alloc_history[i][2] = OOB)
+
 ----------------------------------------------------------------------------
 (* Temporal property: EventuallyAllocSucceedsUnlessFull. *)
 ----------------------------------------------------------------------------

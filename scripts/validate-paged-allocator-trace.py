@@ -15,6 +15,14 @@ Asserts the following invariants at every tick:
                               its current last block before this alloc
     DefragPreservesOwnership — every DEFRAG_MOVE preserves the (seq,
                               logical_pos) -> block mapping
+    PoolBoundsRespected    — every block_id in ALLOC / DEFRAG_MOVE / FREE
+                              is in [0, pool_capacity). Bound by an
+                              optional NDJSON header line
+                              {"pool_capacity": N, "block_size_tokens": 64}
+                              emitted at trace-init under
+                              LLAMA_T5_TRACE_BUILD developer builds. If
+                              the header is absent (legacy trace),
+                              PoolBoundsRespected is skipped.
 
 Exit codes:
     0 = trace is valid (all invariants hold)
@@ -55,6 +63,7 @@ def validate(stream: Any) -> int:
     seq_blocks: dict[int, list[int]] = defaultdict(list)  # seq -> ordered block_ids
     violations: list[str] = []
     events_seen = 0
+    pool_capacity: int | None = None  # set by header line if present
 
     for lineno, raw_line in enumerate(stream, start=1):
         line = raw_line.strip()
@@ -65,6 +74,12 @@ def validate(stream: Any) -> int:
         except json.JSONDecodeError as exc:
             print(f"INVALID FORMAT at line {lineno}: {exc}", file=sys.stderr)
             return 2
+        # Header line (T5.9): {"pool_capacity": N, "block_size_tokens": 64}
+        # arrives once at trace-init under LLAMA_T5_TRACE_BUILD developer
+        # builds. Records without an "op" field are treated as the header.
+        if "op" not in evt and "pool_capacity" in evt:
+            pool_capacity = int(evt["pool_capacity"])
+            continue
         events_seen += 1
         op = evt.get("op")
         seq = evt.get("seq")
@@ -75,6 +90,17 @@ def validate(stream: Any) -> int:
                 f"tick={tick}: unknown op {op!r} (line {lineno})"
             )
             continue
+
+        # PoolBoundsRespected (T5.9): every block_id touched in any op
+        # must be in [0, pool_capacity). Only checked when the header
+        # set pool_capacity; legacy traces (no header) skip this check.
+        if pool_capacity is not None and isinstance(block_id, int):
+            if block_id < 0 or block_id >= pool_capacity:
+                violations.append(
+                    f"tick={tick} {op}: PoolBoundsRespected violated — "
+                    f"block {block_id} outside [0, {pool_capacity}) "
+                    f"(line {lineno})"
+                )
 
         if op == "ALLOC":
             # Check BlockUniquelyOwned: block_id must not already be owned.
