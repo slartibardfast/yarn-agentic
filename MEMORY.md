@@ -9027,3 +9027,59 @@ satisfy §4. The framing question is not "are the gaps named honestly?"
 *place*?" — load-bearing gaps belong as subtasks under the parent
 step, not in a deferrals list. A deferral that, if it never lands,
 falsifies the step's stated goal is a subtask in disguise.
+
+
+## T5.9 closure (2026-05-23) — Tier 5 re-closed same day as reopen
+
+**Status.** Paged BACKING + admission gate landed. Tier 5 CLOSED at T5.9.
+Parent submodule HEAD `e8ab38be` (T5.9.B' fix-forward). Parent repo HEAD
+`3b87046` (PHASE doc closure). All seven binding gates GREEN.
+
+**What landed.** T5.9.A (spec + TLA + tests) → T5.9.B (block-major layout
+flip + `seed_identity_per_stream` + CLI override + find_slot admission)
+→ T5.9.B' (n_kv cap + ALLOC_FAILED wiring) → T5.9.C (bench harness +
+sibling profile + ledger) → T5.9.D (gate sweep) → T5.9.E (closure docs).
+
+**Two same-day gap surfaces, both fixed inline (per §4 "no follow-up cover"):**
+
+(1) ggml's view nbytes assertion uses contiguous-stride bytes computed
+from ne[] alone — manual nb1/nb2/nb3 args don't reduce the byte budget.
+Under user override with smaller physical pool, the K/V view's
+`ne[1]=n_kv × ne[3]=n_seq_in_batch × bytes_per_pos` overshot the source's
+`BLOCK × n_head_per_dev × total_pool_blocks × bytes_per_pos`. Fix: cap
+`n_kv` at construction to `min(kvps_or_size, BLOCK × total_pool_blocks /
+n_stream)`. At auto-size this is a no-op (cap == kvps). Per-row K-bound
+in the FA per-slot-kv kernel still masks beyond active position.
+
+(2) Pool exhaustion in `find_slot` previously returned `false` → server
+"Input prompt is too big" 500. User-locked T5.9 spec was 503 + Retry-After.
+Fix: thread a `last_find_slot_fail_reason` enum on `llama_kv_cache`;
+admission failure sets POOL_EXHAUSTED; `llama_decode_internal` maps that
+to `GGML_STATUS_ALLOC_FAILED`, which the server's existing 503+Retry-After
+path consumes. Legacy `KV_CACHE_FULL` failures keep the historical 500.
+
+**New deferral introduced at T5.9.B' (out-of-scope per user-locked angles):**
+
+State-save under user-override paged BACKING (ctx-checkpoints,
+cache-reuse, prompt-cache restore) is not supported in this release.
+The K/V-tensor-bytes reader assumes per-stream linear stride; paged
+BACKING under user override is block-major and smaller. Bigctx sibling
+profile disables those features via `--ctx-checkpoints 0 --cache-ram 0`.
+Production AUTO mode is unaffected (auto-sized buffer is byte-equivalent
+to T5.8). A future T5.9.X (or T6) iteration can rework the state-save
+reader through `block_table` indirection. This deferral satisfies §4 by
+being named, scoped, and falsifiability-tested: production state-save
+continues to work; user-override state-save is documented as not
+supported.
+
+**Lessons.**
+- `ggml_view_4d`'s assertion uses CONTIGUOUS-stride bytes from ne[],
+  ignoring manual nb1/nb2/nb3 args. Manual strides don't affect the
+  byte-budget check; only ne[1..3] do. Caps go on ne, not nb.
+- Per-row K-bound (src[5] of FA per-slot-kv) is the safety net under
+  paged BACKING — it masks beyond active position regardless of the
+  view's ne[1] cap, so the cap can be tight without correctness loss.
+- find_slot's return-value semantic was conflated for two failure modes
+  (kv-cache-full vs paged-pool-exhausted); adding a fail-reason enum
+  was the surgical disambiguation that wired 503 + Retry-After to the
+  pool-exhaustion path without breaking the legacy "too big" 500.
