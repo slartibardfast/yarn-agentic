@@ -20,3 +20,4 @@ specs/**/*_TTrace_*.bin
 
 # GPU coordination state (volatile, per-host)
 coord/
+data/**/*.sqlite
