@@ -76,7 +76,9 @@ Populated at each T5.x close. Format: <Tier 5 card> | <date> |
 | T5.4 | 2026-05-23 | M3-steady NP=8 (bench-t3.8-m3, CTX_PER_SLOT=8192) | 1-3 | **26.50** | **0.14** | **GP5.a Bundle A close PASS.** 3 runs: 26.464, 26.535, 26.509 t/s. Mean 26.50 vs T4 C1-steady baseline 26.49 (+0.04%) — comfortably within ±2% band [25.96, 27.02]. Shadow allocator + LLAMA_T5_TRACE OFF-path add no measurable cost. data/t5.4-bundle-a-close-20260523-010415/. |
 | T5.4 | _pending_ | trace validator 60s | — | — | — | GP5.spec: validate-paged-allocator-trace.py OK on production-shape session (defer to T5.8 or run separately under LLAMA_T5_TRACE=1) |
 | T5.4 | _pending_ | trace validator 60s | — | — | — | GP5.spec: validate-paged-allocator-trace.py OK on production-shape session |
-| T5.5 | _pending_ | ncu PSKV kernel | — | — | — | GP5.kernel: regs ≤ 254, occ ≥ 25%, μs ≤ 133 |
+| T5.5 | 2026-05-23 | verify-production-determinism | 1 | — | — | ACCEPTANCE PASS @ 1455 MHz, NP_LIST="1 2 4 8", CTX_CHECKPOINTS=3 — kernel block_table indirection landed (legacy nullptr branch preserved). Paged path COMPILED but not yet exercised; first exercise at T5.6. |
+| T5.5 | _pending_ | ncu PSKV kernel | — | — | — | GP5.kernel: regs ≤ 254, occ ≥ 25%, μs ≤ 133 (defer to T5.8 closure with paged path active) |
+| T5.6 | 2026-05-23 | verify-production-determinism | 1 | — | — | **ACCEPTANCE PASS** @ 1455 MHz, NP_LIST="1 2 4 8", CTX_CHECKPOINTS=3 — paged WRITE (SET_ROWS view reshape, inp_kv_idxs flipped to paged formula, inp_block_table populator) + READ (kernel uses paged_nb12/13 + block_table src[6]) end-to-end. Cross-NP slot byte-identical to NP=1; cross-NP slot-0 matrix BYTE-IDENTICAL; batch-shape invariance 4/4 PASS. Production paged path active for kv.n_stream > 1; NP==1 retains legacy contig branch. |
 | T5.8 | _pending_ | M1 NP=8 final | — | — | — | GP5.a hard gate close |
 | T5.8 | _pending_ | M2 staggered NP=8 final | — | — | — | GP5.b numeric record (NOT hard gate post-reframe) |
 | T5.8 | _pending_ | M4 high-ctx feasibility | — | — | — | **GP5.b feasibility** hard gate (Path C reframe) |
