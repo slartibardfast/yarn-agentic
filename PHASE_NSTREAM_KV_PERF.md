@@ -2961,7 +2961,9 @@ T4 lifts the pre-T4 `active_pp_slot_id` PrefillSerialisationGate from the server
 
 ---
 
-## Tier 5 closure (2026-05-23) — audit-grade A/S/M/E/C
+## Tier 5 closure attempt (2026-05-23) — REOPENED same day
+
+**Reopen note (2026-05-23):** the closure below was finalised at the addressing/kernel/defrag capability layer and named paged BACKING as a "forward-looking deferral". User correction same day: **paged BACKING is a T5.9 subtask, not forward-looking work** — it is the load-bearing piece of the user override's high-ctx feasibility goal (`[[project_t5_probe_falsified_path_c_override]]`). Without it, GP5.b feasibility is honestly only half-delivered (addressing live; backing-buffer still contig-sized). Per CLAUDE.md §4 ("No follow-up cover") + §5 (reopen with explicit iteration-log note), T5 is reopened to `[ ]` with **T5.9 — paged BACKING** as the binding subtask. T5.8 closure infrastructure (audit-grade A/S/M/E/C below) is preserved as the foundation T5.9 builds on; T5 closes again only when T5.9 is GREEN.
 
 ### T5.A — Anchor
 
@@ -3017,11 +3019,39 @@ The honest reading: T5 landed the **paged ADDRESSING capability**; the **paged B
 
 **Forward-looking work named in this closure (NOT gaps — capability not in T5's scope):**
 
-1. **Paged BACKING** (cells[] → block-pool peak-concurrent buffer sizing). The buffer-allocation site at `llama_kv_cache_init` still sizes for `n_ctx × n_stream`. Replacement is the lever that actually unlocks ctx ≥ 1M NP=8 workloads.
-2. **Kernel `block_table == nullptr` legacy branch removal** in `ggml-cuda/fattn-per-slot-kv-singlewarp-sm75.cu`. Unreachable in production after T5.7b's always-on `set_block_table`. Removal requires non-trivial test fill rewrites for `test-fattn-per-slot-kv-{ncols,dispatch-np}-invariance` (K layouts differ paged vs legacy at ne11 > BLOCK_SIZE).
-3. **Graph-level defrag integration** into `llama_kv_cache_defrag_internal` (per OpenQ-T5-B). `defrag_thold = -1.0f` default in production, so the trigger path is not exercised. The allocator-level `defrag()` method (T5.7c) and its binding test remain available for the integration.
+1. **Kernel `block_table == nullptr` legacy branch removal** in `ggml-cuda/fattn-per-slot-kv-singlewarp-sm75.cu`. Unreachable in production after T5.7b's always-on `set_block_table`. Removal requires non-trivial test fill rewrites for `test-fattn-per-slot-kv-{ncols,dispatch-np}-invariance` (K layouts differ paged vs legacy at ne11 > BLOCK_SIZE).
+2. **Graph-level defrag integration** into `llama_kv_cache_defrag_internal` (per OpenQ-T5-B). `defrag_thold = -1.0f` default in production, so the trigger path is not exercised. The allocator-level `defrag()` method (T5.7c) and its binding test remain available for the integration.
 
-**Tier 5 status: CLOSED at the addressing/kernel/defrag capability layer.** The infrastructure to support heterogeneous-length multi-stream workloads and high-ctx scenarios is in tree, with binding tests + trace validator + audit-grade closure documentation. The next phase (paged BACKING) is independently scoped and can be picked up against this foundation.
+**Tier 5 status: REOPENED at T5.9.** T5.1–T5.8 infrastructure (allocator + trace + spec + addressing layer + bake-out) is in tree as the foundation; **T5.9 paged BACKING** binds Tier 5 closure on the user override's high-ctx feasibility goal.
+
+### T5.9 — paged BACKING (REOPEN binding subtask)
+
+**Anchor.** GP5.b feasibility was honestly split at T5.8: addressing/kernel layer live, backing-buffer layer still contig-sized (`n_ctx_per_stream × n_stream × n_layer × n_head_kv × head_dim × Q4_0` at `llama_kv_cache_init`). Ctx 8M NP=8 OOMs at KV buffer alloc as documented in `data/t5-probe-findings.md`. The user override scoped T5 as "forward-looking infra for ctx ≥ 1M workloads where contiguous can't allocate" — that goal is BACKING-bound, not ADDRESSING-bound. T5.9 closes the gap.
+
+**Scope.** Replace the contig KV buffer allocation in `llama_kv_cache_init` with a block-pool sized to peak-concurrent blocks. Paged ADDRESSING (`block_table` lookups in WRITE / READ / K-shift / defrag) is unchanged — it already operates on logical blocks. T5.9 changes the *physical sizing* the allocator hands out blocks from.
+
+**Open decisions (to lock at T5.9 scoping):**
+
+1. **Sizing policy.** Static at init (`peak_blocks_per_stream × n_stream` with an explicit `--kv-pool-blocks` CLI to override)? Dynamic high-water (grow on demand up to a ceiling)? Initial recommendation: static at init with a CLI knob, growth-policy deferred — keeps the buffer-allocation site simple, avoids interaction with `ggml_backend_buffer` lifecycle.
+2. **Pool exhaustion semantics.** When all blocks are in use and a new prompt arrives: (a) reject admission (clean composition with T4 chunked-prefill admission — the admission loop sees an `alloc_block` failure and skips that slot), (b) evict longest-idle slot (more complex, requires slot-lifecycle wiring), (c) error to client. Initial recommendation: (a).
+3. **K-shift composition.** Current `build_k_shift` per T5.7a already operates on paged blocks (per-(device, stream) inp_K_shift). Re-verify under reduced pool size that K-shift's stream-internal block enumeration is correct when `total_blocks(pool) < n_ctx × n_stream / BLOCK_SIZE`.
+4. **Defrag composition.** T5.7c allocator-level `defrag()` returns logical moves; the caller-applied byte-move via T3.6 generic CUDA Q→Q same-type non-contig cpy needs to handle the smaller physical pool. Likely no change required (defrag is logical) — re-verify at T5.9.
+5. **DFlash composition.** Per-slot scratch sizing in DFlash multi-slot phases assumes the legacy contig layout for per-slot KV slice addressing. Likely requires a re-binding via the `block_table` lookups already in place; needs explicit verification.
+
+**Mechanism (sketch).** `llama_kv_cache_init` at the K/V tensor creation site currently sizes `kv_size = n_ctx × n_stream`. Replace with `kv_size = total_pool_blocks × BLOCK_SIZE`. The `block_table` per-stream lookups in WRITE/READ already index the buffer at `bid × paged_nb13` byte offset — that arithmetic is independent of whether `bid ∈ [0, n_ctx × n_stream / BLOCK_SIZE)` (legacy nominal-max sizing) or `bid ∈ [0, total_pool_blocks)` (T5.9 sized-to-pool). Allocator already manages logical bid → physical-bid identity; T5.9 just shrinks the physical range.
+
+**Binding gates (T5.9):**
+
+- **GP5.9.feasibility (HARD):** ctx 8M NP=8 (per-stream 1M) allocates + decodes to completion at finite t/s. This is the gate the user override anchored on; T5.9 closure binds on it.
+- **GP5.9.regression:** production NP=2 + Hadamard + DFlash byte-identical to T5.8 baseline (no regression at production sizes).
+- **GP5.9.NPC:** verify-production-determinism NP={1,2,4,8} ACCEPTANCE PASS post-T5.9.
+- **GP5.9.DFlash:** test-dflash-{np-invariance, np-multislot, closure} GREEN.
+- **GP5.9.K-shift:** test-kv-shift-per-stream {LAYER, GRAPH} GREEN under reduced pool size.
+- **GP5.9.defrag:** test-kv-defrag-per-stream {LAYER, GRAPH} GREEN; test-paged-defrag-preserves-contents GREEN.
+- **GP5.9.exhaustion:** new test — drive pool to exhaustion via N concurrent prompts at high per-prompt ctx; assert clean admission rejection (no crash, error to client, server stays up).
+- **GP5.9.spec:** `paged_kv_pool_sizing.allium` (new) — sizing policy contract + exhaustion-handling contract. Trace validator extended for `PoolBoundsRespected` invariant.
+
+**Scope decisions to lock before implementation:** the five open decisions above. Worth a plan-mode pass to surface tradeoffs explicitly before coding.
 
 ---
 
