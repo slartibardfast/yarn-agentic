@@ -1,0 +1,141 @@
+{
+  "cell_id": "no-hadamard",
+  "timestamp": "2026-05-23T19:49:26.398577Z",
+  "engine": "ik_llama",
+  "engine_build": "4f4da34f",
+  "model": {
+    "path": "<see profile>",
+    "weights_dtype": "<see profile>",
+    "n_params": null,
+    "n_layers": null,
+    "n_head_kv": null
+  },
+  "config": {
+    "ctx_per_slot": 262144,
+    "parallel": 2,
+    "batch_size": 2048,
+    "ubatch_size": 512,
+    "kv_type_k": "q4_0",
+    "kv_type_v": "q4_0",
+    "k_cache_hadamard": false,
+    "v_cache_hadamard": false,
+    "flash_attn": true,
+    "dflash": true,
+    "draft_max": 4,
+    "kv_pool_blocks": null,
+    "defrag_thold": 0.1,
+    "ctx_checkpoints": 64,
+    "cache_ram": 40960,
+    "device": "CUDA0,CUDA1",
+    "split_mode": "graph",
+    "tensor_split": "1,1"
+  },
+  "clocks": {
+    "gpu_mhz": 1455,
+    "locked": true
+  },
+  "workload": {
+    "label": "gate0-prompts-np8-concurrent",
+    "prompts": 8,
+    "max_tokens": 256,
+    "temp": 0.0,
+    "seed": 42,
+    "fire_pattern": "concurrent",
+    "ignore_eos": true
+  },
+  "results": {
+    "wall_secs": 116.4932746887207,
+    "total_input_toks": null,
+    "total_output_toks": 512,
+    "tok_per_sec_aggregate": 4.395103505915725,
+    "tok_per_sec_per_slot_mean": 8.700346516270924,
+    "tok_per_sec_per_slot_p50": 7.793190922387255,
+    "tok_per_sec_per_slot_p99": 9.607502110154593,
+    "ttft_s_mean": null,
+    "ttft_s_p50": null,
+    "ttft_s_p99": null,
+    "tpot_s_mean": null,
+    "per_request": [
+      {
+        "idx": 0,
+        "status": 200,
+        "tokens": 256,
+        "latency_s": 26.645843744277954,
+        "ttft_s": null,
+        "decode_s": null
+      },
+      {
+        "idx": 1,
+        "status": 0,
+        "tokens": 0,
+        "latency_s": 116.492258310318,
+        "ttft_s": null,
+        "decode_s": null,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 2,
+        "status": 200,
+        "tokens": 256,
+        "latency_s": 32.849188804626465,
+        "ttft_s": null,
+        "decode_s": null
+      },
+      {
+        "idx": 3,
+        "status": 0,
+        "tokens": 0,
+        "latency_s": 116.49169301986694,
+        "ttft_s": null,
+        "decode_s": null,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 4,
+        "status": 0,
+        "tokens": 0,
+        "latency_s": 116.49145746231079,
+        "ttft_s": null,
+        "decode_s": null,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 5,
+        "status": 0,
+        "tokens": 0,
+        "latency_s": 116.49107480049133,
+        "ttft_s": null,
+        "decode_s": null,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 6,
+        "status": 0,
+        "tokens": 0,
+        "latency_s": 116.49097466468811,
+        "ttft_s": null,
+        "decode_s": null,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 7,
+        "status": 0,
+        "tokens": 0,
+        "latency_s": 116.49101948738098,
+        "ttft_s": null,
+        "decode_s": null,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      }
+    ]
+  },
+  "instrumentation": {
+    "defrag_events": null,
+    "admission_events_503": null,
+    "admission_events_413": null,
+    "dispatch_multi_seq_count": null,
+    "vram_kv_buffer_mib": null,
+    "vram_compute_buffer_mib": null,
+    "graph_pool_size": null
+  },
+  "notes": ""
+}

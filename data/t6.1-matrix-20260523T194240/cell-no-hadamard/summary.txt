@@ -1,0 +1,9 @@
+=== T6 cell summary: no-hadamard ===
+engine=ik_llama build=4f4da34f
+workload=gate0-prompts-np8-concurrent max_tokens=256 ignore_eos=True
+clocks=1455 MHz locked
+wall_secs=116.49
+total_output_toks=512
+tok_per_sec_aggregate=4.40
+tok_per_sec_per_slot_mean=8.70
+status_counts={200: 2, 0: 6}

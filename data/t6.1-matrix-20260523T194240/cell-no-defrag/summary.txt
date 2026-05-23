@@ -1,0 +1,9 @@
+=== T6 cell summary: no-defrag ===
+engine=ik_llama build=4f4da34f
+workload=gate0-prompts-np8-concurrent max_tokens=256 ignore_eos=True
+clocks=1455 MHz locked
+wall_secs=169.31
+total_output_toks=1765
+tok_per_sec_aggregate=10.42
+tok_per_sec_per_slot_mean=3.10
+status_counts={200: 8}
