@@ -8973,3 +8973,57 @@ the route there. (3) M3-staggered's 5s gaps don't stress the
 admission policy — for a workload that actually exercises chunked
 admission (long prompts or burst short prompts) future T4.7-equivalent
 gates would be more binding.
+
+---
+
+## 2026-05-23 — T5 reopened same day; paged BACKING is T5.9, not "forward-looking deferral"
+
+**What happened.** T5.8 closure was finalised earlier 2026-05-23 with paged
+BACKING named as a "forward-looking deferral" (PHASE doc T5.C list item
+#1). Same day, user correction: paged BACKING is a **T5.9 subtask**, not
+forward-looking work, because it is the load-bearing piece of the user
+override's high-ctx feasibility goal (the override that re-anchored T5
+when T5.0-probe falsified the original numeric uplift premise — see
+prior MEMORY entry on `project_t5_probe_falsified_path_c_override`).
+
+Without paged BACKING, GP5.b feasibility is honestly only half-delivered:
+addressing layer is end-to-end live, but the KV buffer is still sized
+`n_ctx_per_stream × n_stream × n_layer × n_head_kv × head_dim × Q4_0`
+at `llama_kv_cache_init` — so ctx 8M NP=8 OOMs at the buffer alloc site
+as documented in `data/t5-probe-findings.md`. That is the gap T5 was
+re-scoped to close; calling it "deferral" was misnamed.
+
+**Correction.** Per CLAUDE.md §4 (No follow-up cover — every gap is a
+subtask, not a footnote on a CLOSED step) + §5 (a step that was marked
+`[x]` and later found to be incomplete is reopened to `[ ]` with a note
+in the iteration log naming what forced the reopen):
+
+- PHASE_NSTREAM_KV_PERF.md T5 status changed CLOSED → REOPENED at T5.9.
+- Reopen note added at top of the existing T5 closure section.
+- Paged BACKING removed from the "forward-looking deferrals" list (items
+  #2 kernel nullptr branch removal and #3 graph-level defrag integration
+  stay — those are genuinely independent of T5's scope).
+- T5.9 stub section added: anchor, scope, five open decisions (sizing
+  policy / exhaustion semantics / K-shift composition / defrag
+  composition / DFlash composition), mechanism sketch, eight binding
+  gates (GP5.9.feasibility through GP5.9.spec).
+- T5.1–T5.8 infrastructure (allocator + trace + spec + addressing layer
+  + bake-out) is preserved as the foundation T5.9 builds on.
+
+**Why it matters going forward.** The T5.8 audit-grade closure pattern
+(A/S/M/E/C) is sound; the failure mode was naming the load-bearing
+unfinished piece as "next phase / forward-looking" instead of as a
+subtask under the parent step. Future closure sections must apply the
+§4 test ("would this step still be [x] with binding verification if
+this scheduled work were never done?") to anything in the
+forward-looking list. If the answer is "no", it stays as a subtask, the
+parent stays open. Auto-memory `project_t5_8_tier_5_closed.md` is
+updated to reflect the reopen; PHASE commit on parent is the next
+commit after `0179b71` (T4 closure).
+
+**Lesson.** Audit-grade closure documentation does not by itself
+satisfy §4. The framing question is not "are the gaps named honestly?"
+(T5.8 closure did pass that bar) but "are the gaps named in the right
+*place*?" — load-bearing gaps belong as subtasks under the parent
+step, not in a deferrals list. A deferral that, if it never lands,
+falsifies the step's stated goal is a subtask in disguise.
