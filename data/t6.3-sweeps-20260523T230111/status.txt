@@ -1,0 +1,10 @@
+draftmax-2 PASS
+draftmax-3 PASS
+draftmax-5 PASS
+draftmax-6 PASS
+np1-dflash PASS
+np1-nodflash PASS
+np2-dflash PASS
+np2-nodflash PASS
+np4-dflash PASS
+np4-nodflash PASS

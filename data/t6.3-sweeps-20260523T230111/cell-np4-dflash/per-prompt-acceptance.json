@@ -1,0 +1,160 @@
+{
+  "cell_dir": "/home/llm/yarn-agentic/data/t6.3-sweeps-20260523T230111/cell-np4-dflash",
+  "n_release_events": 5,
+  "n_real_tasks": 4,
+  "n_warmup": 1,
+  "per_task": [
+    {
+      "slot": 0,
+      "task": 3,
+      "n_past_at_release": 46,
+      "accept_count": 23,
+      "gen_count": 28,
+      "acceptance_rate": 0.8214285714285714,
+      "dflash_cum_stat": {
+        "calls_bind": 1,
+        "calls_gen": 7,
+        "calls_accept": 14,
+        "gen_drafts": 14,
+        "acc_drafts": 12,
+        "gen_tokens": 56,
+        "acc_tokens": 46,
+        "dur_bind_ms": 0.001,
+        "dur_gen_ms": 274.358,
+        "dur_accept_ms": 0.003
+      },
+      "prompt_idx": -1,
+      "prompt": "<WARMUP>"
+    },
+    {
+      "slot": 1,
+      "task": 13,
+      "n_past_at_release": 270,
+      "accept_count": 189,
+      "gen_count": 264,
+      "acceptance_rate": 0.7159090909090909,
+      "dflash_cum_stat": {
+        "calls_bind": 1,
+        "calls_gen": 66,
+        "calls_accept": 132,
+        "gen_drafts": 132,
+        "acc_drafts": 110,
+        "gen_tokens": 528,
+        "acc_tokens": 378,
+        "dur_bind_ms": 0.0,
+        "dur_gen_ms": 3981.495,
+        "dur_accept_ms": 0.024
+      },
+      "prompt_idx": 0,
+      "prompt": "Explain the difference between latent diffusion and pixel-space diffusion in two sentences.",
+      "latency_s": 33.84807729721069,
+      "bench_tokens": 256
+    },
+    {
+      "slot": 0,
+      "task": 14,
+      "n_past_at_release": 267,
+      "accept_count": 159,
+      "gen_count": 377,
+      "acceptance_rate": 0.4217506631299735,
+      "dflash_cum_stat": {
+        "calls_bind": 2,
+        "calls_gen": 102,
+        "calls_accept": 204,
+        "gen_drafts": 204,
+        "acc_drafts": 150,
+        "gen_tokens": 816,
+        "acc_tokens": 364,
+        "dur_bind_ms": 0.002,
+        "dur_gen_ms": 6410.337,
+        "dur_accept_ms": 0.033
+      },
+      "prompt_idx": 1,
+      "prompt": "Summarize the plot of King Lear in one paragraph.",
+      "latency_s": 50.83001160621643,
+      "bench_tokens": 256
+    },
+    {
+      "slot": 0,
+      "task": 16,
+      "n_past_at_release": 215,
+      "accept_count": 139,
+      "gen_count": 216,
+      "acceptance_rate": 0.6435185185185185,
+      "dflash_cum_stat": {
+        "calls_bind": 3,
+        "calls_gen": 156,
+        "calls_accept": 312,
+        "gen_drafts": 312,
+        "acc_drafts": 240,
+        "gen_tokens": 1248,
+        "acc_tokens": 642,
+        "dur_bind_ms": 0.002,
+        "dur_gen_ms": 9535.818,
+        "dur_accept_ms": 0.049
+      },
+      "prompt_idx": 2,
+      "prompt": "Write Python code that fits a 2nd-degree polynomial to a list of (x, y) pairs.",
+      "latency_s": 80.9647696018219,
+      "bench_tokens": 194
+    },
+    {
+      "slot": 1,
+      "task": 15,
+      "n_past_at_release": 269,
+      "accept_count": 154,
+      "gen_count": 404,
+      "acceptance_rate": 0.3811881188118812,
+      "dflash_cum_stat": {
+        "calls_bind": 2,
+        "calls_gen": 167,
+        "calls_accept": 334,
+        "gen_drafts": 334,
+        "acc_drafts": 252,
+        "gen_tokens": 1336,
+        "acc_tokens": 686,
+        "dur_bind_ms": 0.0,
+        "dur_gen_ms": 10438.264,
+        "dur_accept_ms": 0.053
+      },
+      "prompt_idx": 3,
+      "prompt": "What are the main causes of the Peloponnesian War?",
+      "latency_s": 86.33920764923096,
+      "bench_tokens": 256
+    }
+  ],
+  "per_prompt_summary": [
+    {
+      "prompt_idx": 0,
+      "prompt": "Explain the difference between latent diffusion and pixel-space diffusion in two sentences.",
+      "n_completions": 1,
+      "accept_total": 189,
+      "gen_total": 264,
+      "acceptance_rate": 0.7159090909090909
+    },
+    {
+      "prompt_idx": 1,
+      "prompt": "Summarize the plot of King Lear in one paragraph.",
+      "n_completions": 1,
+      "accept_total": 159,
+      "gen_total": 377,
+      "acceptance_rate": 0.4217506631299735
+    },
+    {
+      "prompt_idx": 2,
+      "prompt": "Write Python code that fits a 2nd-degree polynomial to a list of (x, y) pairs.",
+      "n_completions": 1,
+      "accept_total": 139,
+      "gen_total": 216,
+      "acceptance_rate": 0.6435185185185185
+    },
+    {
+      "prompt_idx": 3,
+      "prompt": "What are the main causes of the Peloponnesian War?",
+      "n_completions": 1,
+      "accept_total": 154,
+      "gen_total": 404,
+      "acceptance_rate": 0.3811881188118812
+    }
+  ]
+}

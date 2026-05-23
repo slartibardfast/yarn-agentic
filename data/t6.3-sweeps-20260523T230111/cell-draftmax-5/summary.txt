@@ -1,0 +1,9 @@
+=== T6 cell summary: draftmax-5 ===
+engine=ik_llama build=3ee7816f
+workload=gate0-prompts-np8-concurrent max_tokens=256 ignore_eos=True
+clocks=1455 MHz locked
+wall_secs=176.65
+total_output_toks=1991
+tok_per_sec_aggregate=11.27
+tok_per_sec_per_slot_mean=3.32
+status_counts={200: 8}

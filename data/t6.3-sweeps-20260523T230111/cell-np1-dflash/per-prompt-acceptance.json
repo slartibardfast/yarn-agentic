@@ -1,0 +1,64 @@
+{
+  "cell_dir": "/home/llm/yarn-agentic/data/t6.3-sweeps-20260523T230111/cell-np1-dflash",
+  "n_release_events": 2,
+  "n_real_tasks": 1,
+  "n_warmup": 1,
+  "per_task": [
+    {
+      "slot": 0,
+      "task": 3,
+      "n_past_at_release": 46,
+      "accept_count": 23,
+      "gen_count": 28,
+      "acceptance_rate": 0.8214285714285714,
+      "dflash_cum_stat": {
+        "calls_bind": 1,
+        "calls_gen": 7,
+        "calls_accept": 14,
+        "gen_drafts": 14,
+        "acc_drafts": 12,
+        "gen_tokens": 56,
+        "acc_tokens": 46,
+        "dur_bind_ms": 0.001,
+        "dur_gen_ms": 273.628,
+        "dur_accept_ms": 0.003
+      },
+      "prompt_idx": -1,
+      "prompt": "<WARMUP>"
+    },
+    {
+      "slot": 1,
+      "task": 13,
+      "n_past_at_release": 270,
+      "accept_count": 177,
+      "gen_count": 308,
+      "acceptance_rate": 0.5746753246753247,
+      "dflash_cum_stat": {
+        "calls_bind": 1,
+        "calls_gen": 78,
+        "calls_accept": 156,
+        "gen_drafts": 156,
+        "acc_drafts": 132,
+        "gen_tokens": 624,
+        "acc_tokens": 354,
+        "dur_bind_ms": 0.001,
+        "dur_gen_ms": 5178.915,
+        "dur_accept_ms": 0.024
+      },
+      "prompt_idx": 0,
+      "prompt": "Explain the difference between latent diffusion and pixel-space diffusion in two sentences.",
+      "latency_s": 22.331260204315186,
+      "bench_tokens": 256
+    }
+  ],
+  "per_prompt_summary": [
+    {
+      "prompt_idx": 0,
+      "prompt": "Explain the difference between latent diffusion and pixel-space diffusion in two sentences.",
+      "n_completions": 1,
+      "accept_total": 177,
+      "gen_total": 308,
+      "acceptance_rate": 0.5746753246753247
+    }
+  ]
+}

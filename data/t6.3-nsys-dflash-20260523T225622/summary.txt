@@ -1,0 +1,9 @@
+=== T6 cell summary: t6.3-nsys-dflash ===
+engine=ik_llama build=3ee7816f
+workload=gate0-prompts-np8-concurrent max_tokens=256 ignore_eos=True
+clocks=1455 MHz locked
+wall_secs=204.13
+total_output_toks=2048
+tok_per_sec_aggregate=10.03
+tok_per_sec_per_slot_mean=2.95
+status_counts={200: 8}

@@ -1,0 +1,21 @@
+{
+  "per_request": [
+    {
+      "idx": 0,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 24.53860354423523,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 1,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 24.74803638458252,
+      "ttft_s": null,
+      "decode_s": null
+    }
+  ],
+  "wall_secs": 24.748860359191895
+}

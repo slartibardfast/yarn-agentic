@@ -1,0 +1,37 @@
+# T6.3 nsys decode trace — DFlash on at NP=8
+
+Trace: `/home/llm/yarn-agentic/data/t6.3-nsys-dflash-20260523T225622/bench.nsys-rep`
+Capture: delay=50s duration=20s
+Workload: 8 gate0 prompts × 256 tokens, --parallel 2, DFlash on (draft_max=4)
+Clocks: 1455 MHz locked
+
+## Top 25 kernels by total GPU time
+
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+
+26.5,4084981341,25406,160788.1,146527.0,57504,698080,100729.1,ncclDevKernel_AllReduce_Sum_f32_RING_LL(ncclDevKernelArgsStorage<(unsigned long)4096>)
+17.8,2736414667,3055,895716.7,243904.0,97856,21142152,2432971.9,"mul_mat_f16_pinned_kernel_wmma(const __half *, const __half *, float *, int, int, int, int, int, int)"
+13.3,2045448991,37288,54855.4,58528.0,15808,93536,21810.2,"void mul_mat_q_split_k<(ggml_type)2, (int)8, (int)8, (bool)0, (int)4>(const char *, const char *, float *, float *, int, int, int, int, int, int, int)"
+12.2,1875822368,83655,22423.3,3968.0,3903,4196673,275778.5,void cutlass::Kernel2<cutlass_75_wmma_tensorop_h161616gemm_16x16_128x2_tn_align8>(T1::Params)
+8.2,1257081284,15155,82948.3,94432.0,18144,109856,28444.6,"void mul_mat_q_split_k<(ggml_type)2, (int)16, (int)8, (bool)0, (int)4>(const char *, const char *, float *, float *, int, int, int, int, int, int, int)"
+3.0,468412243,11088,42245.0,42240.0,40448,44480,524.1,"void mul_mat_q_split_k<(ggml_type)159, (int)8, (int)8, (bool)0, (int)4>(const char *, const char *, float *, float *, int, int, int, int, int, int, int)"
+2.1,326819154,2812,116223.0,107424.0,99423,223424,29412.1,"void flash_attn_per_slot_kv_singlewarp_kernel<(int)256, (int)256, (ggml_type)2, (ggml_type)2>(const char *, const char *, const char *, const char *, const char *, const int *, const int *, int, float *, float2 *, float, float, float, float, float, unsigned int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int)"
+1.9,297037882,3384,87777.2,87744.0,87328,91840,360.9,"void fused_mul_mat_vec_q<(ggml_type)2, (int)1, (int)4, (int)1>(const void *, const void *, const void *, float *, const char *, const void *, const void *, unsigned long, int, int, int, int, unsigned long, unsigned long, unsigned long, long, ggml_unary_op, float)"
+1.3,198822654,28092,7077.6,2496.0,2111,14528,5671.0,"void cpy_flt<&cpy_1_flt<float, float>>(const char *, char *, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, char **, int)"
+1.3,193652183,325,595852.9,466432.0,164096,1231424,341373.8,"<unnamed>::attention_kernel(const __half *, const __half *, const __half *, const int *, __half *, int, int, int, int, int, int, int, int)"
+1.0,159832947,83289,1919.0,1920.0,1824,2016,28.0,"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, __half, __half, __half, __half, (bool)0, __half, __half, __half, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)"
+1.0,157061338,1638,95886.0,95680.0,95264,98720,669.2,"void fused_mul_mat_vec_q<(ggml_type)2, (int)2, (int)4, (int)1>(const void *, const void *, const void *, float *, const char *, const void *, const void *, unsigned long, int, int, int, int, unsigned long, unsigned long, unsigned long, long, ggml_unary_op, float)"
+1.0,149819400,11221,13351.7,16064.0,7328,50816,4656.5,"void delta_net_recurrent_f32<(int)128, (int)256>(const float *, const float *, const float *, const float *, const float *, const float *, float *, long, long, int, long, long, long, int, unsigned long, unsigned long, unsigned long)"
+0.8,125487363,884,141954.0,142047.0,141247,143264,409.5,"void fused_mul_mat_vec_q<(ggml_type)2, (int)4, (int)4, (int)1>(const void *, const void *, const void *, float *, const char *, const void *, const void *, unsigned long, int, int, int, int, unsigned long, unsigned long, unsigned long, long, ggml_unary_op, float)"
+0.8,123398109,83655,1475.1,1472.0,1280,1984,151.1,"void convert_unary<float, __half>(const void *, T2 *, long)"
+0.8,120240798,1010,119050.3,119040.0,118623,119744,186.7,"void fused_mul_mat_vec_q<(ggml_type)2, (int)3, (int)4, (int)1>(const void *, const void *, const void *, float *, const char *, const void *, const void *, unsigned long, int, int, int, int, unsigned long, unsigned long, unsigned long, long, ggml_unary_op, float)"
+0.7,113744904,25494,4461.6,4416.0,4064,6400,205.5,"void fused_rms_norm_f32<(int)1024, float>(const T2 *, const float *, float *, int, float)"
+0.7,113358456,83655,1355.1,1344.0,1248,4352,190.6,"void convert_unary<__half, float>(const void *, T2 *, long)"
+0.7,106207611,640,165949.4,165984.5,165119,167360,457.3,"void fused_mul_mat_vec_q<(ggml_type)2, (int)5, (int)4, (int)1>(const void *, const void *, const void *, float *, const char *, const void *, const void *, unsigned long, int, int, int, int, unsigned long, unsigned long, unsigned long, long, ggml_unary_op, float)"
+0.7,101716164,48376,2102.6,2112.0,1408,2688,216.3,"void mul_mat_q_split_k_fixup<(int)8, (int)8, (bool)0, (int)4>(float *, const float *, int, int, int)"
+0.5,80281498,43254,1856.0,1728.0,1600,2784,249.6,"void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)1>(const float *, void *, long, long, long)"
+0.4,56667666,325,174362.0,174240.0,173952,175456,355.3,"<unnamed>::q_norm_rope_kernel(const float *, __half *, const __half *, const int *, float, float, int, int, int)"
+0.4,54976854,15251,3604.8,3456.0,2048,5216,789.9,"void mul_mat_q_split_k_fixup<(int)16, (int)8, (bool)0, (int)4>(float *, const float *, int, int, int)"
+0.3,52575968,11221,4685.5,4672.0,4608,4864,28.5,"concat_f32_dim0(const float *, const float *, float *, long, long)"
+0.3,42393230,11221,3778.0,4192.0,2208,13056,1036.0,"void ssm_conv_single_seq_f32_nc4<(int)32>(const float *, const float *, const float *, float *, int, int, int, int, int)"
+0.2,36466631,5624,6484.1,5056.0,3647,15712,2883.7,"void k_set_rows_quant<long, block_q4_0, (int)32, &quantize_f32_q4_0_block>(const float *, const T1 *, T2 *, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long)"

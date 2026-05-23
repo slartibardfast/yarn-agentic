@@ -1,0 +1,96 @@
+{
+  "cell_dir": "/home/llm/yarn-agentic/data/t6.3-sweeps-20260523T230111/cell-np2-dflash",
+  "n_release_events": 3,
+  "n_real_tasks": 2,
+  "n_warmup": 1,
+  "per_task": [
+    {
+      "slot": 0,
+      "task": 3,
+      "n_past_at_release": 46,
+      "accept_count": 23,
+      "gen_count": 28,
+      "acceptance_rate": 0.8214285714285714,
+      "dflash_cum_stat": {
+        "calls_bind": 1,
+        "calls_gen": 7,
+        "calls_accept": 14,
+        "gen_drafts": 14,
+        "acc_drafts": 12,
+        "gen_tokens": 56,
+        "acc_tokens": 46,
+        "dur_bind_ms": 0.0,
+        "dur_gen_ms": 272.864,
+        "dur_accept_ms": 0.002
+      },
+      "prompt_idx": -1,
+      "prompt": "<WARMUP>"
+    },
+    {
+      "slot": 1,
+      "task": 13,
+      "n_past_at_release": 267,
+      "accept_count": 185,
+      "gen_count": 278,
+      "acceptance_rate": 0.6654676258992805,
+      "dflash_cum_stat": {
+        "calls_bind": 1,
+        "calls_gen": 70,
+        "calls_accept": 140,
+        "gen_drafts": 140,
+        "acc_drafts": 114,
+        "gen_tokens": 560,
+        "acc_tokens": 370,
+        "dur_bind_ms": 0.0,
+        "dur_gen_ms": 4317.375,
+        "dur_accept_ms": 0.029
+      },
+      "prompt_idx": 1,
+      "prompt": "Summarize the plot of King Lear in one paragraph.",
+      "latency_s": 36.94359469413757,
+      "bench_tokens": 256
+    },
+    {
+      "slot": 0,
+      "task": 14,
+      "n_past_at_release": 270,
+      "accept_count": 178,
+      "gen_count": 304,
+      "acceptance_rate": 0.5855263157894737,
+      "dflash_cum_stat": {
+        "calls_bind": 2,
+        "calls_gen": 83,
+        "calls_accept": 166,
+        "gen_drafts": 166,
+        "acc_drafts": 138,
+        "gen_tokens": 664,
+        "acc_tokens": 402,
+        "dur_bind_ms": 0.0,
+        "dur_gen_ms": 5356.53,
+        "dur_accept_ms": 0.039
+      },
+      "prompt_idx": 0,
+      "prompt": "Explain the difference between latent diffusion and pixel-space diffusion in two sentences.",
+      "latency_s": 39.41561961174011,
+      "bench_tokens": 256
+    }
+  ],
+  "per_prompt_summary": [
+    {
+      "prompt_idx": 0,
+      "prompt": "Explain the difference between latent diffusion and pixel-space diffusion in two sentences.",
+      "n_completions": 1,
+      "accept_total": 178,
+      "gen_total": 304,
+      "acceptance_rate": 0.5855263157894737
+    },
+    {
+      "prompt_idx": 1,
+      "prompt": "Summarize the plot of King Lear in one paragraph.",
+      "n_completions": 1,
+      "accept_total": 185,
+      "gen_total": 278,
+      "acceptance_rate": 0.6654676258992805
+    }
+  ]
+}

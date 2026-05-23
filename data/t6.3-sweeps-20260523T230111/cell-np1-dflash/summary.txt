@@ -1,0 +1,9 @@
+=== T6 cell summary: np1-dflash ===
+engine=ik_llama build=3ee7816f
+workload=gate0-prompts-np1-concurrent max_tokens=256 ignore_eos=True
+clocks=1455 MHz locked
+wall_secs=22.33
+total_output_toks=256
+tok_per_sec_aggregate=11.46
+tok_per_sec_per_slot_mean=11.46
+status_counts={200: 1}

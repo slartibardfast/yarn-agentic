@@ -1,0 +1,288 @@
+{
+  "cell_dir": "/home/llm/yarn-agentic/data/t6.3-sweeps-20260523T230111/cell-draftmax-2",
+  "n_release_events": 9,
+  "n_real_tasks": 8,
+  "n_warmup": 1,
+  "per_task": [
+    {
+      "slot": 0,
+      "task": 3,
+      "n_past_at_release": 46,
+      "accept_count": 19,
+      "gen_count": 22,
+      "acceptance_rate": 0.8636363636363636,
+      "dflash_cum_stat": {
+        "calls_bind": 1,
+        "calls_gen": 11,
+        "calls_accept": 22,
+        "gen_drafts": 22,
+        "acc_drafts": 20,
+        "gen_tokens": 44,
+        "acc_tokens": 38,
+        "dur_bind_ms": 0.001,
+        "dur_gen_ms": 433.285,
+        "dur_accept_ms": 0.004
+      },
+      "prompt_idx": -1,
+      "prompt": "<WARMUP>"
+    },
+    {
+      "slot": 1,
+      "task": 17,
+      "n_past_at_release": 270,
+      "accept_count": 161,
+      "gen_count": 188,
+      "acceptance_rate": 0.8563829787234043,
+      "dflash_cum_stat": {
+        "calls_bind": 1,
+        "calls_gen": 94,
+        "calls_accept": 188,
+        "gen_drafts": 188,
+        "acc_drafts": 166,
+        "gen_tokens": 376,
+        "acc_tokens": 322,
+        "dur_bind_ms": 0.001,
+        "dur_gen_ms": 5887.943,
+        "dur_accept_ms": 0.033
+      },
+      "prompt_idx": 0,
+      "prompt": "Explain the difference between latent diffusion and pixel-space diffusion in two sentences.",
+      "latency_s": 38.33282804489136,
+      "bench_tokens": 256
+    },
+    {
+      "slot": 0,
+      "task": 18,
+      "n_past_at_release": 267,
+      "accept_count": 144,
+      "gen_count": 221,
+      "acceptance_rate": 0.6515837104072398,
+      "dflash_cum_stat": {
+        "calls_bind": 2,
+        "calls_gen": 122,
+        "calls_accept": 244,
+        "gen_drafts": 244,
+        "acc_drafts": 198,
+        "gen_tokens": 488,
+        "acc_tokens": 326,
+        "dur_bind_ms": 0.002,
+        "dur_gen_ms": 7650.965,
+        "dur_accept_ms": 0.05
+      },
+      "prompt_idx": 1,
+      "prompt": "Summarize the plot of King Lear in one paragraph.",
+      "latency_s": 46.21791100502014,
+      "bench_tokens": 256
+    },
+    {
+      "slot": 1,
+      "task": 19,
+      "n_past_at_release": 277,
+      "accept_count": 143,
+      "gen_count": 224,
+      "acceptance_rate": 0.6383928571428571,
+      "dflash_cum_stat": {
+        "calls_bind": 2,
+        "calls_gen": 206,
+        "calls_accept": 412,
+        "gen_drafts": 412,
+        "acc_drafts": 330,
+        "gen_tokens": 824,
+        "acc_tokens": 608,
+        "dur_bind_ms": 0.001,
+        "dur_gen_ms": 13166.914,
+        "dur_accept_ms": 0.078
+      },
+      "prompt_idx": 2,
+      "prompt": "Write Python code that fits a 2nd-degree polynomial to a list of (x, y) pairs.",
+      "latency_s": 87.01178669929504,
+      "bench_tokens": 256
+    },
+    {
+      "slot": 0,
+      "task": 20,
+      "n_past_at_release": 269,
+      "accept_count": 143,
+      "gen_count": 222,
+      "acceptance_rate": 0.6441441441441441,
+      "dflash_cum_stat": {
+        "calls_bind": 3,
+        "calls_gen": 233,
+        "calls_accept": 466,
+        "gen_drafts": 466,
+        "acc_drafts": 374,
+        "gen_tokens": 932,
+        "acc_tokens": 612,
+        "dur_bind_ms": 0.002,
+        "dur_gen_ms": 14843.246,
+        "dur_accept_ms": 0.098
+      },
+      "prompt_idx": 3,
+      "prompt": "What are the main causes of the Peloponnesian War?",
+      "latency_s": 95.1801929473877,
+      "bench_tokens": 256
+    },
+    {
+      "slot": 1,
+      "task": 21,
+      "n_past_at_release": 278,
+      "accept_count": 164,
+      "gen_count": 182,
+      "acceptance_rate": 0.9010989010989011,
+      "dflash_cum_stat": {
+        "calls_bind": 3,
+        "calls_gen": 297,
+        "calls_accept": 594,
+        "gen_drafts": 594,
+        "acc_drafts": 502,
+        "gen_tokens": 1188,
+        "acc_tokens": 936,
+        "dur_bind_ms": 0.002,
+        "dur_gen_ms": 19102.41,
+        "dur_accept_ms": 0.118
+      },
+      "prompt_idx": 4,
+      "prompt": "Translate to French: The early-morning fog lingered over the harbour until the trawlers cut through it.",
+      "latency_s": 124.50439667701721,
+      "bench_tokens": 256
+    },
+    {
+      "slot": 0,
+      "task": 22,
+      "n_past_at_release": 271,
+      "accept_count": 141,
+      "gen_count": 228,
+      "acceptance_rate": 0.618421052631579,
+      "dflash_cum_stat": {
+        "calls_bind": 4,
+        "calls_gen": 347,
+        "calls_accept": 694,
+        "gen_drafts": 694,
+        "acc_drafts": 546,
+        "gen_tokens": 1388,
+        "acc_tokens": 894,
+        "dur_bind_ms": 0.003,
+        "dur_gen_ms": 22316.68,
+        "dur_accept_ms": 0.137
+      },
+      "prompt_idx": 5,
+      "prompt": "List five practical steps for reducing memory allocations in a hot inner loop in Rust.",
+      "latency_s": 141.5306134223938,
+      "bench_tokens": 256
+    },
+    {
+      "slot": 1,
+      "task": 23,
+      "n_past_at_release": 264,
+      "accept_count": 166,
+      "gen_count": 178,
+      "acceptance_rate": 0.9325842696629213,
+      "dflash_cum_stat": {
+        "calls_bind": 4,
+        "calls_gen": 386,
+        "calls_accept": 772,
+        "gen_drafts": 772,
+        "acc_drafts": 670,
+        "gen_tokens": 1544,
+        "acc_tokens": 1268,
+        "dur_bind_ms": 0.003,
+        "dur_gen_ms": 24663.548,
+        "dur_accept_ms": 0.152
+      },
+      "prompt_idx": 7,
+      "prompt": "Write a haiku about a printing press.",
+      "latency_s": 161.11920833587646,
+      "bench_tokens": 256
+    },
+    {
+      "slot": 0,
+      "task": 24,
+      "n_past_at_release": 266,
+      "accept_count": 140,
+      "gen_count": 228,
+      "acceptance_rate": 0.6140350877192983,
+      "dflash_cum_stat": {
+        "calls_bind": 5,
+        "calls_gen": 461,
+        "calls_accept": 922,
+        "gen_drafts": 922,
+        "acc_drafts": 718,
+        "gen_tokens": 1844,
+        "acc_tokens": 1174,
+        "dur_bind_ms": 0.004,
+        "dur_gen_ms": 29510.301,
+        "dur_accept_ms": 0.183
+      },
+      "prompt_idx": 6,
+      "prompt": "Describe the role of telomeres in cellular aging.",
+      "latency_s": 176.82216143608093,
+      "bench_tokens": 256
+    }
+  ],
+  "per_prompt_summary": [
+    {
+      "prompt_idx": 0,
+      "prompt": "Explain the difference between latent diffusion and pixel-space diffusion in two sentences.",
+      "n_completions": 1,
+      "accept_total": 161,
+      "gen_total": 188,
+      "acceptance_rate": 0.8563829787234043
+    },
+    {
+      "prompt_idx": 1,
+      "prompt": "Summarize the plot of King Lear in one paragraph.",
+      "n_completions": 1,
+      "accept_total": 144,
+      "gen_total": 221,
+      "acceptance_rate": 0.6515837104072398
+    },
+    {
+      "prompt_idx": 2,
+      "prompt": "Write Python code that fits a 2nd-degree polynomial to a list of (x, y) pairs.",
+      "n_completions": 1,
+      "accept_total": 143,
+      "gen_total": 224,
+      "acceptance_rate": 0.6383928571428571
+    },
+    {
+      "prompt_idx": 3,
+      "prompt": "What are the main causes of the Peloponnesian War?",
+      "n_completions": 1,
+      "accept_total": 143,
+      "gen_total": 222,
+      "acceptance_rate": 0.6441441441441441
+    },
+    {
+      "prompt_idx": 4,
+      "prompt": "Translate to French: The early-morning fog lingered over the harbour until the trawlers cut through it.",
+      "n_completions": 1,
+      "accept_total": 164,
+      "gen_total": 182,
+      "acceptance_rate": 0.9010989010989011
+    },
+    {
+      "prompt_idx": 5,
+      "prompt": "List five practical steps for reducing memory allocations in a hot inner loop in Rust.",
+      "n_completions": 1,
+      "accept_total": 141,
+      "gen_total": 228,
+      "acceptance_rate": 0.618421052631579
+    },
+    {
+      "prompt_idx": 6,
+      "prompt": "Describe the role of telomeres in cellular aging.",
+      "n_completions": 1,
+      "accept_total": 140,
+      "gen_total": 228,
+      "acceptance_rate": 0.6140350877192983
+    },
+    {
+      "prompt_idx": 7,
+      "prompt": "Write a haiku about a printing press.",
+      "n_completions": 1,
+      "accept_total": 166,
+      "gen_total": 178,
+      "acceptance_rate": 0.9325842696629213
+    }
+  ]
+}

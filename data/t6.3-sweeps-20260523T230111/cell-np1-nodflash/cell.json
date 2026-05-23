@@ -1,0 +1,79 @@
+{
+  "cell_id": "np1-nodflash",
+  "timestamp": "2026-05-23T23:15:26.302379Z",
+  "engine": "ik_llama",
+  "engine_build": "3ee7816f",
+  "model": {
+    "path": "<see profile>",
+    "weights_dtype": "<see profile>",
+    "n_params": null,
+    "n_layers": null,
+    "n_head_kv": null
+  },
+  "config": {
+    "ctx_per_slot": 262144,
+    "parallel": 2,
+    "batch_size": 2048,
+    "ubatch_size": 512,
+    "kv_type_k": "q4_0",
+    "kv_type_v": "q4_0",
+    "k_cache_hadamard": true,
+    "v_cache_hadamard": true,
+    "flash_attn": true,
+    "dflash": false,
+    "draft_max": null,
+    "kv_pool_blocks": null,
+    "defrag_thold": 0.1,
+    "ctx_checkpoints": 64,
+    "cache_ram": 40960,
+    "device": "CUDA0,CUDA1",
+    "split_mode": "graph",
+    "tensor_split": "1,1"
+  },
+  "clocks": {
+    "gpu_mhz": 1455,
+    "locked": true
+  },
+  "workload": {
+    "label": "gate0-prompts-np1-concurrent",
+    "prompts": 8,
+    "max_tokens": 256,
+    "temp": 0.0,
+    "seed": 42,
+    "fire_pattern": "concurrent",
+    "ignore_eos": true
+  },
+  "results": {
+    "wall_secs": 13.974413633346558,
+    "total_input_toks": null,
+    "total_output_toks": 256,
+    "tok_per_sec_aggregate": 18.319194401768524,
+    "tok_per_sec_per_slot_mean": 18.319941415324397,
+    "tok_per_sec_per_slot_p50": 18.319941415324397,
+    "tok_per_sec_per_slot_p99": 18.319941415324397,
+    "ttft_s_mean": null,
+    "ttft_s_p50": null,
+    "ttft_s_p99": null,
+    "tpot_s_mean": null,
+    "per_request": [
+      {
+        "idx": 0,
+        "status": 200,
+        "tokens": 256,
+        "latency_s": 13.973843812942505,
+        "ttft_s": null,
+        "decode_s": null
+      }
+    ]
+  },
+  "instrumentation": {
+    "defrag_events": null,
+    "admission_events_503": null,
+    "admission_events_413": null,
+    "dispatch_multi_seq_count": null,
+    "vram_kv_buffer_mib": null,
+    "vram_compute_buffer_mib": null,
+    "graph_pool_size": null
+  },
+  "notes": ""
+}

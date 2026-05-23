@@ -1,0 +1,87 @@
+{
+  "cell_id": "np2-nodflash",
+  "timestamp": "2026-05-23T23:17:00.614954Z",
+  "engine": "ik_llama",
+  "engine_build": "3ee7816f",
+  "model": {
+    "path": "<see profile>",
+    "weights_dtype": "<see profile>",
+    "n_params": null,
+    "n_layers": null,
+    "n_head_kv": null
+  },
+  "config": {
+    "ctx_per_slot": 262144,
+    "parallel": 2,
+    "batch_size": 2048,
+    "ubatch_size": 512,
+    "kv_type_k": "q4_0",
+    "kv_type_v": "q4_0",
+    "k_cache_hadamard": true,
+    "v_cache_hadamard": true,
+    "flash_attn": true,
+    "dflash": false,
+    "draft_max": null,
+    "kv_pool_blocks": null,
+    "defrag_thold": 0.1,
+    "ctx_checkpoints": 64,
+    "cache_ram": 40960,
+    "device": "CUDA0,CUDA1",
+    "split_mode": "graph",
+    "tensor_split": "1,1"
+  },
+  "clocks": {
+    "gpu_mhz": 1455,
+    "locked": true
+  },
+  "workload": {
+    "label": "gate0-prompts-np2-concurrent",
+    "prompts": 8,
+    "max_tokens": 256,
+    "temp": 0.0,
+    "seed": 42,
+    "fire_pattern": "concurrent",
+    "ignore_eos": true
+  },
+  "results": {
+    "wall_secs": 24.748860359191895,
+    "total_input_toks": null,
+    "total_output_toks": 512,
+    "tok_per_sec_aggregate": 20.687821280216635,
+    "tok_per_sec_per_slot_mean": 10.388398271472276,
+    "tok_per_sec_per_slot_p50": 10.344255035905894,
+    "tok_per_sec_per_slot_p99": 10.43254150703866,
+    "ttft_s_mean": null,
+    "ttft_s_p50": null,
+    "ttft_s_p99": null,
+    "tpot_s_mean": null,
+    "per_request": [
+      {
+        "idx": 0,
+        "status": 200,
+        "tokens": 256,
+        "latency_s": 24.53860354423523,
+        "ttft_s": null,
+        "decode_s": null
+      },
+      {
+        "idx": 1,
+        "status": 200,
+        "tokens": 256,
+        "latency_s": 24.74803638458252,
+        "ttft_s": null,
+        "decode_s": null
+      }
+    ]
+  },
+  "instrumentation": {
+    "defrag_events": null,
+    "admission_events_503": null,
+    "admission_events_413": null,
+    "dispatch_multi_seq_count": null,
+    "vram_kv_buffer_mib": null,
+    "vram_compute_buffer_mib": null,
+    "graph_pool_size": null
+  },
+  "notes": ""
+}

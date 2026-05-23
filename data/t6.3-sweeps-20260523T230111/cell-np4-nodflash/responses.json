@@ -1,0 +1,37 @@
+{
+  "per_request": [
+    {
+      "idx": 0,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 24.51761484146118,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 1,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 24.726487636566162,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 2,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 49.536091327667236,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 3,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 49.74798536300659,
+      "ttft_s": null,
+      "decode_s": null
+    }
+  ],
+  "wall_secs": 49.7493941783905
+}

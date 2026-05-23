@@ -1,0 +1,9 @@
+=== T6 cell summary: np4-nodflash ===
+engine=ik_llama build=3ee7816f
+workload=gate0-prompts-np4-concurrent max_tokens=256 ignore_eos=True
+clocks=1455 MHz locked
+wall_secs=49.75
+total_output_toks=1024
+tok_per_sec_aggregate=20.58
+tok_per_sec_per_slot_mean=7.78
+status_counts={200: 4}
