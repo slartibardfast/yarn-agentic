@@ -68,7 +68,8 @@ Populated at each T5.x close. Format: <Tier 5 card> | <date> |
 | _baseline_ | 2026-05-22 | T4 C1-staggered NP=8 | (ref) | 21.62 | — | T4.7 ledger row |
 | _vLLM ref_ | 2026-05-12 | vLLM PA V1 NP=8 same hardware | (ref) | 154.77 | — | `data/gate0-np1-np8.json` |
 | _gap_ | — | — | — | 5.84× | — | vLLM / T4 baseline |
-| T5.1 | _pending_ | unit (allocator only) | — | — | — | binds [[test-kv-block-allocator]] |
+| T5.1 | 2026-05-23 | unit (allocator only) | 1 | — | — | test-kv-block-allocator PASS (7 invariants); test-paged-allocator-determinism PASS (3×3 traces) |
+| T5.1 | 2026-05-23 | verify-production-determinism | 1 | — | — | ACCEPTANCE PASS @ 1455 MHz, NP_LIST="1 2 4 8", CTX_CHECKPOINTS=3 — dormant allocator does not regress production |
 | T5.4 | _pending_ | M1 NP=8 + production NP=2 | — | — | — | Bundle A close (GP5.a regression band) |
 | T5.4 | _pending_ | trace validator 60s | — | — | — | GP5.spec: validate-paged-allocator-trace.py OK |
 | T5.5 | _pending_ | ncu PSKV kernel | — | — | — | GP5.kernel: regs ≤ 254, occ ≥ 25%, μs ≤ 133 |
