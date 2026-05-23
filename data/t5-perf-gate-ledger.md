@@ -70,6 +70,7 @@ Populated at each T5.x close. Format: <Tier 5 card> | <date> |
 | _gap_ | — | — | — | 5.84× | — | vLLM / T4 baseline |
 | T5.1 | 2026-05-23 | unit (allocator only) | 1 | — | — | test-kv-block-allocator PASS (7 invariants); test-paged-allocator-determinism PASS (3×3 traces) |
 | T5.1 | 2026-05-23 | verify-production-determinism | 1 | — | — | ACCEPTANCE PASS @ 1455 MHz, NP_LIST="1 2 4 8", CTX_CHECKPOINTS=3 — dormant allocator does not regress production |
+| T5.2 | 2026-05-23 | verify-production-determinism | 1 | — | — | ACCEPTANCE PASS — shadow paged allocator wired at find_slot + clear; production byte-identity unchanged. Formula+view+fallback-removal coherent-oneshot is T5.3. |
 | T5.4 | _pending_ | M1 NP=8 + production NP=2 | — | — | — | Bundle A close (GP5.a regression band) |
 | T5.4 | _pending_ | trace validator 60s | — | — | — | GP5.spec: validate-paged-allocator-trace.py OK |
 | T5.5 | _pending_ | ncu PSKV kernel | — | — | — | GP5.kernel: regs ≤ 254, occ ≥ 25%, μs ≤ 133 |
