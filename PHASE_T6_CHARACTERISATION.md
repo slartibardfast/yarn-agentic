@@ -151,45 +151,53 @@ Token budget: ~10-15k. Closed at lower end.
 
 ---
 
-## T6.1 — Binary ablation matrix (CLOSED)
+## T6.1 — Binary ablation matrix (CLOSED, two iterations)
 
-Ran 2026-05-23. Six cells at gate0 workload (8 prompts × 256 max_tokens × NP=8 fired into --parallel 2 server, queue depth 6) at locked clocks 1455 MHz. Three features had runtime knobs and got binary cells: DFlash, Hadamard K/V, defrag_thold. Four features have no runtime knob (T4 chunked-prefill, T5.9 paged BACKING, per-slot-kv FA, T3 unified-stream) and were deferred to their unconditional T6.4 / T6.5 / T6.7 / T6.9 deep-dives.
+Ran 2026-05-23 in two iterations: a first run that exposed a use-of-vector-past-end bug at the defrag/k-shift call sites, and a re-run after the fix landed.
 
-**Cell roster:**
+### Iteration 1 (pre-fix) — surfaced the bug
 
-| cell_id | dflash | hadamard | defrag | t/s_agg | status | clean |
-|---|---|---|---|---|---|---|
-| prod-baseline | on | on | 0.1 | 3.44 | {200:2, 0:6} | **SEGV** |
-| no-defrag | on | on | -1 | 10.42 | {200:8} | ✓ |
-| no-dflash | off | on | 0.1 | 20.47 | {200:8} | ✓ |
-| no-dflash-nodefrag | off | on | -1 | 20.96 | {200:8} | ✓ |
-| no-hadamard | on | off | 0.1 | 4.40 | {200:2, 0:6} | **SEGV** |
-| no-hadamard-nodefrag | on | off | -1 | 12.69 | {200:8} | ✓ |
+Six cells produced under `data/t6.1-matrix-20260523T194240/`. Two cells (`prod-baseline`, `no-hadamard`) SEGV'd at 2/8 prompts when DFlash was on AND defrag was 0.1. Backtrace consistently in `llm_build_context::build_defrag` at the layer-loop body, with `kv_self.k_l[64]` returning the deterministic non-null value `0x1ea30`. Investigation revealed that `llama_kv_cache_init` (src/llama.cpp:906-907) truncates its loop bound to `hparams.n_layer - hparams.nextn_predict_layers` on the production path (`!model.mtp`), so `kv_self.k_l.size() == 64` for Qwen 3.6 27B while `llm_build_context::n_layer == hparams.n_layer == 65`. The K-shift and defrag loops therefore read one entry past the vector end. Under no-DFlash the garbage byte was zero and the nullptr skip caught it; under DFlash the byte was a stable non-null garbage value that survived the skip and SEGV'd on `tensor->extra` access.
 
-**Per-feature verdict (defrag-OFF cells used as safe baseline since the production default crashed):**
+Pre-fix per-feature verdicts cited "DFlash -50.3%" and "Hadamard -17.9%" against a `no-defrag` baseline — both were partial artefacts of comparing cells with different defrag states while two of the cells were broken.
 
-- **DFlash** (vs `no-dflash-nodefrag` 20.96): ON `no-defrag` 10.42 t/s — **net-negative -50.3%**. Drafter cost dominates at gate0's varied prompts (0.42 acceptance rate measured in prod-baseline log). Contrast bench-t3.8-m3 identical-prompt NP=2 where DFlash is a clear win. Workload-shape sensitive; T6.3 owes the per-prompt-shape acceptance distribution.
-- **Hadamard** (vs `no-hadamard-nodefrag` 12.69): ON `no-defrag` 10.42 t/s — **net-negative -17.9% on throughput**. Throughput-only finding; Hadamard exists to recover Q4_0 quantisation accuracy. T6.8 owes the accuracy characterisation under Q4_0 + no-Hadamard.
-- **defrag** ON-vs-OFF: ON cell `prod-baseline` **CRASHED**. Combined with DFlash multi-slot under varied-prompt NP=8, defrag-on (0.1) is unsafe. T5.9.E closure measured at production NP=2 + identical-prompt bench-t3.8-m3 was safe (fragmentation stayed ~1.0, threshold 0.1 never triggered actual moves); gate0 NP=8 prompt reuse triggers active defrag passes that segfault. Real production bug. T6.6 owes root-cause + a fix or a default re-flip.
+### Iteration 2 (post-fix) — measurement of record
 
-**Findings as headline closure:**
+Fix landed at submodule `3ee7816f` bounding the K-shift and defrag loops by `std::min(n_layer, kv_self.k_l.size())`. NPC ACCEPTANCE PASS at NP={1,2,4,8} confirmed cross-NP byte-identity preserved.
 
-- The production default config (DFlash + Hadamard + defrag 0.1) crashes under realistic varied-prompt NP=8 workload. The defrag default flip from T5.9.E is regression-prone in a way bench-t3.8-m3 cannot catch.
-- DFlash is workload-shape-sensitive. The "DFlash is a win" claim was workload-locked to bench-t3.8-m3 / identical short prompts; it does not generalise to varied prompts at NP=8.
-- Hadamard's t/s cost is real and substantial (-18%). The accuracy gain it buys is uncharacterised in T6.1 — accepting the t/s cost requires the accuracy delta in T6.8.
+Re-ran the four-cell matrix at `data/t6.1-matrix-fixed-20260523T211929/`:
 
-These three findings make T6.6 (defrag), T6.3 (DFlash), and T6.8 (Hadamard) the highest-priority unconditional deep-dives. The "should this stay on by default in production" decision for each is downstream of those deep-dives, not from T6.1.
+| cell_id | dflash | hadamard | defrag | t/s_agg | status |
+|---|---|---|---|---|---|
+| prod-baseline | on | on | 0.1 | **11.03** | {200:8} |
+| no-dflash | off | on | 0.1 | **20.45** | {200:8} |
+| no-hadamard | on | off | 0.1 | **11.04** | {200:8} |
+| no-defrag | on | on | -1 | **11.24** | {200:8} |
+
+**Per-feature verdict (vs `prod-baseline` 11.03 t/s):**
+
+- **DFlash:** ON 11.03 vs OFF 20.45 — Δ **-46.1% (net-negative)**. Drafter cost dominates at gate0's varied prompts (0.42 acceptance rate measured in iteration 1's prod-baseline server log). Workload-shape sensitive; contrast bench-t3.8-m3 (identical short prompts at NP=2) where DFlash is a clear win. T6.3 owes per-prompt-shape acceptance distribution.
+- **Hadamard:** ON 11.03 vs OFF 11.04 — Δ **-0.1% (no-op within noise)**. The pre-fix -17.9% finding was an artefact. T6.8 still owes accuracy characterisation under Q4_0 + no-Hadamard (Hadamard exists for accuracy recovery; this matrix only measured throughput).
+- **defrag:** ON 11.03 vs OFF 11.24 — Δ **-1.9% (no-op within noise)**. The pre-fix "CRASHES" verdict was the n_layer-vs-k_l.size() bug, not defrag itself. Defrag at 0.1 fires repeatedly during the run (seen in server.log fragmentation traces) with no measurable throughput impact at this workload.
+
+### Findings as headline closure
+
+- **DFlash is the only feature with a material net-effect at gate0 NP=8, and it's net-negative.** The "DFlash is a win" story from T3-T5 closures was workload-locked to bench-t3.8-m3 (identical short prompts) and doesn't generalise.
+- **Hadamard and defrag are essentially no-op for throughput** at this workload. The cost surface across both is within measurement noise (±2%).
+- **The defrag default flip from T5.9.E is safe** — but the SEGV bug it exposed is a real one that bench-t3.8-m3 couldn't catch because that workload kept fragmentation ~1.0 and never triggered actual defrag passes. T6.1's varied workload + slot reuse exercised the defrag path on the MTP-tail-layer edge case.
+
+These findings make T6.3 (DFlash workload-shape sensitivity) the highest-priority unconditional deep-dive. T6.6 (defrag) and T6.8 (Hadamard) are also unconditional but the framing shifts — T6.6 now investigates "is there ANY workload where defrag actually buys VRAM or t/s" rather than "what does defrag cost", since at gate0 it costs nothing. T6.8 still owes accuracy.
 
 **Artifacts:**
-- `data/t6.1-matrix-20260523T194240/SUMMARY.md` — human-readable summary.
-- `data/t6.1-matrix-20260523T194240/SUMMARY.json` — machine-readable cell roster.
-- `data/t6.1-matrix-20260523T194240/cell-*/cell.json` — six schema-conformant cells (passed `scripts/validate-t6-cell.py`).
-- `data/t6.1-matrix-20260523T194240/cell-prod-baseline/server.log`, `.../cell-no-hadamard/server.log` — captured the crash signatures (both end mid-decode at fragmentation > 0.6 after defrag passes had been firing).
-- `scripts/run-t6.1-matrix.sh`, `scripts/run-t6.1-matrix-extension.sh`, `scripts/aggregate-t6-matrix.py` — the driver + aggregator (extension added after the crash discovery to isolate Hadamard/DFlash from the broken defrag axis).
+- `data/t6.1-matrix-fixed-20260523T211929/SUMMARY.md` — measurement of record.
+- `data/t6.1-matrix-fixed-20260523T211929/cell-*/cell.json` — four schema-conformant cells.
+- `data/t6.1-matrix-20260523T194240/` — iteration-1 artefacts preserved (the SEGV cores, the discovery context); `prod-baseline` and `no-hadamard` cells there are NOT the measurement of record — see iteration 2.
+- Submodule fix `3ee7816f` in `ik_llama.cpp/src/llama-build-context.cpp` — bounds the K-shift and defrag loops by `kv_self.k_l.size()`.
+- `scripts/run-t6.1-matrix.sh`, `scripts/run-t6.1-matrix-extension.sh`, `scripts/aggregate-t6-matrix.py`, `scripts/validate-t6-cell.py`.
 
 **Subtasks not done by T6.1 (named, not deferred-as-cover):**
 - The four features with no runtime knob (T4 chunked-prefill, T5.9 paged BACKING, per-slot-kv FA, T3 unified-stream) need build-flag-gated or sibling-binary variants if they are to be binary-cell characterised. They are scoped instead into the unconditional T6.x deep-dives where the deep-dive itself owns the "what does this contribute" question via sweep, not by binary on/off.
-- NP-sub-axis cells (NP ∈ {1, 2, 8}) are not in T6.1. The matrix at NP=8 already produces the unflinching signals it needed to; NP sensitivity for each feature lives in T6.3-T6.9.
+- NP-sub-axis cells (NP ∈ {1, 2, 8}) are not in T6.1. The matrix at NP=8 produced the signals it needed to; NP sensitivity per feature lives in T6.3-T6.9.
 
 - **T6.2 nsys + ncu deep-dive (kernel-level, orthogonal to features).** At production NP=8 shape (and at the configuration T6.1 surfaces as fastest). What kernel dominates? What's the per-CTA cost breakdown? Where does the 6.37× gap to vLLM (from T6.0.a) actually go — is it precision (~2× ceiling), attention kernel cost, dispatcher overhead, or scheduler/admission latency?
 
