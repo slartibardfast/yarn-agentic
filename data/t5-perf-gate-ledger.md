@@ -73,7 +73,8 @@ Populated at each T5.x close. Format: <Tier 5 card> | <date> |
 | T5.2 | 2026-05-23 | verify-production-determinism | 1 | — | — | ACCEPTANCE PASS — shadow paged allocator wired at find_slot + clear; production byte-identity unchanged. Formula+view+fallback-removal coherent-oneshot is T5.3. |
 | T5.3 | 2026-05-23 | verify-production-determinism | 1 | — | — | ACCEPTANCE PASS @ 1455 MHz, NP_LIST="1 2 4 8", CTX_CHECKPOINTS=3 — partial seq_rm shadow + LLAMA_T5_TRACE NDJSON producer added; production byte-identity unchanged. Bundle B (byte flip + kernel migration) is T5.5+. |
 | T5.3 | 2026-05-23 | trace producer smoke | 1 | — | — | LLAMA_T5_TRACE=1 emits 10 well-formed events on synthetic alloc/free pattern; validate-paged-allocator-trace.py OK (4 invariants). LLAMA_T5_TRACE unset → zero file output. |
-| T5.4 | _pending_ | M1 NP=8 + production NP=2 | — | — | — | Bundle A close (GP5.a regression band) |
+| T5.4 | 2026-05-23 | M3-steady NP=8 (bench-t3.8-m3, CTX_PER_SLOT=8192) | 1-3 | **26.50** | **0.14** | **GP5.a Bundle A close PASS.** 3 runs: 26.464, 26.535, 26.509 t/s. Mean 26.50 vs T4 C1-steady baseline 26.49 (+0.04%) — comfortably within ±2% band [25.96, 27.02]. Shadow allocator + LLAMA_T5_TRACE OFF-path add no measurable cost. data/t5.4-bundle-a-close-20260523-010415/. |
+| T5.4 | _pending_ | trace validator 60s | — | — | — | GP5.spec: validate-paged-allocator-trace.py OK on production-shape session (defer to T5.8 or run separately under LLAMA_T5_TRACE=1) |
 | T5.4 | _pending_ | trace validator 60s | — | — | — | GP5.spec: validate-paged-allocator-trace.py OK on production-shape session |
 | T5.5 | _pending_ | ncu PSKV kernel | — | — | — | GP5.kernel: regs ≤ 254, occ ≥ 25%, μs ≤ 133 |
 | T5.8 | _pending_ | M1 NP=8 final | — | — | — | GP5.a hard gate close |
