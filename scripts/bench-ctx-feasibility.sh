@@ -114,6 +114,11 @@ def one(idx):
         "seed": idx,
         "cache_prompt": False,
         "stream": False,
+        # T5.9.E gap-1: force decode to n_predict so slot KV footprint
+        # actually grows and exercises the paged-pool admission gate.
+        # Without this the model hits EOS quickly under temp=0 and the
+        # slot tears down before pool can fill.
+        "ignore_eos": True,
     }
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
