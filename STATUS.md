@@ -1,6 +1,18 @@
 # Project status — Qwen 3.6 27B determinism on dual sm_75
 
-Last updated: 2026-05-20
+Last updated: 2026-05-23 (T5.9 closed; T6 characterisation tier opened)
+
+## Where we are now (2026-05-23) — TL;DR
+
+Tier 5 (paged KV) is **closed at T5.9**: paged BACKING + per-position-via-block_table defrag + admission gate (HTTP 503 + Retry-After for transient pool exhaustion; HTTP 413 for prompts exceeding per-slot cap). Production aggregate **26.65 t/s** at NP=8 / bench-t3.8-m3 workload (+0.76% vs T5.8 baseline; defrag now ON by default at `defrag_thold = 0.1`, fires 100+ times per 3 × 60s runs, overhead ~0.3%). NPC byte-identity preserved across NP={1,2,4,8}. See [PHASE_NSTREAM_KV_PERF.md](PHASE_NSTREAM_KV_PERF.md) §"T5.9 closure" and §"T5.9.E closure-audit honest notes".
+
+The new active phase is **[PHASE_T6_CHARACTERISATION.md](PHASE_T6_CHARACTERISATION.md)** — Tier 6, measurement-only. Goal: produce a cost surface and behavioural envelope for every feature shipped at T3/T4/T5/DFlash, dense enough that any T7+ work has a measured baseline to argue against. **Understanding is the goal**, not optimization or justification.
+
+T6.0.a (step zero — endpoint re-verification) closed with a corrected gap framing: **6.37×** at apples-comparable NP=8 no-spec on the gate0 workload (not the 5.84× cited throughout T3/T4/T5 — that was workload-mismatched). vLLM venv has been uninstalled since 2026-05-12, so its number is acknowledged-stale.
+
+Below this section is the historical narrative from 2026-05-20 — preserved as the lineage from Phase A/B/C/CY/F → PHASE_NSTREAM_KV → PHASE_NSTREAM_KV_PERF → T6.
+
+---
 
 ## The goal
 

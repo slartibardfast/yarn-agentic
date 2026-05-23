@@ -25,7 +25,11 @@
 # N-stream KV cache (Bug C closure)
 
 - [Closed: PHASE_NSTREAM_KV — 4D per-stream layout + Bug C structural closure](PHASE_NSTREAM_KV.md)
-- [Open: PHASE_NSTREAM_KV_PERF — recover regression + unlock dispatch ceiling (Tier 2 → Tier 3)](PHASE_NSTREAM_KV_PERF.md)
+- [Closed: PHASE_NSTREAM_KV_PERF — Tier 3 dispatch + Tier 4 admission + Tier 5 paged KV + Tier 5.9 paged BACKING & defrag](PHASE_NSTREAM_KV_PERF.md)
+
+# Characterisation (Tier 6)
+
+- [Open: PHASE_T6_CHARACTERISATION — measurement-only tier; ablation matrix + per-feature deep-dives](PHASE_T6_CHARACTERISATION.md)
 
 # DFlash speculative decoding
 
