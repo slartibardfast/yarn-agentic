@@ -155,10 +155,29 @@ Token budget: ~10-15k. Writing the schema + the allium contract + one example ce
 
 Sketch only — finalised after T6.0 lands:
 
-- **T6.1 Ablation matrix.** Each feature × on/off. ~16-32 cells. Same harness, same workload, schema-conformant outputs. Result: "feature X contributes Y t/s and Z MiB" per row.
-- **T6.2 nsys + ncu deep-dive.** At production NP=8 shape (and at the configuration the matrix surfaces as fastest). What kernel dominates? What's the per-CTA cost breakdown? Where does the gap to vLLM (or whatever the corrected ratio is) actually go?
-- **T6.3 DFlash characterisation.** Spec decoding has its own knobs — `draft_max`, drafter model size, acceptance-rate distribution by workload shape. Sweep + report behavioural envelope.
-- **T6.4 Closure synthesis.** A single "ik_llama under T5 — what works, what doesn't, what to attack next" document. Anchors T7+.
+- **T6.1 Ablation matrix.** Each feature × on/off, schema-conformant cells against the same gate0 workload. Result per row: "feature X contributes Y t/s and Z MiB at this workload."
+
+  Features in scope as on/off cells (every one of these gets a binary cell):
+
+  | Feature | "on" config | "off" config | Question the cell answers |
+  |---|---|---|---|
+  | DFlash speculative decoding | `--spec-type dflash -md <drafter>` | unset | Is DFlash a net win at this workload? By how much? VRAM cost? |
+  | T4 chunked-prefill admission | (default ON post-T4) | `--prefill-chunk-budget -1` (or equiv disable) | What does T4 actually contribute at staggered/realistic arrival? |
+  | T5.9 paged BACKING + admission | (default ON post-T5.9) | revert to T5.8 binary, OR (more honest) `--kv-pool-blocks 0` (auto = bytes match T5.8) | Pool sizing overhead at default sizing |
+  | T5.9.E defrag | `--defrag-thold 0.1` (new default) | `--defrag-thold -1` | What does defrag cost in t/s, what does it buy in VRAM? |
+  | Per-slot-kv FA dispatch | (default ON post-NPC.4) | requires a build flag to disable, OR a sibling binary with the legacy `ggml_flash_attn_ext` path | The route that closed NPC — is it net-positive on perf or just correctness? |
+  | Hadamard K/V transform | `--k-cache-hadamard --v-cache-hadamard` | unset | The transform cost vs the quantisation-recovery it enables on Q4_0 KV |
+  | T3 unified-stream dispatch | (default ON post-T3.6) | requires a build-time gate, OR sibling binary with legacy per-stream dispatch | The T3 dispatcher's actual contribution at NP=8 |
+
+  ~7 features × on/off = 14 cells minimum. With NP ∈ {1, 2, 8} sub-axis on the load-bearing features, the matrix lands closer to 20-30 cells. Each cell ~5-15 min wall time → T6.1 is a 4-8 hour bench session.
+
+  **DFlash on/off in T6.1 answers "is DFlash a net win at this workload"** as a single binary; T6.3 (below) is the conditional deeper sweep that only fires *if* T6.1's DFlash cell shows a net positive uplift.
+
+- **T6.2 nsys + ncu deep-dive.** At production NP=8 shape (and at the configuration T6.1 surfaces as fastest). What kernel dominates? What's the per-CTA cost breakdown? Where does the 6.37× gap to vLLM (from T6.0.a) actually go — is it precision (~2× ceiling), attention kernel cost, dispatcher overhead, or scheduler/admission latency?
+
+- **T6.3 DFlash characterisation (conditional on T6.1 DFlash cell positive).** If T6.1's DFlash on/off cell shows DFlash is a net positive at the gate0 workload, T6.3 is the deeper sweep: `draft_max` ∈ {2,3,4,5,6,8}, drafter model variants, acceptance-rate distribution by prompt shape (short/code/long/varied), per-step kernel cost breakdown, optimal-config recommendation. If T6.1's DFlash cell shows DFlash is a *net loss* at gate0 (which is possible — vLLM's DFlash-equivalent dropped 154.77 → 34.90, a 4.4× regression), T6.3 instead becomes an autopsy on why and a recommendation on whether to keep DFlash in production at all.
+
+- **T6.4 Closure synthesis.** A single "ik_llama post-T5 — what works, what doesn't, what to attack next" document. Anchors T7+.
 
 ---
 
