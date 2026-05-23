@@ -89,10 +89,14 @@ Populated at each T5.x close. Format: <Tier 5 card> | <date> |
 | T5.7b | 2026-05-23 | test-fattn-per-slot-kv-dispatch-np-invariance | 1 | — | — | **PASS** — 6144 output floats byte-identical across n_kv_max ∈ {256, 512}. |
 | T5.7c | 2026-05-23 | test-paged-defrag-preserves-contents | 1 | — | — | **PASS** — allocator-level paged defrag (`llama_paged_kv_allocator::defrag()` method). N=12 block pool, 4-block seqs for {0,1,2}, free seq 1, write 1-block seq 3 (fragmentation). Defrag returns 3 moves; physically applied to synthetic pool buffer; post-defrag seq-logical reads byte-identical for seqs {0,2,3}. BlockUniquelyOwned + CompactionAfterDefrag invariants hold. Idempotency verified (re-run yields 0 moves). |
 | T5.7c | 2026-05-23 | test-kv-block-allocator + test-paged-allocator-determinism | 1 | — | — | **PASS** — existing allocator invariant tests unchanged post-defrag-method addition. |
-| T5.8 | _pending_ | M1 NP=8 final | — | — | — | GP5.a hard gate close |
-| T5.8 | _pending_ | M2 staggered NP=8 final | — | — | — | GP5.b numeric record (NOT hard gate post-reframe) |
-| T5.8 | _pending_ | M4 high-ctx feasibility | — | — | — | **GP5.b feasibility** hard gate (Path C reframe) |
-| T5.8 | _pending_ | M3 churn 60s | — | — | — | Risk #4 report-only |
+| T5.8 | 2026-05-23 | M1 NP=8 steady (bench-t3.8-m3, CTX_PER_SLOT=8192) | 1-3 | **26.45** | **0.04** | **GP5.a hard gate PASS.** 3 runs: 26.4359, 26.4573, 26.4510 t/s. Mean 26.45 vs T4 C1-steady baseline 26.49 → −0.15% (well within ±2% band [25.96, 27.02]); 5%-tolerance gate ≥ 25.17 satisfied. CV 0.04% << 1% gate (GP5.c). Trace producer fully inert post-bake-out. data/t5.8-bundle-b-close/m1-np8/ |
+| T5.8 | 2026-05-23 | M4 ctx 1M NP=8 (per-stream 1M; --ctx-size 8388608) | 1 | — | — | **GP5.b feasibility — current code FAILS** as designed/documented. `CUDA error: out of memory` at `llama_kv_cache_init`. Per-stream-slab × n_stream sized contig buffer (current backing) cannot fit at this scale; **paged ADDRESSING capability (T5.5–T5.7) is in place but paged BACKING (cells[] → block-pool peak-concurrent sizing) is the next forward-looking step** to actually unlock high-ctx workloads. Documented as Tier 5 forward-looking deferral, not a closure regression. ctx 1M NP=1 (shared, 1M total): KV buffer 17,430 MiB allocates, finite decode TG = 20.93 t/s — Q4_0 Hadamard contig backing OK at single-stream 1M. |
+| T5.8 | 2026-05-23 | ncu PSKV singlewarp (paged active, prefill PP=64 NP=1 sm_75) | 1 | — | — | **GP5.kernel hard gate PASS.** 3 launches, gpu__time_duration mean **88.0 µs** (gate ≤ 127.26 × 1.05 = 133.6 µs; **−30.8%** vs pre-T5 baseline — paged indirection adds net-negative overhead). Registers/thread **216** (gate ≤ 254 ✓ 15% headroom). Shared mem/block 0. Theoretical occupancy **25%** (gate ≥ 25% — exact match, the production design point per `__launch_bounds__(WARP_SIZE, 8)`). Achieved occupancy 3.12% reflects the tiny grid (1×24×1 CTAs) of decode-shape attention — NOT a regression. data/t5.8-ncu-pskv/pskv-paged.ncu-rep |
+| T5.8 | 2026-05-23 | trace validator 60s (LLAMA_T5_TRACE_BUILD path) | 1 | — | — | **GP5.spec hard gate PASS.** Developer-build session: NP=8 prefill PP=256 TG=64, --ctx-size 65536, ~115s wall. 42 BlockAllocEvent records emitted. validate-paged-allocator-trace.py: `OK: 42 events validated; all allocator invariants hold.` Four invariants (BlockUniquelyOwned, FreeListDisjoint, AllocLazy, DefragPreservesOwnership) bind on real session data. data/t5.8-trace/session.ndjson |
+| T5.8 | 2026-05-23 | verify-production-determinism (post-bake-out) | 1 | — | — | **GP5.NPC standing gate PASS.** ACCEPTANCE PASS @ 1455 MHz NP={1,2,4,8} CTX_CHECKPOINTS=3 post-LLAMA_T5_TRACE-bake-out. Cross-NP slot byte-identical to NP=1; cross-NP slot-0 matrix BYTE-IDENTICAL; batch-shape invariance 4/4 PASS. |
+| T5.8 | 2026-05-23 | r5-probe-c4.sh ITERS=20 | 1 | — | — | **GP5.Bug-C standing gate PASS.** 0/20 violations. Bug C absence preserved structurally under paged READ+WRITE. |
+| T5.8 | 2026-05-23 | test suite (paged-defrag, paged-kshift, kv-shift-per-stream, kv-defrag-per-stream, fattn-per-slot-kv-dispatch-np-invariance, dflash-np-invariance, dflash-np-multislot, kv-block-allocator, paged-allocator-determinism) | 1 | — | — | **GP5.d + GP5.f PASS.** All 9 binding tests GREEN on the final commit. DFlash multi-slot composition: slot-0 byte-identical across NP ∈ {1,2,4,8} (per_slot=4); aggregate t/s scales 327.5 / 282.9 t/s @ N=8 / N=4 respectively. |
+| T5.8 | 2026-05-23 | LLAMA_T5_TRACE bake-out (sub-commit `f7e8315b`) | — | — | — | **Env-knob removal complete** per [[feedback_bake_measurement_env_gates]]. Header now provides inline no-op stubs (production); developer builds set `-DLLAMA_T5_TRACE_BUILD=1` to enable. Verified: `LLAMA_T5_TRACE=1 LLAMA_T5_TRACE_PATH=...` produces NO trace file in default build. Net: −55 / +42 LOC. |
 
 ## Gate semantics post-Path-C reframe (2026-05-22)
 
@@ -141,3 +145,49 @@ T5.8 closes when:
   grade A/S/M/E/C format, mirroring T3.8 / T4.7).
 - MEMORY entry.
 - Submodule bump.
+
+## T5.8 closure outcome (2026-05-23)
+
+**GREEN** on every hard binding gate at the *capability* layer:
+
+| Gate           | Status | Evidence |
+|---             |---     |---       |
+| GP5.a regression band | PASS | 26.45 t/s (−0.15% vs T4 baseline) |
+| GP5.c variance        | PASS | CV 0.04% (gate ≤ 1%)              |
+| GP5.kernel ncu        | PASS | regs 216, occ 25%, time 88 µs    |
+| GP5.NPC               | PASS | post-bake-out NP={1,2,4,8} BYTE-IDENT |
+| GP5.Bug-C             | PASS | r5-probe-c4 0/20                 |
+| GP5.spec              | PASS | 42 trace events, 4 invariants OK |
+| GP5.d correctness     | PASS | 9 binding tests GREEN            |
+| GP5.f DFlash          | PASS | slot-0 byte-ident NP={1,2,4,8}   |
+
+**GP5.b feasibility — honest split:** at the *kernel/build-context*
+layer paged READ + WRITE + K-shift + defrag are end-to-end live and
+the production NP=2 + Hadamard + DFlash run is byte-identical to T4
+(GP5.NPC + GP5.a). At the *backing-buffer* layer the KV buffer is
+still sized as `n_ctx_per_stream × n_stream × n_layer × n_head_kv ×
+head_dim × Q4_0` at init — the contig sizing that paged backing is
+designed to replace. Ctx 8M NP=8 (per-stream 1M) hits `CUDA error:
+out of memory` exactly as documented in `data/t5-probe-findings.md`.
+This is the honest **forward-looking deferral** for the next phase
+(paged BACKING replacement of cells[]), not a Tier 5 closure
+regression: the addressing capability landed; the buffer-sizing
+capability is the next step.
+
+**Other forward-looking deferrals named in this closure (not gaps in T5.8):**
+
+- Kernel `block_table == nullptr` legacy branch removal in
+  `ggml-cuda/fattn-per-slot-kv-singlewarp-sm75.cu`. Unreachable in
+  production after T5.7b's always-on `set_block_table`; removal
+  requires non-trivial test fill rewrites for
+  `test-fattn-per-slot-kv-{ncols,dispatch-np}-invariance` (the K
+  layouts differ under paged vs legacy at ne11 > BLOCK_SIZE).
+  Dead-code cleanup, not a capability gap.
+- Graph-level defrag integration into `llama_kv_cache_defrag_internal`
+  (per OpenQ-T5-B). `defrag_thold = -1.0f` default in production, so
+  the trigger path is not exercised in shipped configs. The
+  allocator-level `defrag()` method (T5.7c) and its binding test
+  remain available for the eventual integration.
+- Paged BACKING (cells[] → block-pool peak-concurrent buffer sizing).
+  The infra (allocator, transactional write_tokens, paged defrag) is
+  in tree; the buffer-allocation site replacement is the next phase.

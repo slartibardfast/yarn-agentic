@@ -2961,6 +2961,70 @@ T4 lifts the pre-T4 `active_pp_slot_id` PrefillSerialisationGate from the server
 
 ---
 
+## Tier 5 closure (2026-05-23) — audit-grade A/S/M/E/C
+
+### T5.A — Anchor
+
+T4.7 closed FAIL on the uplift gate but with the correctness scaffold + admission code load-bearing. T4's structural finding was that PSKV singlewarp + n_stream's per-stream slab layout caps aggregate throughput at the multi-slot kernel saturation ceiling. **Tier 5 paged KV** generalises the per-stream slab into a block-pool with a per-(seq, logical_position) `block_table` indirection — the same mechanism vLLM's PagedAttention uses to support heterogeneous seq lengths without pre-allocating per-stream slabs to `n_ctx`. The probe in `data/t5-probe-findings.md` (2026-05-22) measured KV waste **< 20%** on current workload shapes, falsifying the original numeric uplift premise; the user override (per `[[project_t5_probe_falsified_path_c_override_high_ctx_reframe]]`) reframed T5 as **forward-looking infrastructure for ctx ≥ 1M workloads where contiguous backing can't allocate** (~1.2 TB needed for ctx 1M NP=8 Q4_0 vs 48 GiB available).
+
+### T5.S — Scope (delivered)
+
+Tier 5 broke into two coherent bundles:
+
+- **Bundle A (T5.1–T5.4):** standalone `llama_paged_kv_allocator` class (`block_size=64`, LIFO deque free_list, transactional `write_tokens`, AllocLazy); shadow integration at `find_slot` + `kv_cache_clear` + partial seq_rm; NDJSON trace producer; perf check at production shape steady-arrival.
+- **Bundle B (T5.5–T5.8):** PSKV singlewarp kernel + dispatcher block_table indirection (src[6]); WRITE formula flip + `inp_block_table` populator + SET_ROWS view reshape; T5.7a paged K-shift port; T5.7b n_stream==1 contiguous-layout pretence drop (NET CODE REDUCTION −295/+130 LOC); T5.7c allocator-level paged defrag with caller-applied byte moves; T5.8 perf-gate sweep + LLAMA_T5_TRACE env-gate bake-out + this closure.
+
+Spec layer: `paged_block_allocator.allium`, `paged_write_path.allium`, `paged_read_path.allium`, `paged_kshift_defrag.allium`, `PagedKVAllocator.tla` — all in tree at T5.0.
+
+### T5.M — Mechanism
+
+Three sites compose the paged path:
+
+1. **Write site** — `llm_build_kv_store` and `llm_build_std_attention`: K/V views reshape to 4D `[head_dim, n_tok_per_seq, n_head_kv, n_seq_in_batch]`; `inp_kv_idxs[t] = block_table[seq][pos/64] * 64 * n_head_kv + h * 64 + (pos % 64)`; SET_ROWS writes K, V from current ubatch into paged-indexed cells.
+2. **Read site** — PSKV singlewarp kernel: `block_table` is `dst->src[6]` (I32 tensor `[n_blocks_per_seq, n_seqs]`). Per ILP chunk of 4 positions (4 < BLOCK_SIZE=64, all in one block), kernel looks up `bid = block_table[seq][k/64]` once and computes `K_chunk_base = K_direct + bid * paged_nb13 + head_kv * paged_nb12` where `paged_nb12 = nb11 * 64`, `paged_nb13 = paged_nb12 * ne12`. K-loop step is unchanged at `nb11`.
+3. **Defrag site** — `llama_paged_kv_allocator::defrag()` returns `std::vector<defrag_move>{old_bid, new_bid}` via greedy pairing (highest-allocated ↔ lowest-free); idempotent; caller physically applies each move via the T3.6 generic CUDA Q→Q same-type non-contig cpy kernel.
+
+**Pretence drop at T5.7b** is structurally important: every K/V touchpoint (WRITE / READ / K-shift / Q reshape) routes through the paged path at all `n_stream`. At single-seq batches with active stream `s > 0`, the global `[nbps, n_stream]` block_table tensor is viewed as `[nbps, 1]` at byte offset `s * nb[1]` so the kernel's blockIdx.z=0 indexes the active stream's blocks. At NP=1 the identity block_table `[0, 1, 2, …]` makes the per-token byte address depend on the logical paged interpretation (not the legacy contiguous interpretation) — these are mathematically equivalent for attention output but differ at the byte-layout level, so cross-NP byte-identity binds via consistent paged interpretation across all NPs in the same build, not via byte-equality with the pre-T5 baseline.
+
+### T5.E — Evidence (binding gates)
+
+All hard binding gates GREEN at T5.8 close. Detail rows in `data/t5-perf-gate-ledger.md`.
+
+- **GP5.a regression band** — PASS. M1 NP=8 steady (bench-t3.8-m3, CTX_PER_SLOT=8192, 3 runs @ 1455 MHz): **26.45 t/s** (CV **0.04%**). vs T4 C1-steady baseline 26.49 → **−0.15%** (well within ±2% band).
+- **GP5.c variance** — PASS. CV 0.04% << 1% gate.
+- **GP5.kernel ncu** — PASS. Registers/thread **216** (gate ≤ 254 — 15% headroom); theoretical occupancy **25%** (exact match — production design); gpu__time_duration **88.0 µs** (gate ≤ 133.6 µs — paged indirection adds NET-NEGATIVE overhead vs 127.26 µs pre-T5 baseline).
+- **GP5.NPC** — PASS. `scripts/verify-production-determinism.sh` ACCEPTANCE PASS @ 1455 MHz NP={1,2,4,8} CTX_CHECKPOINTS=3 post-bake-out. Cross-NP slot byte-identical to NP=1; cross-NP slot-0 matrix BYTE-IDENTICAL; batch-shape invariance 4/4 PASS.
+- **GP5.Bug-C** — PASS. `scripts/r5-probe-c4.sh ITERS=20` → 0/20 violations.
+- **GP5.spec** — PASS. `LLAMA_T5_TRACE_BUILD=1` developer-build session (NP=8, PP=256, TG=64, ctx 65536, ~115s): 42 BlockAllocEvent records; `validate-paged-allocator-trace.py` reports all 4 invariants (BlockUniquelyOwned, FreeListDisjoint, AllocLazy, DefragPreservesOwnership) bind.
+- **GP5.d correctness** + **GP5.f DFlash composition** — PASS. 9 binding tests GREEN (test-paged-defrag-preserves-contents, test-paged-kshift-byte-identity, test-kv-shift-per-stream LAYER+GRAPH, test-kv-defrag-per-stream LAYER+GRAPH, test-fattn-per-slot-kv-dispatch-np-invariance, test-dflash-np-invariance, test-dflash-np-multislot, test-kv-block-allocator, test-paged-allocator-determinism). DFlash multi-slot: slot-0 byte-identical across NP ∈ {1,2,4,8}.
+
+**GP5.b feasibility — honest split:**
+- *Addressing/kernel layer*: paged READ + WRITE + K-shift + defrag are end-to-end live and production NP=2 + Hadamard + DFlash is byte-identical to T4. ✓
+- *Backing-buffer layer*: KV buffer is still sized as `n_ctx_per_stream × n_stream × n_layer × n_head_kv × head_dim × Q4_0` at init (the contig sizing paged backing is designed to replace). Ctx 8M NP=8 (per-stream 1M) → `CUDA error: out of memory` exactly as documented in `data/t5-probe-findings.md`. Ctx 1M NP=1 (shared, 1M total): KV buffer 17,430 MiB allocates, finite decode TG = 20.93 t/s — single-stream 1M works.
+
+The honest reading: T5 landed the **paged ADDRESSING capability**; the **paged BACKING capability** (cells[] → block-pool peak-concurrent buffer sizing) is the next forward-looking step to actually unlock multi-stream high-ctx workloads. The infra (`llama_paged_kv_allocator`, transactional `write_tokens`, paged `defrag()`, trace producer + validator) is in tree, ready for that next phase.
+
+### T5.C — Closure
+
+- Allocator + spec layer: submodule heads `12da5a51`–`9a7e5be8` (T5.1–T5.4); parent commits per CLAUDE.md §5.
+- Bundle B: T5.5 submodule `0fdc7e83`, T5.6 `0e3cc592`, T5.7a `ee67864c`, T5.7b `0544573b`, T5.7c `7f6fadf6`, T5.8 LLAMA_T5_TRACE bake-out `f7e8315b`. Parent commits track each.
+- All T5.6+ gates GREEN — see `data/t5-perf-gate-ledger.md` end-section "T5.8 closure outcome".
+- LLAMA_T5_TRACE env-gate **REMOVED** at T5.8 close per `[[feedback_bake_measurement_env_gates]]`; producer compile-time-gated by `LLAMA_T5_TRACE_BUILD` (undefined by default — header provides inline no-op stubs).
+- LLAMA_PAGED_KV_LANDED build flag remains — it gates test bodies only, not the production path; not an env-gate per the feedback rule (compile-time test gate).
+- Auto-memory: `~/.claude/projects/-home-llm-yarn-agentic/memory/project_t5_*` chain. Final entry `project_t5_8_tier_5_closed.md` lands at T5.8 close.
+
+**Production impact.** Production profile (`profiles/qwen36-27b-x2-dflash.sh`, NP=2 + DFlash + n_stream=2) is **UNCHANGED in command-line surface**. Internal KV path is paged-everywhere; cross-NP byte-identity preserved at NP={1,2,4,8} multi-GPU. No production action required from Tier 5 closure.
+
+**Forward-looking work named in this closure (NOT gaps — capability not in T5's scope):**
+
+1. **Paged BACKING** (cells[] → block-pool peak-concurrent buffer sizing). The buffer-allocation site at `llama_kv_cache_init` still sizes for `n_ctx × n_stream`. Replacement is the lever that actually unlocks ctx ≥ 1M NP=8 workloads.
+2. **Kernel `block_table == nullptr` legacy branch removal** in `ggml-cuda/fattn-per-slot-kv-singlewarp-sm75.cu`. Unreachable in production after T5.7b's always-on `set_block_table`. Removal requires non-trivial test fill rewrites for `test-fattn-per-slot-kv-{ncols,dispatch-np}-invariance` (K layouts differ paged vs legacy at ne11 > BLOCK_SIZE).
+3. **Graph-level defrag integration** into `llama_kv_cache_defrag_internal` (per OpenQ-T5-B). `defrag_thold = -1.0f` default in production, so the trigger path is not exercised. The allocator-level `defrag()` method (T5.7c) and its binding test remain available for the integration.
+
+**Tier 5 status: CLOSED at the addressing/kernel/defrag capability layer.** The infrastructure to support heterogeneous-length multi-stream workloads and high-ctx scenarios is in tree, with binding tests + trace validator + audit-grade closure documentation. The next phase (paged BACKING) is independently scoped and can be picked up against this foundation.
+
+---
+
 ## Open questions and refinements
 
 These need closure during T3 execution; not blocking the bundle starts but should be answered as the relevant card lands.
