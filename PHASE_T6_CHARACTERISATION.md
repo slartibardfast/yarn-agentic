@@ -27,6 +27,41 @@ T6.0.a deliverable: re-measure the gap on a common workload via a unified HTTP b
 
 Token budget: ~20-30k. Most of the cost is bench wall-time (~10-15 min per engine including warm-up).
 
+#### T6.0.a — Result (2026-05-23)
+
+**vLLM venv was uninstalled since 2026-05-12** (`/home/llm/vllm-venv` no longer exists; service unit is dead via `ConditionPathExists` guard). Re-installing the sm_75 source build with custom patches (`vllm_sm75_patches.py`, `--attention-backend FLASHINFER`, `--enforce-eager`, etc.) is non-trivial — multiple hours, separate scope.
+
+User decision: skip vLLM re-measurement; use the 2026-05-12 reference (`data/gate0-np1-np8.json`) as an **acknowledged-stale** comparator. The bench harness (`scripts/cross-engine-bench.sh`) is the load-bearing deliverable — it speaks `/v1/completions` and can be pointed at any backend, so a future vLLM run reuses it.
+
+Two ik_llama cells landed at the gate0 workload shape (8 reference prompts, max_tokens=256, temp=0, seed=42, ignore_eos=on, locked clocks 1455 MHz):
+
+| Cell | NP | Profile | Spec decoding | Aggregate t/s | Notes |
+|---|---|---|---|---|---|
+| ik_llama-np2-concurrent | 2 | `qwen36-27b-x2-dflash.sh` (production) | DFlash | **12.11** | data/t6-cell-ik_llama-np2-prod-20260523T175629 |
+| ik_llama-np8-concurrent | 8 | `qwen36-27b-x8-deterministic.sh` | none | **24.28** | data/t6-cell-ik_llama-np8-vllm-comparable-20260523T175836 |
+
+Computed gap, with all caveats stated:
+
+```
+vLLM vanilla NP=8 (2026-05-12 stale, int4-AutoRound, no spec):  154.77 t/s
+vLLM dflash  NP=8 (2026-05-12 stale, int4, vLLM-MTP spec):       34.90 t/s
+ik_llama NP=2 prod + DFlash       (2026-05-23, BF16+Q4_0+Had):   12.11 t/s
+ik_llama NP=8 deterministic       (2026-05-23, BF16+Q4_0+Had):   24.28 t/s
+
+Apples-with-known-precision-mismatch ratio (NP=8 no-spec both sides):
+  vLLM(154.77) / ik_llama(24.28) = 6.37×
+```
+
+**Falsified framing.** The 5.84× ratio cited throughout T3/T4/T5 closure docs was computed as `154.77 / 26.49` where `26.49` was at `bench-t3.8-m3` workload (identical "quick brown fox" prompts, n_predict=200, no `ignore_eos`). At the same gate0 workload vLLM was measured at, ik_llama produces 24.28 t/s, not 26.49. The **honest, comparable** ratio is 6.37×, not 5.84×.
+
+**Caveats that don't go away even with re-measurement:**
+
+- **Precision mismatch.** vLLM uses int4-AutoRound (Marlin sm_75); ik_llama uses BF16 weights + F16 lm_head + Q4_0 KV + Hadamard. Different memory-bandwidth pressure. Apples-with-known-precision-mismatch is still apples-with-known-mismatch.
+- **Spec-decoding mismatch (production).** Production ik_llama profile runs DFlash speculative; the vLLM reference's vanilla number does not. NP=2 production with DFlash is 12.11 t/s — *not* directly comparable to NP=8 numbers from either engine.
+- **Workload shape.** Gate0 prompts are varied (some prompts elicit harder content, lowering DFlash acceptance rate and per-step throughput). Production benchmarks against bench-t3.8-m3 use identical short prompts, which over-estimates real-workload throughput by ~10%.
+
+**T6.0.a closes with framing locked.** The gap is **6.37× at apples-comparable NP=8 no-spec on a varied-prompt workload**, with the precision-mismatch caveat persistent regardless of when vLLM is re-measured. Whatever T6.1+ surfaces as the dominant bottleneck, it has to explain a 6.37× factor, not 5.84×, and it can't blame the precision difference for more than a fraction of that gap (int4 vs BF16+Q4_0 KV ≈ 2× bandwidth difference at best).
+
 ### T6.0.b — Lock the measurement schema
 
 Single JSON shape per ablation cell. Every downstream T6 cell populates this same shape; the matrix is then aggregable, diffable, and survives across sessions / authors.
