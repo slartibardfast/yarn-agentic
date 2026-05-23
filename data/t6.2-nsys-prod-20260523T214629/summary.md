@@ -41,20 +41,21 @@
 
 ## Headline findings
 
-### 1. NCCL AllReduce is the second-biggest GPU consumer at 25.6%
+### 1. NCCL AllReduce is the second-biggest GPU consumer at 25.6% — PCIe-bound
 
-Graph-split with 2 GPUs requires an AllReduce after every layer's tensor-parallel computation. At NP=2 decode (1-2 token batches per tick), each AllReduce launches a small-message kernel that pays full RING-LL latency. 45,532 invocations over 12 seconds = ~3,800 AllReduces/sec. The previously-invisible cost of TP-sync on small batches.
+Graph-split with 2 GPUs requires an AllReduce after every layer's tensor-parallel computation. At NP=2 decode (1-2 token batches per tick), each AllReduce launches a small-message kernel that pays full RING-LL latency. 45,532 invocations over 12 seconds = ~3,800 AllReduces/sec.
 
-**Implication:** The "graph-split is free" assumption from earlier phase work is wrong — it's the single largest non-matmul cost. Reducing AllReduce-per-token is a 25% potential win. Levers:
-- Larger NVLink-fused AllReduce (we have peer access)
-- AllReduce batching across layers (single bigger msg vs many small)
-- Going back to **--split-mode layer** (no AllReduce; replaces with whole-layer-on-one-GPU) — only viable if a model layer fits on one 24 GiB GPU. For Qwen 3.6 27B at Q4_0 weights, a single transformer layer fits comfortably; this is a real option to evaluate in T6.
+**Critical context (2026-05-23):** This host currently has **no NVLink** between the two RTX 6000s — AllReduce travels via PCIe-peer-access, which is small-message-latency-poor. NVLink is being installed tomorrow. After install, the same RING-LL AllReduce will benefit from ~10× lower latency on small messages, dramatically reducing this 25.6% share. The cheapest possible "fix" is the hardware install itself; T6.2 must be re-run post-NVLink to establish the new baseline.
 
-### 2. PSKV singlewarp attention is only 3.2% of GPU time
+**Implication:** The "graph-split is free" assumption from earlier phase work was wrong on PCIe-only hardware. On NVLink it may become much closer to free. The recommended action is to RE-MEASURE T6.2 after NVLink lands — that result gates whether any in-software AllReduce-reduction work is justified. Levers within graph-split, if needed post-NVLink, would include AllReduce batching across layers and reducing AllReduce participation per token; --split-mode layer is OUT by user lock 2026-05-23 regardless of NVLink.
 
-The kernel that earlier T3/T5 closure docs identified as the bottleneck contributes ~1/8 the cost of the dominant matmul kernel and ~1/8 the cost of AllReduce. Past optimization effort spent on PSKV ILP / register tuning was real but targeted the wrong dominant cost.
+### 2. PSKV singlewarp attention is now 3.2% of GPU time — the ILP recovery worked
 
-**Implication:** Future kernel-level optimization should target the Q4_0 matmul (31% of time, 80,986 invocations, avg 55µs) before PSKV. T6.7 (per-slot-kv FA characterisation) should still happen, but with the understanding that the kernel is not the dominant cost.
+The PSKV singlewarp 4-way ILP recovery (2026-05-18, see `[[project-pskv-ilp-recovery-landed]]`) delivered TG +2.95% / PP +9.17% with ncu per-CTA −32.7%, NPC PASS at NP={1,2,4,8}. T6.2 measures the kernel's share at **3.2% post-optimization** — the recovery successfully shrank the kernel's footprint in the decode region. What looks unimpressive in retrospect is the right outcome of focused kernel work: the kernel is no longer the cost it was.
+
+The earlier T3/T5 closure docs framed PSKV as the bottleneck because it WAS more prominent before ILP recovery. T6.2's headline isn't "PSKV was the wrong target" — it's "PSKV was a real target, was addressed, and what's now dominant is the next layer of the cost surface that became visible after PSKV was reduced."
+
+**Implication:** Future kernel-level optimization should target the Q4_0 matmul (31% of time, 80,986 invocations, avg 55µs) — the next-tier cost that became prominent. T6.7 (per-slot-kv FA characterisation) is still owed as an unconditional deep-dive, but with the understanding that the kernel's share is already small.
 
 ### 3. Q4_0 matmul kernels dominate at ~60% combined
 
@@ -85,7 +86,9 @@ This leaves ~1.5× unaccounted; candidates include workload-shape differences, K
 
 ## Next steps (T6 follow-ons)
 
-- **T6.2.b** — ncu deep-dive on `mul_mat_q_split_k<Q4_0, 8, 8, 0, 4>` (the 31% kernel). Per-CTA register/occupancy budget; what's the saturation factor against sm_75 peak FLOPs? Targeted invocations only (1 in 10000).
-- **T6.2.c** — AllReduce-batching feasibility probe. Is the NCCL ring-LL choice optimal for sm_75 with peer-access? Probe `--split-mode layer` as a sibling profile and compare end-to-end t/s.
-- **T6.7** — PSKV singlewarp deep-dive, scoped now as "what's the cost surface of the 3.2% it contributes" rather than "what's blocking it". Lower priority than expected.
-- **T6.3** — DFlash characterisation (already highest-priority per T6.1 closure; T6.2 doesn't change that ordering).
+- **T6.2.b** — ncu deep-dive on `mul_mat_q_split_k<Q4_0, 8, 8, 0, 4>` (the 31% kernel). DONE — see `data/t6.2-ncu-20260523T215358/summary.md`. Shared-memory-occupancy-bound at 25%; ~1.6× upside if shared mem can be halved.
+- **T6.2.d (NEW)** — re-run T6.2 nsys after NVLink install (2026-05-24). Re-measure the AllReduce share; this is the cheapest possible AllReduce optimization (hardware install rather than software change). T6.2's kernel attribution is the pre-NVLink baseline; the post-NVLink measurement is what informs T7 prioritisation.
+- **T6.7** — PSKV singlewarp deep-dive. Scope is now "characterise the 3.2% residual after the T3.5 ILP recovery" rather than "what's blocking it". Lower priority than expected.
+- **T6.3** — DFlash characterisation (highest-priority unconditional follow-on per T6.1 closure; T6.2 doesn't change that ordering).
+- **T7 candidate** — `mul_mat_q_split_k` shared-memory reduction (largest single matmul lever). Requires kernel rewrite. NOT gated on NVLink.
+- **T7 candidate** — NCCL AllReduce reduction within graph-split. Conditional on post-NVLink T6.2.d result; if NVLink alone takes the share to <10%, this becomes low-priority.

@@ -85,6 +85,6 @@ This accounts for ~71% of the 6.37× gap. Remaining ~1.4× is likely workload-sh
 ## Next steps (T6 follow-ons)
 
 - **T6.2.c (probe)** — run a sibling profile with `--split-mode layer` instead of `graph`, re-bench at gate0 NP=2. Hypothesis: eliminates the 25.6% AllReduce cost; possible whole-decode speedup of 20-30%. Quick to set up (just a flag), 1-bench to confirm.
-- **T6.7** — PSKV singlewarp deep-dive at lower priority (3.2% of time, not the dominant cost). Still owed unconditionally per T6 discipline.
+- **T6.7** — PSKV singlewarp deep-dive at lower priority (3.2% of time post-ILP-recovery; the recovery succeeded in shrinking the kernel — see `[[project-pskv-ilp-recovery-landed]]`). Still owed unconditionally per T6 discipline, but framing is now "how much of the remaining 3.2% is hardware ceiling vs further-tunable" rather than "is the kernel a bottleneck".
 - **T7 candidate: `mul_mat_q_split_k` shared-mem reduction.** Largest single matmul lever identified by this pass. Requires rewriting the per-block tile stride to use less shared mem.
 - **T6.3** — DFlash characterisation remains the highest-priority unconditional follow-on (driven by T6.1 finding, not changed by T6.2).
