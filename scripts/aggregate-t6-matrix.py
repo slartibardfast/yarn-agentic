@@ -102,14 +102,18 @@ def main():
     lines.append(md_table(rows, ["cell_id", "dflash", "hadamard", "defrag", "wall_s", "out_toks", "t/s_agg", "t/s_slot", "status_counts", "clean"]))
     lines.append("")
 
-    # Pick "no-defrag" as the safe baseline (DFlash + Had + defrag OFF) since
-    # the defrag-on production default crashed under DFlash multi-slot.
-    baseline = next((s for s in summaries if s["cell_id"] == "no-defrag" and s["clean"]), None)
+    # Prefer prod-baseline (production default config) as the reference when
+    # it's clean. The pre-fix run used `no-defrag` as the baseline because
+    # `prod-baseline` was crashing; post-fix `prod-baseline` is the natural
+    # reference.
+    baseline = next((s for s in summaries if s["cell_id"] == "prod-baseline" and s["clean"]), None)
+    if baseline is None:
+        baseline = next((s for s in summaries if s["cell_id"] == "no-defrag" and s["clean"]), None)
 
     if baseline:
         lines.append("## Per-feature delta")
         lines.append("")
-        lines.append(f"**Baseline:** `{baseline['cell_id']}` (DFlash ON, Hadamard ON, defrag OFF) = {baseline['tps_agg']:.2f} t/s aggregate. The defrag-OFF baseline is used because the production default (defrag 0.1) crashed in two of the four T6.1 cells when combined with DFlash multi-slot — see Findings.")
+        lines.append(f"**Baseline:** `{baseline['cell_id']}` = {baseline['tps_agg']:.2f} t/s aggregate.")
         lines.append("")
         b = baseline["tps_agg"]
         delta_rows = []
@@ -123,11 +127,15 @@ def main():
         lines.append(md_table(delta_rows, ["cell_id", "t/s_agg", "Δ vs baseline (t/s)", "Δ (%)"]))
         lines.append("")
 
-    # Per-feature verdicts (compare matched pairs)
+    # Per-feature verdicts (compare matched pairs).
+    # prod-baseline = DFlash ON + Hadamard ON + defrag 0.1 ON.
+    # Each pair flips ONE feature relative to prod-baseline.
+    # "on_id" = the cell where the named feature is ON;
+    # "off_id" = the cell where the named feature is OFF.
     pairs = [
-        ("DFlash",  "no-defrag",        "no-dflash-nodefrag"),
-        ("Hadamard","no-defrag",        "no-hadamard-nodefrag"),
-        ("defrag",  "no-defrag",        "prod-baseline"),
+        ("DFlash",  "prod-baseline", "no-dflash"),
+        ("Hadamard","prod-baseline", "no-hadamard"),
+        ("defrag",  "prod-baseline", "no-defrag"),
     ]
     by_id = {s["cell_id"]: s for s in summaries}
     lines.append("## Per-feature verdict (binary on/off pairs)")

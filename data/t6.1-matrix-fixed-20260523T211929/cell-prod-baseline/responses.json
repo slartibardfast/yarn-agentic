@@ -1,0 +1,69 @@
+{
+  "per_request": [
+    {
+      "idx": 0,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 38.4728684425354,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 1,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 83.13979983329773,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 2,
+      "status": 200,
+      "tokens": 199,
+      "latency_s": 28.710901498794556,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 3,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 138.73759150505066,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 4,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 86.56855940818787,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 5,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 180.4840612411499,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 6,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 139.00190997123718,
+      "ttft_s": null,
+      "decode_s": null
+    },
+    {
+      "idx": 7,
+      "status": 200,
+      "tokens": 256,
+      "latency_s": 170.05203080177307,
+      "ttft_s": null,
+      "decode_s": null
+    }
+  ],
+  "wall_secs": 180.4860155582428
+}

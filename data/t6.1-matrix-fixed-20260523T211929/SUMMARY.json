@@ -1,0 +1,60 @@
+{
+  "cells": [
+    {
+      "cell_id": "no-defrag",
+      "dflash": true,
+      "hadamard": true,
+      "defrag": -1.0,
+      "wall_s": 162.07670664787292,
+      "out_toks": 1822,
+      "tps_agg": 11.241590711480018,
+      "tps_slot": 2.9677575295520984,
+      "status": {
+        "200": 8
+      },
+      "clean": true
+    },
+    {
+      "cell_id": "no-dflash",
+      "dflash": false,
+      "hadamard": true,
+      "defrag": 0.1,
+      "wall_s": 89.07739758491516,
+      "out_toks": 1822,
+      "tps_agg": 20.45412247549256,
+      "tps_slot": 5.159984175296455,
+      "status": {
+        "200": 8
+      },
+      "clean": true
+    },
+    {
+      "cell_id": "no-hadamard",
+      "dflash": true,
+      "hadamard": false,
+      "defrag": 0.1,
+      "wall_s": 185.54579043388367,
+      "out_toks": 2048,
+      "tps_agg": 11.037706623313412,
+      "tps_slot": 3.428218204179768,
+      "status": {
+        "200": 8
+      },
+      "clean": true
+    },
+    {
+      "cell_id": "prod-baseline",
+      "dflash": true,
+      "hadamard": true,
+      "defrag": 0.1,
+      "wall_s": 180.4860155582428,
+      "out_toks": 1991,
+      "tps_agg": 11.031325578559878,
+      "tps_slot": 3.279036315780811,
+      "status": {
+        "200": 8
+      },
+      "clean": true
+    }
+  ]
+}
