@@ -87,6 +87,8 @@ Populated at each T5.x close. Format: <Tier 5 card> | <date> |
 | T5.7b | 2026-05-23 | test-paged-kshift-byte-identity | 1 | — | — | **PASS** post-flip — non-boundary + boundary-crossing. |
 | T5.7b | 2026-05-23 | test-dflash-np-invariance | 1 | — | — | **PASS** — drafter_forward np-invariant across N ∈ {1,2,4,8}, 4/4 seeds. |
 | T5.7b | 2026-05-23 | test-fattn-per-slot-kv-dispatch-np-invariance | 1 | — | — | **PASS** — 6144 output floats byte-identical across n_kv_max ∈ {256, 512}. |
+| T5.7c | 2026-05-23 | test-paged-defrag-preserves-contents | 1 | — | — | **PASS** — allocator-level paged defrag (`llama_paged_kv_allocator::defrag()` method). N=12 block pool, 4-block seqs for {0,1,2}, free seq 1, write 1-block seq 3 (fragmentation). Defrag returns 3 moves; physically applied to synthetic pool buffer; post-defrag seq-logical reads byte-identical for seqs {0,2,3}. BlockUniquelyOwned + CompactionAfterDefrag invariants hold. Idempotency verified (re-run yields 0 moves). |
+| T5.7c | 2026-05-23 | test-kv-block-allocator + test-paged-allocator-determinism | 1 | — | — | **PASS** — existing allocator invariant tests unchanged post-defrag-method addition. |
 | T5.8 | _pending_ | M1 NP=8 final | — | — | — | GP5.a hard gate close |
 | T5.8 | _pending_ | M2 staggered NP=8 final | — | — | — | GP5.b numeric record (NOT hard gate post-reframe) |
 | T5.8 | _pending_ | M4 high-ctx feasibility | — | — | — | **GP5.b feasibility** hard gate (Path C reframe) |
