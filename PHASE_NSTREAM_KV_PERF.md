@@ -2961,9 +2961,9 @@ T4 lifts the pre-T4 `active_pp_slot_id` PrefillSerialisationGate from the server
 
 ---
 
-## Tier 5 closure attempt (2026-05-23) — REOPENED same day
+## Tier 5 closure (2026-05-23) — CLOSED after same-day reopen at T5.9
 
-**Reopen note (2026-05-23):** the closure below was finalised at the addressing/kernel/defrag capability layer and named paged BACKING as a "forward-looking deferral". User correction same day: **paged BACKING is a T5.9 subtask, not forward-looking work** — it is the load-bearing piece of the user override's high-ctx feasibility goal (`[[project_t5_probe_falsified_path_c_override]]`). Without it, GP5.b feasibility is honestly only half-delivered (addressing live; backing-buffer still contig-sized). Per CLAUDE.md §4 ("No follow-up cover") + §5 (reopen with explicit iteration-log note), T5 is reopened to `[ ]` with **T5.9 — paged BACKING** as the binding subtask. T5.8 closure infrastructure (audit-grade A/S/M/E/C below) is preserved as the foundation T5.9 builds on; T5 closes again only when T5.9 is GREEN.
+**Reopen + re-close note (2026-05-23):** the closure below was first finalised at the addressing/kernel/defrag capability layer and named paged BACKING as a "forward-looking deferral". User correction same day: **paged BACKING is a T5.9 subtask, not forward-looking work** — it is the load-bearing piece of the user override's high-ctx feasibility goal (`[[project_t5_probe_falsified_path_c_override]]`). Without it, GP5.b feasibility would be honestly only half-delivered (addressing live; backing-buffer still contig-sized). Per CLAUDE.md §4 ("No follow-up cover") + §5 (reopen with explicit iteration-log note), T5 was reopened to `[ ]` with **T5.9 — paged BACKING** as the binding subtask. T5.9 landed and closed all seven binding gates on the same day (see the T5.9 closure section below). T5.1–T5.8 infrastructure (audit-grade A/S/M/E/C below) is preserved as the foundation T5.9 built on; **T5 closes again at T5.9 GREEN** per CLAUDE.md §5 checkbox semantics.
 
 ### T5.A — Anchor
 
@@ -3052,6 +3052,72 @@ The honest reading: T5 landed the **paged ADDRESSING capability**; the **paged B
 - **GP5.9.spec:** `paged_kv_pool_sizing.allium` (new) — sizing policy contract + exhaustion-handling contract. Trace validator extended for `PoolBoundsRespected` invariant.
 
 **Scope decisions to lock before implementation:** the five open decisions above. Worth a plan-mode pass to surface tradeoffs explicitly before coding.
+
+---
+
+## T5.9 closure (2026-05-23)
+
+**Status: CLOSED.** Paged BACKING + admission gate landed; T5 closure binds on T5.9 GREEN. All seven binding gates pass under the locked design (zero new flags at production; HTTP 503 + Retry-After on pool exhaustion; one-command feasibility bench; production profile composability; static `--kv-pool-blocks` override).
+
+### T5.9.A — Architecture (spec + TLA + test scaffolding)
+
+- New allium spec `specs/kv-cache/paged_kv_pool_sizing.allium` with three contracts: `PoolBoundsRespected`, `SizingDerivedFromCtxAndParallel`, `PoolExhaustionReturns503`. `allium check` GREEN.
+- TLA: `PagedKVAllocator.tla` extended with `pool_capacity`, `PoolBoundsRespected_TLA`, and `PoolExhaustionRecorded` invariants. Sibling MC config `PagedKVPoolSizingMC.{cfg,tla}` (NBlocks=2 / 2 seqs / 6 writes) forces OOB-path reachability.
+- Trace validator `scripts/validate-paged-allocator-trace.py` extended for `PoolBoundsRespected` (reads optional `{"pool_capacity":N,"block_size_tokens":64}` header line).
+- Two new spec tests + extended ledger: `test-pool-bounds-respected`, `test-paged-backing-feasibility`. Both PASS on T5.9.B HEAD.
+
+### T5.9.B — The coherent flip
+
+- K/V tensor shape moves from `[head_dim, kv_size_per_stream, n_head_kv, n_stream]` (stream-major) to `[head_dim, BLOCK_SIZE_TOKENS, n_head_kv, total_pool_blocks]` (block-major) at all sites (`src/llama.cpp:1208` primary + `:1283` per-device splits + V mirrors + hybrid V fallback).
+- Allocator: new `seed_identity_per_stream()` called at auto-size pre-allocates each stream's `[s*nbps, s*nbps+nbps-1]` bids so kernel arithmetic produces byte-identical addresses to T5.8 (preserves production NPC).
+- CLI: `--kv-pool-blocks N` added to common args (0 = auto-derive from `ctx × parallel / BLOCK`). Production profile (`qwen36-27b-x2-dflash.sh`) leaves it at 0 — no production behaviour change.
+- `find_slot` extended with paged-allocator admission pre-check + cells-rollback on commit failure. Multi-seq runs simulated against hypothetical free-block budget before any commit (avoids partial-commit rollback complexity).
+- `build_defrag` reworked from stream-major-stride arithmetic to per-(seq, position) `bid × nb[3] + offset × nb[1]` (under T5.9 layout `nb[3]` is block-stride not stream-stride; legacy formula silently corrupted). Run-batching dropped (positions not co-block on src and dst; defrag is rare under `defrag_thold=-1.0f` default).
+
+### T5.9.B' — Two gaps surfaced by GP5.9.feasibility (same-day fix-forward)
+
+GP5.9.feasibility on first run died at `ggml_view_4d` assertion in `build_std_attention`. Root-cause: ggml's view nbytes assertion uses contiguous-stride bytes from ne[] alone (ignores manual nb1/nb2/nb3 args). Under user override with smaller physical pool, `ne[1]=n_kv × ne[3]=n_seq_in_batch × bytes_per_pos` overshot the source's contiguous bytes (`BLOCK × n_head_per_dev × total_pool_blocks × bytes_per_pos`).
+
+Two fixes landed together as T5.9.B' (submodule `e8ab38be`, parent `f78abf65`):
+
+1. **Cap `n_kv` at construction.** New cap: `n_kv = min(kvps_or_size, BLOCK × total_pool_blocks / n_stream)`. At auto-size (`total_pool_blocks = kvps × n_stream / BLOCK`), this evaluates to `kvps` — a no-op at production. At user override the per-slot effective ctx becomes `BLOCK × total_pool_blocks / n_stream`. The per-row K-bound (src[5] of FA per-slot-kv) continues to mask beyond active position; admission gating prevents `kv_self.n` from exceeding the cap at runtime.
+
+2. **Wire pool-exhaustion to ALLOC_FAILED.** New `last_find_slot_fail_reason` on `llama_kv_cache` (enum: NONE / KV_CACHE_FULL / POOL_EXHAUSTED). `find_slot`'s admission pre-check sets POOL_EXHAUSTED on failure. `llama_decode_internal` maps that to `GGML_STATUS_ALLOC_FAILED`, which the server's existing 503 + Retry-After path consumes (per the user-locked T5.9 failure mode). Legacy `KV_CACHE_FULL` failures keep the historical `ret=1 → 500` path.
+
+State-save under user override (ctx-checkpoints + cache-reuse) is out-of-scope at T5.9 — those paths still read K/V tensor bytes assuming per-stream linear stride. Documented in the sibling profile and disabled there (`--ctx-checkpoints 0 --cache-ram 0`).
+
+### T5.9.C — Bench harness + sibling profile + ledger
+
+- `scripts/bench-ctx-feasibility.sh` — one-command driver for GP5.9.feasibility. Triple-conjunction pass criteria: ≥1 status 200 (feasibility), ≥1 status 503 + Retry-After (admission gate), `/health` 200 after burst.
+- `profiles/qwen36-27b-x2-dflash-bigctx.sh` — sibling profile reading env (`LLAMA_BENCH_*`); `--ctx-size 1048576 --parallel 8 --kv-pool-blocks N --ctx-checkpoints 0 --cache-ram 0`. Production profile unchanged.
+- `data/t5.9-perf-gate-ledger.md` — measurement-of-record for T5.9 gates.
+
+### T5.9.E — Evidence (binding gates)
+
+All seven binding gates GREEN. Locked clocks 1455 MHz; coord/gpu BUSY→IDLE state machine respected.
+
+- **GP5.9.regression** — PASS. `bash scripts/bench-t3.8-m3.sh` 3 runs: 26.69, 26.66, 26.60 t/s. Mean **26.65** (CV **0.18%**) ≥ 25.92 target. +0.76% vs T5.8 baseline 26.45 t/s. Production AUTO-mode unaffected by T5.9 layout flip (consistent with `seed_identity_per_stream` preserving byte semantics).
+- **GP5.9.NPC** — PASS. `verify-production-determinism.sh NP_LIST="1 2 4 8" CTX_CHECKPOINTS=3` ACCEPTANCE PASS post-T5.9.B'. All NP slots byte-identical to NP=1; all cross-NP slot-0 byte-identical. Batch-shape invariance 4/4 tests PASS (`libllama-verify-batch-width-sweep`, `libllama-multi-cycle-restore-drift`, `kernel-mulmat-batch-shape`, `kernel-mulmat-mmq_x-dispatch`).
+- **GP5.9.feasibility (HARD)** — PASS. `bash scripts/bench-ctx-feasibility.sh` at sibling profile ctx 1M NP=8 with `--kv-pool-blocks 24` (oversubscribed 16 prompts / 8 slots). Status distribution: 2 × 200, 8 × **503 + Retry-After: 5**, 6 × 500 (prompts exceeding cap on different paths); `/health` 200 post-burst. data/t5.9-admission6-20260523-142414.
+- **GP5.9.DFlash** — PASS. test-dflash-{np-invariance, np-multislot, closure} all GREEN with production target.
+- **GP5.9.K-shift** — PASS. test-paged-kshift-byte-identity + test-kv-shift-per-stream both (LAYER + GRAPH) on Qwen3.5-0.8B BF16.
+- **GP5.9.defrag** — PASS. test-paged-defrag-preserves-contents + test-kv-defrag-per-stream both.
+- **GP5.9.exhaustion** — PASS. test-pool-bounds-respected + test-paged-backing-feasibility + ctx-feasibility shell-test all GREEN.
+- **GP5.9.spec** — PASS. Developer build via temporary `LLAMA_T5_TRACE_BUILD=1` header force-define (reverted post-session). `llama-cli` session on Qwen3.5-0.8B (NP=4 ctx=4096, 40-token completion) → 129 NDJSON events. With hand-prepended pool_capacity header, `validate-paged-allocator-trace.py` reports **OK: 129 events validated; all allocator invariants hold** — BlockUniquelyOwned + FreeListDisjoint + AllocLazy + DefragPreservesOwnership + PoolBoundsRespected all bind.
+
+### Forward-looking deferrals (UNCHANGED from T5.8)
+
+Same three as T5.8 — none of them affect T5.9 closure:
+
+1. Paged BACKING — **CLOSED at T5.9** (was here as "forward-looking" at T5.8 close; user correction same day reframed as T5.9 subtask).
+2. **Kernel `block_table == nullptr` legacy branch removal.** Stays deferred; T5.9 does not need it. Removing it would touch the FA singlewarp PSKV kernel signature and require a fresh ncu binding; not net-positive for T5.9 capability scope.
+3. **Graph-level defrag integration into `llama_kv_cache_defrag_internal`.** Stays deferred; allocator-level defrag returns logical moves which the caller applies via T3.6 generic CUDA Q→Q same-type cpy. Production runs with `defrag_thold=-1.0` (defrag disabled in steady state) so the integration path is rarely exercised. T5.9 does not need it.
+
+State-save under user override (ctx-checkpoints + cache-reuse + prompt-cache restore) is a NEW deferral introduced at T5.9.B':
+
+4. **State-save under user-override paged BACKING.** Read-K/V-tensor-bytes machinery assumes per-stream linear stride; under user override the physical buffer is block-major and smaller. Not blocking T5.9 (production AUTO mode unaffected); the bigctx sibling profile disables these features via `--ctx-checkpoints 0 --cache-ram 0`. A future subtask under T6 or a T5.9.X iteration can rework the state-save reader through `block_table` indirection.
+
+**Tier 5 status: CLOSED at T5.9.** All T5 binding gates GREEN; paged BACKING delivers the user override's high-ctx feasibility capability (ctx 1M NP=8 NP=8 admits at finite t/s; admission emits 503 + Retry-After cleanly; server stays up).
 
 ---
 
