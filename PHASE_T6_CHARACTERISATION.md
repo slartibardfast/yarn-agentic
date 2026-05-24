@@ -305,6 +305,47 @@ The production profile (`qwen36-27b-x2-dflash.sh`) shipping DFlash ON is a downs
 
 ---
 
+## T6.3 — Production parking decision (1M Yarn + MTP + single slot) — VALIDATION FAILED, swap NOT done
+
+After T6.3 deep-dive verdict (DFlash net-negative across all measured axes), production parking-from-DFlash was scoped (2026-05-23, "parked not dead"). The chosen replacement architecture was **single-slot at 1M ctx with YaRN (factor=4.0) + MTP --draft 1 + auto-pool + transparent multi-request cache**. Validation was a 9-hour overnight stress test against War and Peace (853K Qwen tokens) using `scripts/run-t6.3-1m-overnight.sh`.
+
+### What landed
+
+- **Submodule `a69f19de`** (`ik_llama.cpp/src/llama-delta-net.cpp`) — deterministic MTP+prefill abort fix. `delta_net::delta_net()` was setting `save_per_step_states = true` whenever `save_per_step_ssm && batch.n_tokens > 1`, but per-step buffers are sized for the verify-step batch (`max_tokens = drafted.size() + 1 = 2` for MTP --draft 1). Prefill ubatches far exceed that, overflowing the `ggml_view_2d` into per_step_qkv/per_step_ssm at `build_layer_attn_linear_core` line 631. Fix gates on `batch.n_tokens <= per_step_max_allocated`; per-step save during prefill is meaningless anyway (no draft being verified). Complements the existing PHASE45 D10 multi-slot guard which forces GPU_FALLBACK at `n_seq_max > 1`; the new gate covers the `n_seq_max == 1` prefill case.
+- **YaRN params (HF-authoritative)** locked at `--rope-scaling yarn --rope-scale 4.0 --yarn-orig-ctx 262144`; the `mrope_section`/`mrope_interleaved` fields from the HF model card are multimodal-only (text-only Qwen3.6-27B doesn't use MROPE).
+- **VRAM math verified at single slot**: 1M ctx auto-pool = 16384 blocks → 21 GiB KV + 13 GiB model + 3 GiB compute = ~37 GiB / 48 GiB. Comfortable.
+- **Cache compatibility verified**: at auto-pool (no `--kv-pool-blocks` under-allocation) the T5.9 state-save deferral does NOT apply — `--ctx-checkpoints 64 --cache-ram 40960` works normally.
+- **2-run determinism check PASSED**: 3 prompts × 64 tokens × 2 fresh server sessions = 6 runs; all 3 prompt-pairs byte-identical.
+- **4 post-fix smokes PASSED**: MTP at 262K + MTP at 1M+YaRN + vanilla 1M YaRN + same-config reruns. MTP acceptance 77-84% on short prompts (better than DFlash's 53%).
+
+### What failed
+
+- **Overnight validation Phase 1 (boot smoke)** died silently during the first decode. Server log ended at `fragmentation: 0.93` immediately after `kv cache rm [p0, end)` — no GGML_ASSERT message, no stack trace, no journal entry. Coredump exists at `/var/lib/systemd/coredump/core.llama-server.1001.*.3051613.*.zst` (PID 3051613 = overnight server). Phases 2-6 all failed with `Connection refused` (server already dead). 2829 soak iterations all reported FAIL.
+- **Bug is intermittent**: rerunning the EXACT same prompts in the EXACT same profile (10 minutes later) succeeded. Determinism check before launch (3 prompts × 2 sessions, 6 runs) succeeded. The fragility makes the failure mode hard to characterise without coredump inspection (requires sudo for `/var/lib/systemd/coredump/` access).
+- **Validation gate**: required ≥1 successful 1M-ctx response + cache effectiveness + stability soak. **Got: 1 partial Phase 1 response (1 SSE event) then server death; no other phase ran.**
+
+### Decision
+
+**Production stays on DFlash** (`profiles/active.sh → qwen36-27b-x2-dflash.sh` unchanged) per the original parking discipline ("parked not dead, swap is reversible, do not flip without binding validation"). Per CLAUDE.md §4 (no follow-up cover) + §8 (negative results land cheap when honest) — validation result is the result; partial success on the deterministic per-step bug does not constitute "the production swap is justified."
+
+### Artefacts
+
+- `data/t6.3-1m-overnight-20260524T003021/` — full overnight output (server.log + per-phase JSONs + SUMMARY.md + VRAM timeline). Phase 1 partial response captured at `phase1-boot.json` (`first_tokens: "Answer"`, `n_predicted: 1`).
+- `data/t6.3-mtp-native-postfix-20260524T002407/`, `data/t6.3-1m-yarn-mtp-postfix-20260524T002458/` — post-fix smokes that PASSED.
+- `data/t6.3-mtp-determinism-20260524T002603/` — 2-run determinism check that PASSED (3/3 byte-identical).
+- `data/t6.3-mtp-cache-prompt-20260524T011554/` — isolate test (crashed once at first request; then reruns succeeded — confirms intermittent).
+- `data/t6.3-mtp-smoke-rerun-20260524T011906/` — final reproducibility check showing both Phase-1-style prompts succeed when re-run.
+- `profiles/qwen36-27b-x1-yarn-1m-mtp.sh` — host-side profile (not in repo); intended production target, not flipped.
+- Submodule commit `a69f19de` + parent bump (in main commit history) — the deterministic fix that landed.
+
+### Subtasks opened (named, not deferred-as-cover)
+
+- **T6.3.g** — characterise the intermittent MTP+1M+YaRN crash. Required input: extract the coredump (needs sudo `cp /var/lib/systemd/coredump/core.llama-server.1001.*.3051613.*.zst /tmp/ && zstd -d`); read backtrace; correlate against MTP graph build path. Likely culprits (rank-ordered): (a) MTP graph cache invalidation race when n_past crosses sub-262K → into-YaRN-region boundary; (b) ctx-checkpoint save (149 MiB per checkpoint at 1M ctx) overflowing some host buffer; (c) intermittent CUDA driver state. Without the coredump backtrace this is speculation.
+- **T6.3.h** — re-attempt the production swap after T6.3.g delivers a stable build. Same overnight gates apply.
+- **T6.3.i** — investigate whether the MTP intermittent failure is workload-dependent (size of prompt? Position counters? Specific tokens?). Run the overnight driver iteratively starting Phase 2 directly (skip Phase 1) to see if Phase 2's 853K-token prefill stays stable.
+
+---
+
 ## Disciplines
 
 **Understanding is the goal.** T6 is not an optimization tier and not a justify-what-we-shipped tier. The goal is to produce a cost surface and behavioural envelope for each feature dense enough that any future T7+ work has a measured baseline to argue against. Whether to keep a feature on/off in production is a downstream decision informed by T6's data; T6 itself does not advocate for any feature's continued inclusion or removal. Per-feature deep-dives (T6.3–T6.9) run **regardless** of T6.1's binary on/off outcome — the data is load-bearing for future profiling either way.
