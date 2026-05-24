@@ -18,5 +18,8 @@ cuda-graph-probe-*/
 specs/**/*_TTrace_*.tla
 specs/**/*_TTrace_*.bin
 
+# TLA+ tooling (fetched per-host; CI re-downloads tla2tools.jar each run)
+.tla-tools/
+
 # GPU coordination state (volatile, per-host)
 coord/
