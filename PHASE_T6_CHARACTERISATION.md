@@ -346,6 +346,89 @@ After T6.3 deep-dive verdict (DFlash net-negative across all measured axes), pro
 
 ---
 
+## T6.3.j — 1M-ctx perf ceiling analysis (architecture recalibration)
+
+Closure update to the T6.3 parking decision. After fixing both MTP bugs surfaced by the overnight validation, the second overnight attempt cleared Phase 1 (boot smoke, 128 tokens at 9.5s wall) but exposed a **prefill performance ceiling** that makes the 1M-ctx target infeasible on current hardware.
+
+### Two MTP bugs that landed this session
+
+Both fixes are real and stand. Verified by post-fix smokes at the production-candidate config (`profiles/qwen36-27b-x1-yarn-1m-mtp.sh`).
+
+**Bug 1 — submodule `a69f19de`** (`src/llama-delta-net.cpp`): `delta_net::delta_net()` was setting `save_per_step_states = save_per_step_ssm && batch.n_tokens > 1`. The per-step buffers are sized for the verify batch (`max_tokens = drafted.size() + 1 = 2` for MTP --draft 1), but prefill ubatches far exceed that, overflowing the `ggml_view_2d` into `per_step_qkv/per_step_ssm` at `build_layer_attn_linear_core` line 631. Fix gates on `batch.n_tokens <= per_step_max_allocated`. Complements the existing PHASE45 D10 multi-slot guard (`n_seq_max > 1 → GPU_FALLBACK`) by covering the `n_seq_max == 1` prefill case.
+
+**Bug 2 — submodule `711212a6`** (`examples/server/server-context.cpp`): WARMUP path was calling the single-row `llama_set_draft_input_hidden_state(mtp_target, batch_mtp_hidden_state.data())`, but the destination tensor `inp_mtp_states` has shape `(n_embd, n_tokens)`. The single-row setter only stores `n_embd` floats; `prepare_mtp_graph_inputs` then `memcpy`s `n_embd × n_tokens × sizeof(float)` bytes from a `n_embd`-floats-only buffer, walking off the end into unmapped memory → SIGSEGV in libc AVX2 `vmovdqu`. Fix uses the existing `_multi` variant (`llama_set_draft_input_hidden_state_multi(mtp_target, batch_view.n_tokens, ...)`). The `_multi` setter was introduced for exactly this case (PHASE45 D10.b per in-source comment) but the WARMUP path was still using the legacy single-row setter.
+
+Both fixes ship in `production/2026-q2-next`. NPC binding unaffected (vanilla decode path unchanged).
+
+### Observation that triggered the ceiling analysis
+
+Overnight Phase 2 (cold 853K-token War-and-Peace prefill at 1M ctx + YaRN factor=4.0 + MTP --draft 1) ran the server at **9.7 tokens/sec prefill** — pathological. The driver hit its 1-hour per-request timeout repeatedly. Server log showed continuous `kv cache rm [p0, end)` + `create_check 152.3 MiB took 171 ms` + `erasing old context checkpoint` cycles at ~512 tokens / 53 seconds. Checkpoint thrash accounts for ~340 ms / chunk of overhead but only explains ~0.6 ms/token; the remaining 100+ ms/token gap is the actual forward cost at long ctx.
+
+### Bandwidth ceiling for Qwen3.6-27B on 2× sm_75 (TU102, 672 GB/s DRAM peak per GPU)
+
+Qwen3.6-27B is hybrid: per GGUF metadata `qwen35.full_attention_interval = 4`, **16 of 64 layers are full-attention**, 48 are DeltaNet (constant-size recurrent state). Per-token KV bandwidth (full-attn layers only, Q4_0 KV):
+- Per layer per token: `n_head_kv (4) × head_dim (128) × 2 (K+V) × 0.5 bytes ≈ 512 B/token`
+- 16 full-attn layers × ctx tokens × 512 B = **8.4 KB × ctx** per new token
+
+DRAM-saturated ceilings (peak; ignoring AllReduce, kernel inefficiency, matmul cost, DeltaNet, checkpointing):
+
+| ctx | KV bytes/token | time/token at 672 GB/s | t/s peak ceiling |
+|---:|---:|---:|---:|
+| 262144 | 2.1 GB | 3.1 ms | **322 t/s** |
+| 524288 | 4.3 GB | 6.4 ms | **156 t/s** |
+| 786432 | 6.3 GB | 9.4 ms | **106 t/s** |
+| 1048576 | 8.4 GB | 12.5 ms | **80 t/s** |
+
+These are **upper bounds**. Real-world is typically 30-50% of theoretical ceiling. T6.2 ncu measured `mul_mat_q_split_k<Q4_0>` running at 44.3% DRAM throughput, occupancy-bound at 25% (shared-mem-limited). Adjusted realistic estimates:
+
+| ctx | pre-NVLink real (~40% of ceiling) | post-NVLink real (~45-50%) |
+|---:|---:|---:|
+| 262144 | 130 t/s | 150 t/s |
+| 524288 | 60 t/s | 75 t/s |
+| 786432 | 42 t/s | 50 t/s |
+| 1048576 | **32 t/s** | **38 t/s** |
+
+### NVLink interaction (install date 2026-05-24, not yet active per nvidia-smi)
+
+NVLink2 on TU102 = ~50 GB/s vs PCIe ~12 GB/s. Small-message NCCL latency drops ~10×. Where it helps:
+
+- **Decode at small batch** (AllReduce-dominated): T6.2 measured AllReduce at 26.5% of GPU time at production NP=2. NVLink could cut to ~5%, recovering ~20% wall-clock.
+- **Long-ctx prefill** (DRAM bandwidth dominates): AllReduce per layer transfers `n_embd × ubatch × bf16` ≈ 5 MB. On PCIe ~25-50 ms total per ubatch; on NVLink ~5-10 ms. At 1M ctx with 53s/ubatch observed, this is 0.1% of wall — **negligible**.
+
+NVLink primarily addresses the decode path. For prefill at long ctx, the DRAM ceiling is the binding constraint and NVLink does not move it.
+
+### Production constraint (locked 2026-05-24)
+
+**"1M ctx is predicated on 100+ t/s."** This is a hard target, not a stretch goal. The bandwidth math above shows 100+ t/s at 1M ctx **is not on the table for this hardware** even with NVLink. The 80 t/s peak ceiling, before accounting for any inefficiency, falls under 100. Realistic achievable 1M throughput is 32-38 t/s.
+
+100+ t/s **is achievable** at:
+- **262144 (native, no YaRN)** — comfortably (130 t/s pre-NVLink, 150 post)
+- **524288 (YaRN factor=2.0)** — borderline pre-NVLink (60 t/s), likely-feasible post-NVLink with ubatch tuning (75 t/s real, 156 ceiling)
+- **786432 / 1048576** — off-target until NVLink + matmul tensor-core path lands
+
+### Recalibrated parking ladder
+
+Production parking-from-DFlash architecture must hit 100+ t/s prefill at the chosen ctx. Options:
+
+1. **262K native, single-slot + MTP + cache + queue.** Definitely viable; what production already has for ctx; gains the single-slot+cache+MTP architecture. No YaRN. The parking is a single-axis change (multi-slot → single-slot + transparent queue) rather than ctx expansion.
+2. **524K with YaRN factor=2.0, single-slot + MTP + cache + queue.** Marginal pre-NVLink, likely OK post-NVLink. Doubles per-slot ctx vs production. Worth measuring at ubatch sweep + post-NVLink.
+3. **1M with YaRN factor=4.0.** Conditional on (a) NVLink lands AND (b) Q4_0 → tensor-core matmul path lands (T6.2.b candidate, weeks of work, T7 territory).
+
+### Subtasks not done by T6.3.j (named, not deferred-as-cover)
+
+- **T6.3.k** — measure prefill t/s at 262K and 524K with the (a69f19de + 711212a6)-fixed MTP build. ubatch sweep at the chosen target. Determines actual realistic numbers vs the bandwidth ceiling estimates above.
+- **T6.3.l** — post-NVLink re-measure. AllReduce drops from 26.5% → likely ~5%; re-run T6.3.k + T6.2 nsys to update the cost surface.
+- **T6.3.m** — characterise the prefill bottleneck at long ctx (nsys trace during a 350K-position prefill ubatch). Identify dominant kernels. If matmul shared-mem occupancy is the limiter (T6.2.b's hypothesis), this informs the T7 matmul kernel rewrite priority.
+- **T6.3.n** — investigate the ctx-checkpoint overhead at long ctx. Each 512-token chunk write+evict is 340 ms = 0.66 ms/token of overhead. At 524K ctx target this might be tolerable; at 1M it isn't. Tunable via `--ctx-checkpoints-interval` (default 512; raising to 1048576 would disable intra-prefill checkpointing). Production-default decision depends on whether cross-request prefix-match still hits at the chosen interval.
+
+### Honest verdict
+
+The "1M Yarn + MTP single-slot" architecture as originally scoped (2026-05-23) is **not achievable on current hardware** under the 100+ t/s constraint. Bandwidth math, not implementation quality. The architectural intent (single-slot + transparent queue + multi-request cache) is sound and achievable at smaller ctx; the **1M** part requires either NVLink + matmul tensor-core path (months of work) or different hardware.
+
+Recommended next move: recalibrate target to **524K with YaRN factor=2.0** (or stay at native 262K), measure with the bug-fixed build, validate against the 100+ t/s gate.
+
+---
+
 ## Disciplines
 
 **Understanding is the goal.** T6 is not an optimization tier and not a justify-what-we-shipped tier. The goal is to produce a cost surface and behavioural envelope for each feature dense enough that any future T7+ work has a measured baseline to argue against. Whether to keep a feature on/off in production is a downstream decision informed by T6's data; T6 itself does not advocate for any feature's continued inclusion or removal. Per-feature deep-dives (T6.3–T6.9) run **regardless** of T6.1's binary on/off outcome — the data is load-bearing for future profiling either way.
