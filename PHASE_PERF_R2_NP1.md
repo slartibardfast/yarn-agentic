@@ -276,21 +276,108 @@ calls, ~10 000 × 17 µs = 170 ms ≈ **3.8% wall**.
 **Effort.** Low for the diagnostic pass (~10-15k tokens). High if it
 turns out a shape-aware dispatcher is needed (~50-80k).
 
-### Candidate D — convert_unary cast trio elision (TU102_SPEC #10)
+### Candidate D — convert_unary cast trio elision (refined 2026-05-24)
 
-**Cost.** 64 ms + 57 ms convert_unary pairs + 77 ms splitKreduce =
-**198 ms (4.4%)** combined, all paired with 446 ms of cutlass.
+**Cost (the full HGEMM-with-cast trio).** 446 ms cutlass + 78 ms
+splitKreduce + 64 ms convert_unary<f32,half> + 57 ms convert_unary<half,f32>
+= **645 ms (14.2%)** combined. Identical instance counts (53 621 each
+for cutlass/casts; 53 556 splitKreduce — paired one-to-one).
 
-**Lever.** Promote matched-dtype neighbours so the F16↔F32 casts elide.
-Or, if the cast is around cuBLAS-Lt calls where the math layout is
-fp16-internal, mark the surrounding tensors as fp16 in the graph build
-and skip the cast pair.
+**Call site identified.** `ik_llama.cpp/ggml/src/ggml-cuda.cu:1901-1955` —
+the `ggml_cuda_op_mul_mat_cublas` F16 HGEMM path:
 
-**Effort.** Medium. Cross-kernel dispatch surgery. Per TU102_SPEC #10's
-characterization — not architectural, purely op-graph cleanup.
+```cpp
+// line 1901-1907 — entry cast: src1 (activations) F32 → F16
+if (src1->type != GGML_TYPE_F16) {
+    const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(src1->type);
+    to_fp16_cuda(src1_ddf_i, src1_as_f16.get(), src1_ncols, ne10, stream);
+}
 
-**Ceiling.** ~120 ms / 4 540 ms = **~2.6% wall** if the full cast time
-elides. Lower if only half the pairs are eligible.
+// line 1944-1951 — cuBLAS HGEMM (the cutlass_75_wmma kernel + splitKreduce)
+cublasGemmEx(..., CUDA_R_16F src0, CUDA_R_16F src1, CUDA_R_16F dst,
+             CUBLAS_COMPUTE_16F, s_cublas_algo /*ALGO0_TENSOR_OP*/);
+
+// line 1953-1954 — exit cast: dst F16 → F32
+const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(GGML_TYPE_F16);
+to_fp32_cuda(dst_f16.get(), dst_dd_i, row_diff, src1_ncols, stream);
+```
+
+**Trio anatomy (per-call attribution).** At avg ~8.3 µs cutlass +
+~1.5 µs splitKreduce + ~1.2 µs entry-cast + ~1.1 µs exit-cast =
+**~12 µs/call**. Cast pair is **~19% of per-call time**; HGEMM body is
+the other ~81%. The casts are NOT the dominant cost per call — but
+their *aggregate* is meaningful because the count is 53k.
+
+**The src0 weight cast does NOT contribute.** Per the comment block at
+`ggml-cuda.cu:1842`, `src0` (weight) goes through a persistent
+`fp16_cache` — one-shot conversion per unique weight pointer, then
+cached forever (or until OOM fallback). Confirmed by the convert_unary
+instance counts: 53 621 per direction matches `src1_ncols` calls + dst
+writebacks exactly. **All cast time is on src1 (activations) and dst.**
+
+#### Sub-lever D1 — exit cast elision via CUDA_R_32F output (low-risk)
+
+cuBLAS `cublasGemmEx` supports `CUDA_R_16F` inputs + `CUBLAS_COMPUTE_16F`
++ **`CUDA_R_32F` output** as a single supported combination on Volta+.
+Tensor-core compute path is unchanged (still ALGO0_TENSOR_OP, still
+HMMA); only the writeback dtype differs.
+
+**Surgical change.** ~5-line diff at `ggml-cuda.cu:1938-1954`:
+
+```cpp
+// before:
+ggml_cuda_pool_alloc<half> dst_f16(ctx.pool(id), row_diff*src1_ncols);
+const half alpha_f16 = 1.0f, beta_f16 = 0.0f;
+cublasGemmEx(..., CUDA_R_16F, ..., dst_f16.get(), CUDA_R_16F, ldc,
+             CUBLAS_COMPUTE_16F, s_cublas_algo);
+to_fp32_cuda(dst_f16.get(), dst_dd_i, row_diff, src1_ncols, stream);
+
+// after:
+const float alpha_f32 = 1.0f, beta_f32 = 0.0f;
+cublasGemmEx(..., CUDA_R_16F, ..., dst_dd_i,    CUDA_R_32F, ldc,
+             CUBLAS_COMPUTE_32F, s_cublas_algo_32f);
+// (no exit cast)
+```
+
+**Caveats.**
+
+1. **`CUBLAS_COMPUTE_32F` with F16 inputs uses F32 accumulators.** That's
+   actually *better* numerics than CUBLAS_COMPUTE_16F (F16 accumulators)
+   which the current code uses. NPC contract must be re-verified: the
+   change *should* be byte-identical to a freshly-tuned ALGO that picks
+   tensor-core m16n16k16 with F32 accumulator (CUBLAS_GEMM_ALGO0
+   variants typically engage this).
+2. **Algorithm choice.** The current code pins `CUBLAS_GEMM_ALGO0_TENSOR_OP`
+   for the F16 case. There may be a CUBLAS_GEMM_ALGO0_TENSOR_OP_32F
+   sibling that needs to be selected for the F32-output flavour — needs
+   verification by ALGO survey, not assumption.
+3. **The pinned-F16 path stays as-is.** Line 1923's `s_force_sid_cublas`
+   branch writes F32 directly through a custom kernel. That branch
+   path isn't engaged by default (TU102_SPEC #3 documented it as
+   globally slower) — leave it alone.
+
+**Ceiling for D1.** 57 ms (1.3%) wall reclaim if the cuBLAS internal
+writeback is as fast as our explicit `convert_unary` cast. Could be
+slightly faster (in-kernel writeback) or wash (same cost, just moved).
+Empirical question, easy to measure.
+
+**Effort.** Low. ~5-line diff, rebuild (~10 min), NPC matrix verify
+(scripts/verify-production-determinism.sh at NP={1,2,4,8} multi-GPU),
+re-bench at np=1 vanilla shape. ~30-50k tokens.
+
+#### Sub-lever D2 — entry cast elision (higher effort, dependent on graph build)
+
+The src1 F32→F16 cast at line 1907 needs the *producer* of src1 to
+write F16. That's a graph-build change in `llama-build-context.cpp` —
+mark the residual / norm output as F16 instead of F32. Affects every
+downstream consumer of that tensor (which may include CPU paths, REDUCE
+collectives, etc).
+
+**Cost.** ~64 ms (1.4%) wall reclaim ceiling for the entry cast.
+**Effort.** Higher; full op-graph change. Not in scope this round
+unless D1 lands clean and we want more.
+
+**Combined D1+D2 ceiling.** ~2.7% wall. D1 alone is ~1.3%.
 
 ### Out of scope this round
 
@@ -471,8 +558,8 @@ projected ~5-8% TG wall improvement (24.77 → ~26-27 t/s at this shape).
 |---|---|
 | Lock GPU clocks on xeon | `nvidia-smi -lgc 1455,1455 -i 0,1`. Prerequisite for binding perf-delta gates on Steps 3+. Currently default (variable). |
 | Relocate nsys captures | Move `/tmp/nsys-nvlink/nvlink-vanilla-np1-2026-05-24.nsys-rep` → `data/nsys-perf-2026-05-24-vanilla/`. Repo convention. |
-| Higher-c capture | This trace used `-c 4096` to match TU102_SPEC methodology. Capture at `-c 262144` (production KV pre-alloc) as a follow-up to verify memory-bandwidth kernels don't reshuffle the top-15. |
-| Production ctx 256k re-rank | This trace is at `-c 4096` for methodology match. The real production runs at ctx 262144 — KV scratch is ~10 GiB not 78 MiB. Re-capture at production ctx if any candidate's projection depends on memory-bandwidth saturation. |
+| ~~Higher-c capture~~ | **CLOSED 2026-05-24.** Captured at `-c 262144` (`/tmp/nsys-nvlink/nvlink-vanilla-np1-ctx256k-2026-05-24.nsys-rep`). Kernel mix is functionally identical to `-c 4096` — every top-15 line within ±0.4 pp (largest shift: NCCL 9.1% → 9.5%, mul_mat_q ncols=112 7.3% → 7.4%). Working set / KV pre-alloc does not change the kernel-time distribution for this bench shape. The `-c 4096` ranking is the production-shape ranking. |
+| ~~Production ctx 256k re-rank~~ | **CLOSED 2026-05-24** via the higher-c capture above. Same finding. |
 
 ---
 
