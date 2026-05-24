@@ -9489,3 +9489,86 @@ See [[2026-05-06 — Qwen 3.6 chat template study]] for the original
 seven-fix enumeration, `value.cpp:1137` items-on-objects clarification,
 and the full jinja supported-names list.
 
+
+## 2026-05-24 — qwen3.6-27b is NOT MoE; it's a Mamba-2 SSM + attention hybrid
+
+**The surprise.** The deployed production model
+(`/opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.gguf`) is **not
+MoE**. `gguf_dump.py --no-tensors` shows:
+
+```
+general.architecture            = 'qwen35'
+qwen35.block_count              = 65
+qwen35.embedding_length         = 5120
+qwen35.feed_forward_length      = 17408
+qwen35.attention.head_count     = 24
+qwen35.attention.head_count_kv  = 4
+qwen35.ssm.conv_kernel          = 4
+qwen35.ssm.state_size           = 128
+qwen35.ssm.group_count          = 16
+qwen35.full_attention_interval  = 4
+```
+
+No `n_expert` / `expert_count` / `expert_used` field. It's the qwen35
+**hybrid Mamba-2-SSM + attention** architecture, 65 layers, attention
+fires every 4th layer (`full_attention_interval=4`), the other 49 layers
+are SSM blocks.
+
+**Why this matters.** The 51.25B params reported by `llama-bench` (vs
+"27B" in the filename) tempts the assumption that this is a 27B-active /
+51B-total MoE. It is not. The 51B total weight count comes from the
+sum of (a) attention QKV/O projections at 5120 hidden, (b) the FFN
+up/gate/down at 17408 intermediate per all 65 layers — most of which are
+SSM blocks with their own large in_proj / out_proj — and (c) the SSM
+state-related params (conv_kernel, state_size, group_count, time_step_rank).
+Hybrid SSM+attention has its own "weight inflation" that mimics MoE
+counting but with no actual experts.
+
+**Cost paid before this lesson landed.** PHASE_TU102_SPECIALIZATION #4
+(2026-05-19) framed `fused_mul_mat_vec_q<Q4_0,1,4,1>` as "decode rows
+AND MoE expert-routing fan-out" — both terms wrong for this model. The
+falsification cost ~30k tokens of code-reading on 2026-05-24 to surface;
+the original framing was inherited into PHASE_PERF_R2_NP1.md and
+required an in-doc strike-through update. Two separate commits
+(`910199f` for the new phase doc, `f6ade67` for the TU102 annotation)
+landed the correction.
+
+**How to apply going forward.**
+
+- **When the model is qwen3.5 / qwen3.6 / qwen35*, check GGUF arch
+  before assuming MoE.** The `qwen35moe` arch in `llama-arch.cpp` IS a
+  separate MoE variant — but the production model uses plain `qwen35`,
+  which is the hybrid SSM+attention.
+- **`build_qwen35()` in `llama-build-context.cpp:2889`** builds the
+  non-MoE hybrid graph; `build_qwen35moe()` at line 2885 is the MoE
+  sibling — different graph, different op selection. Check which one
+  the model actually routes through.
+- **`fused_mul_mat_vec_q<...>` template fires from one call site only**
+  (`ggml_fused_up_gate` in `llama-build-context.cpp:1323`). For
+  decode-shape attribution at this model, every invocation of the
+  fused MMVQ kernel is the FFN up+gate matmul. There is no MoE-vs-non-MoE
+  dispatch split to make.
+
+**Where the hot work actually lives at this model.**
+- **MMQ Q4_0 ncols=8 (29.9%)** — prefill + multi-token attention/FFN.
+  Already Lever-D-shipped; std-dev variance suggests workload-driven, not
+  kernel-driven.
+- **fused MMVQ ncols=1 (15.7%)** — FFN up+gate at decode. One source.
+  Lever is kernel-level (ncu probe → Lever-D-style rewrite if occupancy
+  headroom).
+- **NCCL AllReduce (9.1% at np=1)** — Mamba-2 hybrid plus FFN cross-device
+  reductions. AsyncReduce Option B is specced.
+
+**Companion files.**
+- Corrected scope: `PHASE_PERF_R2_NP1.md` §"Candidate A: premise
+  falsification" (commit `910199f`).
+- TU102_SPEC #4 annotation: `PHASE_TU102_SPECIALIZATION.md` (commit
+  `f6ade67`).
+- §1 + §8 in this incident: "think before coding" + "read code before
+  claiming behavior" landed the cheap end of the §8 lesson. Honest
+  negative result writeup cost ~30k tokens vs ~60-100k for a
+  build-rebuild-bench cycle that would have confirmed the same.
+
+See also [[2026-05-19 — TU102 specialization ranking]] for the original
+(now corrected) framing.
+
