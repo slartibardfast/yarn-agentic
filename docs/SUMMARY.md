@@ -41,6 +41,7 @@
 # TU102 specialization
 
 - [Qwen 3.6 27B kernel ranking (opened 2026-05-19)](PHASE_TU102_SPECIALIZATION.md)
+- [Kernel re-rank at np=1 × 256k vanilla shape (opened 2026-05-24)](PHASE_PERF_R2_NP1.md)
 
 # MTP production
 
