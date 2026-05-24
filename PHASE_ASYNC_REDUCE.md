@@ -1,6 +1,6 @@
 # PHASE AsyncReduce — Option B implementation plan
 
-**Status**: planning. Pre-implementation. Triggered by user direction "B will be a great success, worthy of a full allium / tla+ spec and plan."
+**Status**: planning. Pre-implementation. Triggered by user direction "B will be a great success, worthy of a full allium / tla+ spec and plan." **Open Question #2 closed 2026-05-24 via overlap microbench (see §"Open questions" below).** Ready to enter T1 (spec lockdown) when prioritized.
 
 **Branch**: `production/2026-q2-next` (extending Phase CY.F.16 Option A which is already shipped).
 
@@ -131,7 +131,7 @@ Per `specs/async-reduce/DESIGN.md` §Architecture, the per-layer transfer of 1.9
 ## Open questions (from DESIGN.md, resurfaced for spec lockdown)
 
 1. **Does ggml's CUDA backend already use multiple streams?** If yes, hook into existing; if no, add stream class. (Investigate before T2.)
-2. **Is `cudaMemcpyPeerAsync` overlap-able with compute on TU102?** Empirical question — answer via nsys microbenchmark BEFORE T3 to de-risk.
+2. ~~**Is `cudaMemcpyPeerAsync` overlap-able with compute on TU102?** Empirical question — answer via nsys microbenchmark BEFORE T3 to de-risk.~~ **CLOSED 2026-05-24 — YES, overlap works.** Microbench at `data/async-reduce-microbench/microbench.cu` + nsys trace at `overlap-test.nsys-rep`. Measured: 10 × 2 MiB `cudaMemcpyPeerAsync` from GPU1→GPU0 on a non-blocking comm stream, concurrent with a 29 ms compute kernel on a separate non-blocking compute stream. First memcpy started **21 µs into the kernel's runtime** (end of kernel still 29.4 ms in the future); all 10 memcpys (~510 µs total) finished within the first kernel's window. Memcpy throughput = 2 MiB / 45 µs = **45.2 GB/s**, matches NV2 NVLink ceiling. The CE (copy engine) on TU102 is independent of compute SMs — no SM contention observed. **AsyncReduce Option B is green-lit for T1-T10 implementation.**
 3. **Should `evt_input_ready` and `evt_reduce_done` be merged?** TLA+ models them separately for clarity. Implementation may merge if no consumer needs the intermediate signal.
 4. **How does this interact with graph reuse?** Reused graphs cache kernel launch lists. New stream/event semantics may require launch list re-recording — investigate in T2.
 
