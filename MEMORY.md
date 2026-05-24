@@ -9214,3 +9214,151 @@ parent pin bumped to it on main as `fb5f3f8`. Bench in this entry was
 run with `GGML_CUDA_DFLASH=ON` so the stub was not exercised — fix is
 verified by a standalone `g++` compile of the file with the define
 unset, where the symbol now appears in the resulting object.
+
+
+## 2026-05-24 — Production LLM stack migrated yarn → xeon (nginx + 3 backends + cert pipeline)
+
+xeon is now a self-contained replica of yarn's user-facing LLM serving
+stack. Yarn nginx is stopped+disabled; the cert renewal pipeline (acme.sh
++ cloudns DNS-01) was moved over with one forced re-issuance to verify;
+yarn's acme.sh cron line was removed to prevent both hosts racing on
+renewal. DNAT cutover at the router is the only remaining gate to public
+live traffic (deliberately not done in this session).
+
+### Topology and what each piece does
+
+Yarn's stack was:
+- nginx :443 (TLS-terminating reverse proxy + bearer-token auth +
+  static `Bearer <token>` validation in nginx.conf `map`)
+- llama-server :8080 — ik_llama.cpp, qwen3.6-27b + DFlash drafter,
+  np=2, BF16 weights + Q4_0 KV + Hadamard, split-mode graph, two GPUs
+- llama-server :8081 — stock llama.cpp CPU, zerank-1-small reranker
+  served via /v1/chat/completions
+- llama-server :8082 — stock llama.cpp CPU, nomic-embed embeddings
+  served via /v1/embeddings
+
+Plus two unused-in-this-route bits: nginx-mod-njs with `llm_guard.js`
+(token-limit guard) and `embed_prompt.js` (auto-set `prompt_name`)
+shipped in /etc/nginx/njs/ but not wired into any `js_content`
+directive in nginx.conf — dormant, kept for parity.
+
+### Install layout on xeon
+
+Different from yarn's "binaries-in-llm-home" layout. The two trees were
+installed to system paths via `cmake --install --prefix`:
+
+- ik_llama.cpp (GPU + DFlash + Hadamard, sm_75) → `/opt/llm-server/`
+- llama.cpp (CPU-only, AVX-512, no CUDA) → `/opt/llm-server-cpu/`
+
+Shared libraries from both prefixes are registered with the dynamic
+linker via `/etc/ld.so.conf.d/llm-server.conf` (two lines, then
+`ldconfig`). Without that, `libllama-common.so.0` is not found at
+runtime.
+
+Profile scripts at `/home/llm/profiles/` were copied from yarn and the
+binary paths edited via sed — same scripts, different binary location.
+Edit was idempotent (one path per script).
+
+### Systemd units (all enabled on boot)
+
+- `llama-server.service` — `ExecStart=/usr/bin/bash /home/llm/profiles/qwen36-27b-x2-dflash.sh`
+- `embedding.service` — `ExecStart=/usr/bin/bash /home/llm/profiles/embedding.sh`
+- `rerank.service` — `ExecStart=/usr/bin/bash /home/llm/profiles/rerank.sh`
+
+All run as `User=llm Group=llm`, `Type=simple`, `Restart=on-failure`,
+journal output. Production llama-server warm-up was ~10 s; embed/rerank
+~5 s.
+
+Yarn launched these by hand (no systemd units); xeon's units are a
+new addition, not a copy. They reference the same profile scripts but
+ensure clean process management + automatic restart.
+
+### TLS cert pipeline (the important details)
+
+Yarn's cert was issued via **acme.sh** (not certbot — we initially
+installed certbot on xeon expecting that, then discovered acme.sh under
+`/root/.acme.sh/` on yarn). The renewal pipeline:
+
+- `/root/.acme.sh/` transferred wholesale (account key + cloudns API
+  creds + cert config + history). Transit via tarball, shredded both
+  sides after.
+- `/etc/ssl/llm/{fullchain,privkey}.pem` are install destinations
+  (saved in acme.sh's `Le_RealCertPath` / `Le_RealKeyPath`); renewal
+  installs there + runs `Le_ReloadCmd = systemctl reload nginx`.
+- Cron line in **root**'s crontab (not llm's): `51 22 * * * /root/.acme.sh/acme.sh --cron --home /root/.acme.sh --dnssleep 120 > /dev/null`
+- **`--dnssleep 120` is required**, not optional. Default 20 s is too
+  tight for cloudns NS propagation to all of Let's Encrypt's secondary
+  validators — first manual renewal failed with NXDOMAIN from a
+  secondary, succeeded at 120 s. Bake the dnssleep into the cron line
+  itself; setting it via `acme.sh --set-default-dnssleep` is in
+  account.conf which the cron may not consult depending on path.
+- `cronie` package installed on xeon (Arch doesn't ship cron by default
+  — yarn happened to have it, xeon needed `pacman -S cronie` +
+  `systemctl enable --now cronie`). certbot's systemd timer is also
+  enabled (left over from initial install) but harmless — no certs
+  managed by certbot.
+- Yarn's `/root` crontab acme.sh line removed (one-line surgical
+  filter, backup at `/root/.cache/crontab/crontab.bak`).
+
+The current cert valid until 2026-08-22 (re-issued today via the
+migrated pipeline). Next scheduled renewal: 22:51 each day; acme.sh
+internally only renews within its renewal window so day-after-day
+firing is cheap.
+
+### nginx config quirks worth knowing
+
+- `load_module ngx_http_js_module.so` is at the top of nginx.conf
+  explicitly. There's also `/etc/nginx/modules.d/20-njs-http.conf` with
+  the same line, but nginx.conf does not `include modules.d/*.conf;` —
+  so only the explicit top-of-file load actually runs. `modules.d/`
+  lives unused. Don't add an include without removing the duplicate.
+- `location /rerank` on yarn was a path-mapping bug (no trailing slash
+  on location + trailing slash on proxy_pass URI → double slash to
+  backend → 404). **Fixed on xeon as `location /rerank/`**. Verified
+  end-to-end. If the nginx.conf is ever re-pulled from yarn this
+  regresses; either keep this note or vendor the conf into a git repo.
+- API bearer token is in plaintext in nginx.conf's `map` block. The
+  same one is now in this conversation's transcript (was needed for
+  end-to-end smoke). Rotate if that matters.
+- `server_name yarn.d07yx58.net` — kept, because the cert covers that
+  CN and the migration is via DNAT (which steers public-IP-bound
+  packets to whichever internal host is configured) rather than DNS.
+  Don't change server_name without also reissuing the cert for the new
+  name.
+
+### Host context
+
+- `llm` user created on xeon (uid 1001, gid 1001 — matches yarn for any
+  uid-sensitive interaction). Member of `wheel video render llm`.
+  Authorized keys preloaded with dconnolly's ed25519 for incoming ssh;
+  no outbound keys generated (the `llm` user can't reach yarn from
+  xeon without setup, which is fine — dconnolly handles cross-host
+  transfers).
+- `/opt/models/` is `root:llm` with setgid (`drwxrwsr-x`); files inside
+  are `-rw-rw-r-- root:llm`. Lets either user write while keeping root
+  ownership of the tree.
+- `dconnolly` is in the `llm` group (effective in new sessions only —
+  any process pre-dating the group change needs relogin/newgrp).
+- Passwordless sudo for the `wheel` group on xeon (`pwd.sh` installed
+  it). Yarn also has NOPASSWD wheel (preexisting).
+- Firewall: ufw active, only :22 and :443 open externally. Port 80 is
+  not in the DNAT and is closed in ufw. ACME challenges must use
+  DNS-01 only (HTTP-01 would need :80 reachable externally).
+
+### Open items not done in this session
+
+- DNAT cutover at the router (point public :443 from yarn-ip to
+  xeon-ip). When that happens, xeon is live to the public internet.
+- API bearer token rotation (token leaked into transcript).
+- Validate that `system_fingerprint` and other server-identity fields
+  match what production clients expect (haven't compared yarn's old
+  vs xeon's new responses against a client-side regression suite).
+
+### Smoke-test results — all green at end of session
+
+| Route | Direct | Through nginx | Bearer required |
+|---|---|---|---|
+| `/health` | n/a | 200, slots_idle=2 | no |
+| `/v1/models` | 8080 200 | 200, model id matches | yes (401 without) |
+| `/embed/v1/embeddings` | 8082 200 | 200, dim=768 | yes |
+| `/rerank/chat/completions` | 8081 200 | 200, after path fix | yes |
