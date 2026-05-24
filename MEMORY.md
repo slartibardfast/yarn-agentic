@@ -9083,3 +9083,59 @@ supported.
   (kv-cache-full vs paged-pool-exhausted); adding a fail-reason enum
   was the surgical disambiguation that wired 503 + Retry-After to the
   pool-exhaustion path without breaking the legacy "too big" 500.
+
+
+## 2026-05-24 — NVLink verified on `xeon` host: NV2 working at 91% of theoretical ceiling
+
+**Host.** `xeon` (Arch Linux, 16-core CPU, single NUMA node 0). Two Quadro
+RTX 6000 (TU102, sm_75), 24 GiB each. NVIDIA driver 595.58.03, CUDA 13.2.
+GPU0 PCIe bus 0000:17, GPU1 PCIe bus 0000:65 — separate root complexes
+via CPU. Idle reading is PCIe Gen 1 x16 (ASPM downclocked); the
+PCIe-fallback bandwidth measured below is consistent with the link
+ramping to Gen 3 x16 under load (~16 GB/s raw).
+
+**Verdict.** NVLink (2× bonded lanes, NV2 topology) is healthy and
+saturating cleanly. No degraded lanes, no asymmetry between GPU0→GPU1
+and GPU1→GPU0. Theoretical NV2 ceiling is `2 × 25.78 = 51.5 GB/s` uni /
+`~103 GB/s` bidi; measured = **91% of theoretical** both directions.
+
+**Measurements (all at default clocks, GPUs idle pre-run):**
+
+| Probe                                    | NVLink ON | NVLink OFF (PCIe) | Speedup     |
+|------------------------------------------|----------:|------------------:|------------:|
+| `p2pBandwidthLatencyTest` uni            | 47.11 GB/s| 11.52 GB/s        | 4.09×       |
+| `p2pBandwidthLatencyTest` bidi           | 94.13 GB/s| 16.30 GB/s        | 5.78×       |
+| Cross-GPU latency                        | 1.45 µs   | 19 µs             | 13× lower   |
+| NCCL AllReduce @ 1 GiB busbw             | 43.23 GB/s| 7.88 GB/s         | 5.49×       |
+| NCCL AllReduce avg busbw (1M..1G sweep)  | 35.55 GB/s| 7.65 GB/s         | 4.65×       |
+| NCCL AllGather @ 1 GiB busbw             | 38.27 GB/s| 6.30 GB/s         | 6.08×       |
+| NCCL AllGather avg busbw (1M..1G sweep)  | 29.55 GB/s| 6.10 GB/s         | 4.84×       |
+
+**Method.**
+- `nvidia-smi nvlink --status` confirms both links up at 25.781 GB/s on
+  both GPUs; `nvidia-smi topo -m` shows NV2 between GPU0 and GPU1.
+- P2P probe: `NVIDIA/cuda-samples` `p2pBandwidthLatencyTest` built for
+  sm_75 (built at `/tmp/cuda-samples/cpp/5_Domain_Specific/p2pBandwidthLatencyTest/build/`).
+- Collective probe: `NVIDIA/nccl-tests` linked against system NCCL
+  2.29.7 at `/usr/lib/libnccl.so.2.29.7` (built at `/tmp/nccl-tests/build/`).
+- A/B for NCCL: default run vs `NCCL_P2P_DISABLE=1`. Range `1M..1G`
+  doubling (`-b 1M -e 1G -f 2`), `-g 2` GPUs, `-w 5` warmup, `-n 20` iter.
+
+**Implications for the project.**
+- Multi-GPU LLM serving on `xeon` — tensor-parallel collectives or
+  `--split-mode layer` traffic — gets ~5-6× more bandwidth from NVLink
+  vs PCIe fallback. The PCIe path tops out at ~7-8 GB/s busbw for
+  both AllReduce and AllGather.
+- Any future regression of multi-GPU throughput on this host should
+  first check `nvidia-smi nvlink --status` (link could be down) before
+  suspecting algorithmic issues. Sanity test: re-run
+  `p2pBandwidthLatencyTest`; if bidirectional drops from ~94 to ~16 GB/s,
+  P2P is off.
+- Probe binaries live in `/tmp` (cleared on reboot). Both are short
+  rebuilds (~minutes) when needed.
+- End-to-end ik_llama bench at split-mode layer was deliberately NOT
+  run in this session (user-scoped to collective-level confirmation).
+  A future session can build ik_llama here, rsync a model from `yarn`,
+  and bench `llama-bench` TG/PP at NP=1 (single-GPU) vs multi-GPU
+  layer-split to attribute the collective-level speedup to end-to-end
+  serving throughput.
