@@ -23,3 +23,5 @@ coord/
 data/**/*.sqlite
 data/**/*.nsys-rep
 data/**/*.ncu-rep
+data/**/phase*-prompt.txt
+data/**/iter*-prompt.txt
