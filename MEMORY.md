@@ -9362,3 +9362,130 @@ firing is cheap.
 | `/v1/models` | 8080 200 | 200, model id matches | yes (401 without) |
 | `/embed/v1/embeddings` | 8082 200 | 200, dim=768 | yes |
 | `/rerank/chat/completions` | 8081 200 | 200, after path fix | yes |
+
+
+## 2026-05-24 — Deferred: bake fixed Qwen 3.6 chat template into GGUF metadata
+
+**State of the world.** The 2026-05-06 Qwen 3.6 chat-template study landed
+*two* fixes of which only *one* is intrinsic:
+
+- **Intrinsic (shipped).** Submodule commit `06b3b88a` added
+  `string.find` / `string.rfind` to `common/jinja/value.cpp`. This was
+  the engine-capability blocker — without it, the fixed template's
+  fix #6 (auto-close unclosed `<think>` before `<tool_call>`) crashes
+  rendering on any payload that triggers it. Permanent capability gain,
+  no flag dependence.
+- **Flag-based (deferred).** The *content* of the fixed 223-line
+  template lives at `/home/llm/profiles/qwen36-fixed-template.jinja`
+  and is injected via `--chat-template-file` in
+  `/home/llm/profiles/qwen36-27b-x2-dflash.sh` (and any future profile
+  pointing at the same GGUF). The GGUF itself
+  (`qwen3.6-27b-V-F1.T1.lm_head-f16.gguf`) still embeds the *original
+  broken Qwen 3.6 template* in `tokenizer.chat_template`. Drop the
+  flag and the seven latent agentic-loop foot-guns reappear (developer
+  role → `Unexpected message role.`, all-tool-results context evictions
+  → `No user query found in messages.`, truncated-stream orphaned
+  `<think>`, malformed-think-tag splits, etc.).
+
+The 2026-05-06 entry explicitly flagged this split: *"the GGUF still
+embeds the original template; if we want the fix to be intrinsic
+(not flag-dependent), re-emit the GGUF metadata with the fixed
+template as a follow-up. Tracking the flag-based fix is acceptable
+for now."* The acceptable-for-now period continues; this entry
+records the work needed to close it whenever picked up.
+
+**Why this matters now.** Production profile cleanup work was on the
+table in 2026-05-24 (np=1 × 256k vanilla, drop DFlash). The
+`--chat-template-file /home/llm/profiles/qwen36-fixed-template.jinja`
+arg in every profile script is load-bearing and *cannot* be dropped
+in isolation; doing so silently regresses the 7 foot-guns. So either
+the flag stays in all profiles forever, or the GGUF metadata gets
+re-emitted once. The latter is small one-shot work — record here so
+future sessions don't have to re-derive the find/rfind ↔ template
+distinction.
+
+**Concrete steps to close.**
+
+1. Tool: `ik_llama.cpp/gguf-py/scripts/gguf_new_metadata.py` (the
+   `set_metadata.py` sibling only edits same-length scalar fields;
+   `new_metadata.py` rewrites strings/arrays and emits a new file in
+   one pass). Relevant flag:
+   `--chat-template <string-or-jinja-source>`. The script's
+   `chat_template_config` path takes a JSON config with a
+   `chat_template` key — accepts the raw jinja string, no special
+   escaping.
+
+2. Command sketch (run on xeon; uses /opt/models prefix, runs as
+   either dconnolly or llm — `/opt/models/` is `root:llm` setgid so
+   both can write):
+   ```bash
+   python3 ik_llama.cpp/gguf-py/scripts/gguf_new_metadata.py \
+       --chat-template-config /tmp/fixed-template.json \
+       /opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.gguf \
+       /opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.fixed-tmpl.gguf
+   ```
+   where `/tmp/fixed-template.json` is
+   `{"chat_template": "<contents of qwen36-fixed-template.jinja>"}`.
+
+3. Verify metadata round-trip:
+   ```bash
+   python3 ik_llama.cpp/gguf-py/scripts/gguf_dump.py \
+       --no-tensors \
+       /opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.fixed-tmpl.gguf \
+       | grep -A 2 chat_template
+   ```
+   Confirm `tokenizer.chat_template` body starts with the fixed
+   template's opening lines (`{%- if tools %}` ... etc), not the
+   original.
+
+4. Atomic swap of the production GGUF path. The current profile is
+   pinned to `qwen3.6-27b-V-F1.T1.lm_head-f16.gguf`. Either rename
+   the new file over the old (after stopping `llama-server.service`),
+   or repoint every profile to `*.fixed-tmpl.gguf`. The rename path
+   is one-line and keeps `verify-production-determinism.sh`
+   untouched — it greps by basename.
+
+5. Drop `--chat-template-file /home/llm/profiles/qwen36-fixed-template.jinja`
+   from `/home/llm/profiles/qwen36-27b-x2-dflash.sh` *and* from any
+   sibling profile (`qwen36-27b-x1-mtp.sh`,
+   `qwen36-27b-x8-deterministic.sh`, the to-be-created
+   `qwen36-27b-x1-vanilla.sh`).
+
+6. Restart `llama-server.service`; replay the four 2026-05-06 smoke
+   probes (1: developer role mapped to system, no crash; 2: tool-call
+   w/ args + preserved thinking history; 3: all-tool-results no-user
+   query, graceful fallback; 4: happy path).
+
+7. NPC contract check. Re-emitting `tokenizer.chat_template` is
+   metadata-only — tensor bytes untouched, hash of model weights
+   unchanged. Run `bash scripts/verify-production-determinism.sh`
+   anyway to confirm NPC GREEN across NP={1,2,4,8}.
+
+**Risks / things to verify before swap.**
+
+- The `gguf_new_metadata.py` write path uses `tqdm` over tensors and
+  re-emits the entire file (~19.2 GiB). Disk write ~1 min on the
+  Samsung 980 PRO on xeon; not a blocker but plan disk space.
+- The fixed template was authored against a specific Qwen tool-call
+  protocol shape. If a future tool-call client expects the *original*
+  template's behaviour on one of the seven foot-gun paths, baking
+  it in removes the escape hatch. Mitigation: keep the original
+  `qwen36-fixed-template.jinja` checked into the profile dir even
+  after the bake — a future `--chat-template-file` override still
+  works if needed.
+- `gguf_new_metadata.py` lives in the upstream-derived
+  `ik_llama.cpp/gguf-py/`, so it inherits whatever endian / version
+  quirks ggml has at the current pin (`105bc259`). Round-trip
+  `gguf_dump` after rewrite confirms the file is valid before any
+  service restart.
+
+**Why not now.** Defer paired with the np=1 × 256k vanilla profile
+roll only if the bake is small AND the perf work isn't blocked on
+it. Otherwise this is independent cleanup. Either way the
+`--chat-template-file` arg can stay in every profile until the bake
+happens — it has no measurable runtime cost.
+
+See [[2026-05-06 — Qwen 3.6 chat template study]] for the original
+seven-fix enumeration, `value.cpp:1137` items-on-objects clarification,
+and the full jinja supported-names list.
+
