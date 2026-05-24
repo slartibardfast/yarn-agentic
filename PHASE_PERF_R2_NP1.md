@@ -122,34 +122,95 @@ moved into the cutlass row at ALGO0 close). F.4.1' becoming the dominant
 
 ## Optimization candidates ranked at the new shape
 
-### Candidate A — fused_mmvq F.4.1' dispatch split
+### Candidate A — fused_mmvq F.4.1' kernel-level investigation
 
-**Cost.** 714 ms (15.7%), 8 194 calls @ 87.1 µs (tight, std 0.5 µs —
-kernel is well-tuned, not a candidate for rewrite).
+**FRAMING CORRECTED 2026-05-24 — see "Candidate A: premise falsification"
+section below.** Originally framed as "dispatch split" (decode rows vs
+MoE expert routing), inheriting TU102_SPEC #4. That framing is wrong for
+the qwen35 architecture at this production shape. Reframed as a
+kernel-level investigation.
 
-**Lever per TU102_SPEC #4.** F.4.1' is best-in-class under the NPC
-contract for decode rows. It also serves **MoE expert-routing fan-out** at
-the same call site. The expert fan-out path doesn't need the NPC
-guarantee — it can run on a looser-NPC DP4A int8 dot with s32 accumulate.
+**Cost (unchanged).** 714 ms (15.7%), 8 194 calls @ 87.1 µs (tight,
+std 0.5 µs).
 
-**Recover target.** ~50% on the MoE-routed portion of the 8 194 calls.
-If MoE is ~⅓ of qwen3.6's 27B-MoE layers per token, that's
-~8 194 × 0.33 × 0.5 ≈ 1 350 call-equivalents @ 87 µs = ~118 ms ≈ **2.6% wall**.
+**What the kernel actually is.** Per code-reading at
+`ik_llama.cpp/src/llama-build-context.cpp:1323` and the dispatcher at
+`ik_llama.cpp/ggml/src/ggml-cuda/mmvq-templates.cuh:356`, every one of
+the 8 194 calls comes from a single source: the **standard FFN block's
+`ggml_fused_up_gate(up, gate, cur, unary_op)` invocation**, fired once
+per FFN per token. With 65 layers (qwen35) × ~125 token-equivalents per
+bench (200 prefill + 64 generate, decode-shape pressure dominating
+ncols_y=1 path) the count matches.
 
-**NPC contract.** Decode-row path stays on the current F.4.1' kernel
-byte-identically. MoE path is new kernel with its own NPC contract
-(byte-identical *per expert routing*, but ULP-divergent vs
-F.4.1' is acceptable because routing isn't on the NPC-binding critical
-path — verify against `scripts/verify-production-determinism.sh` before
-default-on).
+**There is no dispatch split.** The kernel template
+`fused_mul_mat_vec_q<...>` fires ONLY when `args.vx_u && args.vx_g`
+(both up and gate weight pointers set), which is uniquely satisfied by
+`ggml_cuda_op_fused_mul_mat_vec_q_id`. The non-fused projection path
+(Q/K/V/O attention) fires the sibling `mul_mat_vec_q<...>` template — a
+**different kernel by name**, separate row in nsys (not in top 15).
+MoE expert routing would fire MUL_MAT_ID, which also routes through the
+non-fused MMVQ template, not this one. Hence there are no "decode rows
+vs MoE" sub-populations to split.
 
-**Effort.** Medium. Dispatch-site triage (find where MoE expert routing
-calls F.4.1' vs where decode rows call it) + new kernel TU + acceptance.
+**Possible levers (require measurement before committing).**
 
-**Per CLAUDE.md §1**: dispatch-site triage is genuinely needed — I don't
-yet know whether the 8 194 calls are split 50/50 or 90/10 between decode
-rows and MoE routing. The 50% recovery projection assumes a ⅓ MoE share;
-falsifiable upfront with NVTX annotations or a counter probe.
+1. **Kernel rewrite Lever-D-style.** The kernel uses
+   `__launch_bounds__(nwarps*WARP_SIZE, 1)` at `mmvq-templates.cuh:281,304`
+   — `minBlocksPerSM=1` caps occupancy at 25% on Turing, same constraint
+   that drove the original Lever D rewrite of `mul_mat_q_split_k`. The
+   MMVQ kernel uses fewer registers and less shmem per CTA than MMQ
+   (smaller M=1 path), so the shmem ceiling may not be the binding
+   constraint that blocked Lever C for MMQ — there may be room to bump
+   `minBlocksPerSM` to 2+ on sm_75.
+
+2. **NPC-safe stream-K analog.** The kernel grid is (nrows_x/rpcb_fused,
+   ne2, 1). For ncols_y=1, rpcb=1 → nrows_x blocks on Y axis × 8 experts
+   (ne2). At hidden_dim=5120 nrows_x is in the thousands, so grid
+   already saturates the 72 SMs without stream-K. Not a likely lever
+   for this kernel.
+
+3. **FFN fusion.** Fold `ffn_norm` (preceding RMSNorm) into the
+   fused_up_gate kernel epilogue — equivalent to TU102_SPEC #7 but at
+   the input side. Saves ~16 861 × 3.85 µs ≈ 65 ms (1.4%) launch tax;
+   but the modification has to respect the cross-device REDUCE the
+   norm participates in. Higher effort.
+
+4. **AR16 expansion.** Q4_0_AR16 (type 159) is 4.9% of kernel time
+   currently — it's the recast format that some layers use. If the
+   AR16 variant of `fused_mul_mat_vec_q` is faster per byte (the AR16
+   MMQ phase shipped per `PHASE_MMQ_Q4_0_AR16.md`), and more layers
+   could be moved to AR16 weight type, total time on this kernel
+   family might drop. Requires per-tensor recast tooling — orthogonal
+   workstream.
+
+**Verification (ncu before any kernel-level commit).**
+```
+ncu --set full --target-processes all \
+    --launch-skip 5000 --launch-count 200 \
+    --kernel-name regex:fused_mul_mat_vec_q \
+    --export fused_mmvq_baseline.ncu-rep \
+    /opt/llm-server/bin/llama-batched-bench \
+        -m /opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.gguf \
+        --device CUDA0,CUDA1 --split-mode graph --tensor-split 1,1 \
+        -ngl 999 -fa on -c 4096 -ctk q4_0 -ctv q4_0 -khad -vhad \
+        -b 2048 -ub 512 --threads 16 -npp 200 -ntg 64 -npl 1
+```
+
+Capture: registers/thread, SM occupancy theoretical and achieved,
+DRAM throughput %, achieved DP4A %, shmem/CTA, IPC. The diagnostic
+answers "is this kernel hardware-limited at 87 µs or is there
+headroom" — same shape of question Lever C asked about MMQ that
+revealed shmem as the binding constraint.
+
+**Effort.** Diagnostic ncu pass: ~20-30k tokens (~30 min wall on
+xeon). Kernel rewrite (if ncu shows headroom): ~80-150k tokens.
+Total to a binding perf-delta gate: ~100-200k tokens.
+
+**Per CLAUDE.md §8 (measured-mode-on-diagnosis).** No kernel rewrite
+without ncu evidence first. The MoE-dispatch-split premise was the
+exact failure mode §8 warns about ("speculation is cheap until you
+find out it's wrong, and the cost-to-undo is 50k+ per false-claim
+cascade") — this re-frame is the cheap end of that lesson.
 
 ### Candidate B — AsyncReduce Option B (already specced)
 
@@ -246,6 +307,86 @@ elides. Lower if only half the pairs are eligible.
 
 ---
 
+## Candidate A: premise falsification (2026-05-24)
+
+This phase opened on 2026-05-24 with Candidate A scoped as "F.4.1'
+dispatch split — keep decode rows on the F.4.1' kernel, route
+MoE-expert-routing fan-out to a looser-NPC DP4A int8 kernel." The
+framing was inherited directly from `PHASE_TU102_SPECIALIZATION.md`
+section #4:
+
+> *"this kernel handles both single-token decode rows AND MoE
+> expert-routing fan-out. The expert fan-out path can run on a
+> looser-NPC kernel using DP4A int8 dot with s32 accumulate,
+> recovering ~50% on the MoE-routed portion without touching the
+> activation-path kernel."*
+
+Code-reading on 2026-05-24, before any instrumentation work, falsified
+the framing in two independent ways:
+
+**1. The model is not MoE.** GGUF metadata
+(`/opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.gguf`) inspected
+via `gguf_dump.py --no-tensors`:
+```
+general.architecture        = 'qwen35'
+qwen35.block_count          = 65
+qwen35.embedding_length     = 5120
+qwen35.feed_forward_length  = 17408
+qwen35.attention.head_count = 24
+qwen35.attention.head_count_kv = 4
+qwen35.ssm.conv_kernel      = 4
+qwen35.ssm.state_size       = 128
+qwen35.full_attention_interval = 4
+```
+No `n_expert` / `expert_count` / `expert_used` field — the model is
+**not an MoE**, it's a Mamba-2-SSM + attention hybrid with full
+attention every 4th layer. The "27B-MoE" framing from TU102_SPEC was
+either for a sibling model variant or a documentation error; the
+deployed model has no expert routing.
+
+**2. The kernel template fires from one source only.** The dispatcher
+at `ik_llama.cpp/ggml/src/ggml-cuda/mmvq-templates.cuh:356` predicates
+the `fused_mul_mat_vec_q<...>` kernel launch on
+`args.vx_u && args.vx_g && args.unary_op != GGML_UNARY_OP_COUNT` —
+i.e. both up and gate weight pointers must be set. This is uniquely
+satisfied by `ggml_cuda_op_fused_mul_mat_vec_q_id`, which is itself
+invoked from a single call site:
+`ik_llama.cpp/src/llama-build-context.cpp:1323` —
+`ggml_fused_up_gate(ctx, up, gate, cur, unary_op)` in the standard
+FFN block builder. Fired once per FFN per token.
+
+All other MMVQ paths — non-fused decode projections (Q, K, V, O
+attention) and MUL_MAT_ID (if the model used it) — route to the
+sibling `mul_mat_vec_q<...>` template, a separate kernel template
+with a separate name in nsys. Per the captured kernel table, the
+non-fused MMVQ kernel is **not in the top 15** — its calls dominate
+neither prefill nor decode at this shape.
+
+**Consequence.** Candidate A as originally scoped does not exist
+because (a) there is no MoE in the model and (b) the kernel template
+fires from one source. The ~3% wall reclaim ceiling for A as
+originally framed (recover ~50% on the MoE-routed portion) was
+based on a structural assumption that doesn't hold. Updating the
+candidate description to reflect the corrected kernel-level scope
+(see Candidate A above).
+
+**Cost of the falsification.** ~30k tokens of code-reading,
+methodology-matched against §1 (think before coding) and §8 (read
+code before claiming behavior). Cheap relative to the alternative —
+the original framing would have driven an instrument-rebuild-bench
+cycle (estimated 60-100k tokens) that would have produced a single
+histogram bin with all 8 194 calls in it, confirming the same
+falsification at much higher cost. The §8 lesson lands: read code
+before claiming behavior.
+
+**Update to PHASE_TU102_SPECIALIZATION.** Section #4 of that phase
+doc carries the inherited error. A follow-up edit to that phase
+file (separate commit per §5 rule) should annotate the section with
+the corrected understanding so the next session reading TU102_SPEC
+doesn't re-inherit the framing.
+
+---
+
 ## Recommended round-1 plan
 
 ```
@@ -262,13 +403,23 @@ PHASE_PERF_R2_NP1 — Step 2: branch on the microbench
     PHASE_ASYNC_REDUCE.md to T1-T10 closure (~80-120k tokens).
   → If overlap fails on TU102 → pivot to Candidate A.
 
-PHASE_PERF_R2_NP1 — Step 3 (Candidate A: F.4.1' dispatch split)
-  → Instrument F.4.1' call site with NVTX annotation distinguishing
-    decode-row vs MoE-expert-routing paths.
-  → Rerun nsys at this shape; count calls in each branch.
-  → If MoE share ≥ 25% of calls → ship MoE-path looser-NPC kernel.
-  → Verify by: NPC matrix GREEN at NP={1,2,4,8} after split;
-    tg128 gains ≥ 0.5 t/s at the np=1 shape.
+PHASE_PERF_R2_NP1 — Step 3 (Candidate A: F.4.1' kernel-level investigation)
+  → Original "dispatch split" framing falsified by code-reading
+    2026-05-24 (see "Candidate A: premise falsification" above).
+    Reframed as a kernel-level investigation.
+  → ncu probe of fused_mul_mat_vec_q<Q4_0,1,4,1> at this bench
+    shape. Capture: registers/thread, theoretical+achieved occupancy,
+    DRAM throughput %, achieved DP4A %, shmem/CTA.
+  → Decision branch from ncu result:
+     (a) Latency-bound + occupancy headroom → Lever-D-style rewrite
+         (bump minBlocksPerSM from 1 to 2 on Turing).
+     (b) Bandwidth-bound at peak → no architectural win; close as
+         "kernel is hardware-limited at this shape".
+     (c) Shmem-bound at <50% occupancy → smaller-fragment rewrite
+         (Lever D analog).
+  → Verify by: ncu evidence captured; if kernel rewrite ships,
+    NPC matrix GREEN at NP={1,2,4,8} after change; tg128 gains
+    ≥ 0.5 t/s at the np=1 shape.
 
 PHASE_PERF_R2_NP1 — Step 4 (Candidate C: MMQ Q4_0 ncols=8 shape audit)
   → Instrument dispatcher to log (M, N, K) per call.
