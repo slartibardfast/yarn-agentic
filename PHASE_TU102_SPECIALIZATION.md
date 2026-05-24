@@ -363,18 +363,45 @@ across full NP={1,2,4,8} slot byte-identity + cross-NP slot-0 matrix.
 ## Top 5 — add
 
 ### #4 — `fused_mmvq[Q4_0, nc=1]` (F.4.1') dispatch split
+
+> **Premise falsified 2026-05-24. See `PHASE_PERF_R2_NP1.md`
+> §"Candidate A: premise falsification" for the corrected
+> understanding.**
+>
+> The "decode rows AND MoE expert-routing fan-out" framing below
+> assumes (a) the model has MoE experts and (b) the fused MMVQ kernel
+> template serves multiple call paths. Both are wrong at the
+> production shape:
+>
+> 1. The deployed model (`qwen3.6-27b-V-F1.T1.lm_head-f16.gguf`,
+>    `general.architecture = 'qwen35'`) is a Mamba-2 SSM + attention
+>    hybrid (65 layers, `full_attention_interval=4`). It has no
+>    `n_expert` / `expert_count` GGUF field; no MoE routing.
+>
+> 2. The dispatcher at `mmvq-templates.cuh:356` predicates
+>    `fused_mul_mat_vec_q<...>` on `args.vx_u && args.vx_g`, which is
+>    uniquely satisfied by `ggml_cuda_op_fused_mul_mat_vec_q_id`. That
+>    entry point is invoked from one call site:
+>    `llama-build-context.cpp:1323`'s `ggml_fused_up_gate`. All calls
+>    are the FFN block's up+gate fused matmul; there are no sub-paths
+>    to split.
+>
+> The kernel cost is real, but the lever is kernel-level (ncu probe →
+> potentially Lever-D-style rewrite), not dispatch-level. See
+> PHASE_PERF_R2_NP1 Candidate A (revised).
+
 - **Aggregate cost.** 17.5 s NP=8 (10.5%) + 704 ms NP=1 (9.6%).
-- **TU102 hook.** F.4.1' is already best-in-class under the NPC contract
+- **~~TU102 hook.~~** ~~F.4.1' is already best-in-class under the NPC contract
   (86 µs/call unchanged from pre-NPC). The route here is **not** "rewrite
   the kernel" but **"split the dispatch"**: this kernel handles both
   single-token decode rows AND MoE expert-routing fan-out. The expert
   fan-out path can run on a looser-NPC kernel using DP4A int8 dot with
   s32 accumulate, recovering ~50% on the MoE-routed portion without
-  touching the activation-path kernel.
-- **NPC contract.** Per-target-kernel; the decode-row path stays on the
-  current F.4.1' kernel byte-identically.
-- **Effort.** **Medium.** Dispatch site triage + new kernel TU for the
-  MoE-expert path.
+  touching the activation-path kernel.~~
+- **~~NPC contract.~~** ~~Per-target-kernel; the decode-row path stays on the
+  current F.4.1' kernel byte-identically.~~
+- **~~Effort.~~** ~~**Medium.** Dispatch site triage + new kernel TU for the
+  MoE-expert path.~~
 
 ### #5 — `mul_mat_q[Q4_0_AR16, ncols=8]`
 - **Aggregate cost.** 9.1 s NP=8 (5.4%) + 272 ms NP=1 (3.7%).
