@@ -9139,3 +9139,78 @@ and GPU1→GPU0. Theoretical NV2 ceiling is `2 × 25.78 = 51.5 GB/s` uni /
   and bench `llama-bench` TG/PP at NP=1 (single-GPU) vs multi-GPU
   layer-split to attribute the collective-level speedup to end-to-end
   serving throughput.
+
+
+## 2026-05-24 — End-to-end NVLink bench on xeon: graph split-mode beats layer 18–44%
+
+**Setup.** `xeon` host (2× Quadro RTX 6000, NV2 NVLink confirmed earlier
+today). Production model `qwen3.6-27b-V-F1.T1.lm_head-f16.gguf` rsynced
+from yarn (~19.2 GB). Build: ik_llama.cpp at production/2026-q2-next @
+`711212a6` (now `105bc259` with DFlash-stub fix; binary code path
+unchanged for this bench). CMake config:
+`-DCMAKE_CUDA_ARCHITECTURES=75 -DGGML_CUDA=ON -DGGML_CUDA_DFLASH=ON
+-DGGML_NATIVE=ON -DGGML_AVX512=ON`. NCCL 2.29.7 linked, peer copy at
+`GGML_CUDA_PEER_MAX_BATCH_SIZE=128`. GPUs at default clocks; both idle
+pre-run.
+
+**Bench.** Single multi-GPU run with NVLink ON (no peer-off A/B this
+session; the NCCL-tests A/B earlier today established ~5-6× collective
+speedup over PCIe-fallback). Single-GPU baseline skipped — the 19 GiB
+model + scratch wouldn't fit cleanly in one 24 GiB Quadro at the longer
+context lengths benched.
+
+Command:
+
+```
+llama-bench -m qwen3.6-27b-V-F1.T1.lm_head-f16.gguf \
+  -ngl 99 -ctk q4_0 -ctv q4_0 -fa 1 -mmp 0 \
+  -ts 1,1 -r 3 -sm layer,graph \
+  -pg 512,128 -pg 2048,256 -pg 4096,512
+```
+
+**Results** (t/s, 3 reps, NCCL initialised `=============================== NCCL main communicator initialized`):
+
+| test            | layer (t/s)        | graph (t/s)        | graph speedup |
+|-----------------|-------------------:|-------------------:|--------------:|
+| pp512           |   227.92 ± 92.45*  |   269.97 ± 5.12    | +18%          |
+| tg128           |    22.29 ± 0.02    |    32.00 ± 0.08    | **+44%**      |
+| pp512 + tg128   |    75.76 ± 8.01    |   101.62 ± 0.38    | +34%          |
+| pp2048 + tg256  |    94.58 ± 12.38   |   120.49 ± 0.46    | +27%          |
+| pp4096 + tg512  |    83.81 ± 4.62    |   101.25 ± 0.22    | +21%          |
+
+`*` layer pp512 had high variance (one cold-cache rep). Other layer-mode
+runs are also visibly noisier (std-devs 0.02-12.38) than graph-mode
+(0.08-5.12).
+
+**Implications.**
+- **graph split-mode is the default to bench against on this hardware.**
+  Layer split forces per-layer cross-GPU activation transfer; graph mode
+  replicates the model on each GPU (footprint 17.62 GiB × 2 = 30.51 GiB
+  reported) and parallelises work via graph topology, eliminating the
+  per-layer sync. NVLink absorbs the layer-mode traffic well (the 44%
+  graph-vs-layer TG delta is the residual cost AFTER NVLink has done
+  its job — over PCIe-only the layer-mode penalty would be far larger).
+- **Production reference cross-check.** Production aggregate is 26.65 t/s
+  NP=8 on yarn with DFlash speculative + Hadamard K/V (per
+  PHASE_NSTREAM_KV_PERF.md). Our 32.00 t/s NP=1 no-spec on graph mode is
+  in the same order of magnitude — different shape (NP=1 vs NP=8, no
+  spec vs DFlash, no Hadamard) but enough to confirm xeon is producing
+  numbers consistent with production hardware.
+- **Future regression check.** If a multi-GPU bench on this host drops
+  these numbers materially, suspect (in order): NVLink down
+  (`nvidia-smi nvlink --status` + `p2pBandwidthLatencyTest`), peer-copy
+  build flag flipped (`GGML_CUDA_NO_PEER_COPY` should be OFF), thermal
+  throttling (locked clocks discipline not enforced this run), or split
+  mode change (graph→layer regression matches the table above).
+
+**Bug fix landed in the same session.** Building with
+`GGML_CUDA_DFLASH=OFF` (the default) had a link-time hole:
+`common/speculative.cpp` referenced `llama_get_dflash_drafter`
+unconditionally, but the `#else` stubs block in `src/llama-dflash.cpp`
+overlooked that one entry point (the other 12 dflash functions all had
+stubs). Fix is a 3-line addition (returns `nullptr`, matches existing
+pattern). Submodule commit `105bc259` on `production/2026-q2-next`;
+parent pin bumped to it on main as `fb5f3f8`. Bench in this entry was
+run with `GGML_CUDA_DFLASH=ON` so the stub was not exercised — fix is
+verified by a standalone `g++` compile of the file with the define
+unset, where the symbol now appears in the resulting object.
