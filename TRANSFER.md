@@ -26,19 +26,33 @@ git submodule update --init --recursive
 
 Verify: `git rev-parse HEAD` matches `47022b5` (or newer); `cd ik_llama.cpp && git rev-parse HEAD` matches `711212a6` (or newer).
 
-## 2. Auto-memory (CRITICAL — session continuity)
+## 2. Auto-memory (NOW IN REPO — use `agent-memory-pull.sh`)
 
-Path: `/home/llm/.claude/projects/-home-llm-yarn-agentic/memory/` (~720 KB, 129 files)
+**Updated 2026-05-24**: Auto-memory is now version-controlled under `agent-memory/` in this repo. The live, per-host directory at `~/.claude/projects/-home-llm-yarn-agentic/memory/` syncs to `agent-memory/` via two scripts. See `agent-memory/PROTOCOL.md` for the full protocol.
 
-Contains all `project_*.md` + `feedback_*.md` + `MEMORY.md` index files that future agent sessions read at boot.
+**Bootstrap on a new host:**
 
 ```bash
-# from old host
-rsync -avz /home/llm/.claude/projects/-home-llm-yarn-agentic/ \
-  new-host:/home/llm/.claude/projects/-home-llm-yarn-agentic/
+# After `git clone --recurse-submodules` per §1:
+cd /home/llm/yarn-agentic
+mkdir -p ~/.claude/projects/-home-llm-yarn-agentic/
+bash scripts/agent-memory-pull.sh
+# Verify (129+ entries):
+ls ~/.claude/projects/-home-llm-yarn-agentic/memory/MEMORY.md
+grep -c '^- \[' ~/.claude/projects/-home-llm-yarn-agentic/memory/MEMORY.md
 ```
 
-Confirm on new host: `ls /home/llm/.claude/projects/-home-llm-yarn-agentic/memory/MEMORY.md` and `grep -c '^- \[' MEMORY.md` should show ~50+ entries.
+**Before tearing down the old host — push any session-local edits:**
+
+```bash
+cd /home/llm/yarn-agentic
+bash scripts/agent-memory-push.sh
+# rsyncs live → repo, commits, pushes
+```
+
+The previous direct-rsync path (`/home/llm/.claude/projects/-home-llm-yarn-agentic/`) is no longer the recommended mechanism — the repo is now the cross-host shared layer. The live directory still exists per host and is canonical PER SESSION; the repo carries history across hosts.
+
+For multi-host concurrent edits and conflict recovery, see `agent-memory/PROTOCOL.md`.
 
 ## 3. Host-local CLAUDE.md + user prefs (NOT in repo)
 
@@ -281,17 +295,15 @@ Models go separately (large; verify presence on the new host first).
 
 Audited 2026-05-24 immediately before TRANSFER.md final commit. Items below were considered and either captured above, left intentionally, or flagged for user decision.
 
-### Auto-memory is NOT a git repo — must rsync
+### Auto-memory is now in repo (§2 updated 2026-05-24)
 
-`/home/llm/.claude/projects/-home-llm-yarn-agentic/` is a plain directory (`.git` not present). The 129 `*.md` files inside `memory/` are append-only across sessions. **If skipped, future agent sessions lose all the project_t6_*, project_t5_*, feedback_* continuity** documented across the last several weeks of work.
+Previously: auto-memory at `/home/llm/.claude/projects/-home-llm-yarn-agentic/` was a plain directory requiring rsync. Now: auto-memory is version-controlled under `agent-memory/` in this repo. See §2 above and `agent-memory/PROTOCOL.md`.
 
-The single rsync in §2 covers it. Confirm on new host by counting:
+Verification on new host:
 
 ```bash
-ssh new-host 'ls /home/llm/.claude/projects/-home-llm-yarn-agentic/memory/*.md | wc -l'
-# expect ~129 (or whatever the source had)
-ssh new-host 'head -1 /home/llm/.claude/projects/-home-llm-yarn-agentic/memory/MEMORY.md'
-# expect "# Memory index"
+ssh new-host 'cd /home/llm/yarn-agentic && bash scripts/agent-memory-audit.sh --repo'
+# expect: "audit clean: 130 files, 129 entries, 1:1 mapping" (or higher counts as memories accrete)
 ```
 
 ### Prior-session data dirs (not committed, user decision)
