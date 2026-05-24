@@ -274,3 +274,142 @@ rsync -avn \
 ```
 
 Models go separately (large; verify presence on the new host first).
+
+---
+
+## 15. Gaps & explicit non-transfers (audit at session close)
+
+Audited 2026-05-24 immediately before TRANSFER.md final commit. Items below were considered and either captured above, left intentionally, or flagged for user decision.
+
+### Auto-memory is NOT a git repo — must rsync
+
+`/home/llm/.claude/projects/-home-llm-yarn-agentic/` is a plain directory (`.git` not present). The 129 `*.md` files inside `memory/` are append-only across sessions. **If skipped, future agent sessions lose all the project_t6_*, project_t5_*, feedback_* continuity** documented across the last several weeks of work.
+
+The single rsync in §2 covers it. Confirm on new host by counting:
+
+```bash
+ssh new-host 'ls /home/llm/.claude/projects/-home-llm-yarn-agentic/memory/*.md | wc -l'
+# expect ~129 (or whatever the source had)
+ssh new-host 'head -1 /home/llm/.claude/projects/-home-llm-yarn-agentic/memory/MEMORY.md'
+# expect "# Memory index"
+```
+
+### Prior-session data dirs (not committed, user decision)
+
+24 directories from earlier sessions remain untracked under `data/`, totalling ~**1.3 MB**:
+
+```
+data/t3.8-m3-20260523-035141/                       — t3.8 perf gate bench from 2026-05-23
+data/t5.8-trace/                                    — t5.8 paged-trace artefacts
+data/t5.9-admission-*-20260523-*/                   — 6× T5.9 admission gate tests
+data/t5.9-defrag-regression-20260523-173947/        — T5.9 defrag regression cell
+data/t5.9-feasibility-*-20260523-*/                 — 3× T5.9 feasibility test (incl. default)
+data/t5.9-realistic*-20260523-*/                    — 5× T5.9 realistic-workload cells (1-5)
+data/t5.9-regression*-20260523-*/                   — 2× T5.9 regression cells
+data/t5.9-spec-gap2-fix-20260523-150852/            — T5.9 spec gap-2 fix cell
+data/t5.9-spec-trace-20260523-143936/               — T5.9 spec trace
+data/t6-cell-ik_llama-np2-prod-20260523T175629/     — T6.0.a ik_llama NP=2 cell
+data/t6-cell-ik_llama-np8-vllm-comparable-20260523T175836/  — T6.0.a NP=8 cell
+```
+
+**None are referenced from any committed PHASE doc or memory entry, so they aren't load-bearing for the audit trail.** They're cheap to rsync for completeness:
+
+```bash
+rsync -av /home/llm/yarn-agentic/data/t3.8-*/ \
+          /home/llm/yarn-agentic/data/t5.8-trace/ \
+          /home/llm/yarn-agentic/data/t5.9-*/ \
+          /home/llm/yarn-agentic/data/t6-cell-*/ \
+  new-host:/home/llm/yarn-agentic/data/
+```
+
+Or skip — they reference cells in submodule state (`9970ac87`, `4f4da34f`) that has since been superseded; their numerical content is captured implicitly in the closure PHASE docs.
+
+### Volatile state that does NOT survive the transfer
+
+| state | how it's set | survive a reboot? | how to re-establish |
+|---|---|---|---|
+| GPU clock lock (`nvidia-smi -lgc 1455`) | `sudo bash scripts/gpu-clocks.sh lock` | NO — `-lgc` is volatile | re-apply on new host before binding benches |
+| GPU persistence mode | `nvidia-smi -pm 1` | NO without `nvidia-persistenced` enabled | re-apply or enable persistenced |
+| `coord/gpu-{0,1}.state` (BUSY/IDLE) | volatile file in repo (gitignored) | recreated by next bench script | no action |
+| systemd llama-server.service "active" | `systemctl --user start` | survives `--user` linger if set | on new host run `loginctl enable-linger llm && systemctl --user enable --now llama-server.service` |
+| Live request queue (in-flight prompts) | server runtime state | NO | client retries on its end |
+
+**Recommended cutover sequence (cold):**
+1. New host: clone repo, transfer all §1-9 items, rebuild ik_llama.cpp.
+2. New host: re-lock clocks (§11) + re-enable persistence.
+3. New host: dry-run `bash scripts/verify-production-determinism.sh` to confirm NPC.
+4. Old host: `systemctl --user stop llama-server.service` (clients will get 503/connection-refused; expected).
+5. New host: `systemctl --user enable --now llama-server.service` (DFlash profile is the default per `active.sh`).
+6. Update DNS / load balancer / litellm config to point clients at the new host's port 8080 (or 4000 for litellm gateway).
+
+A hot cutover with both servers up simultaneously is possible but introduces NPC risk (different host hardware → different concurrency races). Production NPC is currently bound only against the old host's hardware. Re-verify on new host first.
+
+### Coredumps require sudo to rsync
+
+§10 already mentions this. To make it explicit: the coredumps under `/var/lib/systemd/coredump/` are owned by `root:root` mode `640`, ACL-grants `+r` to user llm. You can `coredumpctl dump <PID>` to extract one as user llm (we did this for diagnosis this session), but bulk-rsync needs sudo:
+
+```bash
+# As llm (works for one-at-a-time extraction without sudo):
+coredumpctl dump 3146175 -o /tmp/some-core
+rsync -av /tmp/some-core new-host:/home/llm/coredumps-archive/
+
+# Bulk:
+sudo rsync -av /var/lib/systemd/coredump/core.llama-server.1001.*.zst \
+  new-host:/var/lib/systemd/coredump/
+```
+
+For the T6.3 session specifically, the load-bearing diagnostic info from the coredumps (`prepare_mtp_graph_inputs` SIGSEGV at llama.cpp:5780, src=0x10) is already captured in the PHASE_T6_CHARACTERISATION.md T6.3.j section + the auto-memory `project_t6_3_j_1m_ctx_ceiling.md` entry. Skipping the coredumps loses nothing on the audit trail. They're only useful if you want to gdb them again on the new host — and post-fix, they shouldn't repro.
+
+### Ephemerals NOT to transfer
+
+Created during this session, all in `/tmp/` (tmpfs, cleared on reboot):
+
+```
+/tmp/qwen36-27b-x1-mtp-native.sh           — temp profile (skip; superseded by host-side profile)
+/tmp/qwen36-27b-x1-yarn-1m-vanilla.sh      — temp profile (skip; sed-derivative)
+/tmp/qwen36-27b-x1-yarn-1m-mtp-inlinekv.sh — temp profile (skip; the workaround that didn't work)
+/tmp/overnight-core                        — extracted coredump (skip; can re-extract)
+/tmp/debug-core                            — extracted coredump (skip)
+/tmp/t6.3-*.log                            — agent driver outputs (skip; captured in repo data/)
+/tmp/vanilla-{smoke.log,response.json}     — agent smoke artefacts (skip; captured in repo)
+```
+
+### Agent task ephemerals (skip)
+
+`/tmp/claude-1001/-home-llm-yarn-agentic/4f2638d6-977b-48ae-9380-29a5b41d1c93/tasks/` contains background-task stdout for THIS specific agent session. They have UUID-prefixed names and won't be relevant in any future session. Skip.
+
+### Cross-check that nothing material is missing
+
+After transfer, on the new host, verify the audit trail is intact:
+
+```bash
+cd /home/llm/yarn-agentic
+
+# Repo: 4 PHASE docs + MEMORY.md must be present
+ls PHASE_T6_CHARACTERISATION.md PHASE_NSTREAM_KV_PERF.md PHASE_DFLASH_MULTISLOT.md MEMORY.md TRANSFER.md
+# expect: all 5 files present
+
+# Submodule state — production-2026-q2-next branch should be at 711212a6 or newer
+cd ik_llama.cpp && git rev-parse HEAD
+# expect: 711212a6 (or whatever main pushed after)
+
+# Auto-memory continuity
+ls /home/llm/.claude/projects/-home-llm-yarn-agentic/memory/MEMORY.md
+grep -c '^- \[' /home/llm/.claude/projects/-home-llm-yarn-agentic/memory/MEMORY.md
+# expect ~50+ index entries
+
+# Open subtasks: confirm referenced and still owed
+grep -E "^- \*\*T6\.3\.[bcghkilmn]" PHASE_T6_CHARACTERISATION.md
+# expect: 8 named subtasks listed
+```
+
+### Notes on what the new host's first session should do
+
+Per the named-subtask audit trail:
+
+1. **First**: rebuild ik_llama.cpp from source for the new host's CUDA arch.
+2. **Sanity**: production smoke (§13). If NPC fails on new hardware, T6.3.l investigation is required before any further benching.
+3. **Confirm NVLink** if installed: `nvidia-smi nvlink --status`. If active, **T6.3.l** (post-NVLink T6.2 + T6.3.k re-measure) is the next concrete workstream and was pre-blocked on this hardware change.
+4. **T6.3.k** is the load-bearing follow-on from T6.3.j: measure prefill t/s at 262K and 524K with the bug-fixed build to confirm the 100+ t/s gate. Decides the production parking destination (262K native vs 524K YaRN factor=2.0 vs stay-on-DFlash).
+5. **NOT** an immediate task: T6.3.h overnight retry. The architecture as scoped (1M+YaRN) was shown infeasible at 100+ t/s by T6.3.j bandwidth analysis. Retrying without recalibration burns hours.
+
