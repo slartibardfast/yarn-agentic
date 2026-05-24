@@ -1,0 +1,9 @@
+{
+  "label": "",
+  "wall_s": 5.288284063339233,
+  "ttft_s": 0.2725367546081543,
+  "decode_s": 5.015747308731079,
+  "n_predicted": 1,
+  "first_tokens": "Answer",
+  "last_tokens": "Answer"
+}
