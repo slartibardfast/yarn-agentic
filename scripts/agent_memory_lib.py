@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""
+agent-memory CRDT library.
+
+Filename convention for event log:
+    <slug>__<host>__<rfc3339_ms_ts>.md
+
+Where:
+    slug   - the memory identity (e.g. project_t6_3_j_1m_ctx_ceiling)
+    host   - $(hostname) value (e.g. yarn.d07yx58.net)
+    ts     - "%Y%m%dT%H%M%S_%fZ" (UTC, microsecond precision)
+
+The double-underscore "__" is reserved as field separator; no slug or host
+may contain it. All current slugs use single underscores so this is safe.
+
+Operations on the event set:
+- read_events(entries_dir)             -> list of Event objects
+- newest_per_slug(events)              -> dict slug -> Event
+- derive_memory_md(events, link_fmt)   -> rendered markdown
+- new_event_filename(slug, host, ts)   -> string
+
+Frontmatter parsing uses YAML and is lenient: events with malformed
+frontmatter are still listed but reported in audit output.
+
+This module is invoked by the bash sync scripts; it does not touch git.
+"""
+
+import os
+import re
+import sys
+import yaml
+import datetime
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+FNAME_RE = re.compile(r'^(?P<slug>.+?)__(?P<host>.+?)__(?P<ts>[0-9T:_Z.-]+)\.md$')
+
+# Files that live in agent-memory/ but are NOT entries (docs only).
+NON_ENTRY_FILES = {"README.md", "PROTOCOL.md", "MEMORY.md", ".gitignore"}
+
+
+@dataclass
+class Event:
+    slug: str
+    host: str
+    ts: str                  # opaque sortable string
+    path: str                # full path on disk
+    description: str = ""
+    mem_type: str = "?"      # project / feedback / reference / user
+    frontmatter_ok: bool = False
+
+
+def parse_event_filename(fname: str) -> Optional[tuple[str, str, str]]:
+    """Parse `<slug>__<host>__<ts>.md` -> (slug, host, ts). Returns None if not parseable."""
+    m = FNAME_RE.match(fname)
+    if not m:
+        return None
+    return (m.group('slug'), m.group('host'), m.group('ts'))
+
+
+def parse_frontmatter(path: str) -> Optional[dict]:
+    """Read YAML frontmatter from a markdown file. Returns dict or None on failure."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception:
+        return None
+    if not content.startswith('---'):
+        return None
+    # Find the closing --- on its own line
+    end = content.find('\n---', 4)
+    if end < 0:
+        return None
+    try:
+        return yaml.safe_load(content[4:end])
+    except Exception:
+        return None
+
+
+def make_event(path: str) -> Optional[Event]:
+    """Build an Event from a path. Returns None for non-conforming filenames."""
+    fname = os.path.basename(path)
+    parsed = parse_event_filename(fname)
+    if not parsed:
+        return None
+    slug, host, ts = parsed
+    fm = parse_frontmatter(path)
+    desc = ""
+    mem_type = "?"
+    ok = False
+    if fm and isinstance(fm, dict):
+        desc = str(fm.get('description', '')).strip()
+        # Two coexisting frontmatter formats:
+        #   old: type at top level
+        #   new: type nested under metadata
+        meta = fm.get('metadata') or {}
+        if isinstance(meta, dict) and 'type' in meta:
+            mem_type = str(meta['type'])
+        elif 'type' in fm:
+            mem_type = str(fm['type'])
+        else:
+            mem_type = '?'
+        ok = True
+    return Event(slug=slug, host=host, ts=ts, path=path,
+                 description=desc, mem_type=mem_type, frontmatter_ok=ok)
+
+
+def read_events(entries_dir: str) -> list[Event]:
+    """Walk an entries directory, return list of Event objects."""
+    if not os.path.isdir(entries_dir):
+        return []
+    out = []
+    for fname in sorted(os.listdir(entries_dir)):
+        if not fname.endswith('.md'):
+            continue
+        if fname in NON_ENTRY_FILES:
+            continue
+        path = os.path.join(entries_dir, fname)
+        ev = make_event(path)
+        if ev is not None:
+            out.append(ev)
+    return out
+
+
+def newest_per_slug(events: list[Event]) -> dict[str, Event]:
+    """Pick the newest event per slug (LWW by timestamp string compare)."""
+    newest = {}
+    for ev in events:
+        cur = newest.get(ev.slug)
+        if cur is None or ev.ts > cur.ts:
+            newest[ev.slug] = ev
+    return newest
+
+
+def derive_memory_md(events: list[Event], link_format: str,
+                     header: str = "# Memory index") -> str:
+    """Render MEMORY.md from event set.
+
+    link_format options:
+      "events"  - link to entries/<event-filename>.md (used in repo)
+      "live"    - link to <slug>.md (used in live dir)
+    """
+    nbysrc = newest_per_slug(events)
+    nbytype: dict[str, list[Event]] = {}
+    for slug, ev in nbysrc.items():
+        nbytype.setdefault(ev.mem_type, []).append(ev)
+
+    lines = [header, ""]
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines += [
+        f"_Derived from `agent-memory/entries/` on {now}_  ",
+        "_Generated by `scripts/agent-memory-push.sh`; do not hand-edit — edits are overwritten on next push._",
+        "",
+    ]
+
+    # Order types deterministically
+    type_order = ["project", "feedback", "reference", "user", "?"]
+    for t in type_order:
+        if t not in nbytype:
+            continue
+        lines += [f"## {t}", ""]
+        # Sort by slug for stability
+        for ev in sorted(nbytype[t], key=lambda e: e.slug):
+            if link_format == "events":
+                link = f"entries/{os.path.basename(ev.path)}"
+            elif link_format == "live":
+                link = f"{ev.slug}.md"
+            else:
+                raise ValueError(f"unknown link_format: {link_format}")
+            desc = ev.description or "(no description in frontmatter)"
+            # Truncate runaway descriptions
+            if len(desc) > 1000:
+                desc = desc[:1000] + "…"
+            lines.append(f"- [{ev.slug}]({link}) — {desc}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def new_event_ts() -> str:
+    """RFC3339-ish UTC timestamp with microsecond precision, filesystem-safe."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return now.strftime("%Y%m%dT%H%M%S_%fZ")
+
+
+def new_event_filename(slug: str, host: str, ts: Optional[str] = None) -> str:
+    """Compose an event filename."""
+    if ts is None:
+        ts = new_event_ts()
+    return f"{slug}__{host}__{ts}.md"
+
+
+# ---- CLI entry points (called from bash scripts) ----
+
+def cmd_derive(entries_dir: str, out_path: str, link_format: str) -> int:
+    events = read_events(entries_dir)
+    md = derive_memory_md(events, link_format=link_format)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(md + "\n")
+    return 0
+
+
+def cmd_newest(entries_dir: str) -> int:
+    """For each slug, print 'slug<TAB>path-to-newest-event'."""
+    events = read_events(entries_dir)
+    for slug, ev in sorted(newest_per_slug(events).items()):
+        print(f"{slug}\t{ev.path}")
+    return 0
+
+
+def cmd_audit(entries_dir: str) -> int:
+    """Audit: counts + per-slug events + frontmatter status."""
+    events = read_events(entries_dir)
+    nbysrc = newest_per_slug(events)
+    bad_fm = [e for e in events if not e.frontmatter_ok]
+    type_counts: dict[str, int] = {}
+    for ev in nbysrc.values():
+        type_counts[ev.mem_type] = type_counts.get(ev.mem_type, 0) + 1
+    print(f"events:           {len(events)}")
+    print(f"unique slugs:     {len(nbysrc)}")
+    print(f"frontmatter ok:   {len(events) - len(bad_fm)} of {len(events)}")
+    print(f"frontmatter bad:  {len(bad_fm)}")
+    for t in sorted(type_counts):
+        print(f"  type {t}: {type_counts[t]} slugs")
+    if bad_fm:
+        print("\nfiles with malformed/missing frontmatter:")
+        for ev in bad_fm[:20]:
+            print(f"  {os.path.basename(ev.path)}")
+        if len(bad_fm) > 20:
+            print(f"  ... and {len(bad_fm) - 20} more")
+    # Slugs with >1 event (history depth)
+    slug_counts: dict[str, int] = {}
+    for ev in events:
+        slug_counts[ev.slug] = slug_counts.get(ev.slug, 0) + 1
+    multi = sorted(((c, s) for s, c in slug_counts.items() if c > 1), reverse=True)
+    if multi:
+        print(f"\nslugs with multiple events (history depth): {len(multi)}")
+        for c, s in multi[:10]:
+            print(f"  {c}× {s}")
+    return 0
+
+
+def cmd_materialize_live(entries_dir: str, live_dir: str) -> int:
+    """For each slug in entries/, write the newest event content to
+    live/<slug>.md. Regenerate live MEMORY.md with live-format links."""
+    os.makedirs(live_dir, exist_ok=True)
+    events = read_events(entries_dir)
+    newest = newest_per_slug(events)
+    written = 0
+    for slug, ev in newest.items():
+        live_path = os.path.join(live_dir, f"{slug}.md")
+        # If live file already exists with identical content, skip touch (preserves mtime).
+        try:
+            with open(ev.path, 'rb') as f:
+                ev_bytes = f.read()
+        except Exception as e:
+            print(f"  read fail: {ev.path}: {e}", file=sys.stderr)
+            continue
+        live_exists = os.path.isfile(live_path)
+        if live_exists:
+            try:
+                with open(live_path, 'rb') as f:
+                    if f.read() == ev_bytes:
+                        continue
+            except Exception:
+                pass
+        with open(live_path, 'wb') as f:
+            f.write(ev_bytes)
+        written += 1
+    # Regenerate live MEMORY.md
+    live_mem = os.path.join(live_dir, "MEMORY.md")
+    md = derive_memory_md(events, link_format="live")
+    with open(live_mem, 'w', encoding='utf-8') as f:
+        f.write(md + "\n")
+    print(f"materialized: {written} slug files (re)written; live MEMORY.md regenerated; {len(newest)} slugs total")
+    return 0
+
+
+def cmd_diff_live(live_dir: str, entries_dir: str) -> int:
+    """For each <slug>.md in live, report new/update/unchanged vs newest
+    event. Output one line per CHANGED slug: 'STATUS<TAB>slug<TAB>live_path'."""
+    if not os.path.isdir(live_dir):
+        return 0
+    events = read_events(entries_dir)
+    newest = newest_per_slug(events)
+    n_new = 0
+    n_upd = 0
+    n_same = 0
+    for fname in sorted(os.listdir(live_dir)):
+        if not fname.endswith('.md'):
+            continue
+        if fname in NON_ENTRY_FILES:
+            continue
+        slug = fname[:-3]
+        live_path = os.path.join(live_dir, fname)
+        try:
+            with open(live_path, 'rb') as f:
+                live_bytes = f.read()
+        except Exception:
+            continue
+        if slug not in newest:
+            print(f"NEW\t{slug}\t{live_path}")
+            n_new += 1
+        else:
+            try:
+                with open(newest[slug].path, 'rb') as f:
+                    ev_bytes = f.read()
+            except Exception:
+                ev_bytes = b""
+            if live_bytes == ev_bytes:
+                n_same += 1
+            else:
+                print(f"UPDATE\t{slug}\t{live_path}")
+                n_upd += 1
+    print(f"# new={n_new} update={n_upd} unchanged={n_same}", file=sys.stderr)
+    return 0
+
+
+def cmd_write_event(entries_dir: str, slug: str, host: str, content_path: str) -> int:
+    """Copy content_path into entries_dir as a new event for slug + host."""
+    os.makedirs(entries_dir, exist_ok=True)
+    ts = new_event_ts()
+    out = os.path.join(entries_dir, new_event_filename(slug, host, ts))
+    with open(content_path, 'rb') as src, open(out, 'wb') as dst:
+        dst.write(src.read())
+    print(out)
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("usage: agent_memory_lib.py <cmd> [args...]", file=sys.stderr)
+        print("       derive            <entries_dir> <out_path> <events|live>", file=sys.stderr)
+        print("       newest            <entries_dir>", file=sys.stderr)
+        print("       audit             <entries_dir>", file=sys.stderr)
+        print("       materialize-live  <entries_dir> <live_dir>", file=sys.stderr)
+        print("       diff-live         <live_dir> <entries_dir>", file=sys.stderr)
+        print("       write-event       <entries_dir> <slug> <host> <content_path>", file=sys.stderr)
+        sys.exit(2)
+    cmd = sys.argv[1]
+    if cmd == "derive":
+        sys.exit(cmd_derive(sys.argv[2], sys.argv[3], sys.argv[4]))
+    elif cmd == "newest":
+        sys.exit(cmd_newest(sys.argv[2]))
+    elif cmd == "audit":
+        sys.exit(cmd_audit(sys.argv[2]))
+    elif cmd == "materialize-live":
+        sys.exit(cmd_materialize_live(sys.argv[2], sys.argv[3]))
+    elif cmd == "diff-live":
+        sys.exit(cmd_diff_live(sys.argv[2], sys.argv[3]))
+    elif cmd == "write-event":
+        sys.exit(cmd_write_event(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]))
+    else:
+        print(f"unknown command: {cmd}", file=sys.stderr)
+        sys.exit(2)

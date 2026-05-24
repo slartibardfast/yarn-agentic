@@ -1,49 +1,50 @@
 #!/usr/bin/env bash
-# agent-memory-pull — sync the repo's agent-memory/ into the host-local
-# live directory ~/.claude/projects/-home-llm-yarn-agentic/memory/.
+# agent-memory-pull — refresh the host-local live directory from the
+# event-log in the repo.
 #
-# Run this at session start to pick up memories written by other hosts.
+# Reads:  agent-memory/entries/<slug>__<host>__<ts>.md (G-Set, append-only)
+# Writes: ~/.claude/projects/-home-llm-yarn-agentic/memory/<slug>.md  (newest event per slug)
+# Writes: ~/.claude/projects/-home-llm-yarn-agentic/memory/MEMORY.md  (derived index)
 #
 # Semantics:
-#   - rsync --update: per file, only overwrite live if repo has a newer mtime.
-#     Live-side edits since last push are preserved.
-#   - No --delete: files only in live are kept (they will go to repo at next push).
-#   - MEMORY.md gets the same per-file update rule. If both sides edited it
-#     since last sync, the newer mtime wins. To avoid losing local edits,
-#     ALWAYS pull before writing.
+#   - This is a derived materialization; the entries/ directory is the
+#     authoritative store. The live dir is a per-host current-view.
+#   - The pull replaces files in live with the newest-event-per-slug
+#     content. If live has been edited since last push, those edits
+#     will be overwritten ONLY IF a newer event exists; otherwise the
+#     live changes survive (no live file is created without a matching
+#     event, and unchanged-content writes don't touch mtime).
+#   - Files in live that have no corresponding event are NOT deleted
+#     (live-only changes are preserved until push).
 #
-# See agent-memory/PROTOCOL.md for the full protocol.
+# See agent-memory/PROTOCOL.md.
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
-REPO_MEM="$REPO_ROOT/agent-memory"
-LIVE_MEM="$HOME/.claude/projects/-home-llm-yarn-agentic/memory"
+ENTRIES_DIR="$REPO_ROOT/agent-memory/entries"
+LIVE_DIR="$HOME/.claude/projects/-home-llm-yarn-agentic/memory"
+PY="${PY:-/home/llm/venv/bin/python3}"
 
-if [ ! -d "$REPO_MEM" ]; then
-    echo "FAIL: $REPO_MEM does not exist (is the repo checked out?)"
+if [ ! -d "$REPO_ROOT/agent-memory" ]; then
+    echo "FAIL: $REPO_ROOT/agent-memory does not exist (is the repo checked out?)"
     exit 2
 fi
 
-mkdir -p "$LIVE_MEM"
+mkdir -p "$LIVE_DIR" "$ENTRIES_DIR"
 
-echo "=== agent-memory pull ==="
-echo "from: $REPO_MEM"
-echo "to:   $LIVE_MEM"
+echo "=== agent-memory pull (event log → live) ==="
+echo "from: $ENTRIES_DIR"
+echo "to:   $LIVE_DIR"
 
-# First, refresh repo from upstream so we have the latest committed memories.
-echo "[1/2] git pull --rebase agent-memory/ ..."
+echo "[1/2] git pull --rebase ..."
 cd "$REPO_ROOT"
 git pull --rebase 2>&1 | tail -5
 
-# Now rsync repo → live with --update (newer mtime wins, per file).
-# --include='*.md' to be paranoid (only markdown), --exclude='*' otherwise.
-echo "[2/2] rsync --update repo → live..."
-rsync -av --update \
-    --include='*.md' --exclude='*' \
-    "$REPO_MEM/" "$LIVE_MEM/" 2>&1 | tail -10
+echo "[2/2] materialize live from event log ..."
+"$PY" "$HERE/agent_memory_lib.py" materialize-live "$ENTRIES_DIR" "$LIVE_DIR"
 
 echo ""
-echo "[done] live now has $(ls "$LIVE_MEM"/*.md 2>/dev/null | wc -l) memory files"
-echo "[done] MEMORY.md entries: $(grep -c '^- \[' "$LIVE_MEM/MEMORY.md" 2>/dev/null || echo 0)"
+echo "[done] live: $(ls "$LIVE_DIR"/*.md 2>/dev/null | wc -l) files"
+echo "[done] MEMORY.md entries: $(grep -c '^- \[' "$LIVE_DIR/MEMORY.md" 2>/dev/null || echo 0)"

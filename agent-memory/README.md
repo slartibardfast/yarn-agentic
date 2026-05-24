@@ -1,49 +1,53 @@
 # agent-memory/
 
-Version-controlled snapshot of the agent's auto-memory. This is the **shared knowledge layer** across multiple host machines that work on `yarn-agentic`.
+Event-sourced agent auto-memory with CRDT semantics. Multi-host safe.
 
-The live, per-host directory at `~/.claude/projects/-home-llm-yarn-agentic/memory/` is the agent's own working memory. This directory in the repo is its **synced mirror**, so that:
+## What this is
 
-1. Knowledge survives host changes (a new host clones the repo and gets the full history)
-2. Multiple hosts working on the same project share their lessons learned
-3. The full audit trail of project decisions, feedback rules, and references is version-controlled
+The agent's working memory at `~/.claude/projects/-home-llm-yarn-agentic/memory/` is a **per-host current-view** of a **shared event log** stored here under `agent-memory/entries/`. Each memory write becomes a new event file with provenance encoded in the filename (slug + host + timestamp).
 
-See `PROTOCOL.md` for the sync rules.
+This directory carries the shared history across hosts. Pull at session start to materialize the latest current-view into your live directory; push at session end to commit your session's edits as new events.
 
 ## Layout
 
 ```
 agent-memory/
 ├── README.md                  ← this file
-├── PROTOCOL.md                ← sync protocol + conflict resolution
-├── MEMORY.md                  ← index (one line per entry, hand-maintained)
-├── project_*.md               ← per-project memories
-├── feedback_*.md              ← user feedback that shapes agent behaviour
-├── reference_*.md             ← pointers to external systems
-└── user_*.md                  ← facts about the user
+├── PROTOCOL.md                ← full CRDT design + workflow + recovery
+├── MEMORY.md                  ← DERIVED index (do not hand-edit)
+└── entries/                   ← G-Set of memory events
+    └── <slug>__<host>__<ts>.md
 ```
 
-## Quick commands
+## Quick start
 
 ```bash
-# At session start: pull repo into live dir (sync down)
+# At session start — refresh live from the shared event log:
 bash scripts/agent-memory-pull.sh
 
-# At session end (or after meaningful new entries): push live to repo
+# At session end — turn live edits into new events, commit + push:
 bash scripts/agent-memory-push.sh
+
+# Audit:
+bash scripts/agent-memory-audit.sh --repo   # event log
+bash scripts/agent-memory-audit.sh --live   # local materialization
 ```
 
-Both commands are documented in `PROTOCOL.md`.
+## CRDT properties
 
-## Snapshot provenance
+- **G-Set on event identities**: events are append-only; never modified or deleted. Filenames carry host + microsecond timestamp = always unique.
+- **LWW for derived view**: when multiple events exist for a slug, the newest wins for the current view. Older events stay in `entries/` as audit records.
+- **Deterministic derivation**: `MEMORY.md` is regenerated from the event set on every push; no merge conflicts on the index.
+- **Concurrent multi-host writes safe**: two hosts writing the same slug at overlapping times produce two distinct event files, both preserved. No data loss.
 
-This snapshot at first repo-commit:
+See `PROTOCOL.md` for the full design, including workflow details, recovery scenarios, and migration history.
+
+## Snapshot
 
 | field | value |
 |---|---|
-| date | 2026-05-24 |
-| committed from host | yarn.d07yx58.net |
-| file count | 130 (MEMORY.md + 129 entries) |
-| size | ~720 KB |
-| MEMORY.md entries | 129 |
-| audit | clean — 1:1 file ↔ index entry, 0 orphans, 3 SUPERSEDED entries preserved as audit records |
+| schema | event-sourced G-Set CRDT |
+| migration | from flat layout 2026-05-24 |
+| event count at first commit | 129 |
+| unique slugs | 129 |
+| audit at first commit | clean — 124 of 129 have valid frontmatter (5 older entries with malformed YAML; non-blocking) |

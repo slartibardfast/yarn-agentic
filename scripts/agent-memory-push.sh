@@ -1,83 +1,105 @@
 #!/usr/bin/env bash
-# agent-memory-push — sync the host-local live directory
-# ~/.claude/projects/-home-llm-yarn-agentic/memory/ into the repo's
-# agent-memory/, commit, push.
+# agent-memory-push — push host-local memory edits as new events in the
+# repo's event log, then commit + push.
 #
-# Run this at session end (or after writing meaningful new entries).
+# For each <slug>.md in ~/.claude/projects/-home-llm-yarn-agentic/memory/:
+#   - if content differs from newest event for that slug (or no event
+#     exists), append a NEW event file:
+#         agent-memory/entries/<slug>__<host>__<rfc3339-ts>.md
+#   - if content matches newest event, do nothing
 #
-# Semantics:
-#   - Auto-`git pull --rebase` first to incorporate other hosts' commits.
-#   - rsync from live → repo (without --update; this host's session is
-#     authoritative for the files it edited).
-#   - No --delete: files in repo but not live are KEPT (so other hosts'
-#     memories aren't erased).
-#   - git add + commit + push agent-memory/ only.
+# After events are written, the repo's MEMORY.md is regenerated from
+# the event set (links point to the newest event filename per slug).
 #
-# Conflict surface:
-#   - If another host pushed an edit to MEMORY.md since this host's last
-#     pull, `git pull --rebase` will surface the conflict. Resolve by
-#     hand (typical: merge both hosts' new index entries).
+# Concurrency: per-slug events are uniquely-named so concurrent writes
+# never overwrite each other on disk. `git pull --rebase` is run first
+# to incorporate other hosts' events; rebase should NOT conflict since
+# event filenames are disjoint across hosts. MEMORY.md is regenerated
+# from the post-rebase event set, never hand-merged.
 #
-# See agent-memory/PROTOCOL.md for the full protocol.
+# See agent-memory/PROTOCOL.md.
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
-REPO_MEM="$REPO_ROOT/agent-memory"
-LIVE_MEM="$HOME/.claude/projects/-home-llm-yarn-agentic/memory"
+ENTRIES_DIR="$REPO_ROOT/agent-memory/entries"
+LIVE_DIR="$HOME/.claude/projects/-home-llm-yarn-agentic/memory"
+PY="${PY:-/home/llm/venv/bin/python3}"
+HOST_TAG="${HOST_TAG:-$(uname -n)}"
 
-if [ ! -d "$LIVE_MEM" ]; then
-    echo "FAIL: $LIVE_MEM does not exist (run agent-memory-pull.sh first?)"
+if [ ! -d "$LIVE_DIR" ]; then
+    echo "FAIL: $LIVE_DIR does not exist (run agent-memory-pull.sh first?)"
     exit 2
 fi
-
-if [ ! -d "$REPO_MEM" ]; then
-    echo "FAIL: $REPO_MEM does not exist (is the repo checked out?)"
+if [ ! -d "$REPO_ROOT/agent-memory" ]; then
+    echo "FAIL: $REPO_ROOT/agent-memory does not exist"
     exit 2
 fi
+mkdir -p "$ENTRIES_DIR"
 
-echo "=== agent-memory push ==="
-echo "from: $LIVE_MEM"
-echo "to:   $REPO_MEM (then commit + push)"
+echo "=== agent-memory push (live → event log) ==="
+echo "from: $LIVE_DIR"
+echo "to:   $ENTRIES_DIR"
+echo "host tag: $HOST_TAG"
 
-# Pre-flight: pull any new commits from upstream so we rebase cleanly.
+echo "[1/5] git pull --rebase ..."
 cd "$REPO_ROOT"
-echo "[1/4] git pull --rebase ..."
 git pull --rebase 2>&1 | tail -5
 
-# rsync live → repo. Do NOT use --delete (preserve other hosts' files).
-echo "[2/4] rsync live → repo..."
-rsync -av \
-    --include='*.md' --exclude='*' \
-    "$LIVE_MEM/" "$REPO_MEM/" 2>&1 | tail -10
+echo "[2/5] diff live vs event log ..."
+# Capture into temp file (stderr has summary; stdout has CHANGED lines).
+DIFF_TMP="$(mktemp)"
+"$PY" "$HERE/agent_memory_lib.py" diff-live "$LIVE_DIR" "$ENTRIES_DIR" \
+    > "$DIFF_TMP" 2>&1
+# Show the summary line (last line that begins with '#')
+grep '^# ' "$DIFF_TMP" || true
+# Show changed entries
+n_changed=$(grep -cE '^(NEW|UPDATE)' "$DIFF_TMP" 2>/dev/null || true)
+n_changed=${n_changed:-0}
+echo "[3/5] changed slugs: $n_changed"
+if [ "$n_changed" = "0" ]; then
+    echo "[done] no live edits since last push (no new events to write)"
+    # Still regenerate MEMORY.md in case event log was rebased.
+    "$PY" "$HERE/agent_memory_lib.py" derive \
+        "$ENTRIES_DIR" "$REPO_ROOT/agent-memory/MEMORY.md" events
+    if git diff --quiet agent-memory/MEMORY.md; then
+        echo "[done] MEMORY.md unchanged; nothing to commit"
+        rm -f "$DIFF_TMP"
+        exit 0
+    fi
+fi
 
-# Stage changes.
-echo "[3/4] git add + commit + push agent-memory/..."
+# Write new events
+echo "[4/5] write events ..."
+grep -E '^(NEW|UPDATE)' "$DIFF_TMP" | while IFS=$'\t' read -r status slug live_path; do
+    out=$("$PY" "$HERE/agent_memory_lib.py" \
+        write-event "$ENTRIES_DIR" "$slug" "$HOST_TAG" "$live_path")
+    echo "  $status $slug → $(basename "$out")"
+done
+rm -f "$DIFF_TMP"
+
+echo "[5/5] regenerate repo MEMORY.md + git commit + push ..."
+"$PY" "$HERE/agent_memory_lib.py" derive \
+    "$ENTRIES_DIR" "$REPO_ROOT/agent-memory/MEMORY.md" events
+
 git add agent-memory/
 
-# Bail if nothing changed.
 if git diff --cached --quiet agent-memory/; then
-    echo "[done] no changes to commit"
+    echo "[done] no staged changes (rare; check status manually)"
     exit 0
 fi
 
-# Build a useful commit message from the changed files.
-N_CHANGED=$(git diff --cached --name-only agent-memory/ | wc -l)
-NEW_FILES=$(git diff --cached --name-only --diff-filter=A agent-memory/ | wc -l)
-MOD_FILES=$(git diff --cached --name-only --diff-filter=M agent-memory/ | wc -l)
-SAMPLE=$(git diff --cached --name-only agent-memory/ | head -5 | sed 's|agent-memory/||' | tr '\n' ' ')
+n_added=$(git diff --cached --name-only --diff-filter=A agent-memory/ | wc -l)
+n_modified=$(git diff --cached --name-only --diff-filter=M agent-memory/ | wc -l)
+git commit -m "agent-memory sync from ${HOST_TAG}: ${n_added} new event(s), MEMORY.md regenerated
 
-git commit -m "agent-memory sync from $(hostname): ${NEW_FILES} new, ${MOD_FILES} modified
-
-Files touched ($N_CHANGED total, sample): $SAMPLE
-
-Pushed via scripts/agent-memory-push.sh; per agent-memory/PROTOCOL.md.
+Live → event log via scripts/agent-memory-push.sh.
+$n_added new event files, $n_modified files modified (typically MEMORY.md).
+Per agent-memory/PROTOCOL.md (CRDT, G-Set on events).
 "
 
-echo "[4/4] git push..."
 git push 2>&1 | tail -3
 
 echo ""
-echo "[done] repo has $(ls "$REPO_MEM"/*.md 2>/dev/null | wc -l) memory files"
-echo "[done] MEMORY.md entries: $(grep -c '^- \[' "$REPO_MEM/MEMORY.md" 2>/dev/null || echo 0)"
+echo "[done] event log: $(ls "$ENTRIES_DIR"/*.md 2>/dev/null | wc -l) total events"
