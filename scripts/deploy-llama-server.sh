@@ -23,6 +23,14 @@ BUILD=${BUILD:-/home/dconnolly/yarn-agentic/ik_llama.cpp/build}
 PREFIX=${PREFIX:-/opt/llm-server}
 SERVICE=${SERVICE:-llama-server.service}
 
+ALLOW_NO_MMPROJ_MGPU=0
+for arg in "$@"; do
+    case "$arg" in
+        --allow-no-mmproj-mgpu) ALLOW_NO_MMPROJ_MGPU=1 ;;
+        *) printf 'unknown flag: %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
+
 log() { printf '%s %s\n' "[$(date -u '+%H:%M:%S')]" "$*"; }
 
 # ---------------------------------------------------------------------------
@@ -39,6 +47,39 @@ for so in "$BUILD/ggml/src/libggml.so" "$BUILD/src/libllama.so" "$BUILD/examples
         exit 1
     fi
 done
+
+# ---------------------------------------------------------------------------
+# PHASE 46 §11.4 — multi-GPU CLIP regression guard.
+#
+# Two byte-level checks on the build tree before install:
+#   1. The binary must contain the "multi-backend init" LOG_INF string emitted
+#      by clip.cpp's Path-B multi-backend parser. A pre-Phase-46 binary lacks
+#      this string entirely.
+#   2. libggml.so must export ggml_mgpu_create_split — the shared row-chunk
+#      split entry point introduced by submodule commit f2704241. A
+#      pre-Phase-46 libggml.so has no such symbol.
+#
+# Either failure aborts deploy. Pass --allow-no-mmproj-mgpu for the emergency
+# rollback path (deploying a pre-Phase-46 binary on purpose).
+# ---------------------------------------------------------------------------
+if [[ "$ALLOW_NO_MMPROJ_MGPU" == "1" ]]; then
+    log "WARN: --allow-no-mmproj-mgpu set; skipping Phase 46 multi-GPU CLIP guards"
+else
+    if ! strings "$BUILD/examples/mtmd/libmtmd.so" | grep -q 'multi-backend init'; then
+        log "ABORT: $BUILD/examples/mtmd/libmtmd.so missing 'multi-backend init' string"
+        log "  Phase 46 multi-backend CLIP path not present — refusing to deploy"
+        log "  Pass --allow-no-mmproj-mgpu to override for rollback."
+        exit 1
+    fi
+    if ! nm -D --defined-only "$BUILD/ggml/src/libggml.so" 2>/dev/null \
+        | grep -q 'ggml_mgpu_create_split'; then
+        log "ABORT: $BUILD/ggml/src/libggml.so missing ggml_mgpu_create_split export"
+        log "  Phase 46 shared mgpu_split_config infra not present — refusing to deploy"
+        log "  Pass --allow-no-mmproj-mgpu to override for rollback."
+        exit 1
+    fi
+    log "OK: Phase 46 multi-GPU CLIP guards clean"
+fi
 
 # Warn (do not block) on dirty submodule — caller may be testing local changes.
 SUBMOD_DIR="$(cd "$BUILD"/.. && pwd)"
