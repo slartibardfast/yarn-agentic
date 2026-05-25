@@ -246,10 +246,37 @@ The script will:
 2. Atomically install `bin/llama-server` and `lib/{libggml,libllama,libmtmd}.so` to `/opt/llm-server/` with `root:llm` ownership.
 3. Verify post-install hashes match the build tree byte-for-byte.
 4. Verify the regression guard — refuse if `i_split < GGML_SCHED_MAX_SPLITS` still appears in the installed `libggml.so`.
-5. `systemctl restart llama-server.service` and wait up to 120 s for `/health` → 200.
-6. Print the running build's embedded `commit="..."` stamp for sanity.
+5. Ensure the systemd drop-in `/etc/systemd/system/llama-server.service.d/00-lib-path.conf` exists with `Environment=LD_LIBRARY_PATH=/opt/llm-server/lib` (see "Library resolution" below).
+6. `systemctl restart llama-server.service` and wait up to 120 s for `/health` → 200.
+7. Print the running build's embedded `commit="..."` stamp for sanity.
 
 Non-zero exit on any check failure; no partial deploys.
+
+### Library resolution — production vs test
+
+`llama-server` is dynamically linked to `libggml.so`, `libllama.so`, `libmtmd.so`. Where the loader finds them differs between the **build-tree binary** (used for tests, lives at `ik_llama.cpp/build/bin/llama-server`) and the **installed binary** (used in production, lives at `/opt/llm-server/bin/llama-server`).
+
+- **Build-tree binary**: the linker sets `DT_RUNPATH` to the actual build directories (`build/ggml/src`, `build/src`, `build/examples/mtmd`). Running it in place — for benchmarks, tests, or `./build/bin/llama-server --version` — works because those paths exist on the host. **Test workflows do not need `LD_LIBRARY_PATH`.**
+- **Installed binary**: same `DT_RUNPATH` (the install step does not rewrite the ELF — `install -m 0755` is a byte copy, not a relocatable install). On its own, the installed binary would resolve libs from the *build tree*, not from `/opt/llm-server/lib/`. That was the cause of the 2026-05-25 deploy regression: a patched `libggml.so` was installed to `/opt/llm-server/lib/`, but the running service kept loading the build-tree (also patched, fine) until someone wiped the build tree, at which point the service would have crashed.
+
+To make the installed binary load **from `/opt/llm-server/lib/` first** — which is what production wants — the deploy script writes a systemd drop-in:
+
+```
+/etc/systemd/system/llama-server.service.d/00-lib-path.conf:
+    [Service]
+    Environment=LD_LIBRARY_PATH=/opt/llm-server/lib
+```
+
+The loader checks `LD_LIBRARY_PATH` **before** `DT_RUNPATH`, so the installed libs win for the service process. The build-tree path remains a fallback for the binary's other lifetimes (running it directly, outside systemd).
+
+If you ever need a self-contained installed binary (no `LD_LIBRARY_PATH` reliance), install `patchelf` and rewrite the RPATH:
+
+```bash
+sudo pacman -S patchelf
+sudo patchelf --set-rpath '$ORIGIN/../lib' /opt/llm-server/bin/llama-server
+```
+
+This is **not** currently part of the deploy script — the systemd drop-in is preferred because it works on any host without an extra build dependency. Trade: a service launched from outside systemd (manual `/opt/llm-server/bin/llama-server`) would still need `LD_LIBRARY_PATH` exported in the shell.
 
 ---
 

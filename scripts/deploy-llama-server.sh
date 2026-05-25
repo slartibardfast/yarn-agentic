@@ -94,6 +94,41 @@ fi
 log "OK: hashes match, regression guard clean"
 
 # ---------------------------------------------------------------------------
+# Ensure systemd drop-in sets LD_LIBRARY_PATH=/opt/llm-server/lib so the
+# loader prefers the installed libs over the binary's build-tree RUNPATH.
+#
+# Without this drop-in, the installed binary at $PREFIX/bin/llama-server
+# resolves libggml/libllama/libmtmd from its embedded RUNPATH — which points
+# at the build tree (e.g. /home/dconnolly/yarn-agentic/ik_llama.cpp/build/
+# ggml/src/libggml.so) because CMake stores BUILD_RPATH in the linked binary
+# and we install via `install -m 0755` which does not rewrite the ELF.
+# Setting LD_LIBRARY_PATH makes the loader check $PREFIX/lib first; that's
+# where the deploy step above just placed the fresh patched libs.
+#
+# A cleaner alternative (binary self-contained via patchelf --set-rpath
+# '$ORIGIN/../lib') is available if patchelf is installed; this script
+# prefers the systemd drop-in because it works on any host without an
+# extra build dependency.
+# ---------------------------------------------------------------------------
+DROPIN_DIR=/etc/systemd/system/"$SERVICE".d
+DROPIN_FILE="$DROPIN_DIR/00-lib-path.conf"
+log "ensuring systemd drop-in at $DROPIN_FILE"
+sudo install -d -m 0755 "$DROPIN_DIR"
+if [[ ! -f "$DROPIN_FILE" ]] \
+    || ! grep -q "LD_LIBRARY_PATH=$PREFIX/lib" "$DROPIN_FILE" 2>/dev/null; then
+    sudo tee "$DROPIN_FILE" >/dev/null <<EOF
+# Force the loader to prefer the installed libs over the binary's build-tree
+# RUNPATH. Managed by scripts/deploy-llama-server.sh — do not hand-edit.
+[Service]
+Environment=LD_LIBRARY_PATH=$PREFIX/lib
+EOF
+    log "wrote $DROPIN_FILE"
+    sudo systemctl daemon-reload
+else
+    log "drop-in already in place"
+fi
+
+# ---------------------------------------------------------------------------
 # Restart and wait for /health.
 # ---------------------------------------------------------------------------
 log "restarting $SERVICE"
