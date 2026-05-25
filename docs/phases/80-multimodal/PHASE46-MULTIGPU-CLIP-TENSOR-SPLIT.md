@@ -88,8 +88,13 @@ After this phase lands, the following must all hold:
    to the single-device (CUDA0) baseline at the same `--image-min-tokens`
    / `--image-max-tokens`, modulo documented reduce-order f32 epsilon
    on non-determinism-controlled paths.
-5. No regression on text-decode determinism: G3.a still PASS at
-   NP ∈ {1, 2, 4, 8}; G3.c still 0 / 20.
+5. No regression on text-decode determinism, verified by re-running
+   the existing binding harnesses against the deployed build:
+   - **G3.a** — `scripts/test-production-np-determinism.sh` PASS at
+     NP ∈ {1, 2, 4, 8} (byte-identity).
+   - **G3.c** — `scripts/r5-probe-c4.sh` 0 / 20 divergences on
+     Qwen 3.6 27B.
+   These are unmodified — Phase 46 only consumes them.
 6. CPU-vision fallback path (current production state) still works
    if `MTMD_BACKEND_DEVICE` is unset or set to a single device.
 
@@ -151,14 +156,21 @@ Land RED first (per CLAUDE.md §4, test-first discipline). All in
 - `test-clip-weight-split.cpp` — RED: load mmproj with
   `MTMD_TENSOR_SPLIT=1,1`, query per-device buffer sizes, assert
   both > 0 and within 5 % of each other. Will fail until Step 2.
-- `test-clip-encode-equivalence.cpp` — RED: encode a fixed test
-  image (committed to `tests/data/`) with (a) CUDA0-only and
-  (b) CUDA0+CUDA1 split; assert outputs equal to f32 epsilon. Will
+- `test-clip-encode-equivalence.cpp` — RED: encode the existing
+  in-tree fixture `examples/mtmd/test-1.jpeg` (MIT-licensed under the
+  repo root `LICENSE`, 640×488 JPEG, SFW — the canonical upstream
+  mtmd test image, already used by `llama-mtmd-cli`) with
+  (a) CUDA0-only and (b) CUDA0+CUDA1 split; assert outputs equal to
+  f32 epsilon. **No new image bytes are added to the tree.** Will
   fail until Step 2 is correct.
 - Integration: `scripts/verify-multigpu-clip.sh` — end-to-end
   vision-encode test against a running `llama-server` with the
   production profile; assert no OOM, /health stays 200, response
-  contains the expected output.
+  contains the expected output. After the multi-GPU encode passes,
+  the script also invokes
+  `scripts/test-production-np-determinism.sh` and
+  `scripts/r5-probe-c4.sh` so a single binding run covers both the
+  vision goal and the text-decode regression guards (Goal #5).
 
 ### Step 4 — Production rollout
 
@@ -250,9 +262,11 @@ LoC at risk): this is on a different scale of structural impact.
 | `ik_llama.cpp/tests/test-clip-multi-backend-init.cpp` | NEW (Step 3) |
 | `ik_llama.cpp/tests/test-clip-weight-split.cpp` | NEW (Step 3) |
 | `ik_llama.cpp/tests/test-clip-encode-equivalence.cpp` | NEW (Step 3) |
-| `ik_llama.cpp/tests/data/` | NEW: fixed test image + reference output |
+| `ik_llama.cpp/examples/mtmd/test-1.jpeg` | **Reused fixture** — already MIT, already in tree |
 | `ik_llama.cpp/tests/CMakeLists.txt` | Register tests |
-| `yarn-agentic/scripts/verify-multigpu-clip.sh` | NEW integration harness |
+| `yarn-agentic/scripts/verify-multigpu-clip.sh` | NEW integration harness (wraps G3.a + G3.c at the end) |
+| `yarn-agentic/scripts/test-production-np-determinism.sh` | **Reused** (G3.a) — invoked by the integration harness |
+| `yarn-agentic/scripts/r5-probe-c4.sh` | **Reused** (G3.c) — invoked by the integration harness |
 | `yarn-agentic/PHASE46-MULTIGPU-CLIP-TENSOR-SPLIT.md` | This doc |
 | `yarn-agentic/docs/SUMMARY.md` | Add Phase 46 entry |
 | `/home/llm/profiles/qwen36-27b-x1-vanilla.sh` | Drop `--no-mmproj-offload` at deploy |
@@ -273,7 +287,8 @@ LoC at risk): this is on a different scale of structural impact.
   - [ ] Cherry-pick to `production/2026-q2-next`
   - [ ] Deploy via `scripts/deploy-llama-server.sh`
   - [ ] `scripts/verify-multigpu-clip.sh` PASS against production
-  - [ ] G3.a NP-determinism still PASS
+  - [ ] `scripts/test-production-np-determinism.sh` (G3.a) PASS at NP ∈ {1, 2, 4, 8}
+  - [ ] `scripts/r5-probe-c4.sh` (G3.c) 0 / 20 divergences
   - [ ] CPU-vision fallback path still works (rollback drill)
 - [ ] Close: this PHASE doc updated with final implementation
       notes; MEMORY.md entry appended.
