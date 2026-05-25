@@ -1,6 +1,9 @@
 # PHASE 35 — CUDA Graph Cache: Instrumentation, Topology-Class Keying, Allocation-Aware Eviction
 
-> **Status (working doc):** Plan landed; no code phases shipped yet.
+> **Status (2026-05-25):** Step A instrumentation landed; **Step B
+> allocation-aware eviction landed in production** (commit
+> `606ce62b` on `production/2026-q2-next`). See §15 below for the
+> implementation as shipped.
 > Phase ordering: A (instrumentation) → A.gate (decision) → B + E (the
 > actual redesign) → C/D (conditional) → F (post-mortem amendments).
 > Each phase opens with **test contracts (RED)** that must be written
@@ -1285,4 +1288,112 @@ parallel=2 attempt and does not unlock multi-slot.
   `scripts/cuda-graph-probe/`; computes per-probe summary
   statistics. The PASS/FAIL/ABORT verdict logic for A.D1–A.D5 lands
   during A.gate when we have real data to wire it against.
+
+---
+
+## 15. Step B — Allocation-Aware Eviction (landed 2026-05-25)
+
+Commit `606ce62b` on `production/2026-q2-next` (cherry-picked from
+dev branch `b45eeb7d`). 79 / 2 LoC in `ggml/src/ggml-cuda.cu`.
+Running in production behind build stamp `commit="606ce62b"`.
+
+### 15.1 What it does
+
+Before any `cudaGraphInstantiate` call (both the first-time path at
+`ggml-cuda.cu:5038` and the reinstantiate fallback at `:4912`), the
+cache calls `ggml_cuda_evict_for_pressure(ctx, topology_key)`:
+
+1. Read `min_free` (env `GGML_CUDA_GRAPH_MIN_FREE_MIB`, default
+   `4096`; `0` disables).
+2. `cudaMemGetInfo` → if free already ≥ `min_free`, return.
+3. Otherwise build `(last_use_us, topology_key)` pairs for every
+   entry except `protect_key` (the entry about to be instantiated),
+   sort ascending → oldest first.
+4. Erase entries one at a time (destructor releases
+   `cudaGraphExec_t` + `cudaGraph_t` back to the pool), re-check
+   `cudaMemGetInfo`, stop when threshold met or only the protected
+   entry remains.
+5. If `GGML_CUDA_GRAPH_PROBE=1`, every eviction emits a
+   `vram_delta` probe event with `note="evict_pressure"` recording
+   bytes reclaimed.
+
+### 15.2 Why LRU and not size-based
+
+Size-based eviction would need a per-entry "bytes occupied" figure
+that `cudaMemGetInfo` cannot give. `cudaMemGetInfo`'s `free` only
+shows the **whole-device** delta, with cuBLAS workspace, pool
+fragmentation, and neighbouring backend allocations all in the
+denominator. The honest signal is whole-device pressure; the honest
+response is "evict until the device looks healthy again." LRU by
+`last_use_us` (already maintained at `ggml_cuda_get_graph`:4648 for
+the FIFO eviction) is the cheapest defensible policy that doesn't
+require speculative sizing.
+
+### 15.3 What it does NOT solve
+
+The 2026-05-25 vision-encode OOM that motivated this work is **not
+resolved** by this patch. Diagnosis after deploy:
+
+- The graph cache only contained a single CLIP-on-CUDA0 entry at
+  the time of the crash (1024-token vision encoder); the LM graphs
+  lived on a different backend context. There was nothing to evict.
+- The crash was a single-graph-too-big problem: the 1024-token
+  vision encoder's `cudaGraphInstantiate` working memory by itself
+  exceeds available headroom on either device.
+- Evicting other entries cannot help when the new entry alone is
+  too large.
+
+That problem is the subject of **PHASE 46** (`PHASE46-MULTIGPU-CLIP-TENSOR-SPLIT.md`):
+shard the vision encoder across both GPUs so neither device has to
+absorb the full 9-11 GiB working set alone.
+
+### 15.4 What it DOES solve
+
+The eviction now fires under sustained multi-topology pressure that
+the FIFO count cap can't address: graphs cached at memory headroom
+"OK for one, not OK for three" no longer accumulate to OOM. Phase A
+probe will exercise this once the box runs a mixed-workload soak.
+
+### 15.5 Env knobs (production drop-in)
+
+`/etc/systemd/system/llama-server.service.d/02-cuda-graph-probe.conf`:
+
+```ini
+[Service]
+Environment=GGML_CUDA_GRAPH_MAX=8
+Environment=GGML_CUDA_GRAPH_PROBE=1
+Environment=GGML_CUDA_GRAPH_PROBE_DIR=/tmp/cuda-probe
+Environment=GGML_CUDA_GRAPH_MIN_FREE_MIB=4096
+```
+
+`MTMD_BACKEND_DEVICE=CUDA1` was removed from this drop-in in the
+same deploy — vision is now CPU-resident (profile flag
+`--no-mmproj-offload`) pending Phase 46. See profile script
+`/home/llm/profiles/qwen36-27b-x1-vanilla.sh`.
+
+### 15.6 Code map (as shipped)
+
+- `ggml-cuda.cu:4573-4607` — header comment + `ggml_cuda_graph_min_free_bytes`
+- `ggml-cuda.cu:4609-4641` — `ggml_cuda_evict_for_pressure`
+- `ggml-cuda.cu:4912` — call site: reinstantiate fallback after `cudaGraphExecUpdate` failure
+- `ggml-cuda.cu:5036` — call site: first-time instantiate
+- Probe channel: `cuda_graph_probe::record_vram(..., "evict_pressure", ...)`
+  in `ggml_cuda_evict_for_pressure`; consumed by
+  `scripts/cuda-graph-probe/parse-probe-dump.py`.
+
+### 15.7 Closure criterion
+
+Step B is closed when:
+
+1. ✅ Production binary runs the patch (build stamp `606ce62b`).
+2. ✅ No regression on text-decode (validated by service /health
+   and idle-slot transition trace post-deploy).
+3. ⏳ Probe captures at least one `evict_pressure` event under
+   real workload — bound by Phase A.gate soak. Until then this is
+   "running" but unproven on the original signal.
+4. ✅ The original signal it was designed for (multi-image vision
+   OOM) has been correctly re-attributed to Phase 46 scope.
+
+Criterion 3 is the only outstanding item; it is bound to the
+existing Step A.gate soak schedule, not new work for this step.
 
