@@ -186,6 +186,66 @@ Rather than wholesale `SLT_WRN` traces across all of save/read, the static analy
 - Run binding test against `127.0.0.1:8081` (the dev binary listens on a different port so production on `:8080` stays untouched).
 - Production stays on Phase 1 throughout Phase 2.
 
+### 5.6 Probe #1 results + the actual SEGV stack (2026-05-25 12:46 UTC)
+
+Ran the instrumented dev binary (commit `39290fc3`, restore re-enabled, PROBE1-W/R first/last-word fingerprint at every s_l write/read) on a 1644-token prompt + 1648-token follow-up, on port 8080 (production was stopped). Turn 2 reproduced the SEGV under instrumentation.
+
+**Concrete byte-level findings:**
+
+- Every PROBE1-W and PROBE1-R entry shows `size=3268608` (= 3.12 MB) and `extra=1` on every SSM layer. Confirms: per-layer payload is the F32 SSM state, every s_l tensor is multi-device-split. The blob math closes: 48 SSM layers × 3.12 MB ≈ 150 MB ≈ observed 149.6 MiB. **H1 is dead — the blob is the right size.**
+- 48 PROBE1-R entries (one per SSM layer) ran to completion before the crash → the restore itself was structurally complete; `apply_checkpoint()` returned `restored context checkpoint took 59.20 ms (pos_min = 1535, pos_max = 1535)` cleanly.
+- Round-trip byte-equality cannot be confirmed at this granularity yet — PROBE1 doesn't tag which checkpoint a write belongs to, so we can't pair a specific PROBE1-W with its matching PROBE1-R. Probe #1.5 (add `pos_min` to the log) needed for that confirmation.
+
+**The actual SIGSEGV stack** (`coredumpctl`, PID 10373):
+
+```
+#0  0x00007ff1ba59c08d  ggml_new_tensor_impl.constprop.1                       (libggml.so  + 0x19c08d)
+#1  0x00007ff1ba5cd528  ggml_view_3d                                           (libggml.so  + 0x1cd528)
+#2  0x00007ff1cf1a4433  llm_build_context::build_defrag(...)                   (libllama.so + 0x1a4433)
+#3  0x00007ff1cf1b0499  llm_build_context::llama_build_graph_defrag(...)       (libllama.so + 0x1b0499)
+#4  0x00007ff1cf095ee0  llama_kv_cache_update                                  (libllama.so + 0x95ee0)
+#5  0x00007ff1cf0bd266  llama_decode_internal                                  (libllama.so + 0xbd266)
+#6  0x00007ff1cf0bfda6  llama_decode                                           (libllama.so + 0xbfda6)
+#7  0x000055994db07f08  server_context::process_batch_tokens(int&)             (llama-server)
+#8  0x000055994db0b30a  server_context::update_slots()                         (llama-server)
+```
+
+**Reshapes the diagnosis completely.** The crash is **not** in `apply_checkpoint`, **not** in the post-restore prefill, and **not** in the decoder consuming `s_l`. It's in the **KV-cache defragmentation** triggered by `llama_kv_cache_update` on the first decode call after the restore. The sequence from the journal:
+
+```
+... slot apply_checkp: restored context checkpoint took 59.20 ms (pos_min=1535, pos_max=1535)
+... apply_checkp: erased invalidated context checkpoint (pos_min=1644, pos_max=1644)
+... batch_pending_prompt: kv cache rm [p0, end) ... p0=1536
+... fragmentation: 0.50
+... [SIGSEGV in build_defrag → ggml_view_3d → ggml_new_tensor_impl]
+```
+
+So: restore writes s_l rows back; `apply_checkp` then erases the now-invalidated future checkpoint (pos_max=1644 > restored pos_max=1535) which calls `kv_cache_seq_rm` at p0=1536; that wipe-from-1536-onwards rearranges the cell table; on the next decode, `llama_kv_cache_update` recomputes fragmentation, sees 0.50 and triggers defrag; the defrag graph builder constructs a `ggml_view_3d` over what it thinks is the live KV layout; **one of the source tensors is no longer valid** (most likely a freed `s_l[il]` view, or a split-tensor `->extra` pointer that the rm/restore sequence left dangling); `ggml_new_tensor_impl` crashes dereferencing it.
+
+### 5.7 Updated hypothesis ranking
+
+- **H6 (new, leading).** The KV-cache rm path post-restore leaves the per-layer split-tensor descriptors (`s_l[il]->extra` and/or the analogous K/V split metadata) in a state that `build_defrag` cannot construct a graph over. The 48 PROBE1-R entries showed `extra=1` for every SSM layer; the defrag builder presumably walks `extra->splits[id]` per layer and one of those entries is stale/freed.
+- **H5 (still possible).** Same family — split-tensor layout mismatch between save and restore, but the failure surface is specifically the defrag graph builder.
+- **H3 (demoted).** Per-step SSM buffer mismatch is no longer the leading suspect; the SEGV stack puts us in `build_defrag` which is upstream of any per-step SSM consumption.
+- **H4 (still relevant).** Cell-table metadata desync is a plausible reading of the kv_cache_rm → fragmentation 0.50 → defrag-explodes sequence.
+
+### 5.8 Phase 3 sub-path decision tightens toward 3a
+
+The bug is **localised** to the defrag graph construction post-restore — not to the SSM state ownership architecture, the recurrent memory abstraction, or any boundary that `llama_memory_hybrid` would clean up. This pushes the Phase 3 decision strongly toward **3a (targeted in-place patch)** rather than 3b (Phase 45 D9.6h extension) or 3c (upstream backport).
+
+Probable fix shape:
+
+- **Option A.** Skip the defrag pass for one decode batch after a restore. Add a flag in `server_slot` / `llama_kv_cache` that suppresses `llama_kv_cache_update`'s defrag call on the first post-restore decode. Tiny patch. Doesn't address the root cause but kills the symptom.
+- **Option B.** Make `build_defrag` robust to the post-restore cell layout — either rebuild the affected tensor views before defrag, or skip layers whose split-tensor descriptors point at freed memory. Slightly larger patch; addresses the root.
+- **Option C.** Find the exact line in `kv_cache_seq_rm` or `apply_checkpoint` that's leaving the descriptor invalid and fix it at the source. Smallest patch if we can pinpoint it.
+
+Next instrumentation iteration should target the defrag path:
+
+- **Probe #4** (replaces #2, #3): log every `ggml_view_3d` call inside `build_defrag` with the source tensor identity, ne[], nb[], and `->extra` validity. The view that fails will tell us exactly which descriptor is bad.
+- **Probe #1.5** (small extension): tag PROBE1-W with `pos_min`/`pos_max` of the checkpoint being saved, so we can pair the bytes round-trip if/when we want.
+
+Probe #4 is the path to a concrete fix. Probe #1.5 is now optional given the defrag-path discovery.
+
 ## 6. Verification — end-to-end binding test script
 
 `scripts/verify-hybrid-checkpoint.sh` exercises all phases. Exit criterion of this PHASE doc is that the script passes after Phase 3 (whichever sub-path lands).
