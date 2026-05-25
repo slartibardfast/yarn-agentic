@@ -9909,3 +9909,115 @@ budget fits cleanly; text-decode path is unchanged.
 - Submodule patch `606ce62b` on `production/2026-q2-next` (unpushed
   pending user direction on the slartibardfast remote)
 - Drop-in `/etc/systemd/system/llama-server.service.d/02-cuda-graph-probe.conf`
+
+---
+
+## 2026-05-25 (later) — Phase 46 B.0-B.5 partial: spec-first foundation + LM-side extraction
+
+Driven by the standing goal "implement Phase 46 through to completion."
+Got six commits deep on the submodule + four on top-level
+yarn-agentic. **Phase 46 stays OPEN; the load-bearing piece (B.5b
+multi-device mmproj weight residency) is the remaining work to
+realize the §1 fit goal.**
+
+**B.0 — five formal specs PASS** (yarn-agentic commit `34b7151`):
+
+- `specs/mgpu-split/MgpuSplitConfig.allium` — 16 invariants, allium check PASS
+- `specs/mgpu-split/BuftSetupLoop.tla` + 4 mode .cfg — TLC PASS (graph/layer/attn/none)
+- `specs/mgpu-split/CreateSplitBalance.tla` + .cfg — TLC PASS, 106 states, termination/balance/sum verified
+- `specs/mgpu-split/ClipCrossDeviceFlow.tla` + .cfg — TLC PASS at N_LAYERS=2, 11,238 states (extends AsyncReduce.tla)
+- `specs/mgpu-split/CrossCodepathConsistency.allium` — 12 invariants, allium check PASS
+
+Spec-fix highlights along the way:
+
+1. ClipCrossDeviceFlow.tla relaxed StartFFN prereq from prev=DONE to
+   prev ∈ {FFN_DONE, WAITING_REDUCE, CONSUMING, DONE} — resolves an
+   inconsistency in upstream AsyncReduce.tla (comment promised
+   compute/transfer overlap; guard prevented it).
+2. ClipCrossDeviceFlow's FullOverlapUnderSaturation weakened to the
+   ENABLED form: spec asserts overlap PERMITTED, B.7 measures
+   REALIZED. The "schedule must overlap" claim is empirical, not
+   formal.
+3. Both .allium specs rewritten from async-reduce.allium's
+   pseudo-DSL style to canonical Allium 3 (matches dflash.allium /
+   batch-invariance.allium). Now CI-checkable.
+4. TLC 2026.05.18 does not short-circuit `\/` in state predicates —
+   wrap `l-1` accesses in `IF l = 0 THEN TRUE ELSE ...` to avoid
+   domain-error fingerprint failures.
+
+CI workflow change for spec-tla-gate.yml (6 new TLC steps + 2 new
+allium-check steps) was prepared locally but held — OAuth token
+lacks `workflow` scope. User must push that separately or skip.
+
+**B.1-B.4 — LM-side extraction landed** (ik_llama.cpp commits
+`f2704241` → `69d7ffe7`):
+
+- `ggml/include/ggml-mgpu-split.h` + `ggml/src/ggml-mgpu-split.cpp` —
+  shared header with `ggml_mgpu_create_split` (byte-equivalent port of
+  the LM-local create_split) and `ggml_mgpu_alloc_split_tensors`
+  (generalized prepare_split_tensors core that doesn't carry the
+  llama_split_tensor LM-internal type).
+- `ggml_mgpu_split_config` struct exactly per MgpuSplitConfig.allium.
+- `ggml_mgpu_split_config_check` runtime invariant verifier — 9 of
+  the spec's 16 invariants (the structurally-checkable subset).
+- `create_tensors_helper.ctx_for_layer_split` routes through cfg.
+- `model.mgpu_split_config` added; populated in `llama.cpp` right
+  after the buft-setup loop at line 4198. PASS / first-failure
+  logged at startup.
+
+All semantics-preserving by construction; full llama-server rebuild
+clean throughout.
+
+**B.5 part 1 — multi-backend init + P2 peer-access gate** (ik_llama.cpp
+commit `ba186fdb`):
+
+- `ggml/include/ggml-cuda.h` + `.cu` add
+  `ggml_backend_cuda_can_access_peer` (wraps `cudaDeviceCanAccessPeer`).
+- `clip.cpp` parses `MTMD_BACKEND_DEVICE` as comma-separated list,
+  initializes one backend per token, pushes all into `backend_ptrs`.
+- Multi-device case runs P2 peer-access gate over every (i, j) pair;
+  throws `std::runtime_error("PHASE46 B.5 P2 gate failed: CUDA peer
+  access unavailable between requested devices")` if any pair fails.
+- CPU-vision fallback preserved.
+
+**B.5b — multi-device WEIGHT RESIDENCY (OPEN; Phase 46 closure binds here).**
+
+ik fork's `ggml_backend_cuda_split_buffer_type` (ggml-cuda.cu:1428)
+requires each tensor's `->extra` pointer pre-populated with a
+`ggml_split_tensor_t` carrying per-device sub-tensors. The LM
+achieves this via `prepare_split_tensors` calls scattered
+throughout `llama-load-tensors.cpp`. CLIP's mmproj loader at
+`clip.cpp:3804` uses `alloc_ctx_tensors_from_buft` on a single ctx
+with the primary backend's default buft — no pre-decoration.
+
+To make mmproj weights physically reside on both CUDA0 and CUDA1
+(the original Phase 46 goal), CLIP needs a per-tensor pre-decoration
+pass mirroring `llama_layer.split_*` (llama-model.h:201-210). This
+is ~80-150 LoC of clip.cpp changes plus extensions to its model
+struct to carry the split state. Currently in scope as B.5b in
+PHASE46 §10 with an OPEN checkbox.
+
+**B.6-B.8 status:**
+- B.6 LM gate re-cert deferred to maintenance window. Production
+  service uses both GPUs at capacity; G3.a / G3.c test binaries
+  cannot allocate concurrent VRAM. Attempted to run on this host;
+  cudaMalloc failed at 2.4 GiB on device 1 due to existing prod
+  process. B.1-B.4 semantics-preserving claim stands on formal
+  contract; empirical bit-identity verification is the closure step.
+- B.7 CLIP perf gate cannot run until B.5b — current state has
+  weights single-device; multi-backend init has no observable
+  encode-latency benefit.
+- B.8 production rollout blocked on B.5b + B.6 + B.7 closure.
+
+**Submodule push held.** `production/2026-q2-next` has commits
+`f2704241..ba186fdb` unpushed to slartibardfast/ik_llama.cpp.git
+pending user authorization. Top-level pointer bumped to `ba186fdb`
+and pushed (commit `5350422`); fresh clones cannot resolve the
+submodule pointer until either commit is pushed to slartibardfast
+or the user authorizes.
+
+**Interim production state unchanged.** Vision still runs on CPU
+(`--no-mmproj-offload`). The LM is still on commit `606ce62b`
+(the running production binary predates B.1-B.5). When B.5b lands
++ B.6 PASS, the deploy script will swap in a build that has the
+full Path B + multi-device CLIP.
