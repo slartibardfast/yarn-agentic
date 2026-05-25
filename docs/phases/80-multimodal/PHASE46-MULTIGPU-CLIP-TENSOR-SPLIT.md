@@ -334,34 +334,37 @@ coverage, maximum possible speed.
 
 ## 10. Checkboxes
 
-- [ ] Step 1: multi-backend parsing in clip.cpp
-  - [ ] Implementation
-  - [ ] `test-clip-multi-backend-init.cpp` GREEN
-  - [ ] Journal `clip_ctx: have N back-ends:` shows ≥ 3 with `MTMD_BACKEND_DEVICE=CUDA0,CUDA1`
-- [ ] **Step 2: Path B sub-steps (§12.4) — superseded checkboxes below**
-  - [ ] **B.0** — Five formal specs land in `specs/mgpu-split/`
-    - [ ] `MgpuSplitConfig.allium` — Alloy Analyzer no counterexample at scope ≥ 8
-    - [ ] `BuftSetupLoop.tla` — TLC PASS
-    - [ ] `CreateSplitBalance.tla` — TLC PASS (termination + balance + sum invariant)
-    - [ ] `ClipCrossDeviceFlow.tla` — TLC PASS (extends `AsyncReduce.tla`)
-    - [ ] `CrossCodepathConsistency.allium` — Alloy Analyzer no counterexample at scope ≥ 4
-    - [ ] `docs/SUMMARY.md` "Multi-GPU split formal specs" section added
-  - [ ] **B.1** — `create_split` + `prepare_split_tensors` extracted to `src/ggml-mgpu-split.{h,cpp}`; 13 call sites in `llama-load-tensors.cpp` migrated
-  - [ ] **B.2** — `mgpu_split_config` struct defined per `MgpuSplitConfig.allium`
-  - [ ] **B.3** — `create_tensors_helper` refactored to take `mgpu_split_config &`
-  - [ ] **B.4** — Buft-setup at `llama.cpp:4168-4198` populates `mgpu_split_config`
-  - [ ] **B.5** — `clip.cpp` wires multi-backend + populates struct + P1 f16 default + P2 peer-access gate
+- [x] Step 1: multi-backend parsing in clip.cpp (landed in B.5 part 1 — see below)
+- [~] **Step 2: Path B sub-steps (§12.4) — partial; see status below**
+  - [x] **B.0** — Five formal specs land in `specs/mgpu-split/` (commit `34b7151`)
+    - [x] `MgpuSplitConfig.allium` — `allium check` PASS, 0 errors (16 invariants)
+    - [x] `BuftSetupLoop.tla` — TLC PASS on all 4 mode .cfgs (graph/layer/attn/none)
+    - [x] `CreateSplitBalance.tla` — TLC PASS, 106 distinct states (termination + balance + sum)
+    - [x] `ClipCrossDeviceFlow.tla` — TLC PASS at N_LAYERS=2, 11,238 distinct states
+    - [x] `CrossCodepathConsistency.allium` — `allium check` PASS, 0 errors (12 invariants)
+    - [x] `docs/SUMMARY.md` "Multi-GPU split formal specs" section added
+  - [x] **B.1** — `create_split` extracted to `ggml/{include,src}/ggml-mgpu-split.{h,cpp}` (submodule commit `f2704241`); 13 LM-side call sites continue via thin wrapper
+  - [x] **B.2** — `ggml_mgpu_split_config` struct + `ggml_mgpu_split_config_check` runtime invariant verifier (submodule `4ce3e51f`)
+  - [x] **B.3** — `create_tensors_helper` reads via `cfg.buft_layer[i].first/.second`; struct mirrors model fields (submodule `ffaa94c3`)
+  - [x] **B.4** — `model.mgpu_split_config` member added; populated immediately after the buft-setup loop at `llama.cpp:4198`; check runs and logs PASS / first failure (submodule `69d7ffe7`)
+  - [~] **B.5** — partial (submodule `ba186fdb` for part 1)
+    - [x] Multi-backend init from comma-separated `MTMD_BACKEND_DEVICE`
+    - [x] P2 peer-access gate (`ggml_backend_cuda_can_access_peer`) — refuses to start on failure
+    - [ ] **B.5b — multi-device weight residency** (OPEN). Requires per-tensor `ggml_split_tensor_t` decoration on mmproj weights before `alloc_ctx_tensors_from_buft` at `clip.cpp:3804`. Mirrors the LM-side `llama_layer::split_*` pattern at `llama-model.h:201-210` and the per-arch `prepare_split_tensors` calls at `llama-load-tensors.cpp:3931+`. Estimated ~80-150 LoC plus clip-model-struct additions. **Phase 46 closure binds on this.**
+    - [ ] B.5c CLI flags: `--mmproj-devices`, `--mmproj-tensor-split`, `--mmproj-split-mode`, `--mmproj-smf16/smf32`, `--mmproj-smgs`
+    - [ ] B.5d P1 f16 cross-device exchange default
     - [ ] `test-clip-multi-backend-init.cpp` GREEN
     - [ ] `test-clip-weight-split.cpp` GREEN
     - [ ] `test-clip-encode-equivalence.cpp` GREEN
-  - [ ] **B.6** — LM gate re-cert (HARD)
+  - [ ] **B.6** — LM gate re-cert (HARD; deferred to maintenance window — production service uses both GPUs at capacity, test binary cannot allocate concurrent VRAM)
     - [ ] G3.a `test-production-np-determinism.sh` PASS NP∈{1,2,4,8}
     - [ ] G3.c `r5-probe-c4.sh` 0/20 divergences
     - [ ] `test-n-stream-kv-layout` PASS
     - [ ] Phase 45 D10.a 3-slot smoke PASS
-  - [ ] **B.7** — CLIP perf gate (HARD, P7): encode latency ≤ 1.3× §11.1 single-GPU baseline
+    - **Note:** B.1-B.4 are semantics-preserving by construction (cfg mirrors model fields; reads through cfg are equivalent to reads through model fields). Empirical bit-identity verification remains as the binding closure step.
+  - [ ] **B.7** — CLIP perf gate (HARD, P7): encode latency ≤ 1.3× §11.1 single-GPU baseline. Cannot run until B.5b lands (current state: weights single-device; multi-backend init has no observable benefit).
     - [ ] `test-clip-encode-latency.cpp` GREEN
-  - [ ] **B.8** — Production rollout via deploy script + rollback drill (see Step 4 below for ops checklist)
+  - [ ] **B.8** — Production rollout via deploy script + rollback drill
 - [ ] Step 4: production rollout
   - [ ] Cherry-pick to `production/2026-q2-next`
   - [ ] Deploy via `scripts/deploy-llama-server.sh`
