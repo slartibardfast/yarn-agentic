@@ -127,6 +127,18 @@
 
 - [Phase 46: Multi-GPU CLIP via tensor-split](phases/80-multimodal/PHASE46-MULTIGPU-CLIP-TENSOR-SPLIT.md)
 
+## Multi-GPU split formal specs (Phase 46 B.0)
+
+The five B.0-full specs that must PASS before any C++ touches Path B
+(per PHASE46 §12.2). Three TLA+ specs (run under TLC) and two
+Allium-style specs (run under Alloy Analyzer).
+
+- [Spec #1 — MgpuSplitConfig.allium (data-structure spine)](../specs/mgpu-split/MgpuSplitConfig.allium)
+- [Spec #2 — BuftSetupLoop.tla (buft-assignment loop)](../specs/mgpu-split/BuftSetupLoop.tla)
+- [Spec #3 — CreateSplitBalance.tla (row-chunking algorithm)](../specs/mgpu-split/CreateSplitBalance.tla)
+- [Spec #4 — ClipCrossDeviceFlow.tla (CLIP topology, extends AsyncReduce)](../specs/mgpu-split/ClipCrossDeviceFlow.tla)
+- [Spec #5 — CrossCodepathConsistency.allium (LM ⇔ CLIP equivalence)](../specs/mgpu-split/CrossCodepathConsistency.allium)
+
 # llama_context decompose
 
 - [Phase 45: Decompose llama_context](phases/60-llama-context-decompose/PHASE45.md)

@@ -119,8 +119,24 @@ UnchangedClipExtensions == UNCHANGED << encoder_output_ready, lm_consumed >>
 
 StartFFN(d, l) ==
     /\ compute_state[d, l] = "IDLE"
-    /\ \/ l = 0
-       \/ compute_state[d, l-1] = "DONE"
+    /\ \* Compute pipeline is independent of the reduce pipeline:
+       \* layer l+1's compute can start as soon as layer l's FFN is done,
+       \* WITHOUT waiting for layer l's reduce + consume. This is the
+       \* compute/transfer overlap pattern (P3 in PHASE46 §12.3) that
+       \* makes the B.7 perf gate (≤ 1.3× single-GPU baseline) achievable.
+       \*
+       \* Use IF/THEN/ELSE rather than \/ to guarantee TLC short-circuits
+       \* compute_state[d, l-1] when l = 0 (TLC 2026.05.18 fingerprint
+       \* failure observed otherwise).
+       \*
+       \* Diverges from AsyncReduce.tla's StartFFN, which required prev
+       \* DONE — that guard prevented the overlap the comment in
+       \* AsyncReduce.tla:84-85 promised. This spec resolves the
+       \* AsyncReduce inconsistency by aligning the guard with the
+       \* documented intent.
+       (IF l = 0 THEN TRUE
+        ELSE compute_state[d, l - 1] \in
+                {"FFN_DONE", "WAITING_REDUCE", "CONSUMING", "DONE"})
     /\ compute_state' = [compute_state EXCEPT ![d, l] = "COMPUTING_FFN"]
     /\ UNCHANGED << comm_state, evt_input_ready, evt_reduce_done, reduced >>
     /\ UnchangedClipExtensions
@@ -178,10 +194,16 @@ SignalReduceDone(d, l) ==
 \* CLIP-specific actions (extensions)
 \* ============================================================
 
-\* Signal that the encoder is done: every device's last layer is DONE.
+\* Signal that the encoder is done: every (device, layer) pair is DONE.
+\* NOT just the last layer — under the compute/transfer overlap pattern
+\* enabled by StartFFN's relaxed guard, layer N-1 can reach DONE before
+\* earlier layers do (compute pipeline ahead of reduce pipeline). The
+\* binding contract for downstream LM consumption is that the FULL
+\* encoder output is materialized, which requires every layer's reduce
+\* to have CONSUMED — i.e. every layer is DONE.
 SignalEncoderOutputReady ==
     /\ encoder_output_ready = FALSE
-    /\ \A d \in Devices : compute_state[d, N_LAYERS - 1] = "DONE"
+    /\ \A d \in Devices, l \in Layers : compute_state[d, l] = "DONE"
     /\ encoder_output_ready' = TRUE
     /\ UNCHANGED << compute_state, comm_state, evt_input_ready,
                     evt_reduce_done, reduced, lm_consumed >>
@@ -250,13 +272,14 @@ LivenessAllLayersComplete ==
 \* ============================================================
 
 \* SAFETY: encoder output ready only after every layer is DONE.
+\* (State invariant — no [] prefix; TLC's INVARIANTS clause wraps it.)
 EncoderReadyAfterAllLayers ==
-    [] (encoder_output_ready = TRUE =>
-          \A d \in Devices, l \in Layers: compute_state[d, l] = "DONE")
+    encoder_output_ready = TRUE =>
+        \A d \in Devices, l \in Layers: compute_state[d, l] = "DONE"
 
 \* SAFETY: LM never consumes before encoder ready.
 LMConsumesAfterReady ==
-    [] (lm_consumed = TRUE => encoder_output_ready = TRUE)
+    lm_consumed = TRUE => encoder_output_ready = TRUE
 
 \* LIVENESS: encoder eventually signals ready.
 EventuallyEncoderReady == <>(encoder_output_ready = TRUE)
@@ -292,12 +315,24 @@ EventuallyLMConsumes == <>(lm_consumed = TRUE)
 \* exactly the schedule pattern P3 forbids.
 
 FullOverlapUnderSaturation ==
-    [] \A d \in Devices, l \in (Layers \ {N_LAYERS - 1}):
-        (/\ comm_state[d, l] = "REDUCE_KERNEL"
-         /\ \/ l = 0
-            \/ compute_state[d, l - 1] = "DONE")
-        => compute_state[d, l + 1] \in
-                 {"COMPUTING_FFN","FFN_DONE","WAITING_REDUCE","CONSUMING","DONE"}
+    \A d \in Devices, l \in (Layers \ {N_LAYERS - 1}):
+        LET prereqs_ready ==
+                IF l = 0 THEN TRUE
+                ELSE compute_state[d, l - 1] \in
+                       {"FFN_DONE","WAITING_REDUCE","CONSUMING","DONE"}
+        IN  (/\ comm_state[d, l] = "REDUCE_KERNEL"
+             /\ compute_state[d, l + 1] = "IDLE"
+             /\ prereqs_ready)
+            => ENABLED StartFFN(d, l + 1)
+       \* Spec asserts overlap is PERMITTED (StartFFN ENABLED), not that
+       \* the schedule HAS fired it. Whether overlap actually occurs at
+       \* runtime is the empirical B.7 perf gate (PHASE46 §12.3 P7):
+       \* if encode latency exceeds 1.3× single-GPU baseline, the schedule
+       \* failed to overlap and Phase 46 stays OPEN.
+       \*
+       \* This is structurally the same form as AsyncReduce.tla's
+       \* OverlapPossible — kept here for the CLIP topology to make the
+       \* spec/B.7 division explicit.
 
 \* ============================================================
 \* DEADLOCK FREEDOM (inherited; restated to bind on this spec's Next)

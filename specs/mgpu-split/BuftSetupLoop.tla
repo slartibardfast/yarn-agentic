@@ -34,15 +34,13 @@
    operates against the populated config.
 *)
 
-EXTENDS Naturals, FiniteSets, Sequences, TLC
+EXTENDS Integers, FiniteSets, Sequences, TLC
 
 CONSTANTS
     NLayer,         \* total transformer layers
     NDevice,        \* number of participating devices
     IGpuStart,      \* first GPU-assigned layer index
     SplitMode,      \* "NONE" | "LAYER" | "ATTN" | "GRAPH"
-    Splits,         \* sequence [1..NDevice] of cumulative fractions
-                    \* in [0, 1], monotone non-decreasing, Splits[NDevice] = 1
     NGpuLayers,     \* layers requested on GPU (may exceed NLayer)
     MainGpu         \* index in 0..NDevice-1 of the main GPU
 
@@ -51,22 +49,32 @@ ASSUME
     /\ NDevice      \in Nat \ {0}
     /\ IGpuStart    \in 0..NLayer
     /\ SplitMode    \in {"NONE", "LAYER", "ATTN", "GRAPH"}
-    /\ Splits       \in [1..NDevice -> 0..NDevice]   \* discretized to ints over NDevice
     /\ NGpuLayers   \in Nat
     /\ MainGpu      \in 0..(NDevice - 1)
+
+\* Deterministic Splits abstraction. Real-world Splits values come from
+\* --tensor-split CLI parsing and satisfy MgpuSplitConfig.allium's
+\* @SplitsMonotonic / @SplitsNormalized. For the structural invariants
+\* this loop establishes, a linear identity (Splits[d] = d) is sufficient
+\* — only the upper_bound's monotonic-search property matters, not the
+\* exact ratio. Replacing this with a real --tensor-split value would
+\* require the broader proof environment from CreateSplitBalance.tla.
+Splits == [d \in 1..NDevice |-> d]
 
 \* Acceptable layer-device mappings: -1 sentinel = CPU; else 0..NDevice-1.
 LayerDevice == {-1} \cup (0..(NDevice - 1))
 
 \* "Buft kind" abstraction: split_buft is represented as a single
 \* opaque value SPLIT_BUFT; per-device offload bufts as OFFLOAD(d).
-\* The model does not care about byte-level alignment; only the
-\* identity of which kind was assigned.
-BuftKind == {"NIL"} \cup {[k |-> "OFFLOAD", d |-> d] : d \in 0..(NDevice - 1)}
-                    \cup {[k |-> "SPLIT"]}
+\* All values are records with identical keys to keep TLC's fingerprinting
+\* type-uniform — d is set to 0 for NIL and SPLIT and ignored when k # "OFFLOAD".
+BuftKind ==
+    {[k |-> "NIL",   d |-> 0],
+     [k |-> "SPLIT", d |-> 0]}
+    \cup {[k |-> "OFFLOAD", d |-> d] : d \in 0..(NDevice - 1)}
 
-NilBuft   == "NIL"
-SplitBuft == [k |-> "SPLIT"]
+NilBuft        == [k |-> "NIL",   d |-> 0]
+SplitBuft      == [k |-> "SPLIT", d |-> 0]
 OffloadBuft(d) == [k |-> "OFFLOAD", d |-> d]
 
 \* The pair stored in model.buft_layer[i]: { split, offload }.
@@ -166,8 +174,11 @@ LoopStep ==
                                               ELSE layer_device)
            assigned_offload ==
                IF SplitMode = "ATTN" /\ IGpuStart < NLayer THEN
-                   OffloadBuft(UpperBoundDevice((i - IGpuStart)
-                       \div MAX(1, NLayer - IGpuStart)))
+                   LET denom == IF (NLayer - IGpuStart) >= 1
+                                THEN (NLayer - IGpuStart)
+                                ELSE 1
+                   IN  OffloadBuft(UpperBoundDevice(
+                           (i - IGpuStart) \div denom))
                ELSE
                    layer_buft_offload
            assigned_split ==
@@ -210,8 +221,6 @@ Next ==
     \/ LoopExit
     \/ /\ pc = "done"
        /\ UNCHANGED vars   \* stutter at done
-
-MAX(a, b) == IF a >= b THEN a ELSE b
 
 Spec ==
     /\ Init
