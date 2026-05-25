@@ -225,18 +225,31 @@ The CUDA userspace (`libcudart.so`, `libnvcuvid.so`, etc.) and the NVIDIA kernel
 
 ### Service deploy procedure
 
-Concretely, deploying a fresh `llama-server` after a code change or toolchain shift is:
+**Always use `scripts/deploy-llama-server.sh`. Never `sudo install` the binary manually.**
 
-```
+The 2026-05-25 production wedge regressed twice after the supposed GGML_SCHED patch was "deployed" because the manual `sudo install` copied only the binary — `/opt/llm-server/lib/libggml.so` stayed stale from the previous build, and the runtime loaded the unpatched lib via `LD_LIBRARY_PATH` (set by the profile script) despite the binary's RUNPATH pointing at the build tree. The script is the canonical sequence; it installs binary + all `.so` files atomically, sha256-verifies the install against the build tree, refuses to deploy if the legacy `GGML_SCHED_MAX_SPLITS` assert string is still present in `libggml.so` (regression guard), restarts the service, and polls `/health` for liveness.
+
+End-to-end after a code change or toolchain shift:
+
+```bash
 cd /home/dconnolly/yarn-agentic/ik_llama.cpp
 cmake -B build -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-15   # only if pin not already set
 ninja -C build clean                                          # only after toolchain change
-cmake --build build -j --target llama-server
-sudo install -m 0755 -o root -g llm \
-    build/bin/llama-server /opt/llm-server/bin/llama-server
-sudo systemctl restart llama-server.service                   # OR: sudo reboot, after a CUDA upgrade
-curl -sS http://127.0.0.1:8080/health                         # verify
+cmake --build build -j --target llama-server                  # also produces libggml/libllama/libmtmd .so
+cd ..
+./scripts/deploy-llama-server.sh                              # OR: sudo reboot, after a CUDA upgrade
 ```
+
+The script will:
+
+1. Refuse to run if the build tree is incomplete (missing `.so` files).
+2. Atomically install `bin/llama-server` and `lib/{libggml,libllama,libmtmd}.so` to `/opt/llm-server/` with `root:llm` ownership.
+3. Verify post-install hashes match the build tree byte-for-byte.
+4. Verify the regression guard — refuse if `i_split < GGML_SCHED_MAX_SPLITS` still appears in the installed `libggml.so`.
+5. `systemctl restart llama-server.service` and wait up to 120 s for `/health` → 200.
+6. Print the running build's embedded `commit="..."` stamp for sanity.
+
+Non-zero exit on any check failure; no partial deploys.
 
 ---
 
