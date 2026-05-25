@@ -292,3 +292,120 @@ LoC at risk): this is on a different scale of structural impact.
   - [ ] CPU-vision fallback path still works (rollback drill)
 - [ ] Close: this PHASE doc updated with final implementation
       notes; MEMORY.md entry appended.
+
+## 11. Scope changes (2026-05-25 — pre-execution review)
+
+After §1–10 were written, a review identified four adjacent items
+that strengthen Phase 46 without changing its structural claim.
+Folded in here rather than rewritten into §4 so the original scoping
+decision stays visible in doc history.
+
+Budget impact: original ~105–125k tokens → revised **~125–150k
+tokens** (+20-25%). Justified per item below.
+
+### 11.1 — Baseline latency capture (precondition for §3 stretch #7)
+
+§3 stretch criterion 7 ("within 1.5× single-GPU baseline") is
+currently unverifiable: production is on CPU vision, so no
+single-GPU encode latency is on record. The Phase 35 work didn't
+pin it either.
+
+Action — *before* Step 1 lands:
+
+1. Stop the service.
+2. Temporarily flip the profile to single-device GPU vision at a
+   reduced image budget that fits on CUDA0 alone (suggest
+   `--image-max-tokens 256` and `--image-min-tokens 256` — small
+   enough to dodge the OOM that drove §1's headroom table).
+3. Send one vision request with `examples/mtmd/test-1.jpeg`.
+4. Record `mtmd: image encoded in N ms` from the journal.
+5. Restore the CPU-vision profile, restart.
+
+Acceptance: the recorded number is written into §6 as the reference
+for stretch criterion 7. Estimated **+3k tokens, ~10 min wallclock**.
+
+### 11.2 — CLI flag parity with `--tensor-split`
+
+Original plan routes config through `MTMD_BACKEND_DEVICE` and
+`MTMD_TENSOR_SPLIT` env vars because `clip.cpp` already parses the
+first. The LM uses CLI flags (`--tensor-split 1,1`,
+`--split-mode graph`). Add:
+
+- `--mmproj-devices CUDA0,CUDA1` — peer of `--tensor-split`'s
+  device-selection role.
+- `--mmproj-tensor-split 1,1` — peer of `--tensor-split` itself.
+
+Plumb in `common/common.cpp` → `common_params.mmproj_devices` /
+`mmproj_tensor_split`, then pass to clip.cpp during init.
+
+The two env vars stay as a zero-cost compat fallback (env-var route
+read only if the CLI flag is unset). Profile script and systemd
+drop-in migrate to flags at deploy time.
+
+Acceptance: `llama-server --help` lists both flags;
+`--mmproj-devices CUDA0,CUDA1 --mmproj-tensor-split 1,1` produces
+the same multi-backend init as the env-var route. Estimated
+**+30-50 LoC across `common/common.cpp` and `clip.cpp`, +8-13k
+tokens**.
+
+### 11.3 — Phase 35 §15.7 closure observation (free, passive)
+
+PHASE35-GRAPH-CACHE-REDESIGN.md §15.7 has one open closure
+criterion: capture at least one `evict_pressure` event under real
+workload. Phase 46's `verify-multigpu-clip.sh` will exercise large
+vision + LM graphs concurrently — exactly the load Step B was
+designed for.
+
+Add ~5 lines to `verify-multigpu-clip.sh`:
+
+```bash
+EVICT_BEFORE=$(journalctl -u llama-server.service --since="-1m" | grep -c "evict_pressure")
+# ... run vision encode ...
+EVICT_AFTER=$(journalctl -u llama-server.service --since="-1m" | grep -c "evict_pressure")
+echo "PHASE35 §15.7 observation: evict_pressure events during this run: $((EVICT_AFTER - EVICT_BEFORE))"
+```
+
+Acceptance: harness emits the count line. If ≥ 1, propagate to
+PHASE35 §15.7 closure with the journal entry. If 0 across the
+harness run, that's also a real signal (the 4096 MiB headroom may
+be too generous; potential follow-up but **not** a Phase 46
+blocker). Estimated **+2k tokens**.
+
+### 11.4 — Deploy-script regression guard for multi-backend path
+
+`scripts/deploy-llama-server.sh` already refuses to install a
+`libggml.so` containing the legacy `GGML_SCHED_MAX_SPLITS` assert
+string (CLAUDE.md §9). Add a symmetric guard for clip.cpp's
+multi-backend path:
+
+1. Step 1 emits a distinctive `LOG_INF` from the multi-backend
+   parse path — e.g. `clip_ctx: multi-backend init: N devices`.
+2. Deploy script does:
+   ```bash
+   if ! strings build/bin/llama-server | grep -q "multi-backend init"; then
+       echo "FATAL: build missing multi-backend CLIP — refusing to deploy" >&2
+       exit 1
+   fi
+   ```
+3. The check fires on the build-tree binary *before* the install
+   step, so a bad build can't reach `/opt/llm-server/`.
+
+Acceptance: deploy script refuses to install a `llama-server`
+binary that doesn't contain the multi-backend init string. The
+guard is opt-out-able with an explicit `--allow-no-mmproj-mgpu`
+flag for emergency rollback to a pre-Phase-46 binary. Estimated
+**+10-15 LoC in deploy script, +3k tokens**.
+
+### Checkboxes for §11
+
+- [ ] §11.1 — single-GPU baseline latency captured and pasted into §6
+- [ ] §11.2 — `--mmproj-devices` and `--mmproj-tensor-split` flags
+      implemented and tested
+  - [ ] `llama-server --help` lists both flags
+  - [ ] Env-var fallback still works (compat)
+- [ ] §11.3 — `verify-multigpu-clip.sh` emits `evict_pressure` event
+      count; if ≥ 1, PHASE35 §15.7 closed in the same commit
+- [ ] §11.4 — Deploy-script multi-backend regression guard landed
+      and verified by attempting to deploy a built-without-Step-1
+      binary (must refuse)
+
