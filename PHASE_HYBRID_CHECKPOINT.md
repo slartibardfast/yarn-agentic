@@ -130,7 +130,61 @@ Phase 2's diagnosis selects one of three sub-paths:
 
 ## 5. Diagnosis
 
-*[populated by Phase 2]*
+### 5.1 Static analysis (2026-05-25, no instrumentation yet)
+
+First pass: read the save (`src/llama.cpp:9461-9505`) and read (`:9946-10014`) blocks side-by-side, and trace the writer / reader subclasses.
+
+**The save and read paths are symmetric for the recurrent case.**
+
+- Both branch on `seq_id == -1` (full save / restore) vs `seq_id >= 0` (per-slot).
+- Both use `llama_kv_qnext_seq_id_in_range(transformer_kv, seq_id)` as the gate (defined at `:881`: `n_slots > 0 && seq_id >= 0 && seq_id < n_slots`).
+- Save (`:9494`) writes `s_rows * s_size_row` bytes from offset `src_seq_id * s_size_row`. Read (`:10006`) writes the same number of bytes to offset `s_dst_row * s_size_row`.
+- The recurrent-aware writer at `:10094` and reader at `:9721` both check `model.hparams.recurrent_layer_arr[il]` and route to recurrent-only multi-device split helpers when needed (`get_tensor_data_split` 4-arg variant on the write side; `read_kv_cache_data_split` with `is_recurrent=true` on the read side).
+
+**The one asymmetry** is that save reads from row `src_seq_id = cells[seq_id].src` (`:9489`), while read writes to row `seq_id` (`:9995`). For our production case this is harmless: `--parallel 1`, `seq_id=0`, and `cells[i].src` defaults to `0` (struct default at `src/llama-context.h:20`) or is explicitly set to `i` at several init / reset call sites (`:980, :2425, :2498, :2611, :7248`). So `src_seq_id == seq_id == 0` in steady state — the save reads row 0 and the read writes row 0. The asymmetry would only manifest if some prior `seq_cp` operation set `cells[0].src` to a different value, which doesn't happen under the current production launch flags.
+
+### 5.2 H1 (multi-seq blob bloat) is refuted
+
+Initial worry was that 149.6 MiB ≈ 3× the expected ~52 MB single-seq SSM-state math, suggesting a multi-seq leak despite `--parallel 1`. The 52 MB figure was wrong — it assumed a narrower element width. Recomputing with the actual element type:
+
+- `ssm.state_size = 128`, `ssm.inner_size = 6144`, `ssm.time_step_rank = 48`, `ssm.group_count = 16`, `ssm.conv_kernel = 4`.
+- `conv_state_dim = (4-1) × (2 × 128 × 16 + 6144) = 30 720` elements.
+- `ssm_state_dim = (6144 / 48)² × 48 = 128² × 48 = 786 432` elements.
+- `n_embd_v_s = 30 720 + 786 432 = 817 152` elements.
+- `s_l[il]->type = F32` (confirmed by element-size match): `817 152 × 4 = 3 268 608` bytes ≈ 3.12 MB per row.
+- `full_attention_interval = 4` → ~16 attention layers (with `s_l[il] == nullptr`, write headers only) + ~49 SSM layers (with 1 row of payload).
+- Total = `16 × 16 + 49 × 3.12 MB ≈ 153 MB` ≈ **observed 149.6 MiB.**
+
+So the blob is the **expected single-seq size**, not multi-seq bloat. H1 refuted. The 149.6 MiB is normal.
+
+### 5.3 Implications — the bug is downstream of the restore, not in it
+
+The restore log line (`restored context checkpoint took 46.31 ms`) is followed by `erased invalidated context checkpoint` lines and `kv cache rm [p0=2560, end)`, then `fragmentation: 0.52`, then a new `create_check 6 of 64`, then another `kv cache rm [p0=3072, end)` — and 13 s later, SIGSEGV. The restore *itself* runs to completion cleanly. The SEGV is in the **post-restore delta-prefill or first decode**, when the decoder consumes the (now-restored) `s_l[il]` state.
+
+Updated hypotheses, ranked:
+
+- **H3 (most likely now).** Per-step SSM buffer (`src/llama.cpp:2137-2175`, allocated post-`a69f19de` to fix the MTP+prefill abort) and the restored `s_l[il]` disagree about state-stride or per-step-allocated-count. The decoder dereferences the per-step view at a position that the restored state doesn't have valid data for.
+- **H5 (new).** `s_l[il]->extra` (the multi-device split tensor descriptor) is set when allocated via the per-device split path (`:1156`). Restore via `read_kv_cache_data_split` (`:9721`) iterates per-device. If the split layout at save time differs from restore time — e.g. one device was offline / the split count changed across a service restart — the restore would write to the right per-device tensors but the resulting per-device data layout would be inconsistent. Subsequent decode reads from the wrong device-slice.
+- **H4 (still possible).** `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY` semantics include the cell-table metadata in the blob (the early section of `write_kv_cache_data`), and the restore desynchronises if the cell array has been resized between save and restore.
+- **H2 (refuted for our case).** `n_slots` mismatch would be caught by the `s_size_row != s_size_row_ref` check at `:9978-9982` or the `s_rows_ref != s_rows` check at `:9999-10001`, both of which return false on mismatch and would log an error before any data corruption.
+
+### 5.4 Next step — targeted instrumentation
+
+Rather than wholesale `SLT_WRN` traces across all of save/read, the static analysis points at three high-value probe points:
+
+1. **Per-layer save/restore byte-equality check.** Add CRC32 over each layer's `s_rows * s_size_row` payload at write time; compute CRC at read time; log mismatch with `il`, `s_rows`, `s_size_row`. Confirms whether the bytes round-trip correctly per layer.
+2. **Pre-decode `s_l[il]` content check post-restore.** Hash the per-device split contents of `s_l[il]` immediately after `apply_checkpoint` completes, again before the first decode batch is committed. Confirms whether the restored state survives the intervening `kv cache rm` + `create_check` operations or whether something rewrites it in-between.
+3. **Per-step SSM buffer sanity at the SEGV site.** `src/llama.cpp:2137-2175` allocates per-step SSM views. Log their shape / device / size on the first decode call after a restore. Cross-reference against `s_l[il]` shape.
+
+(1) and (2) are tractable code changes in `llama_data_write_buffer::write_tensor_data` and `read_kv_cache_data` respectively (+ a small hash helper). (3) is a print-statement at the per-step buffer allocation site.
+
+### 5.5 Instrumentation plan
+
+- New branch in the `ik_llama.cpp` submodule: `dev/2026-q2-hybrid-ckpt-trace` off `production/2026-q2-next`.
+- Separate build tree at `ik_llama.cpp/build-dev/` so production builds stay clean (same `-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-15` toolchain pin per CLAUDE.md §9).
+- Instrumented binary at `ik_llama.cpp/build-dev/bin/llama-server-dev` (the `cmake --build` target stays `llama-server` but the build-dev tree is segregated; the dev binary is **not** installed to `/opt/llm-server/`).
+- Run binding test against `127.0.0.1:8081` (the dev binary listens on a different port so production on `:8080` stays untouched).
+- Production stays on Phase 1 throughout Phase 2.
 
 ## 6. Verification — end-to-end binding test script
 
