@@ -123,6 +123,10 @@
 - [GGML scheduler: adopt upstream dynamic-splits policy (2026-05-25 prod assert)](PHASE_GGML_SCHED_DYNSPLITS.md)
 - [Hybrid/recurrent checkpoint: stabilise → diagnose → decide (2026-05-25 prod SEGV)](PHASE_HYBRID_CHECKPOINT.md)
 
+# Multimodal
+
+- [Phase 46: Multi-GPU CLIP via tensor-split](phases/80-multimodal/PHASE46-MULTIGPU-CLIP-TENSOR-SPLIT.md)
+
 # llama_context decompose
 
 - [Phase 45: Decompose llama_context](phases/60-llama-context-decompose/PHASE45.md)
