@@ -10161,3 +10161,58 @@ Code (ik_llama.cpp):
 
 Plan doc: `docs/phases/80-multimodal/PHASE46-MULTIGPU-CLIP-TENSOR-SPLIT.md`
 (§10 reflects all checkboxes; §12 holds the design pivot rationale).
+
+## 2026-05-25 — Phase 46 closables landed; empirical gates remain
+
+After the previous "code-complete" entry, drove the closables that
+don't require a maintenance window:
+
+**§11.4 deploy-script regression guard** (commit `149ad76`):
+`scripts/deploy-llama-server.sh` now refuses to install a build that
+lacks the Phase-46 multi-backend path. Two byte-level checks before
+install:
+- `strings $BUILD/examples/mtmd/libmtmd.so | grep 'multi-backend init'`
+- `nm -D --defined-only $BUILD/ggml/src/libggml.so | grep ggml_mgpu_create_split`
+`--allow-no-mmproj-mgpu` opt-out flag for emergency rollback. Both
+guards verified to pass on the current build tree.
+
+**§11.3 verify-multigpu-clip.sh harness** (commit `b347398`): the
+shared B.7 perf-gate driver. Maintenance-window script — refuses to
+run unless `llama-server.service` is stopped. Boots the dev binary
+with the new `--mmproj-*` CLI flags, verifies the "multi-backend init"
+log line fires, sends one 1024-token vision encode against
+`examples/mtmd/test-1.jpeg`, captures wall time + clip-side encode
+latency, counts `evict_pressure` events before/after (PHASE35 §15.7
+closure observation), and asserts a non-empty assistant response.
+Per-run artifacts under `/tmp/phase46-multigpu-clip/$RUN_ID/`.
+
+**B.5 spec tests** (submodule `ef7c41a4`):
+- `tests/spec/test-clip-multi-backend-init.cpp` GREEN (9 cases — comma
+  parsing, whitespace trim, dedup, peer-access fail-closed)
+- `tests/spec/test-clip-weight-split.cpp` GREEN (8 cases —
+  is_splittable predicate, exhaustive partition, size monotonicity)
+- `tests/spec/test-clip-encode-equivalence.cpp` built, SKIP-77 until
+  harness produces `/tmp/phase46-multigpu-clip/equivalence.json`
+- `tests/spec/test-clip-encode-latency.cpp` built, SKIP-77 until
+  harness produces `/tmp/phase46-multigpu-clip/latency.json`. HARD
+  gate: `median_ms <= 1.3 * baseline_ms`. SOFT (warn-only):
+  `p95_ms <= 1.5x`.
+
+All four tests build clean; CTest `SKIP_RETURN_CODE 77` keeps the
+regression suite green on dev hosts without harness output.
+
+**PHASE46 checkbox update** (commit `af9bce0`): §11.2 marked done,
+§11.4 marked done, §11.3/§11.5 marked partial, B.5/B.7 sub-tests
+pinned to commit refs. Open empirical work: §11.1 baseline,
+B.6 LM gate re-cert, B.7 perf gate, B.8 rollout — all gated on a
+maintenance window.
+
+**Held items unchanged from previous entry:**
+- 9 submodule commits (`f2704241..ef7c41a4`) on
+  `production/2026-q2-next`, pending user push authorization per
+  CLAUDE.md (never push submodule fork without auth).
+- `.github/workflows/spec-tla-gate.yml` working-tree modification
+  pending workflow-scoped token.
+
+Phase 46 status: code-complete + all autonomous closables landed.
+Closure now binds entirely on maintenance-window empirical gates.
