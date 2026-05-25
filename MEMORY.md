@@ -9572,3 +9572,90 @@ landed the correction.
 See also [[2026-05-19 — TU102 specialization ranking]] for the original
 (now corrected) framing.
 
+
+
+## 2026-05-25 — production wedge: stale GGML_SCHED_MAX_SPLITS assert defeats the ik fork's own dynamic-splits machinery
+
+**What happened.** `llama-server.service` on host `xeon` (qwen3.6-27b
+np=1 vanilla profile, MainPID 59875, started 2026-05-24 22:31:07 UTC)
+entered a "listening-but-not-serving" state at 2026-05-25 07:52:46 UTC.
+Symptoms: `/health` and `/slots` time out 10 s+, all
+`/v1/chat/completions` requests return `status=200` with immediate
+`srv stop: cancel task` (HTTP layer ACKs, no tokens produced), GPU
+utilization 0 % despite model resident (~23 GiB across 2× RTX 6000),
+and systemd reports `active (running)` because the process is still
+alive. `Restart=on-failure` does not fire on a wedge that doesn't exit.
+
+**Root cause.** The journal at the failure timestamp:
+`fragmentation: 0.94` followed by
+`/home/dconnolly/yarn-agentic/ik_llama.cpp/ggml/src/ggml-backend.cpp:1768: GGML_ASSERT(i_split < GGML_SCHED_MAX_SPLITS) failed`.
+The trigger was a short "hi" prompt routed through the prompt-cache
+restore path against a saved 8997-token cache with `f_keep: 0.00,
+cache_ram_similarity: 0.50`. The `apply_checkp` + `erased invalidated
+context checkpoint` + `kv cache rm [p0=512, end)` sequence drove KV
+fragmentation to 0.94. Healthy unfragmented split count for this model
+is 387 (from `llama_init_from_model: graph splits = 387` at boot) — the
+fragmentation produced a 10×+ multiplier and overran the compile-time
+cap of 4096.
+
+**The kicker.** The ik fork already carries upstream PR #9047's
+dynamic-splits machinery — `splits_capacity` field exists in struct
+(line 1160), `initial_splits_capacity = 16` is set in
+`ggml_backend_sched_new` (line 2467), and the realloc-on-grow loop is
+wired up correctly at lines 1762-1766. The legacy assert at line 1768
+fires **after** the realloc has already successfully expanded the
+array. Someone partially backported PR #9047 and left the legacy assert
+in place; it has defeated the entire mechanism since.
+
+**Fix (commit `252217d8` in `ik_llama.cpp` submodule on
+`production/2026-q2-next`).** Three-line surgical patch matching
+upstream PR #9047 verbatim: delete the stale assert at line 1768, and
+switch `nodes_size` (line 2451) and `context_buffer_size` (line 2457)
+to use a `graph_size`-derived local instead of the constant. The
+`#define GGML_SCHED_MAX_SPLITS 4096` macro is intentionally left in
+place — its only remaining user is the `// debug only` `causes[]`
+static array at line 1277, gated behind `GGML_SCHED_DEBUG=1`. Cleaning
+that up (matching upstream's `#if 0` / `GGML_SCHED_MAX_SPLITS_DEBUG`
+pattern) is a separate follow-up.
+
+**Why not bump 4096 → 32768 instead.** A larger constant is a band-aid
+that re-occurs the moment a more fragmented graph or a bigger model
+appears. The upstream policy is the architectural fix. The dynamic
+machinery is already present in the fork — the constant is the only
+thing standing in its way. The minimal change that activates the
+machinery is also the architecturally correct one. Memory cost
+difference is negligible on a 128 GiB host. Both options are cheap;
+one is right.
+
+**How to apply going forward.**
+
+- **Investigate before bumping a "size" constant.** If a `MAX_FOO`
+  define is hit, first check whether the same file already has the
+  dynamic-replacement code patched in but ungated. The ik fork has at
+  least one prior example of this pattern (PR partially applied, legacy
+  cap left in place) — search for `GGML_ASSERT(.* < .*MAX)` near
+  `realloc(...capacity * 2)` constructs.
+- **`Restart=on-failure` does not catch a wedge that doesn't exit.**
+  If a long-running service can enter a state where it accepts TCP but
+  returns immediately-cancelled responses, the unit needs a separate
+  health-probe-driven restart (timer + curl), or `Type=notify` +
+  `WatchdogSec=` if the binary supports `sd_notify`. Tracked as
+  follow-up §T5 in `PHASE_GGML_SCHED_DYNSPLITS.md`.
+- **Prompt-cache restore against a high-fragmentation cache is the
+  forcing function.** Long idle + saved fat cache + dissimilar short
+  prompt is the sequence that triggers worst-case fragmentation. If
+  fragmentation > ~0.9 is observed, evict and rebuild rather than
+  attempting `apply_checkp`. Not patched yet.
+
+**Companion files.**
+- This phase doc: `PHASE_GGML_SCHED_DYNSPLITS.md` (commit `c6f6532` in
+  yarn-agentic — pushed once GitHub recovers from a transient 500).
+- Submodule patch: `252217d8` in `ik_llama.cpp` on
+  `production/2026-q2-next`. Committed locally; not pushed (user owns
+  upstream destination).
+- Upstream reference: PR #9047 in `ggml-org/llama.cpp`.
+- Service evidence: `journalctl -u llama-server.service` on host `xeon`
+  for the window 2026-05-24 22:31 → 2026-05-25 08:34 UTC.
+
+See also [[2026-05-24 — qwen3.6-27b is non-MoE Mamba-2+attention hybrid]]
+for the model architecture the assert was triggered on.
