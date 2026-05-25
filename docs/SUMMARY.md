@@ -118,6 +118,10 @@
 
 - [Phase 35: CUDA graph cache redesign — test-first plan](phases/40-graph-cache/PHASE35-GRAPH-CACHE-REDESIGN.md)
 
+# Scheduler stability
+
+- [GGML scheduler: adopt upstream dynamic-splits policy (2026-05-25 prod assert)](PHASE_GGML_SCHED_DYNSPLITS.md)
+
 # llama_context decompose
 
 - [Phase 45: Decompose llama_context](phases/60-llama-context-decompose/PHASE45.md)
