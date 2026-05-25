@@ -9659,3 +9659,104 @@ one is right.
 
 See also [[2026-05-24 — qwen3.6-27b is non-MoE Mamba-2+attention hybrid]]
 for the model architecture the assert was triggered on.
+
+
+## 2026-05-25 — Hybrid checkpoint restore Phase 1: disable restore for recurrent models (SEGV mitigation)
+
+**What happened.** Today's GGML_SCHED_MAX_SPLITS fix (commit `4515818` + ik
+submodule `252217d8`) unblocked the assert-driven wedge. The very next
+binding test surfaced a second, distinct bug: `apply_checkpoint()`
+"succeeded" (journal: `restored context checkpoint took 46.31 ms
+(pos_min = 2559, pos_max = 2559)`), then the service SIGSEGV'd (signal
+11, core-dump, systemd `Restart=on-failure` restart-counter increment)
+~13 s later during the post-restore delta-prefill + decode. Same
+qwen35 Mamba2+attention hybrid (Qwen 3.6 27B).
+
+**The saved blob is 149.6 MiB** — roughly 3× the expected single-seq
+SSM-state math (~52 MB for 64 SSM layers × ~817 KB per layer at
+`--parallel 1`). Strong hint at a multi-seq / sizing mismatch on save
+vs restore that the in-place validity check at
+`server-context.cpp:3514-3517` cannot detect; the restore "succeeds"
+structurally then the decoder dereferences garbage.
+
+**Orphan audit before fixing.** User pushed back on the first plan
+(wholesale adopt upstream `llama_memory_hybrid`). Three Explore
+agents enumerated every ik-local work-stream touching `llama_kv_cache`,
+`s_l`, the `seq_*` operations, `find_slot`, `server_slot`, and the
+server's checkpoint paths. Verdict: ~1500-2000 LoC at risk —
+`find_slot` multi-seq allocator (`src/llama.cpp:1504-1700`), all 7
+`llama_kv_cache_seq_*` ops (`:2447-2750`), T3.5 split_equal dispatch
+(`server-context.cpp:4680-4900`), K/V view offset formula at 40+ build
+sites, per-stream split tracking (`split_k_l[]`, `split_v_l[]`,
+`split_s_l[]` — no analog in upstream's hierarchy), DFlash spec_ckpt
+machinery, paged KV allocator. Five gate-binding tests would need
+re-certification: G3.a NPC, G3.c Bug C, `test-n-stream-kv-layout`,
+Phase 45 D10.a/e. Phase 45 D9.6d has *already* extracted `s_l` from
+`llama_context` onto `llama_decoder` (+29.76 % perf); D9.6g renamed
+`kv_self` → `transformer_kv` (+30.37 %) — the codebase is already
+moving toward a hybrid-memory split under its own roadmap.
+
+**Phase 1 patch (commit `ee43c323` in `ik_llama.cpp` submodule).** The
+validity lambda's `has_recurrent` branch at
+`server-context.cpp:3514-3528` now returns `false` unconditionally —
+forces the safe `do_reset = true` branch at line 3548
+(`no usable hybrid/recurrent checkpoint; forcing full prompt
+re-processing`) which the fork already implements correctly. Effect:
+every chat follow-up on hybrid models full-reprefills. Slow but
+**safe** — no SEGV. Phase 45 D9.6d's extracted-to-decoder `s_l` is
+untouched. No conflicts with N-stream, T-series, MTP, DFlash, Vulkan.
+
+**Verification (post-deploy 2026-05-25 11:50 UTC).** Same 2-turn
+binding test that crashed earlier: turn 1 OK (215 t/s prefill), turn 2
+OK (224 t/s, journal logs the safe fallback message), no GGML_ASSERT,
+no SEGV, MainPID unchanged across the test.
+
+**How to apply going forward.**
+
+- **The hybrid-model post-restore SEGV is now mitigated, not fixed.**
+  Production is stable on the Phase 1 patch but every chat follow-up
+  full-reprefills. On a 30 k-token shared-prefix chat with OpenCode,
+  that's ~5 min per turn. The proper fix is Phase 3 of
+  `PHASE_HYBRID_CHECKPOINT.md`, decision-gated by the Phase 2
+  diagnosis (instrumented `llama-server-dev` binary, CRC32 over the
+  s_l payload, byte-compare save vs restore, core-dump SEGV stack).
+- **Phase 2's hypotheses** are H1 multi-seq blob sizing mismatch, H2
+  `n_slots`-shape mismatch on restore, H3 per-step SSM buffer vs
+  checkpoint disagreement (recent `a69f19de` commit's territory),
+  H4 `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY` includes unexpected header
+  data. Phase 3 sub-path (3a targeted patch / 3b Phase-45 D9.6h
+  extension / 3c last-resort upstream backport) is chosen by H1/H2/
+  H3/H4's outcome.
+- **Do not assume `apply_checkpoint()` validity-lambda success means
+  the decoded follow-up will be safe.** The lambda only checks
+  positional invariants; the SSM state's structural compatibility is
+  not verified. This is exactly the failure mode that bit production.
+
+**Deploy hardening that landed alongside Phase 1.**
+
+- `scripts/deploy-llama-server.sh` now manages a systemd drop-in at
+  `/etc/systemd/system/llama-server.service.d/00-lib-path.conf` with
+  `Environment=LD_LIBRARY_PATH=/opt/llm-server/lib`. The loader checks
+  LD_LIBRARY_PATH before the binary's `DT_RUNPATH` (which still points
+  at the dconnolly build tree because `install -m 0755` doesn't
+  rewrite ELF). Idempotent. Without this drop-in, the installed
+  binary at `/opt/llm-server/bin/llama-server` resolves libs from
+  the build tree, which silently works while both paths hold identical
+  bytes and breaks the moment they diverge (this morning's incident).
+- `CLAUDE.md §9` documents the test vs production binary behavior:
+  build-tree binary uses build paths for tests; installed binary
+  uses LD_LIBRARY_PATH for production. The patchelf-based "self-
+  contained binary" alternative is documented but not used.
+
+**Companion files.**
+
+- This phase doc: `PHASE_HYBRID_CHECKPOINT.md` (commit `166f48c`).
+- Submodule patch: `ee43c323` in `ik_llama.cpp` on
+  `production/2026-q2-next`; submodule pointer bumped in top-level
+  commit `1a2fb86`.
+- Deploy + CLAUDE.md §9 hardening: commit `032131c`.
+- Layer 1 (closed today): `PHASE_GGML_SCHED_DYNSPLITS.md`.
+
+See also [[2026-05-25 — GGML_SCHED_MAX_SPLITS production wedge +
+dynamic-splits adoption]] for the Layer 1 fix that surfaced this
+Layer 2 bug.
