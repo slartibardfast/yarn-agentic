@@ -246,6 +246,46 @@ Next instrumentation iteration should target the defrag path:
 
 Probe #4 is the path to a concrete fix. Probe #1.5 is now optional given the defrag-path discovery.
 
+### 5.9 Option A fix shipped (2026-05-25 13:07 UTC) — Phase 2 closed
+
+Option A landed in three submodule commits on `production/2026-q2-next`:
+
+- **`11ffe5b7`** — Add `bool skip_next_defrag` to `llama_kv_cache` (header), set in `llama_state_seq_set_data_internal` after `read_kv_cache`, check + clear in the defrag-trigger block at `src/llama.cpp:6703`.
+- **`9fd2875c`** — Revert Phase 1's `return false` in `apply_checkpoint`'s `has_recurrent` validity lambda. Restoration is safe now that defrag is fenced.
+- **`d67da398`** — Also clear `do_defrag = false` at the restore site. The half-fix (skip_next_defrag alone) reproduced the SEGV in production binding because a defrag queued at the END of turn 1 (`fragmentation: 0.15` → `do_defrag = true`) survived the restore and was consumed by the first post-restore decode call. Same SEGV stack as the original. Clearing the queued flag at restore closes the gap.
+
+Top-level pointer bumped in commit `9bf1490`.
+
+**Production binding test (build 4801 commit d67da398, 2026-05-25 13:07 UTC):**
+
+```
+turn 1   elapsed 6 s   1202 prompt tokens   210 t/s prefill   cached_tokens=0
+turn 2   elapsed 1 s   1207 prompt tokens   221 t/s prefill   cached_tokens=1024 ←
+```
+
+Turn 2's `cached_tokens: 1024` is the proof — checkpoint at `pos_max=1023` was restored, only 183 fresh tokens were re-prefilled. Journal:
+
+```
+apply_checkp: restored context checkpoint took 61.42 ms (pos_min=1023, pos_max=1023)
+apply_checkp: erased invalidated context checkpoint (pos_min=1202, pos_max=1202)
+defrag suspended for one decode batch (post-restore)        ← skip_next_defrag fired
+fragmentation: 0.53                                          ← next batch re-queued, executes safely
+prompt eval time = 826.21 ms / 183 tokens (221 t/s)
+       eval time =  50.79 ms /   2 tokens (39 t/s)
+```
+
+MainPID 12869 unchanged across both turns. No `GGML_ASSERT`, no `SEGV`, no cancel-task.
+
+**Phase 2 binding closure** (the original §5.5 instrumentation plan): Probe #1 captured the byte fingerprints, refuted H1, and was sufficient to trigger the SEGV under instrumentation; the **coredumpctl stack** then identified the actual fault site (`build_defrag → ggml_view_3d`) which made Probe #4 unnecessary. Total Phase 2 wall-clock from start to fix: ~90 min.
+
+### 5.10 Phase 3 decision — 3a delivered, no further phases required
+
+The user's original §4 plan listed three Phase 3 sub-paths (3a targeted in-place patch, 3b Phase-45-aligned `llama_decoder::recurrent_state_save/restore` split, 3c upstream `llama_memory_hybrid` backport). The Phase 2 diagnosis localised the bug to defrag-trigger queueing around the restore — outside the recurrent memory ownership boundary — so 3a was the correct sub-path. 3b and 3c would have been overkill and would have orphaned ~1500-2000 LoC of ik-local work (per the audit in §2).
+
+Phase 3a is shipped at `d67da398`. **Phase 3b and 3c are not required**; the orphan audit findings stand as a record of why the smaller fix was the right one. If future architectural cleanup wants to revisit the `s_l` ownership boundary (e.g., as part of Phase 45 D9.8 — migrating remaining `llama_context` fields to `llama_session`), the defrag fence can be revisited at that time.
+
+**Status**: PHASE_HYBRID_CHECKPOINT closed 2026-05-25. Production stable on `build=4801 commit="d67da398"` with hybrid checkpoint restoration enabled.
+
 ## 6. Verification — end-to-end binding test script
 
 `scripts/verify-hybrid-checkpoint.sh` exercises all phases. Exit criterion of this PHASE doc is that the script passes after Phase 3 (whichever sub-path lands).
