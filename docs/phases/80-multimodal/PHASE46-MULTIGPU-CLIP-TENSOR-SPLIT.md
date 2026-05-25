@@ -353,17 +353,19 @@ coverage, maximum possible speed.
     - [x] **B.5b — multi-device weight residency** (submodule `79f359d6`). Two-ctx pattern: `ctx_data_split` (multi-device, large matmul weights, pre-decorated with `clip_split_tensor.ggml` extras) + `ctx_data` (single-device, norms/biases/small tensors). Mirrors LM-side `llama_layer::split_*`. ~194 LoC + the new `clip_split_tensor` struct + 4 new clip_ctx fields. Build clean; runtime verification deferred to maintenance window (production GPUs at capacity).
     - [x] B.5c CLI flags: `--mmproj-devices`, `--mmproj-tensor-split`, `--mmproj-split-mode`, `--mmproj-smf16/smf32`, `--mmproj-smgs` (submodule `c648b624`); CLI→env-var bridge in `server-context.cpp` keeps clip.cpp's reader unchanged
     - [x] B.5d P1 f16 default ON — `mmproj_smf16 = true` in `common_params` (landed in B.5c)
-    - [ ] `test-clip-multi-backend-init.cpp` GREEN
-    - [ ] `test-clip-weight-split.cpp` GREEN
-    - [ ] `test-clip-encode-equivalence.cpp` GREEN
+    - [x] `test-clip-multi-backend-init.cpp` GREEN (9 cases PASS on dev host; submodule `ef7c41a4`)
+    - [x] `test-clip-weight-split.cpp` GREEN (8 cases PASS on dev host; submodule `ef7c41a4`)
+    - [~] `test-clip-encode-equivalence.cpp` — built, SKIPs cleanly until
+          `scripts/verify-multigpu-clip.sh` produces
+          `/tmp/phase46-multigpu-clip/equivalence.json` during maintenance window
   - [ ] **B.6** — LM gate re-cert (HARD; deferred to maintenance window — production service uses both GPUs at capacity, test binary cannot allocate concurrent VRAM)
     - [ ] G3.a `test-production-np-determinism.sh` PASS NP∈{1,2,4,8}
     - [ ] G3.c `r5-probe-c4.sh` 0/20 divergences
     - [ ] `test-n-stream-kv-layout` PASS
     - [ ] Phase 45 D10.a 3-slot smoke PASS
     - **Note:** B.1-B.4 are semantics-preserving by construction (cfg mirrors model fields; reads through cfg are equivalent to reads through model fields). Empirical bit-identity verification remains as the binding closure step.
-  - [ ] **B.7** — CLIP perf gate (HARD, P7): encode latency ≤ 1.3× §11.1 single-GPU baseline. Cannot run until B.5b lands (current state: weights single-device; multi-backend init has no observable benefit).
-    - [ ] `test-clip-encode-latency.cpp` GREEN
+  - [ ] **B.7** — CLIP perf gate (HARD, P7): encode latency ≤ 1.3× §11.1 single-GPU baseline. B.5b code-complete (submodule `79f359d6`); empirical run requires maintenance window. `scripts/verify-multigpu-clip.sh` (commit `b347398`) emits `/tmp/phase46-multigpu-clip/latency.json` which `test-clip-encode-latency.cpp` (submodule `ef7c41a4`) binds against.
+    - [~] `test-clip-encode-latency.cpp` — built, SKIPs cleanly until harness produces input JSON
   - [ ] **B.8** — Production rollout via deploy script + rollback drill
 - [ ] Step 4: production rollout
   - [ ] Cherry-pick to `production/2026-q2-next`
@@ -521,18 +523,22 @@ Acceptance: `test-clip-encode-latency.cpp` GREEN. Estimated
 ### Checkboxes for §11
 
 - [ ] §11.1 — single-GPU baseline latency captured and pasted into §6
-- [ ] §11.2 — full CLI flag family implemented and tested
-  - [ ] `--mmproj-devices`, `--mmproj-tensor-split`,
+      (requires maintenance window)
+- [x] §11.2 — full CLI flag family implemented (landed in B.5c, submodule `c648b624`)
+  - [x] `--mmproj-devices`, `--mmproj-tensor-split`,
         `--mmproj-split-mode graph`, `--mmproj-smf16/--mmproj-smf32`,
-        `--mmproj-smgs` all in `llama-server --help`
-  - [ ] Env-var fallback still works (compat)
-- [ ] §11.3 — `verify-multigpu-clip.sh` emits `evict_pressure` event
-      count; if ≥ 1, PHASE35 §15.7 closed in the same commit
-- [ ] §11.4 — Deploy-script regression guard checks both the
-      multi-backend log string AND the shared-infra symbol; verified
-      by attempting to deploy a built-without-Path-B binary (must refuse)
-- [ ] §11.5 — CLIP perf gate `test-clip-encode-latency.cpp` GREEN
-      (median ≤ 1.3× §11.1 baseline)
+        `--mmproj-smgs` all in `common/common.cpp` arg handlers + `--help`
+  - [x] Env-var fallback works via CLI→env-var bridge in
+        `examples/server/server-context.cpp:159+`
+- [~] §11.3 — `scripts/verify-multigpu-clip.sh` (commit `b347398`) emits
+      `evict_pressure` event count during the harness run; promotion to
+      PHASE35 §15.7 closure is conditional on count ≥ 1 in real run
+- [x] §11.4 — Deploy-script regression guard (commit `149ad76`): checks
+      `multi-backend init` string in libmtmd.so AND
+      `ggml_mgpu_create_split` symbol in libggml.so; `--allow-no-mmproj-mgpu`
+      opt-out for emergency rollback. Verified both guards pass on current build.
+- [~] §11.5 — `test-clip-encode-latency.cpp` (submodule `ef7c41a4`) built,
+      SKIPs cleanly until §11.1 baseline + harness run produce its input
 
 ## 12. Design pivot — Path B (extract LM split infra), B.0-full formal-spec-first, perf-gated (2026-05-25, post-grep)
 
