@@ -350,7 +350,7 @@ coverage, maximum possible speed.
   - [~] **B.5** — partial (submodule `ba186fdb` for part 1)
     - [x] Multi-backend init from comma-separated `MTMD_BACKEND_DEVICE`
     - [x] P2 peer-access gate (`ggml_backend_cuda_can_access_peer`) — refuses to start on failure
-    - [ ] **B.5b — multi-device weight residency** (OPEN). Requires per-tensor `ggml_split_tensor_t` decoration on mmproj weights before `alloc_ctx_tensors_from_buft` at `clip.cpp:3804`. Mirrors the LM-side `llama_layer::split_*` pattern at `llama-model.h:201-210` and the per-arch `prepare_split_tensors` calls at `llama-load-tensors.cpp:3931+`. Estimated ~80-150 LoC plus clip-model-struct additions. **Phase 46 closure binds on this.**
+    - [x] **B.5b — multi-device weight residency** (submodule `79f359d6`). Two-ctx pattern: `ctx_data_split` (multi-device, large matmul weights, pre-decorated with `clip_split_tensor.ggml` extras) + `ctx_data` (single-device, norms/biases/small tensors). Mirrors LM-side `llama_layer::split_*`. ~194 LoC + the new `clip_split_tensor` struct + 4 new clip_ctx fields. Build clean; runtime verification deferred to maintenance window (production GPUs at capacity).
     - [ ] B.5c CLI flags: `--mmproj-devices`, `--mmproj-tensor-split`, `--mmproj-split-mode`, `--mmproj-smf16/smf32`, `--mmproj-smgs`
     - [ ] B.5d P1 f16 cross-device exchange default
     - [ ] `test-clip-multi-backend-init.cpp` GREEN
