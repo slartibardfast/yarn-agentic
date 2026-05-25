@@ -9760,3 +9760,99 @@ no SEGV, MainPID unchanged across the test.
 See also [[2026-05-25 — GGML_SCHED_MAX_SPLITS production wedge +
 dynamic-splits adoption]] for the Layer 1 fix that surfaced this
 Layer 2 bug.
+
+
+## 2026-05-25 — Hybrid checkpoint Phase 2: SEGV is in defrag, not restore (Option A defrag fence)
+
+**Diagnosis flipped the model.** Phase 1 (commit `ee43c323` in ik
+fork) disabled hybrid checkpoint restoration as a safety patch under
+the assumption that the restore itself, or the post-restore decode's
+consumption of `s_l`, was the structural problem. **It wasn't.**
+Phase 2 instrumentation (PROBE1 byte fingerprint on every s_l save
+and read) showed the restore completes cleanly — all 48 SSM-layer
+PROBE1-R entries fired before the crash — and `coredumpctl` then
+pinned the actual fault site to
+`ggml_new_tensor_impl ← ggml_view_3d ← llm_build_context::build_defrag ← llama_kv_cache_update`.
+
+The bug is in the **KV-cache defragmentation graph builder**, triggered
+on the FIRST decode call after a restore + erased-invalidated-checkpoint
++ `kv_cache_seq_rm` + fragmentation-threshold-cross sequence. The
+restore puts the cells/`->extra` layout in a state `build_defrag`
+can't walk over for one batch; one batch later, the descriptors settle
+and defrag would run fine.
+
+**Option A — defrag fence around restore.** Three commits on the
+ik fork's `production/2026-q2-next`:
+
+- `11ffe5b7` — add `bool skip_next_defrag` to `llama_kv_cache` (in
+  `src/llama-context.h`); set in `llama_state_seq_set_data_internal`
+  after `read_kv_cache`; check + clear in the defrag-trigger block at
+  the end of `llama_decode_internal` (`src/llama.cpp:6703`).
+
+- `9fd2875c` — revert Phase 1's `return false` in
+  `apply_checkpoint`'s `has_recurrent` validity lambda. Restoration
+  is safe now that defrag is fenced.
+
+- `d67da398` — **also clear `do_defrag = false`** at the restore site.
+  The first production-binding test of just-skip_next_defrag still
+  SEGV'd because a defrag queued at the END of turn 1
+  (`fragmentation: 0.15` → `do_defrag = true`) survived the restore
+  and was consumed by the first post-restore decode call. Same SEGV
+  stack as the original. Clearing the queued flag at restore closes
+  the gap. **Without this third commit, Option A is incomplete.**
+
+Top-level pointer bumped in `9bf1490`. Production deployed via
+`scripts/deploy-llama-server.sh` at 2026-05-25 13:07 UTC on
+`build=4801 commit="d67da398"`.
+
+**Verification numbers** (production binding test, 2026-05-25):
+
+- turn 1: 1202 prompt tokens, prefill 210 t/s, total 6 s
+- turn 2: 1207 prompt tokens, `cached_tokens=1024`, only 183 fresh
+  prefill at 221 t/s, total **1 s**
+- journal: `restored context checkpoint took 61.42 ms (pos_min=1023)`
+- journal: `defrag suspended for one decode batch (post-restore)`
+- journal: `fragmentation: 0.53` then defrag re-queued, executes safely
+  next batch (the cells have settled by then)
+- no `GGML_ASSERT`, no `SEGV`, MainPID 12869 unchanged across both turns
+
+**Phase 3 — 3a delivered, 3b/3c not needed.** The PHASE doc §2 orphan
+audit (1500-2000 LoC at risk under wholesale `llama_memory_hybrid`
+backport) made wholesale adoption the wrong tool for a bug that
+turned out to be localised to ~10 lines around the defrag trigger.
+The audit findings remain valid as a record of what we'd have
+needed to preserve had Phase 2's diagnosis pointed deeper.
+
+**How to apply going forward.**
+
+- **The right diagnostic order is: instrumentation, then assume.**
+  We spent a turn assuming the SSM state ownership was the bug
+  (Phase 3b/3c) and almost wrote up a 3-week wholesale-port plan.
+  The `coredumpctl` stack from the dev binary's reproduction settled
+  the question in 30 seconds. **`ulimit -c unlimited` + a reproducible
+  test case beats whiteboard speculation every time.**
+- **Defrag queueing is asynchronous from defrag execution.** The
+  trigger sets `do_defrag = true` in one decode call; the next
+  `llama_kv_cache_update` consumes it. Any code path that mutates
+  the cache layout (restore, large `kv_cache_seq_rm`, etc.) must
+  fence BOTH (a) cancel any pending queue and (b) suppress the next
+  trigger. Half-fixes will reproduce the original failure.
+- **`apply_checkpoint`'s validity lambda is not the right place to
+  defend against post-restore decode crashes.** It only knows about
+  position bounds (`pos_max <= n_past && pos_max < pos_next`); it
+  doesn't know about defrag state. The fence belongs at the
+  state-machinery level (`llama_state_seq_set_data_internal`), where
+  the actual restore returns.
+
+**Companion files.**
+
+- This phase doc: `PHASE_HYBRID_CHECKPOINT.md` §5.6-5.10 (incremental
+  commits `ef9017c`, `837d236`, `93d2c68`).
+- Submodule patches: `11ffe5b7`, `9fd2875c`, `d67da398` on
+  `production/2026-q2-next`.
+- Top-level pointer: `9bf1490`.
+- Layer 1 (closed 2026-05-25 earlier): `PHASE_GGML_SCHED_DYNSPLITS.md`.
+
+See also [[2026-05-25 — Hybrid checkpoint restore Phase 1: disable
+restore for recurrent models (SEGV mitigation)]] for the Phase 1 entry
+this supersedes.
