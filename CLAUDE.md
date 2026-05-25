@@ -183,6 +183,61 @@ Rules:
 
 The reframe: **time is not the binding constraint inside a sustained context window**. The relationship between agent and clock changes. Estimates that center on calendar time are estimating the wrong thing. Estimates that center on the cost of decisions and the discipline of diagnosis are estimating what actually moves.
 
+## 9. Toolchain and build environment (host-specific)
+
+This section captures known build-environment constraints on the production host (`xeon`). Update when the underlying packages change.
+
+### Current toolchain state (2026-05-25)
+
+- **Host GCC**: 16.1.1 (`/usr/bin/c++` → `g++` 16.1.1, libstdc++ 16.1.1 at `/usr/include/c++/16.1.1/`).
+- **CUDA**: 13.2.78 at `/opt/cuda` (recently upgraded; the running production binary was built before the upgrade and is using a stale dlopen'd cudart until the next service restart).
+- **Older GCC available for `-ccbin`**: `/usr/bin/g++-15` (libstdc++ 15.2.1 at `/usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/c++/`). No `g++-14`/`g++-13` installed.
+
+### Known incompat — CUDA 13.2 nvcc cannot parse libstdc++ 16.1.1 headers
+
+`nvcc` 13.2's host-side preprocessor chokes on C++23 features that GCC 16's libstdc++ headers use unconditionally — *deducing-this* method syntax in `<functional>` / `<bits/binders.h>`, and the `__builtin_is_virtual_base_of` intrinsic in `<bits/shared_ptr_base.h>`. Any `.cu` translation unit that transitively includes those headers (i.e. most of `ggml-cuda/*.cu`) fails to compile.
+
+### Rule — pin CUDA host compiler to gcc-15
+
+Configure (or reconfigure) the ik_llama.cpp / llama.cpp build trees with:
+
+```
+cmake -B build -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-15
+```
+
+`gcc-15` ships its own libstdc++ 15.2.1 headers, which `nvcc` 13.2 parses cleanly. The C++ side (non-CUDA `.cpp` files) continues to use the default `/usr/bin/c++` (GCC 16) — both link against the same system libstdc++.so.6, so the mixed-host-compiler setup is ABI-stable. Re-check this pin whenever CUDA or GCC is upgraded: the right answer can flip in either direction.
+
+### Rule — clean build after any toolchain change
+
+After bumping CUDA, GCC, NCCL, or any other piece of the toolchain (including changing `CMAKE_CUDA_HOST_COMPILER`), nuke previously-built objects before rebuilding:
+
+```
+ninja -C build clean      # preserves CMakeCache (use after -ccbin change)
+# or
+rm -rf build/             # total nuke (use after CUDA / GCC upgrade)
+```
+
+Linking object files compiled against different stdlib / CUDA versions silently produces binaries that may pass `--help` but crash on first real workload. `ccache` keeps subsequent rebuilds fast — the cost of a clean build is small, the cost of a mixed-asset binary in production is large.
+
+### Rule — host reboot after CUDA upgrade
+
+The CUDA userspace (`libcudart.so`, `libnvcuvid.so`, etc.) and the NVIDIA kernel module must match. After `pacman -Syu` (or similar) replaces `/opt/cuda`, the running kernel module may still be the previous version's. Symptoms: GPU contexts initialize OK from userspace but operations fail with `CUDA_ERROR_SYSTEM_DRIVER_MISMATCH` or hang. Resolution: `sudo reboot` (cleanest), or `sudo rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia && sudo modprobe nvidia ...` (riskier, requires no GPU processes running). Reboot is preferred because long-running services (like `llama-server.service`) already hold the old `libcudart` via `mmap` and need a full process restart anyway.
+
+### Service deploy procedure
+
+Concretely, deploying a fresh `llama-server` after a code change or toolchain shift is:
+
+```
+cd /home/dconnolly/yarn-agentic/ik_llama.cpp
+cmake -B build -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-15   # only if pin not already set
+ninja -C build clean                                          # only after toolchain change
+cmake --build build -j --target llama-server
+sudo install -m 0755 -o root -g llm \
+    build/bin/llama-server /opt/llm-server/bin/llama-server
+sudo systemctl restart llama-server.service                   # OR: sudo reboot, after a CUDA upgrade
+curl -sS http://127.0.0.1:8080/health                         # verify
+```
+
 ---
 
 These guidelines are working correctly when you observe: fewer unnecessary changes appearing in git diffs, fewer rewrites caused by overcomplication, clarifying questions happening before implementation rather than after mistakes are discovered, and diagnostic rigor before declarations of "done" or "infeasible".
