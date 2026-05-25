@@ -10021,3 +10021,143 @@ or the user authorizes.
 (the running production binary predates B.1-B.5). When B.5b lands
 + B.6 PASS, the deploy script will swap in a build that has the
 full Path B + multi-device CLIP.
+
+---
+
+## 2026-05-25 (later still) — Phase 46 code-complete (B.5b + B.5c + B.5d)
+
+Continued in same session after the "B.0-B.5 partial" entry above.
+Closed out every remaining code-implementation sub-step; Phase 46
+is now code-complete with only empirical close-out (B.6/B.7/B.8)
+remaining.
+
+**B.5b — multi-device weight residency** (submodule commit `79f359d6`):
+
+Two-ctx pattern in `clip.cpp`:
+- `ctx_data`        — single-device, hosts 1D / small tensors
+                      (norms, biases, embeddings, small projectors)
+- `ctx_data_split`  — multi-device, hosts mmproj matmul weights
+                      with pre-populated `ggml_split_tensor_t` extras
+- `buf` / `buf_split` — separate ggml_backend_buffers per ctx
+- `split_tensors` — `vector<unique_ptr<clip_split_tensor>>` owns
+                    per-tensor sub-tensors + the C-level extras
+                    (stable pointer for `tensor->extra`)
+- `mem_used_per_device` — input to `ggml_mgpu_create_split`'s
+                          memory-balance algorithm
+
+New struct in clip.cpp:
+```cpp
+struct clip_split_tensor {
+    std::vector<ggml_tensor *> tensor_splits;
+    ggml_split_tensor_t        ggml;
+};
+```
+Mirrors `llama_split_tensor` in `src/llama-impl.h` shape-for-shape;
+mtmd-local because clip.cpp doesn't link against llama-impl.h.
+
+Splittable predicate (in `get_tensor` lambda):
+```
+ggml_n_dims(t) >= 2  AND  t->ne[0] >= 256  AND  t->ne[1] >= 256
+AND  ggml_nbytes(t) >= 1 MiB
+```
+Catches attn/ffn matmul weights; excludes norms/biases/embeddings.
+
+The data-load loop now searches **both ctxs** by name and uses
+`ggml_backend_tensor_set` for split tensors (the split buft isn't
+host-mapped).
+
+**B.5c — CLI flag family** (submodule commit `c648b624`):
+
+Added to `common_params`:
+- `std::string mmproj_devices`        e.g. "CUDA0,CUDA1"
+- `std::string mmproj_tensor_split`   e.g. "1,1"
+- `std::string mmproj_split_mode`     "graph" only in B.5
+- `bool        mmproj_smf16 = true`   P1 default ON
+- `bool        mmproj_smgs  = false`
+
+Six new `--mmproj-*` CLI flags + corresponding `--help` entries
+under "multi-modality". Bridge in `examples/server/server-context.cpp`
+sets the corresponding `MTMD_*` env vars when CLI fields are
+populated — keeps clip.cpp's parser unchanged (env-var path is
+the canonical reader).
+
+**B.5d — P1 f16 cross-device exchange default ON** — folded into
+B.5c: `mmproj_smf16 = true` in `common_params`. Override via
+`--mmproj-smf32` if diagnostic f32 needed.
+
+**Final session totals:**
+
+12 commits (5 top-level + 7 submodule):
+
+Top-level yarn-agentic (pushed to slartibardfast/yarn-agentic.git):
+- `34b7151` PHASE46 B.0 — spec fixes (all 5 PASS) + SUMMARY index
+- `5350422` PHASE46 B.0-B.5 partial: submodule bump + status update
+- `b2e0467` MEMORY: 2026-05-25 (later) — Phase 46 B.0-B.5 partial
+- `c00d117` PHASE46 B.5b landed: submodule bump + checkbox update
+- `1fb349f` PHASE46 B.5c+B.5d landed: submodule bump + checkbox update
+
+ik_llama.cpp on production/2026-q2-next (HELD — unpushed to
+slartibardfast/ik_llama.cpp.git pending user authorization):
+- `f2704241` PHASE46 B.1: extract create_split to shared ggml-mgpu-split
+- `4ce3e51f` PHASE46 B.2: define ggml_mgpu_split_config struct + check
+- `ffaa94c3` PHASE46 B.3: route create_tensors_helper through cfg
+- `69d7ffe7` PHASE46 B.4: populate model.mgpu_split_config in load path
+- `ba186fdb` PHASE46 B.5: multi-backend init + P2 peer-access gate
+- `79f359d6` PHASE46 B.5b: multi-device weight residency for mmproj
+- `c648b624` PHASE46 B.5c: --mmproj-* CLI flag family
+
+Top-level pointer bumped to `c648b624`. Fresh clones cannot resolve
+the submodule pointer until the user pushes to slartibardfast/ik_llama.cpp.git
+or authorizes me to.
+
+**Phase 46 status: code-complete; closure binds on empirical gates:**
+
+- [ ] **B.6** LM gate re-cert (G3.a, G3.c, test-n-stream-kv-layout,
+       Phase 45 D10.a). Requires maintenance window — production
+       holds both GPUs at capacity; test binary cannot allocate
+       concurrent VRAM. Confirmed empirically: attempted to run
+       test-production-np-determinism.sh during the session,
+       cudaMalloc 2.4 GiB on device 1 failed.
+- [ ] **B.7** CLIP perf gate (≤ 1.3× single-GPU baseline encode
+       latency on `examples/mtmd/test-1.jpeg`). Requires §11.1
+       single-GPU baseline measurement first (procedure pinned
+       in PHASE46 §11.1).
+- [ ] **B.8** Production rollout via `scripts/deploy-llama-server.sh`
+       + rollback drill. Blocked on B.6 + B.7 passing.
+
+**Held workflow change:** `.github/workflows/spec-tla-gate.yml`
+modification (6 TLC + 2 allium-check steps for the new mgpu-split
+specs) stays in the working tree of yarn-agentic. OAuth token
+lacks `workflow` scope. User must push separately or grant scope.
+
+**Production unchanged.** CPU vision still active via
+`--no-mmproj-offload`. New build at
+`ik_llama.cpp/build/bin/llama-server` is the Path B + multi-device
+CLIP binary; runs `--version` and `--help` correctly, all six new
+CLI flags appear in `--help`. End-to-end verification awaits a
+maintenance window.
+
+**Key files for next session:**
+
+Specs (yarn-agentic):
+- `specs/mgpu-split/MgpuSplitConfig.allium`
+- `specs/mgpu-split/BuftSetupLoop.tla` + 4 mode .cfg
+- `specs/mgpu-split/CreateSplitBalance.tla` + .cfg
+- `specs/mgpu-split/ClipCrossDeviceFlow.tla` + .cfg
+- `specs/mgpu-split/CrossCodepathConsistency.allium`
+
+Code (ik_llama.cpp):
+- `ggml/include/ggml-mgpu-split.h` — shared header (B.1-B.2)
+- `ggml/src/ggml-mgpu-split.cpp` — implementation
+- `src/llama-load-tensors.cpp` — `create_tensors_helper.cfg` (B.3)
+- `src/llama-model.h:496` — `model.mgpu_split_config` field
+- `src/llama.cpp:4198+` — populate block (B.4)
+- `examples/mtmd/clip.cpp:457+` (clip_ctx new fields), `:493+` (B.5
+  multi-backend init + P2 gate), `:3500+` (B.5b two-ctx + split
+  decoration), `:3950+` (B.5b dual-ctx alloc + dual-search load)
+- `ggml/include/ggml-cuda.h` — `ggml_backend_cuda_can_access_peer`
+- `common/common.{h,cpp}` — B.5c CLI flags
+- `examples/server/server-context.cpp:159+` — B.5c CLI→env bridge
+
+Plan doc: `docs/phases/80-multimodal/PHASE46-MULTIGPU-CLIP-TENSOR-SPLIT.md`
+(§10 reflects all checkboxes; §12 holds the design pivot rationale).
