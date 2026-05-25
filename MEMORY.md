@@ -9856,3 +9856,56 @@ needed to preserve had Phase 2's diagnosis pointed deeper.
 See also [[2026-05-25 — Hybrid checkpoint restore Phase 1: disable
 restore for recurrent models (SEGV mitigation)]] for the Phase 1 entry
 this supersedes.
+
+## 2026-05-25 — Phase 35 Step B (alloc-aware CUDA graph eviction) landed; Phase 46 opened for multi-GPU CLIP
+
+**What landed.** `ik_llama.cpp` commit `606ce62b` on
+`production/2026-q2-next` (cherry-picked from dev branch
+`b45eeb7d`): a 79-line addition to `ggml/src/ggml-cuda.cu` that
+calls `ggml_cuda_evict_for_pressure` before every
+`cudaGraphInstantiate`. The function reads `GGML_CUDA_GRAPH_MIN_FREE_MIB`
+(default 4096), queries `cudaMemGetInfo`, and evicts LRU
+(`last_use_us`-ordered) graph cache entries until headroom meets
+the threshold or only the about-to-be-used `protect_key` remains.
+Probe channel records each `evict_pressure` event when
+`GGML_CUDA_GRAPH_PROBE=1`. Production drop-in
+`02-cuda-graph-probe.conf` sets `GGML_CUDA_GRAPH_MIN_FREE_MIB=4096`
+and now also drops the old `MTMD_BACKEND_DEVICE=CUDA1` line.
+
+**What it does NOT solve.** The 2026-05-25 multi-slice vision OOM
+that motivated the patch is **not** fixed by this. Investigation
+during deploy showed the cache had only one CLIP-on-CUDA0 entry at
+the time of the crash; there was nothing to evict. The crash is a
+single-graph-too-big problem: the 1024-token CLIP graph's
+working memory alone exceeds available headroom on either device
+once the 27B LM + 256k KV + cuBLAS workspace are resident. Step B
+remains correct work for its actual scope (cache pressure under
+multi-topology loads) — the original signal was just wrong about
+where the budget went.
+
+**Phase 46 opened.** `docs/phases/80-multimodal/PHASE46-MULTIGPU-CLIP-TENSOR-SPLIT.md`.
+Plan: shard the mmproj weights across both GPUs (CUDA0+CUDA1) the
+same way the LM is split. Two-part change:
+(1) Parse `MTMD_BACKEND_DEVICE` as a comma-separated list and push
+multiple backends to `ggml_backend_sched_new` (clip.cpp:488-516,
+~30 LoC).
+(2) Use `ggml_backend_cuda_split_buffer_type` with an
+`MTMD_TENSOR_SPLIT` env var for the mmproj weight allocations
+(~80-150 LoC). Orphan audit: none — the change is strictly additive
+to the single-device path. Estimated cost ~105-125k tokens (one
+focused session).
+
+**Interim production state.** Vision now runs on CPU
+(`--no-mmproj-offload` in `/home/llm/profiles/qwen36-27b-x1-vanilla.sh`)
+until Phase 46 lands. CLIP latency increases substantially but the
+budget fits cleanly; text-decode path is unchanged.
+
+**Companion files.**
+
+- `docs/phases/40-graph-cache/PHASE35-GRAPH-CACHE-REDESIGN.md` §15 (Step B
+  implementation as shipped)
+- `docs/phases/80-multimodal/PHASE46-MULTIGPU-CLIP-TENSOR-SPLIT.md` (the new plan)
+- `docs/SUMMARY.md` (new "Multimodal" section)
+- Submodule patch `606ce62b` on `production/2026-q2-next` (unpushed
+  pending user direction on the slartibardfast remote)
+- Drop-in `/etc/systemd/system/llama-server.service.d/02-cuda-graph-probe.conf`
