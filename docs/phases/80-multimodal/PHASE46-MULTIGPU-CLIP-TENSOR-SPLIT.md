@@ -764,10 +764,29 @@ coverage, maximum possible speed.
                 all four return sites (NCCL, large ring, small
                 p2p, fallback). 37 LoC. Default-on;
                 `GGML_REDUCE_DISABLE_FENCE` is the rollback
-                escape hatch. Build clean. Verification pending —
-                requires maintenance-window 3-sample
-                `CLIP_LOG_FINAL_HASH=1` run (production currently
-                on CPU vision).
+                escape hatch. Build clean.
+
+                **Test M VERIFICATION — FAIL (2026-05-26 18:33Z):**
+                3-sample production-mode encode with Test M fence
+                enabled produced 3 distinct hashes:
+                - encode 1: `1d8090e2526dd544`
+                - encode 2: `553d2c2272a41a80`
+                - encode 3: `cd40b489738f2cf0`
+                Evidence: `/tmp/phase46-b5e-test-m/run-20260526T183357/`.
+
+                **Reframe:** Test L_NORE proved REDUCE-output
+                readbacks are *necessary* for determinism, but did
+                NOT prove they are *sufficient*. The L_NOMM PASS
+                only ruled out MUL_MAT-only readbacks as required;
+                it said nothing about ADD/NORM/GLU/SCALE/SOFT_MAX.
+                Multiple op classes likely need fences. The
+                deeper mechanism is in `ggml_backend_sched_eval`
+                (ggml-backend.cpp:2127–2173): the eval-callback
+                path calls `ggml_backend_synchronize(split_backend)`
+                **per node** (line 2165), while the production
+                openmp parallel path syncs only at split
+                boundaries (line 2271). Capture mode's per-node
+                drain + DtoH is the load-bearing combination.
 
                 If Test M restores determinism in production async
                 mode, **B.5e closes** with a small surgical fix
