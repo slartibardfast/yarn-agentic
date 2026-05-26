@@ -774,6 +774,41 @@ coverage, maximum possible speed.
                 - encode 3: `cd40b489738f2cf0`
                 Evidence: `/tmp/phase46-b5e-test-m/run-20260526T183357/`.
 
+                **Test N — FAIL (2026-05-26 18:39Z):**
+                no-op eval callback (`CLIP_FORCE_EVAL_CB_NOOP=1`)
+                forces per-node `ggml_backend_synchronize` via the
+                eval-callback path WITHOUT any DtoH. 3 distinct
+                hashes (`c057..`, `a104..`, `beca..`). Per-node
+                synchronize alone is NOT sufficient — the DtoH
+                itself is the structural fence.
+
+                **Test O — PARTIAL PASS (2026-05-26 18:42Z):**
+                per-node DtoH callback (`CLIP_FORCE_EVAL_CB_DTOH=1`,
+                production-shape — no file I/O, scratch buffer
+                discarded). Results:
+                - encode 1: `2554e340101807ab` ← matches
+                  capture-mode baseline
+                - encode 2: `8f3bab2158e84b81`
+                - encode 3: `2f6cb627985ef706`
+
+                Encode 1 is bit-correct; encodes 2-3 drift. This
+                **reframes the entire investigation**: the
+                race is a per-encode state-leak / persistent-state
+                problem, NOT a within-encode peer-access
+                visibility problem. Per-node DtoH IS sufficient
+                for one encode — something persistent across
+                encodes (cuBLAS handle state? CUDA graph capture?
+                scheduler events? memory allocator?) leaks
+                between encodes.
+
+                **Test P — FILE-I/O TOO SLOW (2026-05-26 18:44Z):**
+                `CLIP_DEBUG_SCHED=1 CLIP_CAPTURE_HASH=...` (full
+                capture mode with per-node file writes) produces
+                encode 1 hash `2554e340101807ab` (matches Test O)
+                but encodes 2-3 timeout at curl's 120s. Cannot
+                disambiguate whether file I/O changes the
+                state-leak behavior at this scale.
+
                 **Reframe:** Test L_NORE proved REDUCE-output
                 readbacks are *necessary* for determinism, but did
                 NOT prove they are *sufficient*. The L_NOMM PASS
