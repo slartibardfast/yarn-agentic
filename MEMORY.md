@@ -10301,3 +10301,86 @@ needs the equivalent integration on the activation side.
   how activation tensors get split_buft assignment
 - `/tmp/phase46-multigpu-clip/run-20260526T071133/server.stderr` —
   full evidence journal
+
+## 2026-05-26 — Phase 46 B.5e partial run 2: marker works, IMA reveals deeper need
+
+After Phase 46 B.5e plan was approved (file:
+/home/dconnolly/.claude/plans/examine-how-we-do-serene-liskov.md), executed
+during a ~25 min maintenance window starting 07:47 UTC. Production restored
+07:52 UTC, /health 200, no deploy.
+
+**Implementation (submodule `d8242a71`):**
+- `mark_split()` helper in clip_graph + 2 calls (build_attn line 2727,
+  build_ffn line 2645). Sets 0xff at `op_params[GGML_MAX_OP_PARAMS /
+  sizeof(int32_t) - 1]` — the marker that ggml-backend.cpp:1727 reads
+  to force `need_new_split = true`.
+- Fused-QKV exclusion in is_splittable (clip.cpp:3541+): filter by
+  `strstr(name, "qkv")`. Excluded 27 qkv weights (111 → 84 split tensors).
+
+**Result: partition works, downstream execution doesn't.**
+
+`alloc_compute_meta: graph splits 1 → 55`. Perfectly matches the plan
+prediction (27 vision layers × 2 markers per layer + 1). The marker is
+firing correctly on every layer's attention input and FFN input.
+
+But the encode fails with:
+```
+CUDA error: an illegal memory access was encountered
+  current device: 0, in function ggml_backend_cuda_synchronize at
+  ggml-cuda.cu:4499  cudaStreamSynchronize(cuda_ctx->stream())
+```
+
+Reproduced at 1024 AND 256 image-token budgets. Not size-dependent.
+
+**Root cause (clearer now than before).** The ik fork's GRAPH-mode in
+the LM is more than the 0xff marker — it also has cross-device graph
+infrastructure that CLIP lacks:
+
+1. `llama-build-context.cpp:1252-1268` shows the LM's FFN path: it
+   iterates `for (id = 0; id < n_device; ++id)` and explicitly calls
+   `get_input_tensor_sm_graph(ctx, input, id)` + `do_split_norm(...)`
+   + `ggml_fused_up_gate(ctx, split_u, split_g, cur, ...)` — building
+   PER-DEVICE matmul sub-operations using pre-decomposed weight
+   pieces (`split_u[id]`, `split_g[id]`, `split_d[id]`).
+
+2. Outputs of per-device matmuls are consolidated via explicit
+   `GGML_OP_REDUCE` nodes (sched checks for this at
+   ggml-backend.cpp:1721).
+
+3. CLIP's build_ffn just does `ggml_mul_mat(ctx0, up, cur)` ONCE — no
+   per-device decomposition, no REDUCE. The marker creates a partition
+   boundary but the matmul kernel on each side of the boundary still
+   reads from split_buft weights via peer access. Something in that
+   peer-access read pattern produces the IMA.
+
+**The previous "multi-day" framing was right.** The 0xff marker was
+necessary but only one of several pieces. Closure requires porting
+the LM's split-aware graph construction primitives into clip_graph:
+- A clip-side equivalent of `get_input_tensor_sm_graph` (fetches the
+  per-device slice of an input tensor)
+- Per-device matmul decomposition pattern (clip's build_ffn /
+  build_attn need to iterate over devices and emit per-device ops)
+- Explicit REDUCE ops to consolidate outputs
+
+This is the "multi-day port of row-chunked matmuls into clip_image_build_graph"
+remediation path #1 from the architectural diagnosis at commit c91dfd1 —
+which I'd been hoping was wrong. It isn't wrong; the marker alone is
+just insufficient.
+
+**State at end of session:**
+- Production: CPU-vision, /health 200 since 07:52 UTC
+- New binary at build/bin/llama-server has the marker + qkv exclusion
+  but is NOT deployed (encode still fails)
+- Submodule head: d8242a71 (pushed to slartibardfast/ik_llama.cpp)
+- Top-level main: f8d9967 (pushed)
+- Phase 46 OPEN; B.5e box reopened to [~]
+- All maintenance-window evidence preserved at
+  /tmp/phase46-b5e-256.stderr, /tmp/phase46-b5e-v3.stderr,
+  /tmp/phase46-multigpu-clip/run-20260526T074740/
+
+**Lesson for future-self.** When the LM has a complex feature with
+many small pieces (markers + helpers + per-device decomp + REDUCE),
+implementing only the most-visible piece (the marker) gets you
+PART of the way — visible enough to mislead (graph splits = 55!) but
+not enough to actually work. Read the LM site END-TO-END before
+declaring the CLIP-side mirror complete.
