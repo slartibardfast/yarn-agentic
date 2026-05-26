@@ -334,6 +334,19 @@ coverage, maximum possible speed.
 
 ## 10. Checkboxes
 
+> **2026-05-26 maintenance-run finding (RED).** End-to-end empirical
+> verification (~4 min of production downtime) revealed that the
+> weight-distribution layer (B.5b) is necessary but not sufficient. The
+> ggml backend scheduler produces `graph splits = 1` for the 3739-node
+> CLIP encode — meaning the *compute graph* still single-devices even
+> though both backends are registered, P2 peer-access PASSes, and 111
+> weight tensors land in the multi-device split-buf. OOMs on
+> `cudaGraphInstantiate` at both 1024 and 256 image-token budgets. New
+> required sub-step **B.5e graph-partitioning** added below. Phase 46
+> remains OPEN and the new build is NOT deployed. Production is back on
+> CPU-vision.
+> Evidence: `/tmp/phase46-multigpu-clip/run-20260526T071133/server.stderr`.
+
 - [x] Step 1: multi-backend parsing in clip.cpp (landed in B.5 part 1 — see below)
 - [~] **Step 2: Path B sub-steps (§12.4) — partial; see status below**
   - [x] **B.0** — Five formal specs land in `specs/mgpu-split/` (commit `34b7151`)
@@ -350,21 +363,36 @@ coverage, maximum possible speed.
   - [~] **B.5** — partial (submodule `ba186fdb` for part 1)
     - [x] Multi-backend init from comma-separated `MTMD_BACKEND_DEVICE`
     - [x] P2 peer-access gate (`ggml_backend_cuda_can_access_peer`) — refuses to start on failure
-    - [x] **B.5b — multi-device weight residency** (submodule `79f359d6`). Two-ctx pattern: `ctx_data_split` (multi-device, large matmul weights, pre-decorated with `clip_split_tensor.ggml` extras) + `ctx_data` (single-device, norms/biases/small tensors). Mirrors LM-side `llama_layer::split_*`. ~194 LoC + the new `clip_split_tensor` struct + 4 new clip_ctx fields. Build clean; runtime verification deferred to maintenance window (production GPUs at capacity).
+    - [~] **B.5b — multi-device weight residency** (submodule `79f359d6`). Two-ctx pattern: `ctx_data_split` (multi-device, large matmul weights, pre-decorated with `clip_split_tensor.ggml` extras) + `ctx_data` (single-device, norms/biases/small tensors). Mirrors LM-side `llama_layer::split_*`. ~194 LoC + the new `clip_split_tensor` struct + 4 new clip_ctx fields.
+          - [x] Build clean; loader fires "B.5b multi-device weight residency enabled (n_cuda=2)" + "B.5b split-buf allocated, 111 split tensors" on real boot (verified 2026-05-26 maintenance run).
+          - [ ] **REOPENED 2026-05-26** — weight distribution alone is INSUFFICIENT. Real-host encode OOMs on `cudaGraphInstantiate` at device 0 because the ggml backend scheduler partitions the 3739-node CLIP graph into `graph splits = 1` (all on backend 0). Both backends register, P2 peer-access gate PASSes, 111 split tensors are placed, but the encode compute graph still single-devices. New subtask: B.5e graph-partitioning — make the input/activation buffer types multi-device-aware OR add explicit cross-device boundary markers so the sched produces > 1 split. Evidence: `/tmp/phase46-multigpu-clip/run-20260526T071133/server.stderr`.
     - [x] B.5c CLI flags: `--mmproj-devices`, `--mmproj-tensor-split`, `--mmproj-split-mode`, `--mmproj-smf16/smf32`, `--mmproj-smgs` (submodule `c648b624`); CLI→env-var bridge in `server-context.cpp` keeps clip.cpp's reader unchanged
     - [x] B.5d P1 f16 default ON — `mmproj_smf16 = true` in `common_params` (landed in B.5c)
     - [x] `test-clip-multi-backend-init.cpp` GREEN (9 cases PASS on dev host; submodule `ef7c41a4`)
     - [x] `test-clip-weight-split.cpp` GREEN (8 cases PASS on dev host; submodule `ef7c41a4`)
     - [~] `test-clip-encode-equivalence.cpp` — built, SKIPs cleanly until
           `scripts/verify-multigpu-clip.sh` produces
-          `/tmp/phase46-multigpu-clip/equivalence.json` during maintenance window
+          `/tmp/phase46-multigpu-clip/equivalence.json` during maintenance window.
+          Also: §3 acceptance #4 (byte-identity vs single-GPU baseline) is
+          structurally unverifiable since single-GPU CLIP encode OOMs at
+          the production residency — reframe the test to inter-run
+          determinism (same image → same output bytes across N multi-GPU runs).
+    - [ ] **B.5e (NEW, 2026-05-26)** — graph partitioning across both
+          backends. Real-host evidence: `graph splits = 1` despite both
+          backends registered. Either (a) make the input/activation
+          buffer types multi-device-aware so the sched assigns nodes
+          across devices, or (b) emit explicit boundary tensors / scheduler
+          hints. Code: `examples/mtmd/clip.cpp:3500+` (get_tensor lambda)
+          and `clip.cpp:565+` (sched init). HARD prerequisite for B.7.
   - [ ] **B.6** — LM gate re-cert (HARD; deferred to maintenance window — production service uses both GPUs at capacity, test binary cannot allocate concurrent VRAM)
     - [ ] G3.a `test-production-np-determinism.sh` PASS NP∈{1,2,4,8}
     - [ ] G3.c `r5-probe-c4.sh` 0/20 divergences
     - [ ] `test-n-stream-kv-layout` PASS
     - [ ] Phase 45 D10.a 3-slot smoke PASS
     - **Note:** B.1-B.4 are semantics-preserving by construction (cfg mirrors model fields; reads through cfg are equivalent to reads through model fields). Empirical bit-identity verification remains as the binding closure step.
-  - [ ] **B.7** — CLIP perf gate (HARD, P7): encode latency ≤ 1.3× §11.1 single-GPU baseline. B.5b code-complete (submodule `79f359d6`); empirical run requires maintenance window. `scripts/verify-multigpu-clip.sh` (commit `b347398`) emits `/tmp/phase46-multigpu-clip/latency.json` which `test-clip-encode-latency.cpp` (submodule `ef7c41a4`) binds against.
+  - [ ] **B.7** — CLIP perf gate (HARD, P7).
+    - **Gate reframe (2026-05-26):** §11.1 single-GPU baseline is **structurally unobtainable** — even a single-GPU CLIP encode at the production LM+KV+scratch residency OOMs on `cudaGraphInstantiate`. There is no single-GPU latency reading to multiply by 1.3×. Once B.5e closes the graph-partitioning gap, B.7's gate is reframed to: encode completes successfully under the production LM+KV+scratch config at the target image-token budget, no OOM, median latency recorded as the new reference number (no ratio).
+    - [ ] Empirical: maintenance run 2026-05-26 OOM'd on `cudaGraphInstantiate` at 1024 AND 256 image tokens. Phase 46 cannot deploy until B.5e graph-partitioning lands. `scripts/verify-multigpu-clip.sh` (commit `b347398`) is the binding driver.
     - [~] `test-clip-encode-latency.cpp` — built, SKIPs cleanly until harness produces input JSON
   - [ ] **B.8** — Production rollout via deploy script + rollback drill
 - [ ] Step 4: production rollout
@@ -522,8 +550,11 @@ Acceptance: `test-clip-encode-latency.cpp` GREEN. Estimated
 
 ### Checkboxes for §11
 
-- [ ] §11.1 — single-GPU baseline latency captured and pasted into §6
-      (requires maintenance window)
+- [~] §11.1 — STRUCTURALLY UNOBTAINABLE (user confirmation + empirical
+      check 2026-05-26): even single-GPU CLIP at the production LM+KV
+      residency OOMs on `cudaGraphInstantiate`. There is no
+      "single-GPU baseline" number to capture; B.7 reframed accordingly
+      (see §10 B.7 gate reframe note).
 - [x] §11.2 — full CLI flag family implemented (landed in B.5c, submodule `c648b624`)
   - [x] `--mmproj-devices`, `--mmproj-tensor-split`,
         `--mmproj-split-mode graph`, `--mmproj-smf16/--mmproj-smf32`,
@@ -536,7 +567,9 @@ Acceptance: `test-clip-encode-latency.cpp` GREEN. Estimated
 - [x] §11.4 — Deploy-script regression guard (commit `149ad76`): checks
       `multi-backend init` string in libmtmd.so AND
       `ggml_mgpu_create_split` symbol in libggml.so; `--allow-no-mmproj-mgpu`
-      opt-out for emergency rollback. Verified both guards pass on current build.
+      opt-out for emergency rollback. Verified both positive case (current
+      build passes) AND negative case (synthetic Phase-46-stripped build:
+      guard ABORT with exit 1, expected message printed; 2026-05-26).
 - [~] §11.5 — `test-clip-encode-latency.cpp` (submodule `ef7c41a4`) built,
       SKIPs cleanly until §11.1 baseline + harness run produce its input
 
