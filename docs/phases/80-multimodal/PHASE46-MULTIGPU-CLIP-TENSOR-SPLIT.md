@@ -677,6 +677,40 @@ coverage, maximum possible speed.
                 - `GGML_CUDA_FULL_DEVICE_SYNC=1`
                 - `GGML_CUDA_PER_THREAD_SYNC=1` (causes IMA — do not set)
 
+                **DISCOVERY (2026-05-26 ~16:25):** The entire NPC.4
+                six-test diagnostic round was conducted with
+                **UNLOCKED GPU clocks**. At test time, SM clocks
+                were 300 MHz (idle ramping under load). The
+                LM-blessed production determinism harness
+                (`scripts/verify-production-determinism.sh`)
+                explicitly REQUIRES locked clocks at 1455 MHz and
+                fails the pre-check otherwise:
+
+                ```
+                FAIL: GPU ${idx} SM clock is ${cur_sm} MHz,
+                      expected 1455 MHz.
+                Run `sudo bash scripts/gpu-clocks.sh lock` to
+                lock clocks at 1455 MHz.
+                ```
+
+                Per `scripts/gpu-clocks.sh:7-9`:
+                > Unlocked clocks let SM frequency vary with
+                > thermal/power state, which makes concurrent
+                > multi-slot timing non-deterministic.
+
+                So the LM determinism contract holds under locked
+                clocks, NOT under unlocked clocks. Our six-test
+                CLIP investigation under unlocked clocks could
+                ALL be operational variance rather than a code-
+                level race.
+
+                The simplest hypothesis is now: **CLIP encode is
+                deterministic under locked clocks, same as LM**.
+                No code fix needed — operational requirement.
+                Verifying this is Test J for next session:
+                `sudo bash scripts/gpu-clocks.sh lock` followed by
+                a 3-sample test in production async mode.
+
                 1. Next session: bisect WITHIN the capture's
                    tensor_get behavior — separate the cudaStream
                    Sync call from the cudaMemcpyAsync. Try sync

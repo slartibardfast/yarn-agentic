@@ -10678,3 +10678,49 @@ All six diagnostic env knobs left in source (OFF by default):
 `GGML_CPY_POST_DEVICE_SYNC`, `GGML_CUDA_FULL_DEVICE_SYNC`,
 `GGML_CUDA_PER_THREAD_SYNC` (do not set — causes IMA),
 `CLIP_LOG_FINAL_HASH`.
+
+## 2026-05-26 — PHASE 46 B.5e: GPU clock lock IS THE DETERMINISM CONTRACT
+
+**Discovery while gathering LM evidence:** the LM determinism harness
+`scripts/verify-production-determinism.sh` enforces a GPU SM clock
+pre-check (expected 1455 MHz, default for 2× Quadro RTX 6000). It
+exits FAIL if clocks are unlocked.
+
+Per `scripts/gpu-clocks.sh:7-9`:
+> Unlocked clocks let SM frequency vary with thermal/power state,
+> which makes concurrent multi-slot timing non-deterministic.
+
+At the time of our entire NPC.4 six-test diagnostic round, the
+clocks were at **300 MHz** (idle, ramping under load). The LM
+contract requires `sudo bash scripts/gpu-clocks.sh lock` first.
+
+**Implication:** every CLIP determinism test (C, B, E, F, G, H, I)
+was conducted under conditions where the LM determinism contract
+itself would be void. The "non-determinism" we observed may be
+entirely operational (timing-dependent under variable SM clock
+frequency) rather than a code-level sched/race issue.
+
+The simplest reframing: CLIP encode is likely deterministic under
+the SAME conditions as LM — locked clocks. No code fix needed.
+
+**Next session must verify this with Test J:**
+1. `sudo bash scripts/gpu-clocks.sh lock`  # lock at 1455 MHz
+2. `sudo systemctl stop llama-server.service`
+3. Boot dev binary with NO extra env knobs (just CLIP_LOG_FINAL_HASH=1
+   to capture the embedding hash)
+4. Send 3 identical vision requests; compare hashes
+5. `sudo bash scripts/gpu-clocks.sh unlock` if needed
+
+If deterministic with locked clocks → B.5e closes with operational
+note: "multi-GPU CLIP deployment requires the same SM clock lock
+that the LM production determinism contract requires."
+
+**Lesson learned:** when investigating determinism issues, FIRST
+check the operational pre-conditions of the determinism contract
+(GPU clocks, NCCL config, cuBLAS workspace, env-var stack). The
+LM determinism harness has an explicit pre-check; CLIP needs the
+same gate.
+
+The diagnostic env knobs (Tests B, F, G, H, I, CLIP_LOG_FINAL_HASH)
+remain useful as future debugging tools but were probing the wrong
+layer this round.
