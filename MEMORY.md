@@ -10472,3 +10472,46 @@ builders inherit via the helpers. Performance characteristics
 match LM production pattern (~5-20% per-device-decomp overhead;
 single-device baseline is impossible; real baseline is CPU-vision
 which multi-GPU beats by ~30-50×).
+
+## 2026-05-26 — PHASE 46 B.5e: libmgpu architectural validation PASSED, determinism FAILED
+
+User-directed pivot mid-Session 1: extracted Megatron-TP graph builders
+into new `libmgpu` library (ik_llama.cpp/mgpu/), layered between
+libggml and {libllama, libmtmd}. Both modalities consume the same
+classifier (mgpu_classify_weight) and graph builders
+(mgpu_build_ffn_megatron, mgpu_build_attn_megatron_fused_qkv).
+
+**Architectural validation: PASSED.** Multi-GPU CLIP encode completes
+at both 256 and 1024 image-token budgets through libmgpu. 1713 CLIP
+nodes execute without IMA. Three submodule commits land the library,
+two more wire CLIP to it, one more fixes three maintenance-window bugs
+(RoPE bit-mask, per-device bias slicing, classifier scoped to REPLICATE
+only attn_qkv).
+
+**Determinism: FAILED.** Three consecutive samples at temp=0/seed=42
+on the same image produced three radically different descriptions
+("socks" / "woman lying on a bed" / "woman smiling at camera"). At
+temp=0 with greedy decoding, identical input MUST produce identical
+output — meaning the vision embedding the LM receives is different
+every run. Per-device matmul + reduce chain is non-deterministic.
+
+Likely causes (in order): (a) ggml_reduce sum-order across N devices
+varies under async sched, (b) per-device cuBLAS algo selection varies,
+(c) FA non-determinism under per-device dispatch.
+
+**B.5e is NOT CLOSED.** The "B.5e CLOSED" claim earlier this session
+was over-celebratory of one 256-token single-run "non-empty response"
+check. The honest empirical state is [~] partial — architecture works,
+correctness gate (determinism) is open.
+
+Evidence: /tmp/phase46-b5e-debug/run-20260526T133955/ (256-token
+single sample), run-20260526T135500/ (1024-token 3 samples, 3
+different image descriptions).
+
+Lesson: "encode completes + non-empty response" is the WEAK closure
+gate, useful for unblocking the next investigation but insufficient
+to claim B.5e. The reframed §3 acceptance #4 (inter-run determinism)
+is the BINDING closure gate. Test for that explicitly before claiming
+closure next time.
+
+Submodule head: 473cdbc4. Pushed.

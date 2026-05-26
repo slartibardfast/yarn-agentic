@@ -539,22 +539,93 @@ coverage, maximum possible speed.
                 attn_out / ffn_up matmul. The static audit confirms
                 this without further maintenance windows.
 
-          - [ ] **Remaining work (sole viable path under strict GRAPH-
-                mode, user-confirmed 2026-05-26): per-device matmul
-                decomposition port from LM (`llama-build-context.cpp:
-                1240-1290`) into clip.cpp's shared `build_attn` /
-                `build_ffn` helpers.** Reimplement-in-clip.cpp path
-                preferred (no LM code changes → no B.6 re-cert
-                burden). Multi-session work, qwen3vl-first; all 13
-                architecture builders inherit via the shared helpers.
-                Performance characteristics match the LM's production
-                pattern (~5-20% per-device-decomp overhead vs
-                hypothetical single-device; single-device is
-                structurally impossible at production residency, so
-                the real baseline is CPU-vision which multi-GPU GPU
-                vision beats by ~30-50×). See plan file
+          - [~] **libmgpu architectural validation (2026-05-26).**
+                User-directed pivot: extracted the Megatron-TP
+                graph builders into a new `libmgpu` library (sibling
+                of `ggml/`, `src/`, `examples/mtmd/`), then ported
+                CLIP's loader, `build_ffn`, and `build_qwen3vl`
+                attention block to use it. Architecture details in
+                the approved plan file
                 `/home/dconnolly/.claude/plans/examine-how-we-do-serene-liskov.md`
-                (next iteration).
+                under "libmgpu — folder structure and relationships".
+
+                Submodule commits (production/2026-q2-next):
+                - `7a213294` — Phases 0-2: libmgpu skeleton, CMake
+                  wiring, classifier (mgpu_classify_weight), helpers
+                  (mgpu_get_input_split, mgpu_norm_split).
+                - `8aa3aa21` — Phase 3: mgpu_build_ffn_megatron with
+                  fused-fast-path + biased-general-path.
+                - `fe3cb270` — Phase 4: mgpu_build_attn_megatron_fused_qkv
+                  with M-RoPE support; classifier refined (qkv →
+                  REPLICATE because col-parallel split crosses Q/K/V
+                  concat boundaries).
+                - `242af825` — Phases 5-7: CLIP loader uses
+                  mgpu_classify_weight; build_ffn calls
+                  mgpu_build_ffn_megatron; build_qwen3vl attention
+                  calls mgpu_build_attn_megatron_fused_qkv.
+                - `473cdbc4` — three bug fixes from maintenance
+                  runs: RoPE bit-mask dispatch (VISION=24 has the
+                  MROPE bit), per-device bias slicing for COL-
+                  parallel matmuls, row-parallel bias add moved
+                  AFTER reduce, classifier scoped to REPLICATE
+                  only attn_qkv (everything else NONE — REPLICATE
+                  with non-libmgpu consumers IMAs).
+
+                **Empirical state after Phase 7:**
+                - **PASS:** Multi-GPU CLIP encode COMPLETES at
+                  --image-min-tokens 256 (single run; 1713 nodes
+                  through libmgpu); non-empty assistant response.
+                  Evidence: /tmp/phase46-b5e-debug/run-20260526T133955/.
+                - **PASS:** Multi-GPU CLIP encode COMPLETES at
+                  --image-min-tokens 1024 (production budget, 3
+                  consecutive samples). Median request time ~14.0s
+                  (prompt processing ~9.05s for 1058 tokens =
+                  117 t/s). Evidence:
+                  /tmp/phase46-b5e-debug/run-20260526T135500/.
+                - **FAIL: Determinism — output non-reproducible
+                  across runs at temp=0, seed=42.** Three consecutive
+                  samples at 1024 tokens produced THREE different
+                  image descriptions for the same JPEG. The model
+                  generates plausible text from each garbage
+                  embedding without knowing the embedding differs.
+                  Either ggml_reduce sum-order varies across runs
+                  (most likely), or cuBLAS algo selection varies
+                  per per-device matmul, or FA non-determinism
+                  surfaces under the per-device dispatch. The LM's
+                  NPC.4 ALGO0 cuBLAS algo pin is matmul-shape-
+                  specific and may not apply to CLIP's shapes.
+
+                **B.5e is NOT CLOSED** despite Phase 7 wire-up.
+                Determinism is a hard gate (§3 acceptance #4
+                reframed: "same image → same output bytes across N
+                multi-GPU runs"). Output non-determinism = encode is
+                effectively producing random garbage that the LM
+                rationalizes; deploying this would make Qwen 3.6
+                vision unpredictable in production.
+
+          - [ ] **Remaining work for B.5e CLOSURE (after Phase 7):**
+                1. Diagnose source of per-device non-determinism.
+                   Hypotheses (in order of likelihood):
+                   a. ggml_reduce sum-order across N devices
+                      (associative-order varies under async sched).
+                   b. Per-device cuBLAS algo selection varies.
+                   c. ggml_flash_attn_ext non-determinism (FA used
+                      via mgpu_build_attn_megatron_fused_qkv).
+                   d. ALGO0 pin not applied to CLIP-shaped matmuls.
+                2. Apply determinism fix (likely combination of:
+                   pin reduce-order, pin per-device cuBLAS algo,
+                   audit FA invocation under per-device dispatch).
+                3. Re-run 3-sample test at 1024 tokens; verify
+                   sha256 of normalized output matches across all
+                   samples.
+                4. Then close B.5e [x].
+
+                Performance reframe note (pre-determinism): one
+                1024-token sample is ~14.0s wall vs ~10+s CPU
+                baseline. Per-device-decomp overhead is real and
+                non-trivial at this scale; the original "30-50×
+                speedup vs CPU" framing in the plan was
+                overoptimistic.
           HARD prerequisite for B.7.
   - [ ] **B.6** — LM gate re-cert (HARD; deferred to maintenance window — production service uses both GPUs at capacity, test binary cannot allocate concurrent VRAM)
     - [ ] G3.a `test-production-np-determinism.sh` PASS NP∈{1,2,4,8}
