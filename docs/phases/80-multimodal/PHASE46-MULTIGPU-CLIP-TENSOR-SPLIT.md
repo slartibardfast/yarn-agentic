@@ -424,6 +424,23 @@ coverage, maximum possible speed.
                 `llama-build-context.cpp:1252-1268`). This is multi-day
                 work touching `clip_graph` infrastructure. Strict GRAPH-mode
                 approach per user 2026-05-26 ("we will not switch to layer").
+          - [ ] **Why a small CLIP-side patch cannot close this
+                (code-level confirmation, 2026-05-26).** The ik fork's
+                `ggml/src/ggml-cuda.cu:2126-2127` hardcodes
+                `dev[id].row_low = 0; dev[id].row_high = ne01` in
+                `ggml_cuda_op_mul_mat`'s per-device loop — there is no
+                code path that consults a split partition. The probe
+                `ggml_backend_buffer_is_cuda_split` exists at line 998
+                but the line-1000 comment confirms it is "only used in
+                debug builds currently" — the ik fork stripped upstream
+                llama.cpp's split-buft-aware mul_mat dispatch. Therefore
+                the LM's explicit per-device decomposition pattern is
+                the **only** mechanism in this fork that makes a
+                row-chunked weight work; CLIP must mirror it. A
+                hypothetical alternative — reintroducing upstream's
+                transparent split-buft mul_mat path in ggml-cuda.cu —
+                is also multi-day work and would diverge from the LM's
+                established approach.
           HARD prerequisite for B.7.
   - [ ] **B.6** — LM gate re-cert (HARD; deferred to maintenance window — production service uses both GPUs at capacity, test binary cannot allocate concurrent VRAM)
     - [ ] G3.a `test-production-np-determinism.sh` PASS NP∈{1,2,4,8}
