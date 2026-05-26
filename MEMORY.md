@@ -10576,3 +10576,105 @@ instrumentation localized the bug to the sched path in one
 maintenance window. The prior "multi-day per-device matmul decomp"
 and "ggml_reduce sum-order" speculations were all wrong because we
 didn't measure.
+
+## 2026-05-26 — PHASE 46 B.5e: NPC.4 attempt #1 NEGATIVE
+
+Tested NPC.B5e.4 fix-shape #2 ("tighten sched needs_sync to cover
+implicit peer reads"). Hypothesis: when `cpy_tensor_async` SUCCEEDS
+(the common CUDA path at ggml-backend.cpp:2109), the
+`ggml_backend_synchronize(input_backend)` in the fallback at line
+2110 is NEVER reached — so the source backend's stream is never
+explicitly drained. The cpy_tensor_async's internal event-wait was
+hypothesized to be insufficient.
+
+Patch: added explicit `ggml_backend_synchronize(input_backend)`
+before the cpy_tensor_async block when `sched->has_reduce &&
+input_backend != split_backend`.
+
+**Result: FAIL.** 3 samples at temp=0/seed=42 on test-1.jpeg at
+1024-token budget produced 3 different SHAs and 3 different image
+interpretations:
+- run-1: "The user wants me to identify what is in the image..." (sha d66ed4a4)
+- run-2: "I see a solid color background. It's a..." (sha 7e374b71)
+- run-3: "...It's a person, specifically a woman..." (sha 088d58c5)
+
+Evidence: `/tmp/phase46-b5e-verify/<TS>/`.
+
+The race is NOT at the cpy_tensor_async path of copy_inputs. It's
+somewhere else in the openmp parallel multi-backend eval path
+(ggml-backend.cpp:2180+). Patch reverted.
+
+**Remaining hypotheses for next session:**
+1. Race is in cross-thread NCCL submission. When one thread (the
+   reduce's backend thread) submits NCCL calls on MULTIPLE devices'
+   streams, the cross-stream visibility might not be guaranteed
+   relative to the other backend threads' prior submissions even
+   under omp barriers. Test: replace NCCL path with the ring
+   fallback to see if it changes behavior.
+2. Race in the reduce kernel itself — NCCL allReduce ordering may
+   vary across calls. Per NCCL docs this should be deterministic
+   for fixed comm+shape but the author's comment at reduce.cu:137
+   notes NCCL ergonomics issues.
+3. Race in a peer-access read within a kernel that the sched
+   doesn't gate (would be a kernel-level bug, not a sched bug).
+
+The eval-callback path's `ggml_backend_synchronize(split_backend)`
+after each node masks ALL of these because it's a CPU-blocking
+full-stream drain. Whichever sub-stream/cross-device race is the
+real one, the per-node sync swamps it.
+
+**Lesson:** the fix is at a different layer than I guessed. Need
+to localize further before another attempt — perhaps by extending
+the capture-bisect to instrument INSIDE the reduce kernel or by
+testing the ring-fallback empirically before structural fix.
+
+## 2026-05-26 — PHASE 46 B.5e: NPC.4 six-test diagnostic round NEGATIVE
+
+Followed up the NPC.3 localization with a series of env-gated
+structural sync tests. Evidence: `/tmp/phase46-b5e-tests/20260526T152848/`.
+
+| Test | Sync site / frequency                       | Result |
+|------|--------------------------------------------|--------|
+| C    | production (no extra sync)                 | FAIL   |
+| B    | per-split stream sync (eval thread)        | FAIL   |
+| E    | per-node stream sync (eval-callback path)  | FAIL   |
+| F    | full-device sync after every reduce        | FAIL   |
+| G    | full-device sync after cpy_tensor_async    | FAIL   |
+| H    | full-device sync per node (replaces E)     | FAIL   |
+| I    | per-thread stream sync per node            | IMA on LM init |
+| Cap  | per-node tensor_get (pageable DtoH)        | PASS   |
+
+**Key discovery:** per-backend streams are created with
+`cudaStreamNonBlocking` (`ggml/src/ggml-cuda/common.cuh:906`).
+This flag disables implicit synchronization with cudaStreamPerThread
+and the legacy default stream. Test I confirmed this empirically —
+LM init IMA when per-thread-stream sync is substituted.
+
+The capture's `ggml_backend_tensor_get` mechanism produces
+bit-determinism, but NONE of the targeted sync variants (per-
+node device sync, per-reduce, per-cpy, per-split) reproduce it.
+This rules out the simple hypothesis that "high-frequency
+device sync" is the fix. Something specific about the DtoH
+memcpy pattern is the actual sync-producing factor — and it's
+not yet localized.
+
+Lessons:
+- "Negative results land cheap when honest" — these six tests
+  collectively cost ~60 min of maintenance window time, ~5 LoC
+  each. Catalog of what doesn't work is valuable for next
+  session.
+- The next-session investigation should bisect WITHIN the
+  tensor_get behavior (e.g., remove the cudaMemcpyAsync, keep
+  only the cudaStreamSynchronize on cudaStreamPerThread — but
+  that crashes per Test I; or try cudaMemcpyAsync to PINNED
+  memory; or instrument the actual stream state).
+- Or take a different tack entirely: restructure libmgpu's
+  reduce to single-device gather (fix-shape option 1d from the
+  prior plan), avoiding the cross-device read pattern that the
+  unidentified race depends on.
+
+All six diagnostic env knobs left in source (OFF by default):
+`GGML_SCHED_PER_SPLIT_SYNC`, `GGML_REDUCE_POST_DEVICE_SYNC`,
+`GGML_CPY_POST_DEVICE_SYNC`, `GGML_CUDA_FULL_DEVICE_SYNC`,
+`GGML_CUDA_PER_THREAD_SYNC` (do not set — causes IMA),
+`CLIP_LOG_FINAL_HASH`.

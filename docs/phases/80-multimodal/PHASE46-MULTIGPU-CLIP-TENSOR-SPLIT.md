@@ -609,66 +609,87 @@ coverage, maximum possible speed.
                 via extended `clip_debug_eval_cb` (submodule
                 `e850fe0a`, FNV-1a per-node hash stream gated by
                 `CLIP_CAPTURE_HASH`) proves the libmgpu graph is
-                **bit-deterministic** under per-node sync.
+                **bit-deterministic** when each node has a
+                `ggml_backend_tensor_get` invoked after it.
 
-                Maintenance window 2026-05-26 14:38-14:48:
-                two encodes of `test-1.jpeg` at 1024-token budget
-                under `CLIP_DEBUG_SCHED=1 CLIP_CAPTURE_HASH=...`:
-                - run-1: 1714/1714 nodes hashed, response "brown pillow"
-                - run-2: 1714/1714 nodes hashed, response "brown pillow"
-                - `diff run-1.hashes run-2.hashes` = 0 lines
+                Maintenance window 2026-05-26 14:38-14:48: two
+                encodes of `test-1.jpeg` at 1024-token budget under
+                `CLIP_DEBUG_SCHED=1 CLIP_CAPTURE_HASH=...` produced
+                bit-identical 1714/1714 hash streams + identical
+                text output ("brown pillow"). Evidence:
+                `/tmp/phase46-b5e-capture/20260526T143751/`.
 
-                Evidence: `/tmp/phase46-b5e-capture/20260526T143751/`.
+                **NPC.B5e.4 SIX-TEST DIAGNOSTIC (2026-05-26
+                15:08-16:18):** added `CLIP_LOG_FINAL_HASH` and
+                ran a series of env-gated structural-sync variants
+                in production mode (no per-node sync). Evidence:
+                `/tmp/phase46-b5e-tests/20260526T152848/`.
 
-                Under per-node sync, EVERY node's output is
-                bit-identical across encodes, including all 54
-                ggml_reduce nodes. Hypotheses (a) ggml_reduce sum-
-                order, (b) cuBLAS algo selection, (d) ALGO0 pin
-                shape-mismatch are **disproven** as root causes —
-                they'd produce non-zero diff even under per-node
-                sync.
+                | Test | Sync                                     | Result |
+                |------|------------------------------------------|--------|
+                | C    | production async (no extra sync)         | FAIL   |
+                | B    | per-split stream sync (split's backend)  | FAIL   |
+                | E    | per-node stream sync (callback path)     | FAIL   |
+                | F    | full-device sync after every reduce      | FAIL   |
+                | G    | full-device sync after cpy_tensor_async  | FAIL   |
+                | H    | full-device sync per node (replaces E)   | FAIL   |
+                | I    | per-thread stream sync per node          | IMA on LM init |
+                | Cap  | per-node tensor_get (pageable DtoH)      | PASS   |
 
-                The non-determinism in production mode is purely
-                in the sched's **openmp parallel multi-backend
-                eval path** (ggml-backend.cpp:2180+,
-                `is_async && n_backends > 2 && split_mode_graph &&
-                has_reduce`). Per-node sync uses the eval-callback
-                path at backend.cpp:2135, which serializes nodes
-                and bypasses openmp parallelism — eliminates the
-                race.
+                All targeted-sync variants fail. Only the
+                comprehensive per-node `ggml_backend_tensor_get`
+                pattern produces determinism.
 
-                Existing race-fix (backend.cpp:1981-1988,
-                `has_reduce → sticky needs_sync`) is active but
-                evidently insufficient for CLIP's encode reduce
-                pattern. The bug is in the sched's cross-device
-                dependency tracking, not in libmgpu's graph
-                construction.
+                **Key discovery: per-backend streams are created
+                with `cudaStreamNonBlocking`**
+                (`ggml/src/ggml-cuda/common.cuh:906`). This flag
+                disables implicit synchronization with default
+                streams. So Test I (sync via cudaStreamPerThread)
+                does NOT sync the named non-blocking streams →
+                LM init IMA confirms.
 
-                1. NPC.B5e.4 fix-shape options:
-                   a. Force CLIP encode to use the eval-callback
-                      (per-node) sched path by default. Perf cost:
-                      ~3× encode latency. Correct-by-construction
-                      but ungenerous.
-                   b. Add stronger sched-level barriers for OP_REDUCE
-                      consumers (audit needs_sync semantics; the
-                      current sticky-true may not cover every
-                      cross-device read). Correct-by-construction
-                      via tighter sched contract.
-                   c. Disable NCCL in reduce.cu for the CLIP encode
-                      shape (`nhave==2 && dst->ne[1] >= 32`); use
-                      the ring fallback (which has explicit per-
-                      device event sync). Empirical; may also be
-                      necessary for the LM if production LM is also
-                      non-deterministic at GRAPH split-mode.
-                   d. Restructure libmgpu reduce to dispatch on a
-                      single device (gather all per-device partials
-                      → one device → reduce there → broadcast).
-                      Avoids the cross-device read pattern entirely.
-                      Large libmgpu refactor.
-                2. Apply the chosen fix.
-                3. Re-run 3-sample test at 1024 tokens; verify
-                   sha256 of normalized output matches across all
-                   samples.
+                **Open question:** what specifically does
+                `ggml_backend_cuda_buffer_get_tensor` (which uses
+                `cudaMemcpyAsync` to pageable host + cudaStream
+                Synchronize on cudaStreamPerThread) do that all
+                the targeted syncs don't? Hypotheses for next
+                session:
+                - The DtoH memcpy reads the destination side's
+                  per-device storage from each device through
+                  peer access; the read itself may force a
+                  device-fence that cudaDeviceSynchronize lacks
+                  on this hw (Quadro RTX 6000, CUDA 13.2).
+                - There may be a kernel-level race in a specific
+                  op (FA, mul_mat, soft_max) that ONLY high-
+                  frequency per-tensor reads happen to mask via
+                  read-side serialization.
+                - The capture's tensor_get is invoked per F32/F16
+                  /BF16 node (~1714 nodes); maybe the determinism
+                  requires sync at SPECIFIC nodes outside the
+                  reduce/cpy boundaries.
+
+                Diagnostic env knobs left in source (all OFF by
+                default, no production impact):
+                - `CLIP_LOG_FINAL_HASH=1`
+                - `GGML_SCHED_PER_SPLIT_SYNC=1`
+                - `GGML_REDUCE_POST_DEVICE_SYNC=1`
+                - `GGML_CPY_POST_DEVICE_SYNC=1`
+                - `GGML_CUDA_FULL_DEVICE_SYNC=1`
+                - `GGML_CUDA_PER_THREAD_SYNC=1` (causes IMA — do not set)
+
+                1. Next session: bisect WITHIN the capture's
+                   tensor_get behavior — separate the cudaStream
+                   Sync call from the cudaMemcpyAsync. Try sync
+                   without memcpy (already tested as H = fails).
+                   Try memcpy without sync (would test if the
+                   readback itself causes a fence). Or instrument
+                   to print exact stream contents.
+                2. Or pursue option 1a from the prior plan: force
+                   eval-callback path with no capture (matches
+                   Test E semantically; fails). Pursue option 1d
+                   instead: restructure libmgpu reduce to gather
+                   on one device. Large refactor.
+                3. Re-run 3-sample test; verify sha256 match.
                 4. Then close B.5e [x].
 
                 Performance reframe note (pre-determinism): one
