@@ -10724,3 +10724,57 @@ same gate.
 The diagnostic env knobs (Tests B, F, G, H, I, CLIP_LOG_FINAL_HASH)
 remain useful as future debugging tools but were probing the wrong
 layer this round.
+
+## 2026-05-26 — PHASE 46 B.5e: Test J NEGATIVE — clock-lock is NOT the fix
+
+Ran Test J: `sudo bash scripts/gpu-clocks.sh lock` (1455 MHz confirmed
+on both Quadro RTX 6000), then 3 vision-encode samples in pure
+production async mode (no extra env knobs except CLIP_LOG_FINAL_HASH).
+
+Result: 3 different SHAs, 3 different image interpretations.
+- J1: e344298495d432ff ("brown pillow")
+- J2: f71fc3b1672bb0f3 ("person, woman")
+- J3: 75211050486650d1 (different)
+
+Evidence: /tmp/phase46-b5e-tests-J/20260526T163051/.
+
+**The CLIP non-determinism is NOT pure operational variance.** The
+earlier "locked clocks would fix it" hypothesis was wrong. There IS
+a code-level race that survives even the LM determinism precondition.
+
+Production state after Test J: clocks remain locked at 1455 MHz
+(state change vs pre-test idle). The lock persists past systemd
+restart. Service running normally on CPU-vision.
+
+**Ruled-out factors** (this session, 7 tests, all NEGATIVE):
+- Operational clock variance (Test J)
+- Per-stream sync after each node (Test E)
+- Per-split sync at split boundaries (Test B)
+- Full-device sync after every reduce (Test F)
+- Full-device sync after cpy_tensor_async (Test G)
+- Full-device sync per node (Test H)
+- Source-backend sync at cpy_tensor_async path (NPC.4 attempt #1)
+- ggml_reduce sum-order, cuBLAS algo, FA non-determinism, ALGO0 pin
+  (disproven by NPC.3 capture-bisect)
+
+**Only known-PASS configuration:** per-node ggml_backend_tensor_get
+to PAGEABLE host memory via cudaMemcpyAsync + cudaStreamSynchronize
+on cudaStreamPerThread. ~1714 of these per encode in capture mode.
+
+**Refined hypotheses for next session:**
+1. The tensor_get pattern's effective sync mechanism is NOT
+   cudaStreamPerThread sync (Test I IMA proves it doesn't reach the
+   nonblocking compute streams). NOT cudaDeviceSynchronize (Test H
+   per-node fails). So WHAT is it?
+   - Try pinned host memory in a tensor_get — if determinism breaks,
+     pageable-DtoH-specific semantics are load-bearing.
+   - Try cudaMemcpyAsync to pageable memory followed by NOT syncing
+     — see if just the issuance does anything.
+2. The race might be in a SPECIFIC kernel that has internal non-
+   determinism only under async dispatch. The full tensor read might
+   serialize that kernel in a way other syncs don't.
+3. Restructure libmgpu reduce to single-device gather. Bypasses
+   the cross-device read pattern entirely.
+
+**Investigation is open. Bug is real, code-level, in the openmp
+parallel multi-backend eval path or a kernel it dispatches.**

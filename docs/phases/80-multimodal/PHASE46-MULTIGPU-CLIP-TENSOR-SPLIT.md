@@ -704,12 +704,37 @@ coverage, maximum possible speed.
                 ALL be operational variance rather than a code-
                 level race.
 
-                The simplest hypothesis is now: **CLIP encode is
+                The simplest hypothesis was: **CLIP encode is
                 deterministic under locked clocks, same as LM**.
-                No code fix needed — operational requirement.
-                Verifying this is Test J for next session:
-                `sudo bash scripts/gpu-clocks.sh lock` followed by
-                a 3-sample test in production async mode.
+
+                **Test J (2026-05-26 16:30, NEGATIVE):** ran
+                `sudo bash scripts/gpu-clocks.sh lock` (confirmed
+                1455 MHz on both GPUs), then 3 samples in pure
+                production async mode (no extra env knobs except
+                `CLIP_LOG_FINAL_HASH=1`). Result:
+                - J1: hash `e344298495d432ff` ("brown pillow")
+                - J2: hash `f71fc3b1672bb0f3` ("person, woman")
+                - J3: hash `75211050486650d1` (different)
+
+                **Three different hashes. Clock-lock alone is
+                NOT sufficient for CLIP determinism.** Evidence:
+                `/tmp/phase46-b5e-tests-J/20260526T163051/`.
+
+                The CLIP non-determinism is therefore NOT pure
+                operational variance — there IS a code-level race
+                that's independent of timing. The earlier reframe
+                (operational only, no code fix) was wrong.
+
+                The investigation resumes: the race is somewhere
+                in the openmp parallel multi-backend eval path
+                (NPC.3 localization remains valid), but neither
+                stream-level sync, full-device sync, post-reduce
+                sync, post-cpy sync, per-node sync, nor clock-
+                lock fixes it.
+
+                Production state after Test J: clocks remain
+                locked at 1455 MHz (the lock persists past systemd
+                restart). Service running normally on CPU-vision.
 
                 1. Next session: bisect WITHIN the capture's
                    tensor_get behavior — separate the cudaStream
