@@ -10216,3 +10216,88 @@ maintenance window.
 
 Phase 46 status: code-complete + all autonomous closables landed.
 Closure now binds entirely on maintenance-window empirical gates.
+
+## 2026-05-26 — Phase 46 maintenance-window run: RED, B.5e gap discovered
+
+User authorized stopping production and running all user-gated work.
+~4 min of production downtime; restarted cleanly at 07:14 UTC. The
+empirical run produced a critical finding that REOPENS Phase 46.
+
+**Pre-execution constraint learned (user, 2026-05-26):** "we don't
+have enough vram for single-gpu baseline." Even single-device CLIP
+encode at the production LM (~6.6 GiB per GPU) + 256k KV (~5 GiB per
+GPU) + cuBLAS scratch (~1.5 GiB per GPU) residency OOMs on
+`cudaGraphInstantiate`. §11.1 baseline is structurally unobtainable;
+B.7's "≤ 1.3× single-GPU" gate has no reference number to multiply.
+B.7 reframed in `docs/phases/80-multimodal/PHASE46-...md` §10 to:
+"encode completes successfully under production config; median latency
+recorded as the new reference (no ratio)."
+
+**Maintenance-run finding (RED).** Multi-GPU CLIP path enabled with
+`--mmproj-devices CUDA0,CUDA1 --mmproj-tensor-split 1,1
+--mmproj-split-mode graph --mmproj-smf16`. Server reached /health=200
+in 4 s; loader emitted:
+- `clip_ctx: multi-backend init: 2 devices requested`
+- `clip_ctx: P2 peer-access gate PASS for 2 CUDA devices`
+- `load_tensors: B.5b multi-device weight residency enabled (n_cuda=2)`
+- `load_tensors: B.5b split-buf allocated, 111 split tensors`
+- `alloc_compute_meta: graph splits = 1, nodes = 3739`  ← **gap**
+
+That last line is the smoking gun. The ggml backend scheduler chose
+**one split** for the 3739-node CLIP graph despite both backends being
+registered. The encode then OOM'd on `cudaGraphInstantiate` at device
+0 — same Phase 35 §15 wall the phase was designed to solve.
+
+**Reproduced at smaller budget.** Re-ran with `--image-min-tokens 256
+--image-max-tokens 256` (4× smaller working set). Same `graph splits
+= 1`, same OOM. Not a memory-pressure-only issue — there's a
+structural gap.
+
+**Diagnosis.** B.5b distributes WEIGHTS correctly (111 split tensors
+confirmed). What B.5b does NOT do: make the input/activation tensors
+multi-device-aware. The ggml scheduler routes graph nodes based on
+where their inputs live; if all inputs are single-device, the entire
+graph ends up single-device regardless of weight placement.
+
+**New required sub-step B.5e — graph partitioning.** HARD prereq for
+B.7. Options to investigate:
+1. Multi-device-aware buffer type for input/activation tensors in
+   `examples/mtmd/clip.cpp:3500+` get_tensor lambda
+2. Explicit cross-device boundary markers (split tensor `extra`
+   propagated to compute graph nodes)
+3. `ggml_backend_sched_new` config hints
+
+The LM side achieves this naturally because its embedding inputs and
+activation tensors live in `split_buft` via the per-layer struct. CLIP
+needs the equivalent integration on the activation side.
+
+**Bug fixes landed this session:**
+1. `scripts/verify-multigpu-clip.sh` pre-flight `strings | grep -q`
+   was hitting SIGPIPE under `set -o pipefail` (grep -q exits early →
+   strings gets SIGPIPE → pipeline returns non-zero → false abort).
+   Fixed by `grep -c ... >/dev/null` (commit `5c73afe`).
+2. `scripts/deploy-llama-server.sh` Phase-46 guard verified
+   end-to-end: positive case (current build) PASS; negative case
+   (synthetic Phase-46-stripped build with "multi-backend init"
+   string nulled and `ggml_mgpu_create_split` symbol renamed) ABORT
+   exit 1 with expected message.
+
+**Status:**
+- Phase 46 OPEN (B.5b reopened to [~], B.5e new, B.7 gate reframed).
+- New build NOT deployed — deploy guard would correctly pass it, but
+  the path it enables is empirically broken.
+- Production restored to CPU-vision; /health 200 at 07:14 UTC.
+- Submodule head still at `ef7c41a4`; no new submodule commit needed
+  until B.5e lands.
+- All 9 Phase-46 submodule commits are pushed; top-level pointer
+  matches; nothing held.
+
+**Key files for B.5e work:**
+- `ik_llama.cpp/examples/mtmd/clip.cpp:565+` — sched_new call site
+- `ik_llama.cpp/examples/mtmd/clip.cpp:3500+` — get_tensor lambda
+  with `is_splittable` predicate (currently weight-only)
+- `ik_llama.cpp/ggml/src/ggml-backend.cpp` — sched-partitioning logic
+- `ik_llama.cpp/src/llama-build-context.cpp` — LM-side reference for
+  how activation tensors get split_buft assignment
+- `/tmp/phase46-multigpu-clip/run-20260526T071133/server.stderr` —
+  full evidence journal
