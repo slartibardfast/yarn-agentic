@@ -10446,3 +10446,29 @@ that two prior sessions speculated incorrectly about for
 ~100k tokens. Diagnose, don't pattern-match.
 
 Evidence: `/tmp/phase46-b5e-debug/run-20260526T101234/server.stderr`.
+
+## 2026-05-26 — PHASE 46 B.5e: position_embd excluded; static audit closes the exclusion path
+
+Channel A re-run after the `position_embd` exclusion landed
+(submodule 2acca940). Encode advances past nodes 21-23 (positional
+grid OK). New IMA at **node 50, op=MUL_MAT, src0=
+v.blk.0.attn_out.weight, src0_buft=CUDA_Split** — the case the
+prior pattern-matching diagnosis predicted.
+
+**Static audit of the remaining 83 split tensors** (user-prompted
+2026-05-26): every CUDA_Split-bound tensor in qwen3vl is consumed
+exclusively by `ggml_mul_mat` in shared `build_attn` / `build_ffn`
+helpers. `ggml_cuda_op_mul_mat` cannot read row-chunked src0
+(ggml-cuda.cu:2126-2127). **No further small `is_splittable`
+exclusions exist that would close B.5e.** The audit saves all
+future maintenance windows that would otherwise iterate
+empirically through attn_out → ffn_up → ffn_gate → ffn_down → ...
+
+User confirmed direction 2026-05-26: **multi-day per-device matmul
+decomposition port from LM (llama-build-context.cpp:1240-1290)
+into clip.cpp shared helpers**. Reimplement-in-clip.cpp preferred
+(no LM changes → no B.6 re-cert burden). All 13 architecture
+builders inherit via the helpers. Performance characteristics
+match LM production pattern (~5-20% per-device-decomp overhead;
+single-device baseline is impossible; real baseline is CPU-vision
+which multi-GPU beats by ~30-50×).

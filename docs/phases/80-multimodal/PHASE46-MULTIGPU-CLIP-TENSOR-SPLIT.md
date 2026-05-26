@@ -502,13 +502,59 @@ coverage, maximum possible speed.
 
                 Whether this exclusion alone closes B.5e or whether
                 additional small exclusions are needed is unknown until
-                the next debug capture under the patch. **The shape of
-                the fix is no longer "multi-day port"** — it is one or
-                a small set of `is_splittable` exclusions, each found
-                empirically by another Channel A run.
+                the next debug capture under the patch.
 
                 Evidence: `/tmp/phase46-b5e-debug/run-20260526T101234/server.stderr`
                 (3.7 MB; full CLIP_DBG NODE trace through node 23 + IMA).
+
+          - [x] **Channel A re-run with `position_embd` exclusion landed
+                (2026-05-26 run-20260526T103906).** Encode now advances
+                past nodes 21-23 (positional grid OK). New IMA fires at
+                **node 50, op=MUL_MAT, src0=`v.blk.0.attn_out.weight`,
+                src0_buft=CUDA_Split**. This IS a matmul on a row-chunked
+                weight — the case the prior pattern-matching diagnosis
+                identified. The position_embd UPSCALE was a non-matmul
+                anomaly that fired *before* the first matmul; with it
+                excluded, the first matmul fires the IMA the prior
+                speculation predicted.
+
+          - [x] **Static audit of remaining 83 split tensors
+                (2026-05-26, after position_embd exclusion).** Every
+                CUDA_Split-bound tensor in qwen3vl (and every other
+                clip_graph architecture) is consumed exclusively by
+                `ggml_mul_mat` in shared helpers:
+                - `layer.o_w` (attn_out) → `build_attn` mul_mat
+                - `layer.ff_up_w`, `ff_gate_w`, `ff_down_w` → `build_ffn`
+                  mul_mats
+                - `model.mm_{0,1}_w` (merger) → direct mul_mat in
+                  `build_qwen3vl`
+                - `layer.deepstack_fc{1,2}_w` → `build_ffn` mul_mat
+                  (deepstack branch)
+
+                `ggml_cuda_op_mul_mat` cannot read row-chunked src0
+                (`ggml-cuda.cu:2126-2127` hardcodes `row_low=0,
+                row_high=ne01`). **Therefore: no further small
+                `is_splittable` exclusions exist that would close B.5e.**
+                The empirical iteration would just hit the next
+                attn_out / ffn_up matmul. The static audit confirms
+                this without further maintenance windows.
+
+          - [ ] **Remaining work (sole viable path under strict GRAPH-
+                mode, user-confirmed 2026-05-26): per-device matmul
+                decomposition port from LM (`llama-build-context.cpp:
+                1240-1290`) into clip.cpp's shared `build_attn` /
+                `build_ffn` helpers.** Reimplement-in-clip.cpp path
+                preferred (no LM code changes → no B.6 re-cert
+                burden). Multi-session work, qwen3vl-first; all 13
+                architecture builders inherit via the shared helpers.
+                Performance characteristics match the LM's production
+                pattern (~5-20% per-device-decomp overhead vs
+                hypothetical single-device; single-device is
+                structurally impossible at production residency, so
+                the real baseline is CPU-vision which multi-GPU GPU
+                vision beats by ~30-50×). See plan file
+                `/home/dconnolly/.claude/plans/examine-how-we-do-serene-liskov.md`
+                (next iteration).
           HARD prerequisite for B.7.
   - [ ] **B.6** — LM gate re-cert (HARD; deferred to maintenance window — production service uses both GPUs at capacity, test binary cannot allocate concurrent VRAM)
     - [ ] G3.a `test-production-np-determinism.sh` PASS NP∈{1,2,4,8}
