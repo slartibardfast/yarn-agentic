@@ -604,17 +604,68 @@ coverage, maximum possible speed.
                 vision unpredictable in production.
 
           - [ ] **Remaining work for B.5e CLOSURE (after Phase 7):**
-                1. Diagnose source of per-device non-determinism.
-                   Hypotheses (in order of likelihood):
-                   a. ggml_reduce sum-order across N devices
-                      (associative-order varies under async sched).
-                   b. Per-device cuBLAS algo selection varies.
-                   c. ggml_flash_attn_ext non-determinism (FA used
-                      via mgpu_build_attn_megatron_fused_qkv).
-                   d. ALGO0 pin not applied to CLIP-shaped matmuls.
-                2. Apply determinism fix (likely combination of:
-                   pin reduce-order, pin per-device cuBLAS algo,
-                   audit FA invocation under per-device dispatch).
+
+                **NPC.B5e.3 LOCALIZED (2026-05-26):** Capture-bisect
+                via extended `clip_debug_eval_cb` (submodule
+                `e850fe0a`, FNV-1a per-node hash stream gated by
+                `CLIP_CAPTURE_HASH`) proves the libmgpu graph is
+                **bit-deterministic** under per-node sync.
+
+                Maintenance window 2026-05-26 14:38-14:48:
+                two encodes of `test-1.jpeg` at 1024-token budget
+                under `CLIP_DEBUG_SCHED=1 CLIP_CAPTURE_HASH=...`:
+                - run-1: 1714/1714 nodes hashed, response "brown pillow"
+                - run-2: 1714/1714 nodes hashed, response "brown pillow"
+                - `diff run-1.hashes run-2.hashes` = 0 lines
+
+                Evidence: `/tmp/phase46-b5e-capture/20260526T143751/`.
+
+                Under per-node sync, EVERY node's output is
+                bit-identical across encodes, including all 54
+                ggml_reduce nodes. Hypotheses (a) ggml_reduce sum-
+                order, (b) cuBLAS algo selection, (d) ALGO0 pin
+                shape-mismatch are **disproven** as root causes —
+                they'd produce non-zero diff even under per-node
+                sync.
+
+                The non-determinism in production mode is purely
+                in the sched's **openmp parallel multi-backend
+                eval path** (ggml-backend.cpp:2180+,
+                `is_async && n_backends > 2 && split_mode_graph &&
+                has_reduce`). Per-node sync uses the eval-callback
+                path at backend.cpp:2135, which serializes nodes
+                and bypasses openmp parallelism — eliminates the
+                race.
+
+                Existing race-fix (backend.cpp:1981-1988,
+                `has_reduce → sticky needs_sync`) is active but
+                evidently insufficient for CLIP's encode reduce
+                pattern. The bug is in the sched's cross-device
+                dependency tracking, not in libmgpu's graph
+                construction.
+
+                1. NPC.B5e.4 fix-shape options:
+                   a. Force CLIP encode to use the eval-callback
+                      (per-node) sched path by default. Perf cost:
+                      ~3× encode latency. Correct-by-construction
+                      but ungenerous.
+                   b. Add stronger sched-level barriers for OP_REDUCE
+                      consumers (audit needs_sync semantics; the
+                      current sticky-true may not cover every
+                      cross-device read). Correct-by-construction
+                      via tighter sched contract.
+                   c. Disable NCCL in reduce.cu for the CLIP encode
+                      shape (`nhave==2 && dst->ne[1] >= 32`); use
+                      the ring fallback (which has explicit per-
+                      device event sync). Empirical; may also be
+                      necessary for the LM if production LM is also
+                      non-deterministic at GRAPH split-mode.
+                   d. Restructure libmgpu reduce to dispatch on a
+                      single device (gather all per-device partials
+                      → one device → reduce there → broadcast).
+                      Avoids the cross-device read pattern entirely.
+                      Large libmgpu refactor.
+                2. Apply the chosen fix.
                 3. Re-run 3-sample test at 1024 tokens; verify
                    sha256 of normalized output matches across all
                    samples.

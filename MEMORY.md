@@ -10515,3 +10515,64 @@ is the BINDING closure gate. Test for that explicitly before claiming
 closure next time.
 
 Submodule head: 473cdbc4. Pushed.
+
+## 2026-05-26 — PHASE 46 B.5e: NPC localization (capture-bisect)
+
+The 2026-05-26 13:55 closure attempt mis-diagnosed the determinism
+bug. Hypotheses (a) ggml_reduce sum-order, (b) per-device cuBLAS algo,
+(c) FA non-determinism, (d) ALGO0 pin shape-mismatch are ALL
+**disproven** as root cause by the capture-bisect run today.
+
+**Capture-bisect** (submodule `e850fe0a`): extended
+`clip_debug_eval_cb` in clip.cpp with an `CLIP_CAPTURE_HASH=path` env
+knob that writes a per-node FNV-1a hash stream. Run two encodes,
+diff the hash files — first differing line names the divergent op.
+
+**Maintenance window 14:38-14:48 UTC**: two encodes of `test-1.jpeg`
+at 1024-token budget under `CLIP_DEBUG_SCHED=1 CLIP_CAPTURE_HASH=...`.
+
+Result:
+- run-1: 1714 nodes hashed, response "brown pillow"
+- run-2: 1714 nodes hashed, response "brown pillow"
+- `diff run-1.hashes run-2.hashes` → **0 lines**
+
+Evidence: `/tmp/phase46-b5e-capture/20260526T143751/`.
+
+Under per-node sync, the CLIP encode is fully bit-deterministic. The
+libmgpu graph IS correct by construction. All 54 reduce nodes
+produce identical bytes across encodes.
+
+**The race is in `ggml-backend.cpp`'s openmp parallel multi-backend
+eval path** (line 2180+), gated by `is_async && n_backends > 2 &&
+split_mode_graph && has_reduce`. Per-node sync uses the
+eval-callback path at line 2135 instead — serializes nodes via
+`ggml_backend_synchronize` after every node — and bypasses the omp
+parallel path entirely.
+
+The previously-shipped fix at backend.cpp:1981-1988
+(`k_set_sync = sched->has_reduce` keeps `needs_sync` sticky-true)
+is active but evidently insufficient for the CLIP reduce pattern.
+The fix author's comment names the exact bug shape: "peer P2P
+writes from the reduce broadcast leave each participating backend's
+stream with async writes that must be re-drained on every
+cross-backend input read." Sticky-sync only covers reads tracked
+as `split->inputs[]`; an implicit peer-access read from within a
+kernel is not covered.
+
+**NPC.B5e.4 fix-shape options** (next session):
+
+1. Force CLIP encode to use the eval-callback path by default
+   (install a no-op `callback_eval` for the CLIP encode sched).
+   Cost: ~3× encode latency. Correct-by-construction; cheapest fix.
+2. Tighten sched needs_sync to cover implicit peer reads (audit
+   ggml_backend_sched_copy_inputs). Correct-by-construction via
+   sched contract; potentially benefits LM too.
+3. Restructure libmgpu reduce to single-device gather. Large
+   refactor.
+4. Disable NCCL in reduce.cu for the CLIP encode shape. Empirical.
+
+Lesson: the NPC playbook works. Two empirical runs + 48 LoC of
+instrumentation localized the bug to the sched path in one
+maintenance window. The prior "multi-day per-device matmul decomp"
+and "ggml_reduce sum-order" speculations were all wrong because we
+didn't measure.
