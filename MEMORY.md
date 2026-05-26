@@ -10415,3 +10415,34 @@ B.5e cannot close in a single session. Plan-A (port the LM
 pattern into `clip_graph` for the qwen3vl path) is the only
 forward path; it needs a dedicated multi-session effort, not
 a maintenance window.
+
+## 2026-05-26 — PHASE 46 B.5e IMA LOCALIZED: position-embd UPSCALE, not matmul
+
+Channel A debug bringup (CLIP_DEBUG_SCHED env-gated per-node eval
+callback in clip_ctx, submodule a431854e) captured the actual
+offending op. The prior "multi-day per-device matmul decomposition
+port" diagnosis — landed in MEMORY twice this session — was wrong.
+
+**Actual IMA: node 23 of CLIP encode, op=GGML_OP_UPSCALE,
+src0=`v.position_embd.weight (reshaped) (permuted)`,
+src0_buft=CUDA_Split.** Chain: `v.position_embd.weight` → RESHAPE
+(node 21) → PERMUTE (node 22) → UPSCALE (node 23, IMA).
+
+The UPSCALE kernel reads `src0->data` assuming contiguous local
+storage; row-chunked CUDA_Split storage gives a kernel on device 0
+a pointer that only covers half the rows → reads past its slice →
+IMA. Has nothing to do with matmul kernels.
+
+**Implied fix shape: small targeted is_splittable exclusion.**
+B.5b's predicate at clip.cpp:3541+ already excludes `qkv` (the
+prior fused-QKV exclusion); extend it to also exclude
+`position_embd` (and likely any embedding-like tensor that flows
+into non-matmul ops). Position embeddings are 5-10 MiB at most;
+duplicating per-device is essentially free.
+
+Lesson reinforced: speculation is cheap until it's wrong. The
+30-minute Channel A instrumentation produced the actual answer
+that two prior sessions speculated incorrectly about for
+~100k tokens. Diagnose, don't pattern-match.
+
+Evidence: `/tmp/phase46-b5e-debug/run-20260526T101234/server.stderr`.

@@ -441,6 +441,74 @@ coverage, maximum possible speed.
                 transparent split-buft mul_mat path in ggml-cuda.cu —
                 is also multi-day work and would diverge from the LM's
                 established approach.
+          - [x] **Diagnosis pinned (2026-05-26 Channel A capture, submodule
+                pending).** Instrumented `clip_ctx` with an env-gated
+                `CLIP_DEBUG_SCHED` per-node eval callback that forces
+                `ggml_backend_synchronize` after each sched node, so a
+                CUDA IMA surfaces at the offending node rather than at
+                the global sync fence. Maintenance run captured the
+                following at `/tmp/phase46-b5e-debug/run-20260526T101234/`:
+
+                ```
+                [CLIP_DBG NODE    21 op=RESHAPE  name=v.position_embd.weight (reshaped)
+                                  ne=[1152, 48, 48, 1]  src0=v.position_embd.weight
+                                  src0_op=NONE  src0_buft=CUDA_Split]
+                [CLIP_DBG OK      21]
+                [CLIP_DBG NODE    22 op=PERMUTE  name=v.position_embd.weight (reshaped) (permuted)
+                                  ne=[48, 48, 1152, 1]  src0_op=RESHAPE  src0_buft=CUDA_Split]
+                [CLIP_DBG OK      22]
+                [CLIP_DBG NODE    23 op=UPSCALE  name=node_23
+                                  ne=[36, 26, 1152, 1]  src0_op=PERMUTE  src0_buft=CUDA_Split]
+                CUDA error: an illegal memory access was encountered
+                  in function ggml_backend_cuda_synchronize at ggml-cuda.cu:4499
+                ```
+
+                **Offending op: `GGML_OP_UPSCALE` (node 23), src0 chain
+                `v.position_embd.weight → RESHAPE → PERMUTE → UPSCALE`,
+                src0 storage `CUDA_Split` (row-chunked across both
+                GPUs).** This is the qwen3vl encoder's positional-embed
+                upscale to match the actual image-grid (the 48×48
+                positional grid is upscaled to 36×26 for this image
+                budget). It happens at node 23 of the encode — far
+                BEFORE any layer loop.
+
+                **The prior multi-day "per-device matmul decomposition
+                port" diagnosis was wrong.** The IMA is not in any
+                MUL_MAT — it is in an UPSCALE of a row-chunked
+                positional embedding that B.5b should never have
+                row-chunked in the first place.
+
+                **Implied fix shape — small, targeted patch to
+                `is_splittable` at clip.cpp:3541+.** Extend the
+                existing `qkv` exclusion to also exclude positional
+                embeddings (and likely any small embedding-like
+                tensor that flows into non-matmul ops such as
+                UPSCALE / INTERPOLATE / IM2COL). Pattern:
+
+                ```cpp
+                // PHASE 46 B.5e — exclude positional embeddings.
+                // They are reshaped/permuted/upscaled before use; the
+                // CUDA UPSCALE kernel reads src0->data contiguously
+                // and IMAs on row-chunked storage. Empirically caught
+                // at clip.cpp encode node 23 on 2026-05-26.
+                if (strstr(n, "position_embd") != nullptr) {
+                    return false;
+                }
+                ```
+
+                Position embeddings are small (~5–10 MiB at f16/f32);
+                duplicating them on each device is essentially free
+                (single-digit MiB of redundant residency).
+
+                Whether this exclusion alone closes B.5e or whether
+                additional small exclusions are needed is unknown until
+                the next debug capture under the patch. **The shape of
+                the fix is no longer "multi-day port"** — it is one or
+                a small set of `is_splittable` exclusions, each found
+                empirically by another Channel A run.
+
+                Evidence: `/tmp/phase46-b5e-debug/run-20260526T101234/server.stderr`
+                (3.7 MB; full CLIP_DBG NODE trace through node 23 + IMA).
           HARD prerequisite for B.7.
   - [ ] **B.6** — LM gate re-cert (HARD; deferred to maintenance window — production service uses both GPUs at capacity, test binary cannot allocate concurrent VRAM)
     - [ ] G3.a `test-production-np-determinism.sh` PASS NP∈{1,2,4,8}
