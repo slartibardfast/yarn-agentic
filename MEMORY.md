@@ -10384,3 +10384,34 @@ implementing only the most-visible piece (the marker) gets you
 PART of the way — visible enough to mislead (graph splits = 55!) but
 not enough to actually work. Read the LM site END-TO-END before
 declaring the CLIP-side mirror complete.
+
+## 2026-05-26 — PHASE 46 B.5e code-level: no transparent split-buft path in ik fork
+
+Read `ggml/src/ggml-cuda.cu` end-to-end while diagnosing the
+post-marker IMA. Concrete finding to pin so future sessions
+don't speculate: the ik fork stripped upstream llama.cpp's
+transparent split-buft mul_mat dispatch.
+
+- `ggml-cuda.cu:2126-2127` (`ggml_cuda_op_mul_mat` per-device loop)
+  hardcodes `dev[id].row_low = 0; dev[id].row_high = ne01`. There is
+  no override based on whether `src0->buffer` is split.
+- `ggml-cuda.cu:998-1000` — `ggml_backend_buffer_is_cuda_split`
+  predicate exists but the comment confirms "only used in debug
+  builds currently".
+- `ggml-cuda.cu:4111-4117` (`GGML_OP_MUL_MAT` case in
+  `ggml_cuda_compute_forward`) unconditionally calls
+  `ggml_cuda_mul_mat(ctx, src0, src1, dst, ...)` — no split-aware
+  branch above the dispatcher.
+
+Implication for B.5e: only the LM's pattern (read `weight->extra`
+as `ggml_split_tensor_t *`, loop over devices, call mul_mat with
+`extra->splits[id]` per-device sub-tensor, REDUCE the partials)
+will make a row-chunked CLIP weight work in this fork. There is
+no "add a small split-buft fast path in ggml-cuda" alternative
+that would close B.5e — it would be a multi-day port of
+upstream's stripped infrastructure.
+
+B.5e cannot close in a single session. Plan-A (port the LM
+pattern into `clip_graph` for the qwen3vl path) is the only
+forward path; it needs a dedicated multi-session effort, not
+a maintenance window.
