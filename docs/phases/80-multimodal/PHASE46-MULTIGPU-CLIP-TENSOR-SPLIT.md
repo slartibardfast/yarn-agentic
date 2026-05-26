@@ -378,12 +378,31 @@ coverage, maximum possible speed.
           the production residency — reframe the test to inter-run
           determinism (same image → same output bytes across N multi-GPU runs).
     - [ ] **B.5e (NEW, 2026-05-26)** — graph partitioning across both
-          backends. Real-host evidence: `graph splits = 1` despite both
-          backends registered. Either (a) make the input/activation
-          buffer types multi-device-aware so the sched assigns nodes
-          across devices, or (b) emit explicit boundary tensors / scheduler
-          hints. Code: `examples/mtmd/clip.cpp:3500+` (get_tensor lambda)
-          and `clip.cpp:565+` (sched init). HARD prerequisite for B.7.
+          backends. **Architectural diagnosis (confirmed by read-through
+          2026-05-26):** `clip_graph::ctx0` is a meta-only context
+          (`no_alloc=true`, `clip.cpp:692-697`); activation tensors get
+          no buffer-type assignment until `ggml_backend_sched_alloc_graph`
+          chooses one. The sched's default heuristic assigns the entire
+          3739-node graph to one backend because (a) the input image
+          tensor has no buffer-type preference, (b) split_buft weights
+          appear compatible with any single CUDA backend (peer access
+          available), and (c) keeping the graph on one device minimises
+          cross-backend transitions. The LM avoids this by emitting
+          row-chunked matmul ops in its graph builder that explicitly
+          require cross-device reduction (the GRAPH-mode primitives
+          `llama_split_tensor`, `ggml_split_tensor_t`); CLIP's graph
+          builder has no equivalent. Three remediation paths:
+          1. **Row-chunked matmuls in `clip_image_build_graph`** (matches
+             LM's GRAPH-mode; multi-day port; touches every architecture
+             builder in clip.cpp `build_qwen3vl` / `build_siglip` / etc.).
+          2. **Explicit layer-pinning via
+             `ggml_backend_sched_set_tensor_backend`** (LAYER-mode
+             equivalent; scope pivot — original §12.1 chose GRAPH over
+             LAYER; needs user authorization).
+          3. **Custom multi-device-aware activation buffer type**
+             (research path; uncertain feasibility against the ik fork's
+             buffer-type API).
+          HARD prerequisite for B.7. None of these is a small patch.
   - [ ] **B.6** — LM gate re-cert (HARD; deferred to maintenance window — production service uses both GPUs at capacity, test binary cannot allocate concurrent VRAM)
     - [ ] G3.a `test-production-np-determinism.sh` PASS NP∈{1,2,4,8}
     - [ ] G3.c `r5-probe-c4.sh` 0/20 divergences
