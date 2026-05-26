@@ -57,8 +57,11 @@ done
 
 # Confirm the binary actually contains the Phase-46 path; otherwise the
 # harness silently exercises CPU-vision or a single-backend path.
+# NOTE: avoid `strings | grep -q` — grep -q exits early on first match,
+# which sends SIGPIPE to strings; with `set -o pipefail` the pipeline
+# then returns non-zero even though the match was found.
 if ! strings "$(dirname "$BIN")/../examples/mtmd/libmtmd.so" 2>/dev/null \
-    | grep -q 'multi-backend init'; then
+    | grep -c 'multi-backend init' >/dev/null; then
     log "ABORT: libmtmd.so lacks 'multi-backend init' string — Phase-46 not in this build"
     exit 2
 fi
