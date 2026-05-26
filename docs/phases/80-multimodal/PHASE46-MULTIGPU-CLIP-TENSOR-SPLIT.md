@@ -759,6 +759,16 @@ coverage, maximum possible speed.
                 the readback acts as the peer-access fence.
                 Estimated 10-15 LoC.
 
+                **Test M LANDED (submodule `c2d750f3`):**
+                `ggml_reduce_post_fence` helper added; called from
+                all four return sites (NCCL, large ring, small
+                p2p, fallback). 37 LoC. Default-on;
+                `GGML_REDUCE_DISABLE_FENCE` is the rollback
+                escape hatch. Build clean. Verification pending —
+                requires maintenance-window 3-sample
+                `CLIP_LOG_FINAL_HASH=1` run (production currently
+                on CPU vision).
+
                 If Test M restores determinism in production async
                 mode, **B.5e closes** with a small surgical fix
                 that does NOT require:
