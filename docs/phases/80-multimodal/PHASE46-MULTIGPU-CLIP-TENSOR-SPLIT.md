@@ -335,17 +335,29 @@ coverage, maximum possible speed.
 ## 10. Checkboxes
 
 > **2026-05-26 maintenance-run finding (RED).** End-to-end empirical
-> verification (~4 min of production downtime) revealed that the
-> weight-distribution layer (B.5b) is necessary but not sufficient. The
-> ggml backend scheduler produces `graph splits = 1` for the 3739-node
-> CLIP encode — meaning the *compute graph* still single-devices even
-> though both backends are registered, P2 peer-access PASSes, and 111
-> weight tensors land in the multi-device split-buf. OOMs on
-> `cudaGraphInstantiate` at both 1024 and 256 image-token budgets. New
-> required sub-step **B.5e graph-partitioning** added below. Phase 46
-> remains OPEN and the new build is NOT deployed. Production is back on
-> CPU-vision.
-> Evidence: `/tmp/phase46-multigpu-clip/run-20260526T071133/server.stderr`.
+> verification revealed two stacked structural gaps:
+>
+> **Run 1 (07:11 UTC, ~4 min downtime).** B.5b weights distribute but
+> `alloc_compute_meta: graph splits = 1` for the 3739-node encode →
+> entire compute graph single-devices → OOM on `cudaGraphInstantiate`
+> at 1024 and 256 image-token budgets. Evidence:
+> `/tmp/phase46-multigpu-clip/run-20260526T071133/server.stderr`.
+>
+> **Run 2 (07:47 UTC, ~25 min downtime, after B.5e partial: 0xff marker
+> + fused-QKV exclusion landed in submodule `d8242a71`).** Partitioning
+> now works: `graph splits = 55` (perfectly matches prediction of 27
+> layers × 2 markers + 1). But encode hits `CUDA error: an illegal
+> memory access was encountered` at `cudaStreamSynchronize` AFTER
+> partitioning succeeds. The 0xff marker forces sched partition
+> boundaries but the data dependencies between splits aren't honored
+> without LM's complementary cross-device helpers (`do_split_norm`,
+> `get_input_tensor_sm_graph`, explicit `GGML_OP_REDUCE`, per-device
+> matmul decomposition `split_u`/`split_g`/`split_d`).
+> Evidence: `/tmp/phase46-b5e-v3.stderr`.
+>
+> Phase 46 remains OPEN. New build is NOT deployed. Production is back
+> on CPU-vision, `/health = 200` confirmed at 07:14 + 07:52 UTC.
+> Strict GRAPH-mode approach per user ("we will not switch to layer").
 
 - [x] Step 1: multi-backend parsing in clip.cpp (landed in B.5 part 1 — see below)
 - [~] **Step 2: Path B sub-steps (§12.4) — partial; see status below**
@@ -377,32 +389,42 @@ coverage, maximum possible speed.
           structurally unverifiable since single-GPU CLIP encode OOMs at
           the production residency — reframe the test to inter-run
           determinism (same image → same output bytes across N multi-GPU runs).
-    - [ ] **B.5e (NEW, 2026-05-26)** — graph partitioning across both
-          backends. **Architectural diagnosis (confirmed by read-through
-          2026-05-26):** `clip_graph::ctx0` is a meta-only context
-          (`no_alloc=true`, `clip.cpp:692-697`); activation tensors get
-          no buffer-type assignment until `ggml_backend_sched_alloc_graph`
-          chooses one. The sched's default heuristic assigns the entire
-          3739-node graph to one backend because (a) the input image
-          tensor has no buffer-type preference, (b) split_buft weights
-          appear compatible with any single CUDA backend (peer access
-          available), and (c) keeping the graph on one device minimises
-          cross-backend transitions. The LM avoids this by emitting
-          row-chunked matmul ops in its graph builder that explicitly
-          require cross-device reduction (the GRAPH-mode primitives
-          `llama_split_tensor`, `ggml_split_tensor_t`); CLIP's graph
-          builder has no equivalent. Three remediation paths:
-          1. **Row-chunked matmuls in `clip_image_build_graph`** (matches
-             LM's GRAPH-mode; multi-day port; touches every architecture
-             builder in clip.cpp `build_qwen3vl` / `build_siglip` / etc.).
-          2. **Explicit layer-pinning via
-             `ggml_backend_sched_set_tensor_backend`** (LAYER-mode
-             equivalent; scope pivot — original §12.1 chose GRAPH over
-             LAYER; needs user authorization).
-          3. **Custom multi-device-aware activation buffer type**
-             (research path; uncertain feasibility against the ik fork's
-             buffer-type API).
-          HARD prerequisite for B.7. None of these is a small patch.
+    - [~] **B.5e (NEW, 2026-05-26 partial, submodule `d8242a71`)** — graph
+          partitioning across both backends. Two empirically-verified-correct
+          improvements landed; both necessary, both insufficient on their own.
+          - [x] `mark_split()` helper + calls in `build_attn` (clip.cpp:2727)
+                and `build_ffn` (clip.cpp:2645). Sets the `0xff` op_params
+                marker read by `ggml-backend.cpp:1727`. Mirrors LM at
+                `llama-build-context.cpp:1261, 2444`. **Empirically lifted
+                `alloc_compute_meta: graph splits` from 1 → 55** (27 layers
+                × 2 markers + 1; matches the prediction in the approved
+                plan). Verified `/tmp/phase46-b5e-256.stderr`.
+          - [x] Fused-QKV exclusion in `is_splittable` (clip.cpp:3541+).
+                qwen3vl packs QKV into one weight then view-3d slices at
+                fixed offsets; row-chunking misaligns those views → IMA.
+                Filter excludes any tensor name containing `qkv`.
+                Empirically dropped 111 → 84 split tensors.
+          - [ ] **STILL FAILING (2026-05-26 second maintenance run):** with
+                the above two changes, multi-GPU CLIP encode at both 1024
+                and 256 image tokens hits `CUDA error: an illegal memory
+                access was encountered` at `cudaStreamSynchronize`
+                (`ggml-cuda.cu:4499`), AFTER the 55-split partition is
+                established. Production restarted; new binary NOT deployed.
+                Evidence: `/tmp/phase46-b5e-v3.stderr`.
+          - [ ] **Remaining work — port LM's cross-device graph
+                infrastructure.** The 0xff marker forces sched partition
+                boundaries; without the LM's complementary helpers the
+                data dependencies between splits aren't honored, yielding
+                IMA. Required helpers (search llama-build-context.cpp):
+                `do_split_norm` (per-device norm of split input),
+                `get_input_tensor_sm_graph` (cross-device input fetch),
+                explicit `GGML_OP_REDUCE` insertions to consolidate
+                row-chunked matmul outputs, per-device matmul decomposition
+                (LM's `split_u` / `split_g` / `split_d` convention at
+                `llama-build-context.cpp:1252-1268`). This is multi-day
+                work touching `clip_graph` infrastructure. Strict GRAPH-mode
+                approach per user 2026-05-26 ("we will not switch to layer").
+          HARD prerequisite for B.7.
   - [ ] **B.6** — LM gate re-cert (HARD; deferred to maintenance window — production service uses both GPUs at capacity, test binary cannot allocate concurrent VRAM)
     - [ ] G3.a `test-production-np-determinism.sh` PASS NP∈{1,2,4,8}
     - [ ] G3.c `r5-probe-c4.sh` 0/20 divergences
