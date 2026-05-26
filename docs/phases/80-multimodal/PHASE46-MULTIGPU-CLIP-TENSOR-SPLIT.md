@@ -722,19 +722,56 @@ coverage, maximum possible speed.
 
                 The CLIP non-determinism is therefore NOT pure
                 operational variance — there IS a code-level race
-                that's independent of timing. The earlier reframe
-                (operational only, no code fix) was wrong.
+                that's independent of timing.
 
-                The investigation resumes: the race is somewhere
-                in the openmp parallel multi-backend eval path
-                (NPC.3 localization remains valid), but neither
-                stream-level sync, full-device sync, post-reduce
-                sync, post-cpy sync, per-node sync, nor clock-
-                lock fixes it.
+                **Test K (2026-05-26 16:40, PASS):** modified
+                capture to use `cudaMallocHost` pinned host memory.
+                K1 + K2 produced bit-identical hash streams (final
+                hash `2554e340101807ab` both). Pinned vs pageable
+                does NOT distinguish — the READ itself is the
+                fence.
 
-                Production state after Test J: clocks remain
-                locked at 1455 MHz (the lock persists past systemd
-                restart). Service running normally on CPU-vision.
+                **Test L (2026-05-26 16:47-16:55, LOCALIZED):**
+                selective op-class skip in capture mode:
+                - `CLIP_CAPTURE_SKIP_OPS=MUL_MAT` (L_NOMM): final
+                  hash `2554e340101807ab` → MATCHES baseline.
+                  MUL_MAT-output reads are NOT needed.
+                - `CLIP_CAPTURE_SKIP_OPS=REDUCE` (L_NORE): final
+                  hash `8ab8037be27b05c3` → DIFFERS. **REDUCE-
+                  output reads ARE the load-bearing fence.**
+
+                **ROOT CAUSE:** REDUCE output tensors need a host
+                readback to enforce peer-access memory consistency.
+                The reduce kernels (NCCL or ring) issue cross-
+                device peer-access writes; subsequent reads see
+                those writes only if a peer-access fence is
+                enforced. `cudaDeviceSynchronize` drains compute
+                streams but does NOT enforce peer-access fence for
+                writes from OTHER devices. `cudaMemcpyAsync` DtoH
+                from device memory DOES enforce it (the DMA engine
+                needs consistent memory state).
+
+                **Structural fix candidate (Test M for next
+                session):** insert a tiny ~4-byte `cudaMemcpyAsync`
+                DtoH readback after each reduce code path in
+                `ggml_cuda_op_reduce` (gated behind a default-on
+                knob). The tiny size keeps the cost negligible;
+                the readback acts as the peer-access fence.
+                Estimated 10-15 LoC.
+
+                If Test M restores determinism in production async
+                mode, **B.5e closes** with a small surgical fix
+                that does NOT require:
+                - Eval-callback path (avoids ~3× encode latency)
+                - libmgpu restructure (avoids large refactor)
+                - Operational-only clock lock (Test J disproved
+                  sufficiency, but it's still good hygiene)
+
+                Evidence: `/tmp/phase46-b5e-tests-KL/20260526T163912/`.
+
+                Production state after Test L: restored on CPU-
+                vision, /health=200. Clocks remain locked at
+                1455 MHz from Test J.
 
                 1. Next session: bisect WITHIN the capture's
                    tensor_get behavior — separate the cudaStream

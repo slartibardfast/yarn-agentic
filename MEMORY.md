@@ -10778,3 +10778,57 @@ on cudaStreamPerThread. ~1714 of these per encode in capture mode.
 
 **Investigation is open. Bug is real, code-level, in the openmp
 parallel multi-backend eval path or a kernel it dispatches.**
+
+## 2026-05-26 — PHASE 46 B.5e: TEST L LOCALIZES THE RACE TO REDUCE-OUTPUT READS
+
+After Test J negative (clock-lock isn't sufficient), ran Tests K and L
+to bisect the capture-mode magic:
+
+**Test K (pinned vs pageable):** identical results.
+- K1 + K2 under per-node capture with `cudaMallocHost` pinned buffer
+  produced bit-identical hash streams (1714/1714).
+- Final hashes: K1 = K2 = `2554e340101807ab`.
+- Conclusion: pageable vs pinned host memory is NOT the distinguishing
+  factor. The READ itself, regardless of host memory type, is what
+  provides the fence.
+
+**Test L (selective op-class skip):** localized to REDUCE.
+- L_NOMM (CLIP_CAPTURE_SKIP_OPS=MUL_MAT): final hash
+  `2554e340101807ab` → MATCHES baseline → skipping MUL_MAT reads is
+  fine, determinism preserved.
+- L_NORE (CLIP_CAPTURE_SKIP_OPS=REDUCE): final hash
+  `8ab8037be27b05c3` → DIFFERS from baseline → **skipping REDUCE
+  reads BREAKS determinism**.
+
+**ROOT CAUSE LOCALIZED:** REDUCE output tensors need a host readback
+to act as a peer-access memory fence. The reduce kernels (NCCL or
+ring) issue peer-access writes from other devices into this device's
+memory; subsequent reads see those writes only if a peer-access fence
+is enforced. `cudaDeviceSynchronize` drains THIS device's compute
+streams but does NOT wait for peer-access writes from OTHER devices.
+`cudaMemcpyAsync` DtoH from this device's memory implicitly forces
+the peer-access fence (presumably because the DMA hardware must see
+a consistent memory state).
+
+This explains why all prior tests failed:
+- Test F (per-reduce cudaDeviceSynchronize all devices): drains all
+  compute streams but doesn't force peer-access fence.
+- Test G (per-cpy_tensor_async sync): the cpy itself happens before
+  some reduces; not the right sync point.
+- Test H (per-node cudaDeviceSynchronize): same issue as F.
+
+**Structural fix candidate for next session (Test M):**
+Insert a tiny `cudaMemcpyAsync` DtoH readback (e.g., 4 bytes) at the
+end of `ggml_cuda_op_reduce` for each participating device. This
+should act as a peer-access fence without the cost of reading the
+full tensor. ~10 LoC. If this restores determinism in production
+async mode, B.5e closes with a small, surgical structural fix.
+
+Evidence: `/tmp/phase46-b5e-tests-KL/20260526T163912/`.
+
+**Production state:** restored on CPU-vision, /health=200, clocks
+still locked at 1455 MHz (state change from Test J).
+
+**Test catalog complete:** C, B, E, F, G, H, I, J fail; K passes;
+L_NOMM passes; L_NORE fails. Localization: REDUCE-output host
+readback IS the fence.
