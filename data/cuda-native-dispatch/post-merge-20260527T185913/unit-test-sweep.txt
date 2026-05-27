@@ -1,0 +1,60 @@
+# Unit test sweep on build-tree binaries
+Submodule HEAD: 4465a7d12eaa1793226f08d612b36fe876ab0814
+Host:  (x86_64, kernel 7.0.10-arch1-1)
+Date: 2026-05-27T18:59:24Z
+
+=== test-single-threaded-dispatch ===
+  dispatch_thread_count after 100 iters = 1
+test-single-threaded-dispatch: PASS
+exit=0
+
+=== test-multi-device-graph-capture ===
+  outer_capture_count after 20 iters = 20
+  output hash byte-identical across 20 iters: 0847900abf072325
+test-multi-device-graph-capture: PASS
+exit=0
+
+=== test-multi-device-graph-cache ===
+  outer_capture_count = 50 (expected 50)
+test-multi-device-graph-cache: PASS
+exit=0
+
+=== test-libmgpu-subgraph-capture ===
+  outer_capture_count delta = 0 (over 30 iters)
+test-libmgpu-subgraph-capture: PASS
+exit=0
+
+=== test-cuda-calibration-framework ===
+ggml_cuda_calibrate: REDUCE_CROSS_DEVICE threshold = 1048576
+ggml_cuda_calibrate: REDUCE_CROSS_DEVICE threshold = 104857600
+ggml_cuda_calibrate: REDUCE_CROSS_DEVICE threshold = 104857600
+ggml_cuda_calibrate: REDUCE_CROSS_DEVICE threshold = 104857600
+ggml_cuda_calibrate: REDUCE_CROSS_DEVICE threshold = 104857600
+  T5 PASS: no ops registered → all SIZE_MAX
+  T4 PASS: env override threshold = 12345
+  T6 PASS: synthetic probe found 1 MB bucket
+  T7 PASS: deterministic probe (threshold=104857600)
+  T8 PASS: cache round-trip preserves threshold
+  T9 PASS: FORCE_RECALIBRATE bypasses cache hit
+test-cuda-calibration-framework: PASS
+exit=0
+
+=== test-calibration-ops-registered ===
+ggml_cuda_calibrate: REDUCE_CROSS_DEVICE threshold = SIZE_MAX
+ggml_cuda_calibrate: MATMUL_STREAM_SPLIT threshold = SIZE_MAX
+ggml_cuda_calibrate: PEER_COPY threshold = SIZE_MAX
+ggml_cuda_calibrate: GRAPH_CAPTURE threshold = SIZE_MAX
+ggml_cuda_calibrate: REDUCE_CROSS_DEVICE threshold = SIZE_MAX
+ggml_cuda_calibrate: MATMUL_STREAM_SPLIT threshold = SIZE_MAX
+ggml_cuda_calibrate: PEER_COPY threshold = SIZE_MAX
+ggml_cuda_calibrate: GRAPH_CAPTURE threshold = SIZE_MAX
+  T1 PASS: all 4 ops registered by name
+  T2 PASS: every op calibrates to SIZE_MAX (default-wins stub)
+  T3 PASS: thresholds deterministic across two backends
+test-calibration-ops-registered: PASS
+exit=0
+
+=== test-paged-allocator-determinism ===
+PASS: allocator determinism + LIFO + OOM signal verified across 3 runs
+exit=0
+
