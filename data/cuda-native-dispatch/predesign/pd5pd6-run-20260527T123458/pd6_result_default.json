@@ -1,0 +1,8 @@
+{
+  "shape": { "M": 1024, "K": 1280, "N": 2560, "bytes_C": 5242880 },
+  "path_a_1stream": { "p50_ms": 0.119416, "p95_ms": 0.126254, "p99_ms": 0.133113 },
+  "path_b_2stream": { "p50_ms": 0.146262, "p95_ms": 0.149165, "p99_ms": 0.153316 },
+  "speedup_p50": 0.816453,
+  "decision": "DROP_C8",
+  "equivalence": { "n_diff": 2149387, "n_diff_gt2ulp": 715157, "max_abs_diff": 0.015625 }
+}

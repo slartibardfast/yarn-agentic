@@ -1,0 +1,8 @@
+{
+  "shape": { "hidden_dim": 2560, "n_tokens": 204800, "bytes_fp16": 1048576000 },
+  "path_a_memcpypeer_add": { "p50_ms": 28.055424, "p95_ms": 28.062143, "p99_ms": 28.064545 },
+  "path_b_nccl": { "p50_ms": 25.022688, "p95_ms": 26.045664, "p99_ms": 26.712576 },
+  "speedup_p50": 1.121199,
+  "decision": "SHIP_C9",
+  "equivalence": { "n_diff": 0, "n_diff_gt2ulp": 0, "max_abs_diff": 0 }
+}

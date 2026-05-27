@@ -1,0 +1,3 @@
+index, memory.used [MiB], clocks.current.graphics [MHz]
+0, 1 MiB, 1455 MHz
+1, 9 MiB, 1455 MHz
