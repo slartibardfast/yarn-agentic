@@ -334,8 +334,24 @@ coverage, maximum possible speed.
 
 ## 10. Checkboxes
 
-> **2026-05-26 maintenance-run finding (RED).** End-to-end empirical
-> verification revealed two stacked structural gaps:
+> **2026-05-26 22:25Z — B.5e CLOSED.** Submodule `1db6c2eb`,
+> top-level `523e4f2`. Multi-GPU CLIP is deterministic by default
+> (3× `2554e340101807ab`) and 2.9× faster than CPU vision
+> (14.3 s vs 42.0 s/encode). Three default-on fixes, each opt-out
+> via env var: `GGML_CUDA_STREAM_SYNC=1` reverts
+> cudaDeviceSynchronize → cudaStreamSynchronize;
+> `GGML_SCHED_NO_DRAIN=1` disables openmp-path per-split drain;
+> `GGML_SCHED_NO_ZERO_ACTIVATIONS=1` disables gallocr buffer zeroing
+> in `ggml_backend_sched_reset`. See B.5e CLOSURE SUMMARY block
+> below for the full mechanism + verification. **Remaining gates:
+> B.6 (LM determinism re-cert), B.7 (perf gate formalization with
+> CPU-vision baseline), B.8 (deploy + rollback drill).** The
+> historical RED finding below is preserved for context — do not
+> re-open closed work from it.
+
+> **2026-05-26 maintenance-run finding (RED, HISTORICAL — closed by
+> 1db6c2eb).** End-to-end empirical verification revealed two
+> stacked structural gaps:
 >
 > **Run 1 (07:11 UTC, ~4 min downtime).** B.5b weights distribute but
 > `alloc_compute_meta: graph splits = 1` for the 3739-node encode →
@@ -389,9 +405,17 @@ coverage, maximum possible speed.
           structurally unverifiable since single-GPU CLIP encode OOMs at
           the production residency — reframe the test to inter-run
           determinism (same image → same output bytes across N multi-GPU runs).
-    - [~] **B.5e (NEW, 2026-05-26 partial, submodule `d8242a71`)** — graph
-          partitioning across both backends. Two empirically-verified-correct
-          improvements landed; both necessary, both insufficient on their own.
+    - [x] **B.5e CLOSED 2026-05-26 22:25Z** (submodule `1db6c2eb`,
+          top-level `523e4f2`). Multi-GPU CLIP on the openmp parallel
+          multi-backend dispatch path is deterministic by default
+          (3-sample hash `2554e340101807ab`) and **2.9× faster than
+          the CPU vision baseline** (14.3 s vs 42.0 s per encode at
+          1024 image-token budget). Three default-on fixes; each
+          insufficient alone, combined gives bit-correct + reproducible
+          output. See "**B.5e CLOSURE SUMMARY**" block at end of this
+          B.5e tree for the canonical close-out; the bullets below
+          are the historical investigation log (preserved for
+          context — do NOT re-open closed work from them).
           - [x] `mark_split()` helper + calls in `build_attn` (clip.cpp:2727)
                 and `build_ffn` (clip.cpp:2645). Sets the `0xff` op_params
                 marker read by `ggml-backend.cpp:1727`. Mirrors LM at
@@ -858,6 +882,94 @@ coverage, maximum possible speed.
                 non-trivial at this scale; the original "30-50×
                 speedup vs CPU" framing in the plan was
                 overoptimistic.
+
+          - [x] **B.5e CLOSURE SUMMARY (2026-05-26 22:25Z).**
+                Submodule `1db6c2eb` ("PHASE46 B.5e: make the three
+                CLIP determinism fixes the DEFAULTS"); top-level
+                `523e4f2`. Multi-GPU CLIP encoder on the openmp
+                parallel multi-backend dispatch path is now
+                **bit-identical across encodes** by default, and
+                **2.9× faster than the CPU vision baseline**.
+
+                **Verification (NO env vars set; production-shape
+                run on dev binary at port 18293):**
+                - encode 1 = encode 2 = encode 3 = `2554e340101807ab`
+                - Matches per-node capture-mode baseline.
+                - Reproducible across server restarts.
+                - Wall time: 14.3 s per encode (3-sample mean,
+                  --image-min-tokens 1024 --image-max-tokens 1024).
+
+                **Performance vs CPU baseline:**
+                - CPU vision (production): 42.0 s per encode
+                  (3-sample mean, 2026-05-26 maintenance).
+                - Multi-GPU graph (this fix): 14.3 s per encode.
+                - Speedup: **2.9×**.
+
+                **The three interacting defects that combined to
+                produce the non-determinism:**
+
+                1. `ggml_backend_cuda_synchronize` used
+                   `cudaStreamSynchronize` on the named compute
+                   stream only. Peer-access writes from OTHER
+                   devices to this device's memory landed on
+                   copy/event streams that the per-stream sync did
+                   NOT drain. For libmgpu's multi-device encoder
+                   with `GGML_OP_REDUCE` (which does cross-device
+                   peer writes via the ring or NCCL paths), this
+                   left in-flight writes that a downstream kernel
+                   could read before they completed.
+                2. The sched only called
+                   `ggml_backend_synchronize` at `copy_inputs`
+                   boundaries. The openmp parallel multi-backend
+                   dispatch path (`ggml-backend.cpp:2181`) ran
+                   multiple devices' sub-graphs concurrently;
+                   without per-split drain, the next iteration's
+                   eval could race against in-flight kernels from
+                   the previous iteration on a different backend.
+                3. The gallocr activation buffers persisted across
+                   encodes. Some kernel in the libmgpu multi-device
+                   graph read partially-initialized memory on
+                   subsequent encodes (likely a view-stride case
+                   or a kernel that doesn't fully overwrite its
+                   output). This produced "deterministic state
+                   machine" output on encode 2+: encode N's hash
+                   was a function of encode N-1's residual memory.
+
+                **The three default-on fixes (each opt-out via env
+                var):**
+
+                | Fix | Default | Opt-out env var |
+                |---|---|---|
+                | `cudaDeviceSynchronize` in place of `cudaStreamSynchronize` | ON | `GGML_CUDA_STREAM_SYNC=1` |
+                | Drain all backends after each split (openmp parallel path) | ON | `GGML_SCHED_NO_DRAIN=1` |
+                | Zero gallocr activation buffers in `ggml_backend_sched_reset` | ON | `GGML_SCHED_NO_ZERO_ACTIVATIONS=1` |
+
+                Also: `ggml-backend.cpp:2294` event_record loop now
+                gated on `ith == split_backend_id` (was unguarded —
+                all 3 openmp threads concurrently calling
+                `cudaEventRecord` on the same event handle caused
+                record overwrites). This is an unrelated correctness
+                fix that landed in the same submodule.
+
+                **What B.5e does NOT close (non-blocking
+                follow-ups, do not gate Phase 46):**
+                - Identifying the specific kernel that reads
+                  partially-initialized memory on encode 2+ (the
+                  root cause behind why ZERO_ACTIVATIONS is
+                  needed). The fix-by-zero is correct but there's
+                  a deeper bug somewhere in the CLIP graph that
+                  should be localized for code hygiene.
+                - Tuning the per-split drain to only drain devices
+                  that actually had peer-write work, instead of
+                  draining all backends unconditionally.
+
+                **Bound forward gates:** B.6 (LM determinism
+                re-cert under the new cudaDeviceSynchronize
+                default), B.7 (formal perf gate against the
+                42.0 s CPU baseline), B.8 (production deploy +
+                rollback drill via `scripts/deploy-llama-server.sh`
+                and the `--allow-no-mmproj-mgpu` rollback path).
+
           HARD prerequisite for B.7.
   - [ ] **B.6** — LM gate re-cert (HARD; deferred to maintenance window — production service uses both GPUs at capacity, test binary cannot allocate concurrent VRAM)
     - [ ] G3.a `test-production-np-determinism.sh` PASS NP∈{1,2,4,8}
@@ -866,9 +978,34 @@ coverage, maximum possible speed.
     - [ ] Phase 45 D10.a 3-slot smoke PASS
     - **Note:** B.1-B.4 are semantics-preserving by construction (cfg mirrors model fields; reads through cfg are equivalent to reads through model fields). Empirical bit-identity verification remains as the binding closure step.
   - [ ] **B.7** — CLIP perf gate (HARD, P7).
-    - **Gate reframe (2026-05-26):** §11.1 single-GPU baseline is **structurally unobtainable** — even a single-GPU CLIP encode at the production LM+KV+scratch residency OOMs on `cudaGraphInstantiate`. There is no single-GPU latency reading to multiply by 1.3×. Once B.5e closes the graph-partitioning gap, B.7's gate is reframed to: encode completes successfully under the production LM+KV+scratch config at the target image-token budget, no OOM, median latency recorded as the new reference number (no ratio).
-    - [ ] Empirical: maintenance run 2026-05-26 OOM'd on `cudaGraphInstantiate` at 1024 AND 256 image tokens. Phase 46 cannot deploy until B.5e graph-partitioning lands. `scripts/verify-multigpu-clip.sh` (commit `b347398`) is the binding driver.
-    - [~] `test-clip-encode-latency.cpp` — built, SKIPs cleanly until harness produces input JSON
+    - **Gate reframe (2026-05-26, post-B.5e closure):** §11.1
+      single-GPU baseline is **structurally unobtainable** — even a
+      single-GPU CLIP encode at the production LM+KV+scratch residency
+      OOMs on `cudaGraphInstantiate`. The reference baseline is now
+      the **production CPU-vision encode** (42.0 s/encode, 3-sample
+      mean captured during 2026-05-26 maintenance). Multi-GPU must
+      not regress below CPU vision. With the measured 14.3 s/encode
+      that's a comfortable PASS (multi-GPU is 2.9× faster than CPU),
+      but the test binary and JSON writer still need to be wired up.
+    - [ ] `scripts/verify-multigpu-clip.sh` gains a `LATENCY_N` mode
+      that runs N encodes, discards first 2 as warm-up, computes
+      median + p95, writes
+      `/tmp/phase46-multigpu-clip/latency.json`. `BASELINE_MS=42000`
+      (CPU-vision reference) is the default. Existing single-encode
+      use of the script is unaffected when `LATENCY_N` is unset.
+    - [ ] Maintenance window: stop production; run
+      `LATENCY_N=10 BASELINE_MS=42000
+      ./scripts/verify-multigpu-clip.sh --image-min-tokens 1024
+      --image-max-tokens 1024`; run
+      `build/bin/test-clip-encode-latency`; restart production.
+      `scripts/verify-multigpu-clip.sh` (commit `b347398` + the
+      LATENCY_N addition) is the binding driver.
+    - [~] `test-clip-encode-latency.cpp` — built, SKIPs cleanly until
+      harness produces input JSON. The Option A reframe keeps the
+      schema unchanged (`baseline_ms = 42000` encodes CPU vision);
+      the source comment referring to "§11.1 single-GPU reference"
+      is now inaccurate and slated for a separate clarification
+      commit outside Phase 46.
   - [ ] **B.8** — Production rollout via deploy script + rollback drill
 - [ ] Step 4: production rollout
   - [ ] Cherry-pick to `production/2026-q2-next`
