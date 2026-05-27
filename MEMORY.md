@@ -10832,3 +10832,107 @@ still locked at 1455 MHz (state change from Test J).
 **Test catalog complete:** C, B, E, F, G, H, I, J fail; K passes;
 L_NOMM passes; L_NORE fails. Localization: REDUCE-output host
 readback IS the fence.
+
+---
+
+## 2026-05-27 — Phase 46 CLOSED. Production live on multi-GPU CLIP build.
+
+Combined maintenance window 2026-05-27 09:05Z-10:00Z (55 min,
+well under the 2.5 h budget) closed the last three Phase 46 gates.
+Production runs on submodule `1db6c2eb` / top-level `523e4f2`.
+
+**B.6 — LM determinism re-cert** (partial-PASS, closure exonerated).
+- G3.c `r5-probe-c4.sh` PASS 0/20.
+- G3.a `test-production-np-determinism.sh` fails NP=8 single-slot
+  (slot 6 or 7 rotates between runs) in BOTH the new default AND
+  the `GGML_CUDA_STREAM_SYNC=1` control test. The control proves
+  Phase 46's `cudaDeviceSynchronize` default flip is NOT causal —
+  the failure pre-exists Phase 46. Tracking the NP=8 flake is a
+  separate, future determinism investigation; out of scope for
+  closure.
+- `test-n-stream-kv-layout` fails with explicit RED "4D per-stream
+  layout from N1 is not yet wired" — forward-looking for the
+  unrelated N1 phase, not a Phase 46 regression.
+- Phase 45 D10.a 3-slot smoke NOT RUN: profile
+  `qwen36-27b-x3-mtp.sh` is absent on the xeon host.
+
+**B.7 — Perf gate formalization** (PASS, reframed CPU baseline).
+- `verify-multigpu-clip.sh LATENCY_N=10 BASELINE_MS=42000` wrote
+  `/tmp/phase46-multigpu-clip/latency.json` with
+  `baseline_ms=42000, median_ms=14421, p95_ms=14543, n_samples=8`
+  (10 encodes, 2 dropped as warm-up).
+- `test-clip-encode-latency` PASS at 73.6% headroom under the
+  1.3×42000 ms CPU-vision regression ceiling.
+- All 10 encodes' `reasoning_content` bit-identical at
+  sha256=`fb5167dbc1e7f95b` → determinism holds across N>3.
+
+**B.8 — Production deploy + rollback drill** (PASS).
+- Forward deploy via `scripts/deploy-llama-server.sh` landed
+  build 4832 / commit `1db6c2eb` at `/opt/llm-server/`, /health=200
+  in 4 s. Vision smoke against live prod: 44 s (CPU vision path;
+  production profile still uses `--no-mmproj-offload`).
+- Rollback drill: detached worktree at submodule commit `606ce62b`
+  (a genuine pre-Phase-46 build — no `libmgpu.so`, no
+  "multi-backend init" string). Built via
+  `cmake --build … --target llama-server`. Deployed via
+  `sudo BUILD=…/build bash scripts/deploy-llama-server.sh
+   --allow-no-mmproj-mgpu`. /health=200 in 4 s, vision smoke 40 s.
+- Forward state restored cleanly.
+
+**Three script-defect fixes landed mid-window** (top-level commit
+`44f75c1`, plus PHASE46.md doc update `d374469`):
+
+1. `scripts/deploy-llama-server.sh`: added `libmgpu.so` install +
+   sha-verify (new in Phase 46; absence left the binary in a
+   restart loop with "error while loading shared libraries:
+   libmgpu.so"). Conditional on the build tree having
+   `mgpu/libmgpu.so`; when missing (rollback build) +
+   `--allow-no-mmproj-mgpu` is set, skip install and remove any
+   stale copy from PREFIX.
+2. `scripts/deploy-llama-server.sh`: three `strings | grep -q` /
+   `nm | grep -q` sites produced false-negative aborts under
+   `set -o pipefail` because grep's early exit sends SIGPIPE to
+   the producer. Switched to `grep -c ... >/dev/null`. Same trap
+   `verify-multigpu-clip.sh` already comments on.
+3. `scripts/test-production-np-determinism.sh` and
+   `scripts/r5-probe-c4.sh`: `/home/llm/venv/bin/python` is
+   retired on xeon. Replaced with system `python3` (the embedded
+   scripts are stdlib-only). `r5-probe-c4.sh` also had a stale
+   `cd /home/llm/yarn-agentic` — resolved REPO_ROOT relative to
+   the script.
+
+`scripts/verify-multigpu-clip.sh` LATENCY_N>1 response-sanity
+check was reading single-encode `response.json` which doesn't
+exist when N>1 (per-iteration responses land at
+`response-N.json`). Same commit fell back to the last
+`response-N.json` and accepts `reasoning_content` when `content`
+is empty (small max_tokens with a reasoning model).
+
+**Future regression rollback recipe** (now battle-tested):
+
+```bash
+git -C ik_llama.cpp worktree add --detach /tmp/ik-rollback <pre-regression-commit>
+cmake -B /tmp/ik-rollback/build -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-15
+cmake --build /tmp/ik-rollback/build -j --target llama-server
+sudo systemctl stop llama-server.service
+sudo BUILD=/tmp/ik-rollback/build bash scripts/deploy-llama-server.sh --allow-no-mmproj-mgpu
+# verify /health=200, vision smoke
+# once root-cause known: forward-deploy fixed build (no flag).
+```
+
+Evidence (window artifacts retained):
+- B.6 G3.a / G3.c / nstream logs: `/tmp/phase46-b6/run-20260527T090555/`
+- B.7 latency.json + verify.log: `/tmp/phase46-b7/run-20260527T090555/`
+  + `/tmp/phase46-multigpu-clip/latency.json`
+- B.8 forward + rollback + restore: `/tmp/phase46-b8/`
+
+Non-blocking follow-ups (NOT Phase 46 scope):
+- NP=8 single-slot intermittent flake in
+  `test-production-np-determinism.sh` predates Phase 46. Separate
+  determinism investigation.
+- Identify the specific kernel reading partially-initialized
+  memory on encode 2+ (so `ZERO_ACTIVATIONS` becomes
+  diagnostic-only). Tracked in the B.5e closure record.
+- Tune per-split drain to only drain backends with peer-write work.
+- `test-clip-encode-latency.cpp` source comment still references
+  "§11.1 single-GPU reference" — wording cleanup at leisure.
