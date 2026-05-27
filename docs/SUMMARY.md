@@ -9,7 +9,8 @@
 - [Closed: NP-determinism — canonical writeup](PHASE_NP_DETERMINISM_CLOSED.md)
 - [Open: F.4.1' perf-recovery phase](PHASE_PERF_F4_1.md)
 - [Code-complete: PHASE_CUDA_NATIVE_DISPATCH (C0-C14)](PHASE_CUDA_NATIVE_DISPATCH.md)
-- [Open: PHASE_NP8_FLAKE — NP=8 single-slot LM determinism flake PD](PHASE_NP8_FLAKE.md)
+- [Closed: PHASE_NP8_FLAKE — NP=8 single-slot LM determinism flake (governor-localized + RT mitigation deployed)](PHASE_NP8_FLAKE.md)
+- [Open: PHASE_PERF_R3_NP1 — nsys-driven characterization post-RT-hardening](PHASE_PERF_R3_NP1.md)
 ## Archive (closed sub-phases + superseded plans)
 
 - [Archive: PLAN_DETERMINISM_AUDIT](archive/np-determinism/PLAN_DETERMINISM_AUDIT.md)
