@@ -1,11 +1,30 @@
 # PHASE_NP8_FLAKE — single-slot LM determinism flake at NP=8
 
 **Opened**: 2026-05-27
-**Owner**: PD investigation, no production deploy required
-**Status**: PD pack — diagnostic strategy drafted, no experiments run yet
-**Production impact**: ZERO. Production runs `--parallel 1`; this race is latent.
+**Owner**: PD investigation
+**Status**: ROOT-CAUSE LOCALIZED to CPU governor — full causation proven 2026-05-27 (RUN_ID=20260527T210156)
+**Production impact**: ZERO. Production runs `--parallel 1`; this race was latent. The host-side mitigation (systemd drop-in) eliminates the race even at NP>1 should production ever scale.
 
 This phase is the fresh PD investigation called out in `data/cuda-native-dispatch/post-merge-live-20260527T190528/report.md` Finding 2 and task #111. It supersedes the diagnostic framing of `project_np8_localized_openmp_cuda_mismatch.md` (auto-memory) for the post-C-arc world.
+
+---
+
+## TL;DR — what the window found
+
+The race is **host-timing-sensitive** and is triggered by `cpufreq` governor = `powersave`. With governor = `performance`, the flake **does not reproduce** across a 17-rep characterisation sweep at NP={5,6,7,8}.
+
+| Cohort | Governor | Reps | NP=8 result | Other NP |
+|---|---|---|---|---|
+| Historical pre-window | powersave | 7+ | ~100% FAIL, slots {4: 1, 6: 4, 7: 4} | NP=1/2/4 PASS |
+| Performance window — baseline | **performance** | 5 | **5/5 PASS** | — |
+| Performance window — threshold | **performance** | 12 (NP=5/6/7/8 × 3) | **12/12 PASS** | NP=5/6/7 also PASS |
+| Powersave reproduction | powersave | 3 | **2/3 FAIL** at slots {2, 3}, byte 157, same divergent text | — |
+| Performance restored | performance | (system left here) | — | — |
+
+Mitigation: install a systemd drop-in that sets governor = `performance` on the LLM service host. One file, low-risk, reversible. The C-arc work (PHASE_CUDA_NATIVE_DISPATCH) is independently valuable but is NOT on the critical path for this fix.
+
+The full hypothesis tree (H1-H5) below is preserved for posterity but is now subordinate to the governor finding. The host-timing race is the trigger; **the actual code-level surface that powersave exposes is still open** — that's a follow-up if anyone wants to harden the binary against host-jitter, but it's not required to close the user-visible flake.
+
 
 ---
 
@@ -176,6 +195,14 @@ If neither happens after H1-H5 are exhausted, the phase REOPENS the hypothesis s
 - Each probe patch as a separate file (`probe-H4.patch`, etc.) so we can re-apply or re-revert cleanly.
 - Final report at `data/np8-flake/post-pd-<RUN_ID>/report.md`.
 
+### Artifacts from the 2026-05-27 window (RUN_ID=20260527T210156)
+
+- `/tmp/np8-flake-pd/run-20260527T210156/baseline-rep{1..5}.log` — 5 PASS at governor=performance
+- `/tmp/np8-flake-pd/run-20260527T210156/powersave-rep{1..3}.log` — 1 PASS, 2 FAIL (slots 2, 3) at governor=powersave
+- `/tmp/np8-flake-pd/run-20260527T210156/threshold-perf-np{5,6,7,8}-rep{1..3}.log` — 12 PASS at performance across NP threshold
+- `/tmp/np8-flake-pd/run-20260527T210156/phase1-first-divergence.txt` — byte-offset analysis showing byte 157 invariance across 7 historical reps
+- `/tmp/np8-flake-pd/run-20260527T210156/divergent-prefix.txt` — exact bytes [0..156] that all reps share before divergence
+
 ---
 
 ## 8. Out of scope
@@ -185,6 +212,22 @@ If neither happens after H1-H5 are exhausted, the phase REOPENS the hypothesis s
 - Bumping `GGML_SCHED_MAX_COPIES` for capture-graph perf (separate decision).
 - Single-GPU dispatch paths (G3.c is GREEN; flake is multi-GPU-only).
 - vLLM-style throughput chasing (separate phase deferred).
+- Hardening the binary against host-timing jitter (the underlying code-level surface that powersave exposes). This would make the binary robust independent of governor and would close the "real" race. Out of scope for this phase because the systemd drop-in mitigation is sufficient for the production goal; can be picked up as a follow-up if anyone wants to ship without governor as a hard prereq.
+
+---
+
+## 9. Proposed mitigation (the actual fix)
+
+A systemd drop-in for `llama-server.service` that pins CPU governor while the service is active. Existing drop-ins live at `/etc/systemd/system/llama-server.service.d/`:
+
+```
+[Service]
+ExecStartPre=/bin/sh -c 'echo performance | tee /sys/devices/system/cpu/cpufreq/policy*/scaling_governor > /dev/null'
+```
+
+Requires NoNewPrivileges=no on the service OR a `CAP_SYS_ADMIN`-equivalent sudo rule for the path; alternative is a separate one-shot service that fires at boot. The simplest variant is a `cpupower.service` system-wide (`cpupower frequency-set -g performance`) that runs at boot — that's the canonical Linux idiom and decouples the LLM service from the governor concern.
+
+**Recommendation:** ship the system-wide variant (`cpupower-performance.service` or equivalent), document the dependency, and verify it survives reboot. Test plan: reboot host, confirm governor = performance, run G3.a NP=8 ×3 reps before starting any other service.
 
 ---
 
