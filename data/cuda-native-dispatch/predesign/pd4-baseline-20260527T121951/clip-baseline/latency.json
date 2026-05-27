@@ -1,0 +1,6 @@
+{
+  "baseline_ms": 42000,
+  "median_ms":   14450,
+  "p95_ms":      14746,
+  "n_samples":   8
+}

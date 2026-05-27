@@ -1,0 +1,3 @@
+ code generation, though they remain probabilistic systems that can produce inaccurate or misleading outputs.
+The development of AI has been accompanied by significant ethical and societal concerns. Early debates focused on the potential for machines to achieve human-level intelligence and the implications of such a scenario. More recently, concerns have centered on bias in training data, algorithmic fairness, and the potential for misuse in surveillance and autonomous weapons. The rapid advancement of generative AI has intensified these concerns, particularly regarding misinformation, intellectual property, and the displacement of workers in creative and technical fields.
+The future of AI is likely to involve continued integration into daily life, with applications in

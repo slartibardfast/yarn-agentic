@@ -1,0 +1,5 @@
+index, memory.used [MiB], clocks.current.graphics [MHz]
+0, 1 MiB, 1455 MHz
+1, 9 MiB, 1455 MHz
+0, Quadro RTX 6000, 1455 MHz, 2100 MHz, Enabled
+1, Quadro RTX 6000, 1455 MHz, 2100 MHz, Enabled

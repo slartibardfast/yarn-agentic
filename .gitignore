@@ -27,3 +27,10 @@ coord/
 # PHASE46 B.8 — vision payload is reproducible from test-1.jpeg via
 # scripts/gen-test-vision-payload.sh; do not commit the ~165 KB JSON.
 scripts/test-vision-payload.json
+
+# PHASE_CUDA_NATIVE_DISPATCH predesign — compiled microbench binaries
+data/cuda-native-dispatch/predesign/pd2_capture
+data/cuda-native-dispatch/predesign/pd5_nccl
+data/cuda-native-dispatch/predesign/pd6_mstream
+data/cuda-native-dispatch/predesign/pd5_result.json
+data/cuda-native-dispatch/predesign/pd6_result.json

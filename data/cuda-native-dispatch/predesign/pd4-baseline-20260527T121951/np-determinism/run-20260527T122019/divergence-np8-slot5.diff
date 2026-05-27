@@ -1,0 +1,10 @@
+--- /home/dconnolly/yarn-agentic/data/cuda-native-dispatch/predesign/pd4-baseline-20260527T121951/np-determinism/run-20260527T122019/np1.txt	2026-05-27 12:20:35.437746431 +0000
++++ /home/dconnolly/yarn-agentic/data/cuda-native-dispatch/predesign/pd4-baseline-20260527T121951/np-determinism/run-20260527T122019/np8-slot5.txt	2026-05-27 12:22:22.818225696 +0000
+@@ -1,3 +1,3 @@
+  code generation, though they remain probabilistic systems that can produce inaccurate or misleading outputs.
+-The development of AI has been accompanied by ongoing ethical and societal concerns. Early debates focused on the potential for machines to achieve human-level intelligence and the implications of such a scenario. More recently, concerns have centered on algorithmic bias, data privacy, and the environmental impact of training large models. The environmental impact of training large models is particularly significant, with some estimates suggesting that training a single large language model can consume as much energy as hundreds of homes over a year.
+-The future of AI is likely to involve continued integration into daily life, with applications
+\ No newline at end of file
++The development of AI has been accompanied by significant ethical and societal concerns. Early debates focused on the potential for machines to achieve human-level intelligence and the implications of such a scenario. More recently, concerns have centered on bias in training data, algorithmic fairness, and the potential for misuse in surveillance and autonomous weapons. The rapid advancement of generative AI has intensified these concerns, particularly regarding misinformation, intellectual property, and the displacement of workers in creative and technical fields.
++The future of AI is likely to involve continued integration into daily life, with applications in
+\ No newline at end of file
