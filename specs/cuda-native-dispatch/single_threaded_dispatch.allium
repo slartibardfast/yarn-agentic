@@ -257,6 +257,58 @@ contract LazyCreateBranchesDeleted {
 }
 
 -- ============================================================
+-- C3 — InCaptureGateGuard
+-- ============================================================
+
+contract InCaptureGateGuard {
+    -- C3 installs an in-capture gate inside per-backend
+    -- ggml_backend_cuda_graph_compute. When
+    -- ggml_cuda_outer_capture_active() returns true (set by C4's
+    -- wrapper around ggml_backend_sched_compute_splits), the inner
+    -- graph_compute MUST NOT issue its own:
+    --
+    --   - cudaStreamBeginCapture
+    --   - cudaStreamEndCapture
+    --   - cudaGraphInstantiate
+    --   - cudaGraphLaunch
+    --
+    -- All four are gated by use_cuda_graph; C3 sets use_cuda_graph =
+    -- false whenever in_outer_capture is true. Kernel launches still
+    -- occur on the backend's stream via the eager-launch fallback;
+    -- the CUDA driver folds them into the outer captured cudaGraph_t
+    -- via cudaStreamCaptureModeRelaxed's cross-stream join semantics
+    -- (PD2 verified, CUDA 13.2).
+    --
+    -- Why C3 alone is inert: ggml_cuda_outer_capture_active() returns
+    -- false until C4 wraps compute_splits with an outer Begin/End
+    -- Capture. C3 lands the gate ahead of C4 so that C4's commit can
+    -- be narrow (just the wrapper + the cross-stream event edges).
+    forall ctx: CudaContext, cgraph: ComputeGraph
+        when ggml_cuda_outer_capture_active() == true
+        and ggml_backend_cuda_graph_compute(ctx, cgraph) is_called:
+        not cudaStreamBeginCapture_called(ctx) and
+        not cudaStreamEndCapture_called(ctx) and
+        not cudaGraphInstantiate_called(ctx.cur_graph) and
+        not cudaGraphLaunch_called(ctx.cur_graph)
+}
+
+contract OuterCaptureFlagIsThreadLocal {
+    -- The outer-capture flag lives in static thread_local storage on
+    -- the dispatcher thread. C1's HostThreadIsExactlyOne invariant
+    -- guarantees there is exactly one dispatcher thread, so the
+    -- thread-local has process-wide reach in practice. A future
+    -- change that re-introduces multi-threaded dispatch would also
+    -- break C1's invariant — this contract composes with HostThread
+    -- IsExactlyOne to make the dependency explicit.
+    --
+    -- Static-grep gate (spec-tla-gate CI): the flag's declaration in
+    -- ggml-cuda.cu must use `static thread_local bool`.
+    forall source: file
+        where source == read_file("ik_llama.cpp/ggml/src/ggml-cuda.cu"):
+        contains(source, "static thread_local bool g_outer_capture_active")
+}
+
+-- ============================================================
 -- Composition
 -- ============================================================
 
