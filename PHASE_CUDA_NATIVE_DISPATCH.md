@@ -604,7 +604,8 @@ Two runs total: initial 6-point coverage (RUN_ID=20260527T123458) + refined swee
 | 500 MB | 14.041 ms | 13.081 ms | 1.07× | |
 | **750 MB** | **20.996 ms** | **19.143 ms** | **1.10× — first conservative point** | NCCL p95 < memcpy p50 |
 | 1 GB | 28.055 ms | 25.023 ms | 1.12× | |
-| 1.5 GB | 41.954 ms | 36.909 ms | 1.14× | trending toward asymptote ~1.15-1.20× |
+| 1.5 GB | 41.954 ms | 36.909 ms | 1.14× | |
+| 2 GB | 56.014 ms | 48.627 ms | 1.15× | asymptote — NCCL approaches ~1.15-1.20× steady-state speedup as message size grows; diminishing returns past 1 GB |
 
 **Equivalence**: byte-identical across all measured shapes (`n_diff=0`, max_abs_diff=0). Memcpy + element-wise-add and NCCL ncclAllReduce produce the SAME bits at the libmgpu reduce shape category.
 
