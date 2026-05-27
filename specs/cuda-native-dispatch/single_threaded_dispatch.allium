@@ -195,6 +195,68 @@ contract NoStdBarrierInDispatch {
 }
 
 -- ============================================================
+-- C2 — NoLazyInitInDispatchPath
+-- ============================================================
+
+entity CudaBackend {
+    -- ggml_backend_t produced by ggml_backend_cuda_init. The
+    -- backing context owns the four PD1 lazy-create surfaces;
+    -- C2 pre-allocates them at init.
+    context_copy_event:     opt<u64>,                    -- cudaEvent_t handle
+    context_streams:        map<u32, map<u32, u64>>,    -- streams[d][s]
+    context_cublas_handles: map<u32, u64>,              -- cublas_handles[d]
+    context_pools:          map<u32, u64>,              -- pools[d]
+}
+
+contract NoLazyInitInDispatchPath {
+    -- After ggml_backend_cuda_init returns, the four PD1 lazy-create
+    -- surfaces enumerated in PHASE_CUDA_NATIVE_DISPATCH.md §10 are
+    -- already populated:
+    --
+    --   - copy_event (one cudaEvent_t per context)
+    --   - streams[d][s] for d in [0, device_count), s in
+    --     [0, GGML_CUDA_MAX_STREAMS)
+    --   - cublas_handles[d] for d in [0, device_count)
+    --   - pools[d]          for d in [0, device_count)
+    --
+    -- The accessors in common.cuh (stream(), cublas_handle(), pool())
+    -- are non-lazy after C2: they assert non-null instead of creating
+    -- on demand. The dispatch path cannot trigger lazy init by
+    -- construction.
+    --
+    -- Bound by:
+    --   ggml_backend_cuda_eager_init_complete(backend) == true
+    -- immediately after ggml_backend_cuda_init returns, AND across
+    -- arbitrarily many graph computes (the surfaces never become null
+    -- again).
+    forall backend: CudaBackend
+        when backend_init_returns(backend):
+        backend.context_copy_event != null and
+        forall d: u32 where d < device_count():
+            backend.context_cublas_handles[d] != null and
+            backend.context_pools[d] != null and
+            forall s: u32 where s < GGML_CUDA_MAX_STREAMS:
+                backend.context_streams[d][s] != null
+}
+
+contract LazyCreateBranchesDeleted {
+    -- Static-grep gate (spec-tla-gate CI): the source files MUST NOT
+    -- contain the lazy-create patterns deleted in C2.
+    --
+    --   - common.cuh: the three accessors stream()/cublas_handle()/
+    --     pool() must not contain "if (... == nullptr)" / "cudaStream
+    --     CreateWithFlags(&streams" patterns.
+    --   - ggml-cuda.cu: the cross-device copy site (cpy_tensor_async)
+    --     must not contain "if (!cuda_ctx_src->copy_event)" /
+    --     "cudaEventCreate(&cuda_ctx_src->copy_event)" patterns.
+    forall source: file
+        where source == read_file("ik_llama.cpp/ggml/src/ggml-cuda/common.cuh"):
+        not contains(source, "cudaStreamCreateWithFlags(&streams[") and
+        not contains(source, "cublasCreate(&cublas_handles[") and
+        not contains(source, "pools[device] = new_pool_for_device")
+}
+
+-- ============================================================
 -- Composition
 -- ============================================================
 
