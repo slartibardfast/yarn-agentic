@@ -249,7 +249,18 @@ so the latent race is invisible to users either way.
 All three implemented via `common_apply_runtime_hardening()` called at
 the head of `llama_init_from_gpt_params`. Each fails gracefully on
 EPERM (single warning, continue serving). Binding tests:
-`tests/spec/test-runtime-hardening-mlockall.cpp` — 8/8 PASS.
+`tests/spec/test-runtime-hardening-mlockall.cpp` — 9/9 PASS.
+
+**ggml worker coverage**: ggml creates its worker threads at
+`ggml/src/ggml.c:26910` via `pthread_create(thrd, /*attr=*/NULL, ...)`.
+POSIX semantics: `pthread_create` with NULL attr inherits the creator
+thread's CPU affinity mask and scheduling policy/priority. The
+`--cpu-mask` and `--rt-prio` flags run on the main thread before any
+graph compute, so workers spawned after pick both up for free. T9 in
+the binding test empirically verifies affinity inheritance with a
+direct mimic of ggml's `pthread_create(NULL)` call; scheduling
+inheritance is POSIX-documented through the same code path (verifiable
+only under privilege grant, deferred to production verification).
 
 ### 9.3 Production deploy (pending — separate change)
 
