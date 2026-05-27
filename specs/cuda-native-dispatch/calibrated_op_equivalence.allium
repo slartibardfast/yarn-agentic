@@ -1,0 +1,75 @@
+-- allium: 3
+-- specs/cuda-native-dispatch/calibrated_op_equivalence.allium
+--
+-- Status: PLACEHOLDER. Bound by PHASE_CUDA_NATIVE_DISPATCH.md
+-- commits C8 (MATMUL_STREAM_SPLIT), C9 (REDUCE_CROSS_DEVICE),
+-- C10 (PEER_COPY), C11 (GRAPH_CAPTURE). This spec is updated
+-- incrementally by each commit; the full multi-op invariant is
+-- complete after C11.
+--
+-- Scope: for every calibrated op registered with the framework,
+-- the default and alt strategies produce numerically equivalent
+-- output (byte-identical OR fp16/fp32 ULP-bound, per the op's
+-- specific contract). The dispatch decision (which strategy fires
+-- at a given payload size) may vary across hardware via
+-- calibration, but the OUTPUT BITS MUST NOT vary across strategy
+-- choices for the same input.
+--
+-- Why this spec exists: calibration produces a different threshold
+-- on different hardware. Without the equivalence contract,
+-- threshold variance would propagate to output variance — a
+-- determinism gap. The equivalence contract is the SAFETY NET that
+-- makes calibration safe to deploy.
+--
+-- Per-op contracts (composed):
+--
+--   REDUCE_CROSS_DEVICE:
+--     default = cudaMemcpyPeerAsync + element-wise-add kernel
+--     alt     = ncclAllReduce
+--     Equivalence: byte-identical (PD5 confirmed across 13 shapes
+--     from 2 MB to 1.5 GB, n_diff = 0 everywhere).
+--
+--   MATMUL_STREAM_SPLIT:
+--     default = single-stream cublasHgemm
+--     alt     = two-stream column-split cublasHgemm + per-stream
+--               output assembly
+--     Equivalence: fp16 ULP-bound (the column-split changes the
+--     cublas K-tile config, which can shift the reduction tree
+--     shape; PD6 confirmed byte-identity at 2 of 3 tested shapes,
+--     ULP-diff at the third with max_abs_diff = 0.015625 = 1 ULP
+--     at the relevant magnitudes).
+--
+--   PEER_COPY:
+--     default = direct cudaMemcpyPeerAsync
+--     alt     = staged via pinned-host intermediate
+--     Equivalence: byte-identical (both paths preserve byte
+--     content; no arithmetic).
+--
+--   GRAPH_CAPTURE:
+--     default = cudaGraphLaunch (captured graph replay)
+--     alt     = eager kernel launches with no capture
+--     Equivalence: byte-identical (the kernel sequence is the
+--     same; only the dispatch mechanism differs).
+--
+-- Includes:
+--   - Per-op default and alt strategy declarations.
+--   - Per-op equivalence predicate (byte-identical or ULP-bound,
+--     with specific ULP bound named).
+--   - Composition contract OutputDoesNotDependOnStrategy — given
+--     same input, same hardware, both strategies produce
+--     equivalent output regardless of which fires.
+--
+-- CODE REFS (per-op, post-implementation):
+--   C8: ik_llama.cpp/ggml/src/ggml-cuda.cu mul_mat dispatch
+--   C9: ik_llama.cpp/ggml/src/ggml-cuda/reduce.cu cross-device reduce
+--   C10: ik_llama.cpp/ggml/src/ggml-cuda.cu cpy_tensor_async
+--   C11: ik_llama.cpp/ggml/src/ggml-cuda.cu graph_compute
+--
+-- TBD: fill per-op equivalence contracts incrementally as C8-C11
+-- land. The final spec covers all four registered ops.
+
+allium 3
+
+-- TBD: per-op strategy declarations (4 ops × 2 strategies = 8)
+-- TBD: per-op equivalence predicates (byte-id or ULP-bound)
+-- TBD: OutputDoesNotDependOnStrategy composition contract

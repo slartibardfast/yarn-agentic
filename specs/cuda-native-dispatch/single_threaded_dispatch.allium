@@ -1,0 +1,50 @@
+-- allium: 3
+-- specs/cuda-native-dispatch/single_threaded_dispatch.allium
+--
+-- Status: PLACEHOLDER. Bound by PHASE_CUDA_NATIVE_DISPATCH.md
+-- commit C1 (replace ggml_backend_sched_compute_splits openmp
+-- parallel block with single-threaded multi-backend iteration).
+--
+-- Scope: the new ggml_backend_sched_compute_splits, which runs on
+-- exactly one host thread per process lifetime. NO openmp parallel
+-- region, NO std::barrier fallback, NO per-backend worker threads.
+-- Cross-backend dependencies are expressed as cudaEvent record/wait
+-- pairs on per-backend CUDA streams, not host-side barriers.
+--
+-- Why this spec exists: PD1 (PHASE_CUDA_NATIVE_DISPATCH.md §10)
+-- identified four CUDA-context shared fields that race under
+-- multi-thread eval entry (cuda_graphs map, pools[device],
+-- cublas_handles[device], streams[device][n] lazy-creates). The
+-- structural fix is to eliminate concurrent host-side context
+-- access by construction. This spec binds that property.
+--
+-- The dispatch model is CUDA-idiomatic: host enqueues all kernels
+-- async on per-backend streams; the CUDA driver schedules them
+-- concurrently across devices; cross-device deps are events; per-
+-- token replay is a single cudaGraphLaunch over the captured graph.
+--
+-- Includes:
+--   - External entity for the sched object
+--     (ggml_backend_sched_t, SplitSequence, BackendStream).
+--   - Contracts for ComputeSplits — must run on one host thread,
+--     must enqueue every split's eval on the owning backend's
+--     stream, must establish event-chain dependencies between
+--     cross-backend producer/consumer pairs.
+--   - Contracts for EventChain — every cross-backend read has a
+--     matching producer cudaEventRecord that precedes it.
+--
+-- CODE REFS (paths from /home/dconnolly/yarn-agentic):
+--   ik_llama.cpp/ggml/src/ggml-backend.cpp:2177    compute_splits entry
+--   ik_llama.cpp/ggml/src/ggml-backend.cpp:2215    (DELETED by C1: openmp parallel)
+--   ik_llama.cpp/ggml/src/ggml-backend.cpp:2353    (DELETED by C13: std::barrier fallback)
+--
+-- TBD: fill in entity declarations, contract bodies, and the
+-- HostThreadIsExactlyOne invariant once C1 lands. The C1 commit
+-- updates this file to "live" status with full content.
+
+allium 3
+
+-- TBD: entity declarations
+-- TBD: contracts for ComputeSplits
+-- TBD: EventChain contracts (cross-ref with cross_device_event_chain.allium)
+-- TBD: load-bearing invariant HostThreadIsExactlyOne

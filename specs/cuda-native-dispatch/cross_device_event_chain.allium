@@ -1,0 +1,50 @@
+-- allium: 3
+-- specs/cuda-native-dispatch/cross_device_event_chain.allium
+--
+-- Status: PLACEHOLDER. Bound by PHASE_CUDA_NATIVE_DISPATCH.md
+-- commits C4 (outer cudaStreamBeginCapture wrapping compute_splits)
+-- and C7 (libmgpu port to captured subgraphs).
+--
+-- Scope: in the captured multi-device cudaGraph_t, every cross-
+-- device data dependency is expressed via a cudaEventRecord on the
+-- producer stream + cudaStreamWaitEvent on the consumer stream
+-- BEFORE the consumer reads the produced data. No data flowing
+-- across devices is read on the destination device before its
+-- producer-side event has been recorded.
+--
+-- Why this spec exists: cross-device race surfaces dominated Phase
+-- 46 (CLIP encoder) and the NP=8 LM determinism flake. The
+-- structural fix in this phase is to embed cross-device sync nodes
+-- INTO the captured cudaGraph_t via cudaEventRecord + cudaStreamWait
+-- Event primitives. The CUDA driver enforces these as graph edges;
+-- no host-side barrier is needed.
+--
+-- PD2 (PHASE_CUDA_NATIVE_DISPATCH.md §10) confirmed CUDA 13.2's
+-- cudaStreamCaptureModeRelaxed permits cross-device event waits to
+-- be captured into a single multi-device graph. This spec binds
+-- that the dispatcher actually USES this capability everywhere a
+-- cross-device dependency exists.
+--
+-- Includes:
+--   - External entities for CUDA streams, events, graph nodes.
+--   - Contract for ConsumerWaitsForProducer — every cudaStreamWait
+--     Event in the captured graph has a corresponding earlier
+--     cudaEventRecord on the producer stream.
+--   - Contract for NoMissingEdges — if data tensor T is produced
+--     on device A and read on device B, an event-chain edge
+--     A.stream→T.event→B.stream exists in the captured graph.
+--
+-- CODE REFS:
+--   ik_llama.cpp/ggml/src/ggml-cuda.cu:4382-4511   cpy_tensor_async (already does record+wait)
+--   ik_llama.cpp/ggml/src/ggml-backend.cpp:2126    sched_eval (host-side dispatch entry, to be rewritten by C1)
+--
+-- TBD: fill content when C4 lands. The captured-graph topology is
+-- the binding invariant; this spec checks the graph's structural
+-- shape after capture.
+
+allium 3
+
+-- TBD: entity declarations (CudaStream, CudaEvent, GraphNode, etc.)
+-- TBD: ConsumerWaitsForProducer contract
+-- TBD: NoMissingEdges contract
+-- TBD: composition with single_threaded_dispatch.allium

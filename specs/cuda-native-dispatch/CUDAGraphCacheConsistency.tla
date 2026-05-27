@@ -1,0 +1,58 @@
+--------------------------- MODULE CUDAGraphCacheConsistency ---------------------------
+(*****************************************************************************)
+(* PLACEHOLDER. Bound by PHASE_CUDA_NATIVE_DISPATCH.md commit C5.            *)
+(*                                                                            *)
+(* Companion to specs/cuda-native-dispatch/multi_device_graph_cache.allium. *)
+(*                                                                            *)
+(* Models the multi-device cudaGraph_t cache as a state machine over        *)
+(* insertions, evictions, and lookups. The cache is keyed by                *)
+(*                                                                            *)
+(*     (topology_hash, device_layout, n_seq)                                *)
+(*                                                                            *)
+(* and bounded by GGML_CUDA_GRAPH_MAX. FIFO eviction on capacity overflow.  *)
+(*                                                                            *)
+(* The load-bearing invariants:                                              *)
+(*                                                                            *)
+(*   - CacheKeyUniqueness: two distinct (topology, layout, n_seq) triples   *)
+(*       hash to distinct cache keys. No collision under the modelled hash. *)
+(*   - ReplayBitIdentical: cudaGraphLaunch on a cached graph produces       *)
+(*       byte-identical output to the graph's original capture, given the  *)
+(*       same per-call inputs (ne/nb/src-addresses).                        *)
+(*   - EvictionFifo: when |cache| exceeds GGML_CUDA_GRAPH_MAX, the          *)
+(*       oldest-inserted entry is evicted first.                           *)
+(*   - PostEvictionRecaptureIsIdentical: a key evicted and then captured   *)
+(*       fresh under the same input topology produces a graph that         *)
+(*       cudaGraphInstantiate compares equal to the original.              *)
+(*                                                                            *)
+(* The "too many updates → disable graph" guard (ggml-cuda.cu:5212) is     *)
+(* preserved by the C5 extension; this spec models the guard as a state-  *)
+(* machine transition that marks a key as "graphs-off" after 4 consecutive *)
+(* cudaGraphExecUpdate failures.                                            *)
+(*                                                                            *)
+(* CODE REFS:                                                                *)
+(*   ik_llama.cpp/ggml/src/ggml-cuda.cu:5176       ggml_cuda_get_graph     *)
+(*   ik_llama.cpp/ggml/src/ggml-cuda/common.cuh:888 cuda_graphs map        *)
+(*   ik_llama.cpp/ggml/src/ggml-cuda.cu:5212       graphs-off guard        *)
+(*                                                                            *)
+(* TBD: fill VARIABLES, Init, Next, invariants when C5 lands.               *)
+(*****************************************************************************)
+
+EXTENDS Naturals, Sequences, FiniteSets
+
+(* TBD: CONSTANTS for max cache size, distinct topologies, distinct device *)
+(*      layouts, n_seq range.                                              *)
+
+(* TBD: VARIABLES for cache contents, insertion timestamps, per-key       *)
+(*      cudaGraphExecUpdate failure counters.                              *)
+
+(* TBD: Init *)
+
+(* TBD: Next (Insert, Lookup, Update, Evict, MarkGraphsOff transitions)   *)
+
+(* TBD: invariants                                                         *)
+(*    CacheKeyUniqueness                                                  *)
+(*    ReplayBitIdentical                                                  *)
+(*    EvictionFifo                                                        *)
+(*    PostEvictionRecaptureIsIdentical                                    *)
+
+============================================================================

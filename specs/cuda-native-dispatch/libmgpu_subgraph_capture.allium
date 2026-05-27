@@ -1,0 +1,54 @@
+-- allium: 3
+-- specs/cuda-native-dispatch/libmgpu_subgraph_capture.allium
+--
+-- Status: PLACEHOLDER. Bound by PHASE_CUDA_NATIVE_DISPATCH.md
+-- commit C7 (libmgpu port to captured subgraphs).
+--
+-- Scope: libmgpu's per-device subgraphs (built by the Phase 46
+-- mgpu split builders, ~ik_llama.cpp/mgpu/) capture cleanly into
+-- the outer multi-device cudaGraph_t established by C4. The CLIP
+-- encoder's tensor-parallel matmul + cross-device REDUCE chain
+-- produces byte-identical output to the pre-phase non-captured
+-- libmgpu evaluation. The Phase 46 closure baseline sha
+-- fb5167dbc1e7f95b is the binding reference output for all 10
+-- vision-encode samples.
+--
+-- Why this spec exists: libmgpu is the PRIMARY consumer of the
+-- new dispatch (PHASE_CUDA_NATIVE_DISPATCH.md §1.2). Phase 46 made
+-- the openmp-parallel libmgpu path deterministic via three default-
+-- on patches; C7 deletes the openmp dispatch from libmgpu and the
+-- per-device subgraphs become captured subgraphs in the outer
+-- multi-device graph. This spec binds equivalence between
+-- pre-phase libmgpu output (Phase 46 closure baseline) and the
+-- post-phase captured-graph output.
+--
+-- Includes:
+--   - External entity for libmgpu split builder
+--     (MgpuSplitBuilder, MgpuPerDeviceSubgraph).
+--   - Contract SubgraphCapturesCleanly — each per-device subgraph,
+--     when called from inside cudaStreamCaptureModeRelaxed on the
+--     outer stream, emits its nodes into the outer graph without
+--     introducing a nested BeginCapture/EndCapture pair (C3 in-
+--     capture awareness).
+--   - Contract OutputBitIdenticalToPhase46 — running the captured
+--     graph on the Phase 46 production CLIP vision request produces
+--     reasoning_content sha256 = fb5167dbc1e7f95b for all 10
+--     LATENCY_N samples.
+--   - Contract OpenmpDispatchAbsent — libmgpu's eval path no
+--     longer contains #pragma omp parallel or std::barrier calls.
+--
+-- CODE REFS:
+--   ik_llama.cpp/mgpu/*.{cpp,cu}                 mgpu split builders
+--   ik_llama.cpp/examples/mtmd/                  CLIP encoder integration
+--   PHASE_CUDA_NATIVE_DISPATCH.md §1.2          libmgpu motivation
+--   project_phase46_b5e_closed (auto-memory)    Phase 46 closure baseline
+--
+-- TBD: fill content when C7 lands. The CLIP equivalence test
+-- (test-libmgpu-subgraph-capture.cpp) is the binding mechanism.
+
+allium 3
+
+-- TBD: MgpuSplitBuilder, MgpuPerDeviceSubgraph entities
+-- TBD: SubgraphCapturesCleanly contract
+-- TBD: OutputBitIdenticalToPhase46 contract (sha256 binding)
+-- TBD: OpenmpDispatchAbsent contract

@@ -1,0 +1,56 @@
+--------------------------- MODULE CUDANativeDispatch ---------------------------
+(*****************************************************************************)
+(* PLACEHOLDER. Bound by PHASE_CUDA_NATIVE_DISPATCH.md commits C1, C4.        *)
+(*                                                                            *)
+(* Companion to specs/cuda-native-dispatch/single_threaded_dispatch.allium   *)
+(* and cross_device_event_chain.allium.                                       *)
+(*                                                                            *)
+(* Models the new single-threaded ggml_backend_sched_compute_splits as a    *)
+(* state machine over the lifetime of one graph computation:                *)
+(*                                                                            *)
+(*     IDLE → ENQUEUING → CAPTURING → LAUNCHED → COMPLETE                    *)
+(*                                                                            *)
+(* The load-bearing invariants:                                              *)
+(*                                                                            *)
+(*   - HostThreadIsExactlyOne: at every step, exactly one thread is in       *)
+(*       the dispatch path. No openmp parallel region.                       *)
+(*   - EventChainBeforeRead: for every cross-backend tensor T produced on   *)
+(*       device A and read on device B, an event-record on A.stream         *)
+(*       PRECEDES every event-wait on B.stream that gates T's read.         *)
+(*   - AllSplitsEnqueuedBeforeCapture: cudaStreamEndCapture is called       *)
+(*       AFTER every split's eval has enqueued its kernels.                  *)
+(*   - SingleGraphLaunch: at most one cudaGraphLaunch per token of the      *)
+(*       same topology (cache hit replays; cache miss captures-then-        *)
+(*       launches).                                                          *)
+(*                                                                            *)
+(* The negative variant (not yet written) removes EventChainBeforeRead     *)
+(* and checks that a memory hazard becomes reachable in TLC's state        *)
+(* space — confirms the spec's invariant is load-bearing.                  *)
+(*                                                                            *)
+(* CODE REFS (paths from /home/dconnolly/yarn-agentic):                     *)
+(*   ik_llama.cpp/ggml/src/ggml-backend.cpp:2177  compute_splits entry      *)
+(*   ik_llama.cpp/ggml/src/ggml-cuda.cu:4382      cpy_tensor_async          *)
+(*   ik_llama.cpp/ggml/src/ggml-cuda.cu:5150      graph_compute             *)
+(*                                                                            *)
+(* TBD: fill VARIABLES, Init, Next, invariants when C1+C4 land.              *)
+(*****************************************************************************)
+
+EXTENDS Naturals, Sequences, FiniteSets
+
+(* TBD: CONSTANTS for backend count, split count, max events. *)
+
+(* TBD: VARIABLES for dispatch state, per-backend stream queues,          *)
+(*      event-record/event-wait history, captured graph nodes.            *)
+
+(* TBD: Init *)
+
+(* TBD: Next (state transitions IDLE → ENQUEUING → CAPTURING → LAUNCHED   *)
+(*      → COMPLETE) *)
+
+(* TBD: invariants                                                         *)
+(*    HostThreadIsExactlyOne                                              *)
+(*    EventChainBeforeRead                                                *)
+(*    AllSplitsEnqueuedBeforeCapture                                      *)
+(*    SingleGraphLaunch                                                   *)
+
+============================================================================
