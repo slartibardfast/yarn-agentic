@@ -1,50 +1,219 @@
 -- allium: 3
 -- specs/cuda-native-dispatch/single_threaded_dispatch.allium
 --
--- Status: PLACEHOLDER. Bound by PHASE_CUDA_NATIVE_DISPATCH.md
--- commit C1 (replace ggml_backend_sched_compute_splits openmp
--- parallel block with single-threaded multi-backend iteration).
+-- Status: LIVE as of PHASE_CUDA_NATIVE_DISPATCH commit C1.
 --
--- Scope: the new ggml_backend_sched_compute_splits, which runs on
--- exactly one host thread per process lifetime. NO openmp parallel
--- region, NO std::barrier fallback, NO per-backend worker threads.
--- Cross-backend dependencies are expressed as cudaEvent record/wait
--- pairs on per-backend CUDA streams, not host-side barriers.
+-- Scope: the rewritten ggml_backend_sched_compute_splits at
+-- ik_llama.cpp/ggml/src/ggml-backend.cpp:2177. The dispatch walks
+-- the split sequence on ONE host thread per process lifetime. No
+-- openmp parallel region, no std::barrier worker pool. Cross-
+-- backend dependencies are carried by the existing
+-- ggml_backend_event_record / event_wait calls inside
+-- ggml_backend_sched_copy_inputs (CUDA streams are device-parallel
+-- by construction; host-side parallelism buys nothing for device
+-- concurrency).
 --
 -- Why this spec exists: PD1 (PHASE_CUDA_NATIVE_DISPATCH.md §10)
 -- identified four CUDA-context shared fields that race under
 -- multi-thread eval entry (cuda_graphs map, pools[device],
 -- cublas_handles[device], streams[device][n] lazy-creates). The
 -- structural fix is to eliminate concurrent host-side context
--- access by construction. This spec binds that property.
+-- access by construction. This spec binds that property:
+-- HostThreadIsExactlyOne forces a contradiction if a future change
+-- reintroduces multi-thread dispatch entry.
 --
--- The dispatch model is CUDA-idiomatic: host enqueues all kernels
--- async on per-backend streams; the CUDA driver schedules them
--- concurrently across devices; cross-device deps are events; per-
--- token replay is a single cudaGraphLaunch over the captured graph.
+-- The Phase-46 mitigations (per-split full-backend drain, thread-
+-- gated cudaEventRecord, GGML_SCHED_EVAL_SERIALIZE critical
+-- section, GGML_SCHED_NO_DRAIN escape) become structurally
+-- unnecessary under single-threaded dispatch: there is no
+-- concurrent CPU-side state to coordinate.
 --
--- Includes:
---   - External entity for the sched object
---     (ggml_backend_sched_t, SplitSequence, BackendStream).
---   - Contracts for ComputeSplits — must run on one host thread,
---     must enqueue every split's eval on the owning backend's
---     stream, must establish event-chain dependencies between
---     cross-backend producer/consumer pairs.
---   - Contracts for EventChain — every cross-backend read has a
---     matching producer cudaEventRecord that precedes it.
+-- Code refs (paths from /home/dconnolly/yarn-agentic):
+--   ik_llama.cpp/ggml/src/ggml-backend.cpp:2177
+--     ggml_backend_sched_compute_splits (entry, C1 rewrite)
+--   ik_llama.cpp/ggml/include/ggml-backend.h:217-225
+--     dispatch-thread observation API
+--   ik_llama.cpp/tests/test-single-threaded-dispatch.cpp
+--     binds HostThreadIsExactlyOne under 100 graph computes
 --
--- CODE REFS (paths from /home/dconnolly/yarn-agentic):
---   ik_llama.cpp/ggml/src/ggml-backend.cpp:2177    compute_splits entry
---   ik_llama.cpp/ggml/src/ggml-backend.cpp:2215    (DELETED by C1: openmp parallel)
---   ik_llama.cpp/ggml/src/ggml-backend.cpp:2353    (DELETED by C13: std::barrier fallback)
---
--- TBD: fill in entity declarations, contract bodies, and the
--- HostThreadIsExactlyOne invariant once C1 lands. The C1 commit
--- updates this file to "live" status with full content.
+-- Companion model: specs/cuda-native-dispatch/CUDANativeDispatch.tla
 
 allium 3
 
--- TBD: entity declarations
--- TBD: contracts for ComputeSplits
--- TBD: EventChain contracts (cross-ref with cross_device_event_chain.allium)
--- TBD: load-bearing invariant HostThreadIsExactlyOne
+-- ============================================================
+-- Entities
+-- ============================================================
+
+entity HostThreadId {
+    -- An opaque host-thread identifier (std::thread::id wrapped).
+}
+
+entity ScheduleObject {
+    -- ggml_backend_sched_t. Owns the split sequence and per-backend
+    -- needs_sync / events / statuses state.
+    n_backends:        u32,
+    n_splits:          u32,
+    cur_copy:          u32,
+    is_async:          bool,
+    split_mode_graph:  bool,
+    has_reduce:        bool,
+}
+
+entity Split {
+    -- One slice of the computation graph routed to a single backend.
+    backend_id:        u32,
+    n_inputs:          u32,
+    first_op_is_reduce: bool,
+}
+
+entity BackendStream {
+    -- A per-backend CUDA stream. Producer/consumer events are
+    -- recorded on / waited on these streams.
+    backend_id:        u32,
+    stream_handle:     u64,
+}
+
+entity CudaEvent {
+    -- One slot of sched->events[backend_id][cur_copy]. Records
+    -- happen on the producing backend's stream; waits happen on
+    -- the consuming backend's stream inside copy_inputs.
+    backend_id:        u32,
+    copy_idx:          u32,
+}
+
+-- ============================================================
+-- Contracts
+-- ============================================================
+
+contract HostThreadIsExactlyOne {
+    -- Across the process lifetime, the set of host thread ids that
+    -- have entered ggml_backend_sched_compute_splits has cardinality
+    -- at most 1. The dispatcher is single-threaded by construction.
+    --
+    -- Bound by:
+    --   ggml_backend_sched_dispatch_thread_count() <= 1
+    -- after any sequence of ggml_backend_sched_graph_compute calls
+    -- (with the value being 0 only if compute_splits was never
+    --  entered).
+    forall observed_thread_ids: set<HostThreadId>
+        where observed_thread_ids ==
+              dispatch_thread_ids_since_process_start():
+        cardinality(observed_thread_ids) <= 1
+}
+
+contract SplitsExecuteInSequenceOrder {
+    -- The dispatcher walks splits[0..n_splits) in array order on
+    -- the single host thread. For every pair i < j, split[i]'s
+    -- eval is enqueued (host-side) before split[j]'s eval.
+    --
+    -- Note: this binds host-side enqueue order, not GPU-side
+    -- completion. GPU concurrency across devices is preserved by
+    -- per-backend streams; the dispatcher does not block on
+    -- per-split completion.
+    forall sched: ScheduleObject, i: u32, j: u32
+        where i < j and j < sched.n_splits:
+        host_enqueue_time(sched.splits[i]) <=
+        host_enqueue_time(sched.splits[j])
+}
+
+contract CopyInputsThenEvalThenRecord {
+    -- For each split with n_inputs > 0:
+    --   1. ggml_backend_sched_copy_inputs runs first (uploads
+    --      cross-backend inputs and inserts event_wait calls on
+    --      the destination backend's stream).
+    --   2. ggml_backend_sched_eval runs next (enqueues split's
+    --      kernels on its backend's stream).
+    --   3. cudaEventRecord on sched->events[backend_id][cur_copy]
+    --      runs last (so downstream consumers' event_wait calls
+    --      see the produced data).
+    forall sched: ScheduleObject, split: Split
+        where split.n_inputs > 0:
+        copy_inputs_time(sched, split) <
+        eval_time(sched, split) and
+        eval_time(sched, split) <
+        event_record_time(sched.events[split.backend_id][sched.cur_copy])
+}
+
+contract EventRecordIsThreadSafe {
+    -- Under single-threaded dispatch, exactly one cudaEventRecord
+    -- happens per (event_slot, sched_iteration). The Phase-46
+    -- thread-gated guard `if (ith == split_backend_id)` is now
+    -- structural and is encoded by the absence of openmp.
+    --
+    -- Binding form: for every (event_slot, dispatch_iteration), the
+    -- count of cudaEventRecord calls is in {0, 1}.
+    forall sched: ScheduleObject, ev: CudaEvent, iter: u32:
+        event_record_count(sched, ev, iter) <= 1
+}
+
+contract ReduceMarksParticipantsSticky {
+    -- After a REDUCE split (and unless this is the last split),
+    -- every participating backend has async peer writes. The
+    -- dispatcher sets sched->needs_sync[j] = true for every src[j]
+    -- in the reduce node so that the next consumer read in
+    -- copy_inputs forces a stream sync via event_wait or
+    -- backend_synchronize.
+    forall sched: ScheduleObject, split: Split, i: u32
+        where split.first_op_is_reduce
+        and i < sched.n_splits - 1
+        and split == sched.splits[i]:
+        forall j: u32
+            where j is_participant_in(split.reduce_node):
+            sched.needs_sync[j] == true
+              after_dispatch_of(split, sched)
+}
+
+contract NoOpenMpParallelInDispatch {
+    -- The compiled function ggml_backend_sched_compute_splits
+    -- contains no `#pragma omp parallel` directive. Verified by
+    -- spec-tla-gate's grep gate (lines containing "omp parallel"
+    -- inside the compute_splits body are forbidden).
+    --
+    -- Static check (not runtime): part of the spec-tla-gate CI.
+    forall source_lines: list<str>
+        where source_lines == read_lines(
+                  "ik_llama.cpp/ggml/src/ggml-backend.cpp",
+                  "ggml_backend_sched_compute_splits"):
+        forall line: str where line in source_lines:
+            not contains(line, "omp parallel") and
+            not contains(line, "std::barrier")
+}
+
+contract NoStdBarrierInDispatch {
+    -- Same as NoOpenMpParallelInDispatch but for the std::barrier
+    -- worker-thread variant. Deleted by C1 together with the
+    -- openmp block (originally planned for C13; absorbed into C1
+    -- to avoid carrying ~80 lines of dead code through 12 commits).
+    forall source_lines: list<str>
+        where source_lines == read_lines(
+                  "ik_llama.cpp/ggml/src/ggml-backend.cpp",
+                  "ggml_backend_sched_compute_splits"):
+        forall line: str where line in source_lines:
+            not contains(line, "std::barrier") and
+            not contains(line, "barrier.arrive_and_wait") and
+            not contains(line, "workers.emplace_back")
+}
+
+-- ============================================================
+-- Composition
+-- ============================================================
+
+-- HostThreadIsExactlyOne is the load-bearing invariant. The four
+-- PD1 race surfaces (cuda_graphs, pools, cublas_handles, streams)
+-- are reachable only via ggml_backend_sched_eval -> CUDA backend
+-- entry points. Under HostThreadIsExactlyOne, those entry points
+-- are called from a single thread, so the lazy-create branches
+-- inside ggml-cuda.cu (still present in C1) are race-free by
+-- construction.
+--
+-- C2 will pre-allocate those four surfaces at context init,
+-- removing the lazy-create branches entirely. C1 makes them
+-- safe; C2 makes them unnecessary.
+--
+-- The cross-backend event-chain semantics (NoMissingEdges,
+-- ConsumerWaitsForProducer) live in cross_device_event_chain
+-- .allium, bound by C4 (capture-mode wrapping). Under C1's
+-- eager-launch dispatch, the same property holds via runtime
+-- cudaEventRecord/cudaStreamWaitEvent calls; C4 will additionally
+-- bind that these calls survive being captured into a multi-
+-- device cudaGraph.
