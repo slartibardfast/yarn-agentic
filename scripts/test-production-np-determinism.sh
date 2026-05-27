@@ -135,7 +135,10 @@ do_completion() {
 }
 
 extract_content() {
-    /home/llm/venv/bin/python - "$1" <<'PY'
+    # Was /home/llm/venv/bin/python; that path is gone on xeon as of
+    # PHASE46 closure window 2026-05-27. System python3 is sufficient —
+    # the embedded script only uses stdlib (json, sys).
+    python3 - "$1" <<'PY'
 import json, sys
 p = sys.argv[1]
 try:

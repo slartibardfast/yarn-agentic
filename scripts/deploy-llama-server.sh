@@ -41,12 +41,22 @@ if [[ ! -x "$BUILD/bin/llama-server" ]]; then
     log "  Rebuild first: cmake --build $BUILD -j --target llama-server"
     exit 1
 fi
-for so in "$BUILD/ggml/src/libggml.so" "$BUILD/src/libllama.so" "$BUILD/examples/mtmd/libmtmd.so"; do
+for so in "$BUILD/ggml/src/libggml.so" "$BUILD/src/libllama.so" \
+          "$BUILD/examples/mtmd/libmtmd.so"; do
     if [[ ! -f "$so" ]]; then
         log "ABORT: $so is missing — libs must be rebuilt alongside the binary"
         exit 1
     fi
 done
+# libmgpu.so is Phase 46+; required ONLY when not in --allow-no-mmproj-mgpu
+# rollback mode (a pre-Phase-46 build legitimately won't have it).
+if [[ "$ALLOW_NO_MMPROJ_MGPU" != "1" ]]; then
+    if [[ ! -f "$BUILD/mgpu/libmgpu.so" ]]; then
+        log "ABORT: $BUILD/mgpu/libmgpu.so is missing — libs must be rebuilt alongside the binary"
+        log "  Pass --allow-no-mmproj-mgpu if intentionally deploying a pre-Phase-46 build."
+        exit 1
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # PHASE 46 §11.4 — multi-GPU CLIP regression guard.
@@ -65,14 +75,21 @@ done
 if [[ "$ALLOW_NO_MMPROJ_MGPU" == "1" ]]; then
     log "WARN: --allow-no-mmproj-mgpu set; skipping Phase 46 multi-GPU CLIP guards"
 else
-    if ! strings "$BUILD/examples/mtmd/libmtmd.so" | grep -q 'multi-backend init'; then
+    # NOTE: `strings|grep -q` and `nm|grep -q` send SIGPIPE to the producer
+    # when grep exits early on first match; with `set -o pipefail` the
+    # pipeline then returns non-zero EVEN THOUGH THE MATCH WAS FOUND. Use
+    # `grep -c ... >/dev/null` so grep consumes the full stream and the
+    # exit code reflects whether the match was zero or non-zero. Same
+    # trap verify-multigpu-clip.sh hit (see its lines 60-64).
+    if [[ "$(strings "$BUILD/examples/mtmd/libmtmd.so" \
+             | grep -c 'multi-backend init' || true)" == "0" ]]; then
         log "ABORT: $BUILD/examples/mtmd/libmtmd.so missing 'multi-backend init' string"
         log "  Phase 46 multi-backend CLIP path not present — refusing to deploy"
         log "  Pass --allow-no-mmproj-mgpu to override for rollback."
         exit 1
     fi
-    if ! nm -D --defined-only "$BUILD/ggml/src/libggml.so" 2>/dev/null \
-        | grep -q 'ggml_mgpu_create_split'; then
+    if [[ "$(nm -D --defined-only "$BUILD/ggml/src/libggml.so" 2>/dev/null \
+             | grep -c 'ggml_mgpu_create_split' || true)" == "0" ]]; then
         log "ABORT: $BUILD/ggml/src/libggml.so missing ggml_mgpu_create_split export"
         log "  Phase 46 shared mgpu_split_config infra not present — refusing to deploy"
         log "  Pass --allow-no-mmproj-mgpu to override for rollback."
@@ -98,16 +115,33 @@ sudo install -m 0755 -o root -g llm \
     "$BUILD/src/libllama.so" \
     "$BUILD/examples/mtmd/libmtmd.so" \
     "$PREFIX/lib/"
+# libmgpu.so is Phase 46+; only install when present (rollback builds lack it)
+if [[ -f "$BUILD/mgpu/libmgpu.so" ]]; then
+    sudo install -m 0755 -o root -g llm \
+        "$BUILD/mgpu/libmgpu.so" \
+        "$PREFIX/lib/"
+else
+    # Best-effort: remove any stale libmgpu.so so the binary doesn't link
+    # against a leftover from a prior forward deploy. Rollback binaries do
+    # not reference libmgpu.so so deletion is safe.
+    sudo rm -f "$PREFIX/lib/libmgpu.so"
+fi
 
 # ---------------------------------------------------------------------------
 # Post-install verification — refuse to restart if anything is wrong.
 # ---------------------------------------------------------------------------
 log "verifying installed artifacts"
-for name in libggml.so libllama.so libmtmd.so; do
+# Base libs always verified; libmgpu.so verified only when the build has it.
+VERIFY_NAMES=(libggml.so libllama.so libmtmd.so)
+if [[ -f "$BUILD/mgpu/libmgpu.so" ]]; then
+    VERIFY_NAMES+=(libmgpu.so)
+fi
+for name in "${VERIFY_NAMES[@]}"; do
     case "$name" in
         libggml.so)  src="$BUILD/ggml/src/$name" ;;
         libllama.so) src="$BUILD/src/$name" ;;
         libmtmd.so)  src="$BUILD/examples/mtmd/$name" ;;
+        libmgpu.so)  src="$BUILD/mgpu/$name" ;;
     esac
     bh=$(sha256sum "$src" | cut -d' ' -f1)
     ih=$(sha256sum "$PREFIX/lib/$name" | cut -d' ' -f1)
@@ -127,7 +161,8 @@ fi
 # from the installed libggml.so. This is the specific bug from 2026-05-25;
 # its presence in an installed lib means the patch from ik_llama.cpp commit
 # 252217d8 (or its replacement) did not land in this build.
-if strings "$PREFIX/lib/libggml.so" | grep -q 'i_split < GGML_SCHED_MAX_SPLITS'; then
+if [[ "$(strings "$PREFIX/lib/libggml.so" \
+         | grep -c 'i_split < GGML_SCHED_MAX_SPLITS' || true)" != "0" ]]; then
     log "ABORT: legacy GGML_SCHED_MAX_SPLITS assert string is present in $PREFIX/lib/libggml.so"
     log "  the patch from commit 252217d8 has not landed in this build — refusing to deploy"
     exit 1

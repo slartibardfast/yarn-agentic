@@ -243,19 +243,30 @@ if (( EVICT_DELTA >= 1 )); then
 fi
 
 # ---------------------------------------------------------------------------
-# Response sanity — must be a non-empty assistant message.
+# Response sanity — must produce a non-empty assistant response. With small
+# max_tokens budgets the visible "content" can be empty (all tokens consumed
+# by the model's "reasoning_content" chain-of-thought) so accept either
+# `content` OR `reasoning_content` as evidence the encode round-tripped.
 # ---------------------------------------------------------------------------
 CONTENT=$(printf '%s' "$RESP" | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
-    print(d["choices"][0]["message"]["content"])
-except Exception as e:
+    msg = d["choices"][0]["message"]
+    c = msg.get("content") or msg.get("reasoning_content") or ""
+    print(c)
+except Exception:
     sys.exit(2)
 ' 2>/dev/null || true)
 if [[ -z "$CONTENT" ]]; then
-    log "ABORT: response had no assistant content"
-    head -c 1024 "$RUN_DIR/response.json" | sed 's/^/    /'
+    log "ABORT: response had no assistant content or reasoning_content"
+    # In LATENCY_N>1 mode the per-iteration responses live at response-N.json.
+    if [[ -f "$RUN_DIR/response.json" ]]; then
+        head -c 1024 "$RUN_DIR/response.json" | sed 's/^/    /'
+    else
+        last=$(ls "$RUN_DIR"/response-*.json 2>/dev/null | tail -1)
+        [[ -n "$last" ]] && head -c 1024 "$last" | sed 's/^/    /'
+    fi
     exit 1
 fi
 log "assistant response: ${CONTENT:0:160}"

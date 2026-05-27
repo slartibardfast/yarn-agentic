@@ -8,10 +8,13 @@
 # Diagnostic-only — delete after R5 closure per feedback_bake_measurement_env_gates.
 
 set -uo pipefail
-cd /home/llm/yarn-agentic
+# Was `cd /home/llm/yarn-agentic` — that checkout is not on every host.
+# Resolve to the repo root containing this script.
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$REPO_ROOT"
 
-GGUF=/opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.gguf
-BIN=ik_llama.cpp/build/bin/llama-server
+GGUF=${GGUF:-/opt/models/recast-out/qwen3.6-27b-V-F1.T1.lm_head-f16.gguf}
+BIN=${BIN:-ik_llama.cpp/build/bin/llama-server}
 PORT=18296
 N_PREDICT=64
 ITERS=${ITERS:-10}
@@ -72,7 +75,7 @@ fire() {
         -d "{\"prompt\":\"$PROMPT\",\"n_predict\":$N_PREDICT,\"temperature\":0.0,\"top_p\":1.0,\"top_k\":0,\"min_p\":0.0,\"repeat_penalty\":1.0,\"seed\":1,\"stream\":false,\"cache_prompt\":false}" \
         "http://127.0.0.1:$PORT/completion" > "$1"
 }
-extract() { /home/llm/venv/bin/python -c "import json,sys; print(json.load(open(sys.argv[1])).get('content',''), end='')" "$1"; }
+extract() { python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('content',''), end='')" "$1"; }
 
 # Single-GPU NP=1 baseline (cached for all iters).
 echo "[baseline] single-GPU NP=1"
@@ -115,5 +118,5 @@ echo
 echo "=== C.4 result ==="
 echo "Iters: $ITERS"
 echo "Fails: $FAILS"
-echo "Rate:  $(/home/llm/venv/bin/python -c "print(f'{$FAILS/$ITERS*100:.0f}%')")"
+echo "Rate:  $(python3 -c "print(f'{$FAILS/$ITERS*100:.0f}%')")"
 echo "Results: $OUT_DIR"
