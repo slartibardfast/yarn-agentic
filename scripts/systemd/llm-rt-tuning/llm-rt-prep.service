@@ -1,0 +1,28 @@
+[Unit]
+Description=LLM real-time environment prep (CPU governor + IRQ affinity)
+Documentation=file:///home/dconnolly/yarn-agentic/PHASE_NP8_FLAKE.md
+DefaultDependencies=no
+After=multi-user.target
+Before=llama-server.service
+
+# Conditions: skip silently if not on the production host (sysfs probe).
+# The path always exists on a Linux box with intel_pstate or acpi-cpufreq,
+# so this is just a guard against running on a container/VM with no cpufreq.
+ConditionPathExists=/sys/devices/system/cpu/cpufreq/policy0/scaling_governor
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Apply prep at start (governor=performance, IRQs 30/106/110 → cores 0-3).
+ExecStart=/usr/local/sbin/llm-rt-prep apply
+# On stop, restore defaults (powersave, IRQs back to 0-15). This lets the
+# operator cleanly disable RT prep with `systemctl stop llm-rt-prep`.
+ExecStop=/usr/local/sbin/llm-rt-prep --revert
+
+# Logging: the script's stdout/stderr land in the journal, where the post-
+# apply state report is preserved for audit.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=llama-server.service
