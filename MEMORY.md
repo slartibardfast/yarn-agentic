@@ -10936,3 +10936,21 @@ Non-blocking follow-ups (NOT Phase 46 scope):
 - Tune per-split drain to only drain backends with peer-write work.
 - `test-clip-encode-latency.cpp` source comment still references
   "§11.1 single-GPU reference" — wording cleanup at leisure.
+
+## 2026-05-27 — NP=8 single-slot flake LOCALIZED to openmp ↔ CUDA host-side dispatch race
+
+Three-discriminator window (RUN_ID=20260527T113550) with production stopped:
+
+| Test | Env | Result |
+|---|---|---|
+| NP=8 single-GPU | `DEVICE=CUDA0` | infeasible (`GGML_SCHED_MAX_SPLIT_INPUTS` ASSERT — scheduler static-array limit, different gate) |
+| NP=8 + `GGML_SCHED_EVAL_SERIALIZE=1` | multi-GPU | **PASS — all 8 slots byte-identical to NP=1** |
+| NP=8 + `LLAMA_FATTN_STRICT_SEQUENTIAL_DECODE=1` | multi-GPU | FAIL — slot 7 diverges, same fingerprint as prior reps |
+
+Conclusion: the race is at or below `ggml_backend_sched_eval` (`ggml/src/ggml-backend.cpp:2126`), called concurrently by openmp threads. NOT in concurrent decode batching (Test 3 ruled it out); NOT in the FA kernel (race-free per-CTA design); NOT in cross-stream peer-copy completion (Phase 46's drain + cudaDeviceSynchronize already in force). The race is in host-side CUDA driver state racing under openmp-parallel multi-backend dispatch.
+
+Production runs `--parallel 1` so this is a LATENT determinism gap, not a live regression.
+
+New phase opened: `PHASE_CUDA_NATIVE_DISPATCH.md` — ground-up CUDA-idiomatic single-threaded host + multi-stream device async, with cross-backend CUDA Graph capture as the perf lever. Replaces openmp parallel multi-backend dispatch entirely.
+
+Evidence: `/tmp/np8-discriminator/run-20260527T113550/{test1,test2,test3}.log` and per-test `*-slot*.txt` / `divergence-np*-slot*.diff` under `/tmp/np8-discriminator/test{1,2,3}-*/run-*/`. Slot-7 Test 3 divergence diff byte-identical to the 2026-05-27 09:09Z rep-1 divergence (same race outcome, deterministic-given-race).
