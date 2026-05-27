@@ -1,66 +1,147 @@
 -- allium: 3
 -- specs/cuda-native-dispatch/calibrated_dispatch_framework.allium
 --
--- Status: PLACEHOLDER. Bound by PHASE_CUDA_NATIVE_DISPATCH.md
--- commit C0 (calibration framework). This is the FOUNDATIONAL spec
--- of the phase — every other calibrated-op spec composes with this
--- one.
+-- Status: LIVE as of PHASE_CUDA_NATIVE_DISPATCH commit C0.
+-- This is the FOUNDATIONAL spec of the phase — every other calibrated-
+-- op spec composes with this one.
 --
 -- Scope: the ggml_cuda_calibrate() framework. At context init, the
 -- framework probes each registered op at five payload sizes
 -- {0, 1MB, 10MB, 100MB, 1GB} and records the smallest bucket where
--- the alt-strategy's p95 latency is less than the default-
--- strategy's p50 latency (the "conservative crossover"). If no
--- crossover is found in the probe range, the threshold is
--- SIZE_MAX (alt-strategy never fires). The threshold table is
--- cached to disk at ~/.cache/ggml/cuda-calibration-{gpu_uuid_hash}
--- .json and reloaded on subsequent context inits when the
--- (gpu_uuid, cuda_version, ggml_version) cache_key matches.
+-- the alt-strategy's p95 latency is less than the default-strategy's
+-- p50 latency (the "conservative crossover"). If no crossover is
+-- found in the probe range, the threshold is SIZE_MAX. The threshold
+-- table is cached to disk at
+--   $XDG_CACHE_HOME/ggml/cuda-calibration-{fnv1a64(cache_key)}.json
+-- (fallback $HOME/.cache, then /tmp/ggml-cache). Cache_key is
+-- "v{schema} -cuda{ver} -drv{ver} -gpus:{uuid_hex}...". Mismatch
+-- triggers re-calibration.
 --
--- Why this spec exists: the user directive 2026-05-27 made size-
--- adaptive dispatch the default pattern for the phase. Hardcoding
--- thresholds for one specific hardware (xeon's 2× Quadro RTX 6000
--- + NV2) would be fragile; the same binary on different hardware
--- would pick the wrong strategy. Calibration adapts at runtime.
--- This spec binds the framework's determinism: for a fixed
--- (gpu_uuid, cuda_version, ggml_version) tuple, calibration
--- returns the SAME threshold across processes (modulo quantization
--- absorbing minor variance).
---
--- Includes:
---   - External entity for the calibration framework
---     (CalibrationTable, OpId, Threshold, ProbeResult, CacheFile).
---   - Enumeration of registered ops:
---     {REDUCE_CROSS_DEVICE, MATMUL_STREAM_SPLIT, PEER_COPY,
---      GRAPH_CAPTURE}.
---   - Enumeration of quantization buckets:
---     {0, 1MB, 10MB, 100MB, 1GB, SIZE_MAX}.
---   - Contract ProbeIsDeterministic — for a fixed input and
---     hardware, probe() returns (p50, p95) values that quantize to
---     the same bucket across runs.
---   - Contract CacheLoadIdempotent — calibrate(ctx) writes cache,
---     calibrate(ctx') on a fresh context with matching cache_key
---     loads thresholds bit-identical to the writer.
---   - Contract ThresholdQuantized — every threshold[op] is in
---     {0, 1MB, 10MB, 100MB, 1GB, SIZE_MAX}.
---   - Contract DispatchIsPureFunction — the dispatch decision at
---     a calibrated op site is a pure function of (op_id, payload_
---     bytes, threshold[op_id]).
---
--- CODE REFS (post-C0):
---   ik_llama.cpp/ggml/src/ggml-cuda/calibration.h
---   ik_llama.cpp/ggml/src/ggml-cuda/calibration.cu
---   ggml_backend_cuda_context.{calibration_table}  field added
---   ~/.cache/ggml/cuda-calibration-{key}.json      cache file
---
--- TBD: fill content when C0 lands. The framework determinism is
--- bound by test-cuda-calibration-framework.cpp.
+-- Implementation: ik_llama.cpp/ggml/src/ggml-cuda/calibration.cu (C0).
+-- Public API: ik_llama.cpp/ggml/include/ggml-cuda-calibration.h.
 
 allium 3
 
--- TBD: CalibrationTable, OpId, Threshold, ProbeResult, CacheFile entities
--- TBD: registered-ops enum, quantization-buckets enum
--- TBD: ProbeIsDeterministic contract
--- TBD: CacheLoadIdempotent contract
--- TBD: ThresholdQuantized contract
--- TBD: DispatchIsPureFunction contract
+-- ============================================================
+-- Entities
+-- ============================================================
+
+entity GpuUuid {
+    -- 16-byte UUID returned from cudaGetDeviceProperties().uuid.
+}
+
+entity CacheKey {
+    schema_version: u32,
+    cuda_runtime_version: u32,
+    cuda_driver_version: u32,
+    gpu_uuids: list<GpuUuid>,
+}
+
+entity Threshold {
+    bytes: u64,  -- in {0, 1MB, 10MB, 100MB, 1GB, SIZE_MAX}
+}
+
+entity CalibrationTable {
+    thresholds: map<OpId, Threshold>,
+    cache_key: CacheKey,
+    loaded_from_cache: bool,
+    calibrated: bool,
+}
+
+entity OpId {
+    -- enum {REDUCE_CROSS_DEVICE, MATMUL_STREAM_SPLIT, PEER_COPY, GRAPH_CAPTURE}
+}
+
+entity ProbeResult {
+    p50_ms: f64,
+    p95_ms: f64,
+}
+
+-- ============================================================
+-- Quantization buckets (LOCKED)
+-- ============================================================
+
+constant QUANTIZATION_BUCKETS: list<u64> = [
+    0,
+    1048576,         -- 1 MB
+    10485760,        -- 10 MB
+    104857600,       -- 100 MB
+    1073741824,      -- 1 GB
+    SIZE_MAX,
+]
+
+-- ============================================================
+-- Contracts
+-- ============================================================
+
+contract ThresholdQuantized {
+    forall ctx: CudaContext, op: OpId:
+        ctx.calibration_table.thresholds[op].bytes in QUANTIZATION_BUCKETS
+}
+
+contract ProbeIsDeterministic {
+    -- For a fixed hardware + ggml binary, two fresh contexts (no env
+    -- override, cache disabled) produce identical thresholds.
+    forall ctx1, ctx2: CudaContext, op: OpId
+        where same_hardware(ctx1, ctx2)
+        and not env_override_set(op)
+        and cache_disabled():
+        ctx1.calibration_table.thresholds[op].bytes ==
+        ctx2.calibration_table.thresholds[op].bytes
+}
+
+contract CacheLoadIdempotent {
+    -- After calibrate(ctx1) writes cache, calibrate(ctx2) on a fresh
+    -- context with matching cache_key produces identical thresholds.
+    forall ctx1, ctx2: CudaContext
+        where ctx1.calibration_table.cache_key == ctx2.calibration_table.cache_key
+        and ctx2.calibration_table.loaded_from_cache:
+        forall op: OpId:
+            ctx1.calibration_table.thresholds[op].bytes ==
+            ctx2.calibration_table.thresholds[op].bytes
+}
+
+contract DispatchIsPureFunction {
+    -- The dispatch decision at a calibrated op site is a pure function
+    -- of (op_id, payload_bytes, ctx.threshold[op_id]). No hidden state,
+    -- no time-varying inputs.
+    forall ctx: CudaContext, op: OpId, payload: u64:
+        use_alt_strategy(ctx, op, payload) ==
+        (payload >= ctx.calibration_table.thresholds[op].bytes)
+}
+
+contract CalibrationCompletesBeforeFirstDispatch {
+    -- ggml_cuda_calibrate(ctx) is called during ggml_backend_cuda_init
+    -- before the backend is returned to the caller. Therefore
+    -- ctx.calibration_table.calibrated == true at every dispatch
+    -- query for that context.
+    forall ctx: CudaContext, op: OpId, payload: u64
+        when dispatch_query(ctx, op, payload):
+        ctx.calibration_table.calibrated
+}
+
+contract NoCrossoverImpliesSizeMax {
+    -- If during probing no bucket satisfies alt.p95 < default.p50,
+    -- threshold is SIZE_MAX (alt strategy never fires for that op).
+    forall ctx: CudaContext, op: OpId
+        where forall b in QUANTIZATION_BUCKETS where b > 0 and b < SIZE_MAX:
+            alt_p95_at(ctx, op, b) >= default_p50_at(ctx, op, b):
+        ctx.calibration_table.thresholds[op].bytes == SIZE_MAX
+}
+
+-- ============================================================
+-- Composition with calibrated_op_equivalence.allium
+-- ============================================================
+
+-- The framework's determinism contract DOES NOT bind output
+-- equivalence by itself — it only binds that the dispatch decision
+-- is stable for a fixed (op, payload, threshold). The OUTPUT
+-- equivalence (default and alt strategies produce numerically
+-- equivalent results) is the responsibility of
+-- calibrated_op_equivalence.allium. Together the two specs make
+-- calibration safe to deploy.
+
+-- Code refs:
+--   ik_llama.cpp/ggml/src/ggml-cuda/calibration.cu (C0)
+--   ik_llama.cpp/ggml/include/ggml-cuda-calibration.h (C0)
+--   ik_llama.cpp/tests/test-cuda-calibration-framework.cpp (C0)
