@@ -19,7 +19,14 @@ INSTALL_TARGETS=(
     "${SCRIPT_DIR}/llm-rt-prep.sh|/usr/local/sbin/llm-rt-prep|0755"
     "${SCRIPT_DIR}/llm-rt-prep.service|/etc/systemd/system/llm-rt-prep.service|0644"
     "${SCRIPT_DIR}/llama-server-03-rt-deps.conf|/etc/systemd/system/llama-server.service.d/03-rt-deps.conf|0644"
+    "${SCRIPT_DIR}/04-rt-flags.conf|/etc/systemd/system/llama-server.service.d/04-rt-flags.conf|0644"
 )
+
+# Wrapper script lives at /home/llm/profiles/ owned by user llm; we don't
+# auto-install it here because the path is operator policy, not ops infra.
+# The repo-tracked copy at ${SCRIPT_DIR}/qwen36-27b-x1-vanilla.sh is the
+# canonical reference — sync changes there into /home/llm/profiles/ by
+# hand (sudo install -m 0755 -o llm -g llm ...). Mirror, don't auto-deploy.
 
 if [ "$EUID" -ne 0 ]; then
     echo "FAIL: install.sh must run as root (use sudo)." >&2

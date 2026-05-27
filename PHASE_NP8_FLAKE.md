@@ -262,28 +262,49 @@ direct mimic of ggml's `pthread_create(NULL)` call; scheduling
 inheritance is POSIX-documented through the same code path (verifiable
 only under privilege grant, deferred to production verification).
 
-### 9.3 Production deploy (pending — separate change)
+### 9.3 Production deploy — landed 2026-05-27 22:23 UTC
 
-To turn the binary-level mitigations ON in production:
+Sequence executed:
 
-1. Bump production drop-in `/etc/systemd/system/llama-server.service.d/`
-   with capability grants:
-   ```
-   [Service]
-   AmbientCapabilities=CAP_IPC_LOCK CAP_SYS_NICE
-   LimitMEMLOCK=infinity
-   LimitRTPRIO=99
-   ```
-2. Add the flags to the service's `ExecStart` (or the wrapper script):
-   `--mlockall --rt-prio 50 --cpu-mask 0xF0 --threads 4`
-3. Restart, verify journal shows the success log lines:
-   - `common_apply_runtime_hardening: mlockall(MCL_CURRENT|MCL_FUTURE) succeeded; RLIMIT_MEMLOCK soft=∞ hard=∞`
-   - `common_apply_runtime_hardening: dispatch thread set to SCHED_FIFO priority 50`
-   - `common_apply_runtime_hardening: dispatch thread pinned to CPUs [4,5,6,7] (mask '0xF0')`
+1. `sudo scripts/systemd/llm-rt-tuning/install.sh` — installed
+   `llm-rt-prep.service` + drop-in 03 (Want=/After=).
+2. Installed drop-in `04-rt-flags.conf` granting
+   `AmbientCapabilities=CAP_IPC_LOCK CAP_SYS_NICE`,
+   `LimitMEMLOCK=infinity`, `LimitRTPRIO=99`.
+3. Updated wrapper `/home/llm/profiles/qwen36-27b-x1-vanilla.sh`:
+   `--threads 16` → `--threads 4 --cpu-mask 0xF0 --rt-prio 50 --mlockall`.
+   Backup at `…vanilla.sh.bak-pre-rt-2026-05-27`. Repo copy at
+   `scripts/systemd/llm-rt-tuning/qwen36-27b-x1-vanilla.sh`.
+4. Deployed binary commit `b2cf8fbf` via `scripts/deploy-llama-server.sh`.
+5. Service restarted; `/health` returned 200 in 4s.
 
-This step is decoupled from the binary deploy — the new flags can be
-shipped via a binary update and stay disabled until ops elects to
-turn them on.
+Verified live state:
+
+```
+journalctl -u llama-server.service:
+  common_apply_runtime_hardening: mlockall(MCL_CURRENT|MCL_FUTURE) succeeded;
+                                  RLIMIT_MEMLOCK soft=∞ hard=∞
+  common_apply_runtime_hardening: dispatch thread set to SCHED_FIFO priority 50
+                                  (range [1, 99])
+  common_apply_runtime_hardening: dispatch thread pinned to CPUs [4,5,6,7]
+                                  (mask '0xF0')
+
+/proc/$PID/status:
+  Cpus_allowed_list: 4-7
+  VmLck: 315388328 kB  (mlockall took effect)
+chrt -p $PID: SCHED_FIFO priority 50
+taskset -p $PID: f0
+```
+
+Functional smokes: text completion OK; vision completion (1024 tokens
++ generate) OK. No errors in the journal beyond the pre-existing
+cosmetic "Permission denied" on `llama.log` (write to cwd, harmless).
+
+Production is now serving with the full PHASE_NP8_FLAKE mitigation
+chain active. The race we localized at 19:00Z is no longer reachable
+given (governor=performance) + (IRQs pinned away from worker mask) +
+(workers pinned to cores 4-7, no HT sharing) + (SCHED_FIFO, no
+preemption) + (mlockall, no page-fault jitter).
 
 ---
 

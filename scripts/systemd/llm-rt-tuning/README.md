@@ -16,6 +16,13 @@ isolation for further defense-in-depth.
 | `/usr/local/sbin/llm-rt-prep` | Sets `cpufreq` governor = `performance` and pins AHCI (IRQ 30) + NVIDIA (IRQs 106, 110) IRQ affinity to logical CPUs 0-3 |
 | `/etc/systemd/system/llm-rt-prep.service` | Oneshot unit that calls the script at start and revert at stop |
 | `/etc/systemd/system/llama-server.service.d/03-rt-deps.conf` | Drop-in making `llama-server.service` Want= and After= the prep service |
+| `/etc/systemd/system/llama-server.service.d/04-rt-flags.conf` | Drop-in granting `CAP_IPC_LOCK`, `CAP_SYS_NICE`, `LimitMEMLOCK=infinity`, `LimitRTPRIO=99` so the binary-level `--mlockall` and `--rt-prio` flags succeed |
+
+### Operator-managed (mirrored, not auto-installed)
+
+| Path | Repo copy | Purpose |
+|---|---|---|
+| `/home/llm/profiles/qwen36-27b-x1-vanilla.sh` | `qwen36-27b-x1-vanilla.sh` | Service entrypoint wrapper. Add `--mlockall --rt-prio 50 --cpu-mask 0xF0 --threads 4` to the `llama-server` invocation. Mirror by hand: `sudo install -m 0755 -o llm -g llm scripts/systemd/llm-rt-tuning/qwen36-27b-x1-vanilla.sh /home/llm/profiles/` |
 
 The prep happens **once per boot** (RemainAfterExit=yes). It is pulled
 in automatically when `llama-server.service` starts, but can also be
