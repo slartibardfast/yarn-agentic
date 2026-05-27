@@ -309,6 +309,47 @@ contract OuterCaptureFlagIsThreadLocal {
 }
 
 -- ============================================================
+-- C6 — CPUSplitsHoistedBeforeCapture
+-- ============================================================
+
+contract CPUSplitsHoistedBeforeCapture {
+    -- PD3 confirmed production has no mid-dispatch CPU splits — all
+    -- CPU work is a strict prefix. C6 hoists leading CPU splits out
+    -- of outer capture: they run synchronously on the host BEFORE
+    -- cudaStreamBeginCapture, and the dispatch loop starts at the
+    -- first CUDA split when outer-capture is active.
+    --
+    -- Gating: outer-capture is enabled only when cpu_is_prefix_only
+    -- AND first_cuda_split < n_splits AND !outer_capture_disabled.
+    -- If a graph has CPU splits interleaved or trailing, the wrap
+    -- is skipped and the dispatch loop runs eagerly over every
+    -- split (the C1 path).
+    --
+    -- Cache hits also bypass the capture round-trip but still need
+    -- the CPU prefix to run on every dispatch; the captured graph
+    -- contains no CPU work.
+    forall sched: ScheduleObject
+        when ggml_backend_sched_compute_splits(sched) is_called
+        and outer_capture_active_for(sched):
+        forall i: u32 where i < first_cuda_split(sched):
+            sched.splits[i].backend_id refers_to CPUBackend and
+            sched.splits[i].eval happens_before
+                cudaStreamBeginCapture(sched, primary_stream)
+}
+
+contract NoMidDispatchCPUSplitsUnderCapture {
+    -- Within an active outer-capture round-trip, every split iterated
+    -- by the dispatch loop is on a CUDA backend. CPU splits, if
+    -- present, are entirely upstream of first_cuda_split (the loop
+    -- start under capture).
+    forall sched: ScheduleObject, i: u32
+        where outer_capture_active_for(sched)
+        and i >= first_cuda_split(sched)
+        and i < sched.n_splits:
+        sched.splits[i].backend_id refers_to CudaBackend
+}
+
+-- ============================================================
 -- Composition
 -- ============================================================
 
