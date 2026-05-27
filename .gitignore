@@ -23,3 +23,7 @@ specs/**/*_TTrace_*.bin
 
 # GPU coordination state (volatile, per-host)
 coord/
+
+# PHASE46 B.8 — vision payload is reproducible from test-1.jpeg via
+# scripts/gen-test-vision-payload.sh; do not commit the ~165 KB JSON.
+scripts/test-vision-payload.json
