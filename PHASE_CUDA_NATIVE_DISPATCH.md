@@ -344,12 +344,109 @@ These run BEFORE C1 begins. Each has a binding output that the implementation de
 
 ---
 
-## §10 — Forward to data gathering
+## §10 — Pre-design results (PD1, PD2, PD3 — completed 2026-05-27)
 
-Immediate next actions:
-1. PD2 — multi-device capture test (no production impact). Decisive for C3-C5 capture architecture.
-2. PD3 read-only enumeration — analyze existing sched logging for CPU splits in production LM + CLIP graphs.
-3. PD1 read-only analysis — list shared-state access points in the openmp parallel region (instrumentation deferred unless analysis is ambiguous).
-4. Plan one combined maintenance window for PD4 + PD5 + PD6 (~3-4 hours, ideally batched to avoid multiple production restarts).
+### PD1 result — racing fields enumerated
 
-Pre-design measurements land in `data/cuda-native-dispatch/predesign-<DATE>/`. Each PD task gets a commit + push (`MEMORY.md` notes a one-line entry per CLAUDE.md §6).
+Inside `ggml-backend.cpp:2215-2350` (openmp parallel block), the `if (ith == split_backend_id) ggml_backend_sched_eval(...)` descends into `ggml_backend_cuda_graph_compute`. Four CUDA-context shared fields are accessed without locks under concurrent multi-thread entry on the SAME backend context:
+
+| Racing field | Site | Mechanism |
+|---|---|---|
+| `cuda_ctx->cuda_graphs` (unordered_map) | `ggml-cuda.cu:5176` `ggml_cuda_get_graph()` | unprotected map find/insert/erase under concurrent threads on same context |
+| `cuda_ctx->pools[device]` | `ggml-cuda/common.cuh:959-964` | lazy-create `if (pools[device] == nullptr) new_pool_for_device(...)` |
+| `cuda_ctx->cublas_handles[device]` | `ggml-cuda/common.cuh:931-948` | lazy-create `if (cublas_handles[device] == nullptr) cublasCreate(...)` |
+| `cuda_ctx->streams[device][n]` | `ggml-cuda/common.cuh:903-909` | lazy-create `if (streams[device][n] == nullptr) cudaStreamCreateWithFlags(...)` |
+
+`copy_event` lazy-create at `ggml-cuda.cu:4472-4473` is single-thread accessed via `copy_thread` (only one thread calls `cpy_tensor_async` per split per audit), so it's not in the racing set BUT still a latent race surface if any future change makes cpy_tensor_async concurrent.
+
+`sched->statuses[ith]`, `sched->needs_sync[]`, `sched->events[*][*]` are all guarded by openmp barriers between writes and reads. Not racing.
+
+**C1 design binding**: single-threaded dispatch eliminates ALL four racing fields by construction. **C2 generalized**: pre-allocate `copy_event`, `pools`, `cublas_handles`, AND `streams` at context init — kills every lazy-create race surface, not just `copy_event`. Adjusts the implementation arc: rename C2 to "pre-allocate all CUDA-context lazy fields at init."
+
+### PD2 result — multi-device single-graph capture works in CUDA 13.2
+
+Standalone test `data/cuda-native-dispatch/predesign/pd2_multi_device_capture.cu` compiled with `nvcc -ccbin /usr/bin/g++-15` and run on production hardware (2× Quadro RTX 6000, CUDA 13.2):
+
+- `cudaStreamBeginCapture(stream_CUDA0, cudaStreamCaptureModeRelaxed)`
+- Kernel on CUDA0 stream
+- `cudaEventRecord(e0, stream_CUDA0)`
+- `cudaSetDevice(1); cudaStreamWaitEvent(stream_CUDA1, e0); kernel on stream_CUDA1; cudaEventRecord(e1, stream_CUDA1)`
+- `cudaSetDevice(0); cudaStreamWaitEvent(stream_CUDA0, e1); kernel on stream_CUDA0`
+- `cudaStreamEndCapture(stream_CUDA0, &graph)` → single `cudaGraph_t`
+- `cudaGraphInstantiate` + `cudaGraphLaunch(graph, stream_CUDA0)` → correct output across both devices
+
+Captured graph has 3 nodes (one per kernel); events became edge dependencies, not separate nodes. Graph size scales with kernel count.
+
+**C3-C5 design binding**: single-graph capture. NOT per-device subgraph stitching. Simpler than the contingency. The outer `cudaStreamBeginCapture` in C4 wraps the entire `compute_splits` loop; cross-device dependencies live inside the captured graph.
+
+### PD3 result — CPU splits are upstream-only
+
+Static analysis of `ggml_backend_sched_split_graph` at `ggml-backend.cpp:1412-1850`:
+
+- 5-pass assignment algorithm; CPU is lowest-priority backend (index `n_backends - 1`).
+- Pass 2 (lines 1517-1599) **prevents** CPU nodes from propagating between GPU zones — explicit skip at line 1532.
+- Mainstream LM forward-pass ops (GET_ROWS, ROPE, SOFT_MAX, FLASH_ATTN_EXT, MUL_MAT, RMS_NORM, REDUCE, SUM_ROWS) all have CUDA implementations and assign to GPU when weights are GPU-resident.
+- Production graph inputs (token IDs, positions, attention masks) are marked `GGML_TENSOR_FLAG_INPUT` and default to CPU at line 1308, then `tensor_id_copy()` creates GPU mirrors at lines 1811-1842 — pure upstream.
+
+`/tmp/production-np-determinism/run-20260527T091357/server-np8.log` and `/tmp/phase46-multigpu-clip/run-20260527T092327/` show 387 total splits for CLIP at NP=8 with no "CPU" backend named in any split. Production uses `--no-mmproj-offload` (mmproj on GPU).
+
+`GGML_SCHED_DEBUG=1` (`ggml-backend.cpp:2509`) prints the split list for verification — useful during implementation to confirm hoist-out covers every CPU split.
+
+**C6 design binding**: hoist-out pattern. CPU input staging runs on the host thread BEFORE `cudaGraphLaunch`. No `cudaLaunchHostFunc` plumbing needed. No mid-graph CPU dependencies. The implementation simplifies materially.
+
+### PD4 / PD5 / PD6 — still pending
+
+Combined maintenance window required (~3-4 hours):
+- PD4: baseline perf measurement (`bench-multislot.sh` NP={1,2,4,8}, `verify-multigpu-clip.sh LATENCY_N=10`, `llama-bench`)
+- PD5: NCCL `ncclAllReduce` vs `cudaMemcpyPeer + add` microbenchmark on libmgpu reduce shape
+- PD6: 1-stream vs 2-stream-per-device microbenchmark on libmgpu matmul shape
+
+PD5/PD6 microbenchmarks not yet written — that's the next slug of work, before the maintenance window.
+
+---
+
+## §11 — Formal specifications (Allium + TLA+) — content DEFERRED until PD4-PD6 integrated
+
+User directive 2026-05-27: "we need allium and TLA+ content for this document, add once we have data and integrated it."
+
+This section is filled AFTER PD4-PD6 complete and after the design's parameter values (multi-stream count, NCCL message shape, capture cache key structure) are bound by measurement. Pattern follows `PHASE_NSTREAM_KV_PERF.md` §"P0.B — Radical Allium / TLA+ / test surface expansion" (5 Allium specs + 3 TLA+ specs + 5 property tests + trace-harness extension).
+
+### §11.1 — Allium specs (planned, content TBD)
+
+Five specs covering the new dispatch's correctness invariants. Locations: `/home/dconnolly/yarn-agentic/specs/cuda-native-dispatch/`. Working titles:
+
+1. **`single_threaded_dispatch.allium`** — ALL host-side CUDA driver state mutations happen on exactly one host thread per process lifetime. No concurrent entry into `ggml_backend_sched_compute_splits` or below. Binds C1.
+2. **`cross_device_event_chain.allium`** — every cross-device data dependency in the captured graph has a `cudaEventRecord` on the producer + `cudaStreamWaitEvent` on the consumer. No data read on device D before its producing write is event-synchronized. Binds C4 + C7.
+3. **`multi_device_graph_cache.allium`** — graph cache key `(topology_hash, device_layout, n_seq)` produces identical `cudaGraph_t` for matching keys. Cache hit replays bit-identically to capture. Eviction FIFO bounded by `GGML_CUDA_GRAPH_MAX`. Binds C5.
+4. **`libmgpu_subgraph_capture.allium`** — libmgpu per-device subgraphs capture cleanly into the outer multi-device graph. Cross-device REDUCE produces byte-identical output to the pre-phase memcpy-peer+add (or NCCL ncclAllReduce when C9 is active). Binds C7 + C9.
+5. **`multi_stream_ilp_determinism.allium`** — per-device matmul split across 2 streams produces byte-identical output to 1-stream. Reduction order pinned per replay (same captured graph always sequences partial-reduce identically). Binds C8.
+
+### §11.2 — TLA+ specs (planned, content TBD)
+
+Three models covering dispatch safety + liveness. Locations: `/home/dconnolly/yarn-agentic/specs/cuda-native-dispatch/`.
+
+1. **`CUDANativeDispatch.tla`** — single-threaded `compute_splits` as a state machine `{IDLE, ENQUEUING, CAPTURING, LAUNCHED, COMPLETE}`. Verifies absence of host-side races, event-record/wait ordering, every split's eval completes before the graph end.
+2. **`CUDAGraphCacheConsistency.tla`** — multi-device graph cache. Insertions, evictions, lookups. Verifies cache key uniqueness (no hash collisions) and that evicted-then-re-captured graphs are bit-identical.
+3. **`CrossDeviceReduceOrdering.tla`** — libmgpu's REDUCE under both NCCL and memcpy-peer+add paths. Verifies the two paths produce equivalent numerical output under the same input sequence (fp16 ULP bound).
+
+### §11.3 — Property tests + trace-harness extensions (planned)
+
+Five property tests in `tests/spec/` bound by the Allium specs:
+
+1. `test-single-threaded-dispatch.cpp` — counts threads entering `compute_splits` over N graph computes; asserts always == 1.
+2. `test-cross-device-event-chain.cpp` — instruments event-record/event-wait pairs; asserts every consumer wait has a matching producer record before it.
+3. `test-multi-device-graph-cache.cpp` — runs N captures of the same topology; asserts cache hit rate steady-state, bit-identical replay output.
+4. `test-libmgpu-subgraph-capture.cpp` — captures libmgpu's per-device subgraphs; asserts byte-identity to the pre-phase non-captured output.
+5. `test-multi-stream-ilp-determinism.cpp` — same matmul under 1-stream vs 2-stream; asserts byte-identical (or fp16 ULP bound if reduction order differs).
+
+Trace-harness extension: `cudaGraphTraceCapture` + `cudaGraphTraceLaunch` hooks (CUDA 12+ `cudaGraphAddEventRecordNode` introspection) → JSON trace of captured nodes for property tests to parse.
+
+### §11.4 — Integration order
+
+Once PD4/PD5/PD6 land:
+1. Update §4.3 perf targets with measured numbers.
+2. Update §3.1 commit list with C8/C9 finalized go/no-go from PD5/PD6.
+3. Write §11.1 + §11.2 Allium + TLA+ spec stubs at `specs/cuda-native-dispatch/`.
+4. Each spec gets a placeholder commit BEFORE its implementation commit (C1 ships with `single_threaded_dispatch.allium` already in tree).
+5. Property tests in §11.3 land with their feature commits (per §5.3 "tests land in the SAME commit as the feature").
+6. TLA+ model-checking runs in CI before merge via the existing `.github/workflows/spec-tla-gate.yml` gate.
