@@ -216,18 +216,63 @@ If neither happens after H1-H5 are exhausted, the phase REOPENS the hypothesis s
 
 ---
 
-## 9. Proposed mitigation (the actual fix)
+## 9. Mitigation — landed in two halves
 
-A systemd drop-in for `llama-server.service` that pins CPU governor while the service is active. Existing drop-ins live at `/etc/systemd/system/llama-server.service.d/`:
+### 9.1 Operational (systemd, no binary change) — shipped
 
-```
-[Service]
-ExecStartPre=/bin/sh -c 'echo performance | tee /sys/devices/system/cpu/cpufreq/policy*/scaling_governor > /dev/null'
-```
+`scripts/systemd/llm-rt-tuning/` contains a self-contained, reproducible
+ops install:
 
-Requires NoNewPrivileges=no on the service OR a `CAP_SYS_ADMIN`-equivalent sudo rule for the path; alternative is a separate one-shot service that fires at boot. The simplest variant is a `cpupower.service` system-wide (`cpupower frequency-set -g performance`) that runs at boot — that's the canonical Linux idiom and decouples the LLM service from the governor concern.
+- `llm-rt-prep.sh` — sets CPU governor = `performance` and pins AHCI (IRQ 30)
+  + NVIDIA (IRQs 106, 110) IRQ affinity to logical CPUs 0-3
+- `llm-rt-prep.service` — oneshot systemd unit invoking the script at start
+  and reverting at stop
+- `llama-server-03-rt-deps.conf` — drop-in adding `Wants=` + `After=`
+  the prep service
+- `install.sh` — idempotent installer
 
-**Recommendation:** ship the system-wide variant (`cpupower-performance.service` or equivalent), document the dependency, and verify it survives reboot. Test plan: reboot host, confirm governor = performance, run G3.a NP=8 ×3 reps before starting any other service.
+`Wants=` (soft) on llama-server: a failed prep yields a slightly racy
+service rather than a down service. Production runs `--parallel 1` today
+so the latent race is invisible to users either way.
+
+### 9.2 Binary-level (submodule code, opt-in flags) — shipped
+
+`ik_llama.cpp` submodule HEAD `2ff3ce30` adds three opt-in CLI flags
+(default off, no behavior change unless explicitly enabled):
+
+| Flag | Effect | Capability needed |
+|---|---|---|
+| `--mlockall` | `mlockall(MCL_CURRENT \| MCL_FUTURE)` — locks all process pages, no page-fault jitter | `CAP_IPC_LOCK` or unlimited `RLIMIT_MEMLOCK` |
+| `--rt-prio N` | SCHED_FIFO priority N on the dispatch thread | `CAP_SYS_NICE` or `RLIMIT_RTPRIO ≥ N` |
+| `--cpu-mask 0xF0` | `pthread_setaffinity_np` to CPU set; supports hex (`0xF0`) and range (`4-7`) syntax | none |
+
+All three implemented via `common_apply_runtime_hardening()` called at
+the head of `llama_init_from_gpt_params`. Each fails gracefully on
+EPERM (single warning, continue serving). Binding tests:
+`tests/spec/test-runtime-hardening-mlockall.cpp` — 8/8 PASS.
+
+### 9.3 Production deploy (pending — separate change)
+
+To turn the binary-level mitigations ON in production:
+
+1. Bump production drop-in `/etc/systemd/system/llama-server.service.d/`
+   with capability grants:
+   ```
+   [Service]
+   AmbientCapabilities=CAP_IPC_LOCK CAP_SYS_NICE
+   LimitMEMLOCK=infinity
+   LimitRTPRIO=99
+   ```
+2. Add the flags to the service's `ExecStart` (or the wrapper script):
+   `--mlockall --rt-prio 50 --cpu-mask 0xF0 --threads 4`
+3. Restart, verify journal shows the success log lines:
+   - `common_apply_runtime_hardening: mlockall(MCL_CURRENT|MCL_FUTURE) succeeded; RLIMIT_MEMLOCK soft=∞ hard=∞`
+   - `common_apply_runtime_hardening: dispatch thread set to SCHED_FIFO priority 50`
+   - `common_apply_runtime_hardening: dispatch thread pinned to CPUs [4,5,6,7] (mask '0xF0')`
+
+This step is decoupled from the binary deploy — the new flags can be
+shipped via a binary update and stay disabled until ops elects to
+turn them on.
 
 ---
 
