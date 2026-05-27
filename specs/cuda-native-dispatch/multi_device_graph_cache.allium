@@ -1,60 +1,151 @@
 -- allium: 3
 -- specs/cuda-native-dispatch/multi_device_graph_cache.allium
 --
--- Status: PLACEHOLDER. Bound by PHASE_CUDA_NATIVE_DISPATCH.md
--- commit C5 (multi-device graph cache extension).
+-- Status: LIVE as of PHASE_CUDA_NATIVE_DISPATCH commit C5.
 --
--- Scope: the multi-device cudaGraph_t cache. Key is
--- (topology_hash, device_layout, n_seq) — extending the existing
--- per-context cuda_graphs cache (ggml-cuda/common.cuh:858-969,
--- currently keyed on topology_hash alone). Cache hit must replay
--- bit-identically to the original capture. Eviction policy: FIFO
--- bounded by GGML_CUDA_GRAPH_MAX (existing constant).
+-- Scope: the sched-level multi-device cudaGraph_t cache. The
+-- ggml_backend_sched_t holds an outer_graphs map of topology hash →
+-- cudaGraphExec_t. On dispatch with an active outer capture (C4),
+-- compute_splits looks up the key first. Cache hit → cudaGraphLaunch
+-- the cached exec; skip the per-split dispatch loop AND the
+-- begin/end_capture cycle entirely. Cache miss → begin capture, run
+-- the dispatch loop, end_capture (instantiate), store, launch.
 --
--- Why this spec exists: PD2 confirmed multi-device single-graph
--- capture works. With cross-device deps embedded in one graph, the
--- per-token replay overhead drops from N kernel launches × 3
--- backends to ONE cudaGraphLaunch. The cache makes this amortize
--- across topology hits. The spec binds correctness of the cache
--- under repeated capture/replay cycles.
+-- Why this spec exists: C4 ships the wrap mechanism with no cache
+-- (every dispatch re-captures and re-instantiates — ~3-5 ms overhead
+-- per token, unusable in production). This spec binds the cache's
+-- correctness so the perf path is safe to use.
 --
--- Existing graph cache pattern in tree:
---   ggml-cuda.cu:5176  ggml_cuda_get_graph() find/insert
---   ggml-cuda/common.cuh:888 std::unordered_map<uint64_t,...>
---   "too many updates → disable graph" guard at line ~5212 (4+
---    consecutive cudaGraphExecUpdate failures evicts and falls
---    back to capture-on-every-call for that key)
+-- Implementation:
+--   ik_llama.cpp/ggml/src/ggml-backend.cpp
+--     - outer_graphs map (cap MAX_OUTER_GRAPHS = 16)
+--     - outer_graphs_age FIFO list
+--     - ggml_backend_sched_outer_topology_key() — FNV-1a over
+--       n_splits + per-split (backend_id, n_inputs, n_nodes,
+--       first_op)
+--     - ggml_backend_sched_outer_graphs_clear() — destroys all
+--       cached exec handles
+--   ik_llama.cpp/ggml/src/ggml-cuda.cu
+--     - ggml_cuda_outer_capture_end_capture(...) — fan-in +
+--       EndCapture + Instantiate; returns exec
+--     - ggml_cuda_outer_capture_launch_exec(...) — cudaGraphLaunch
+--     - ggml_cuda_outer_capture_destroy_exec(...) — cudaGraphExec
+--       Destroy
+--   ik_llama.cpp/tests/test-multi-device-graph-cache.cpp
 --
--- The C5 extension keeps the same map shape but extends the key
--- type to include device_layout (which devices are active in this
--- graph) and n_seq (the dispatched-stream-count axis). Same find/
--- insert/erase semantics, same eviction policy.
---
--- Includes:
---   - External entity for the cache (GraphCache, GraphKey,
---     GraphValue).
---   - Contract CacheKeyUniqueness — distinct logical graphs hash
---     to distinct keys; key collisions are impossible by
---     construction (topology + device_layout + n_seq forms a
---     total characterization).
---   - Contract ReplayBitIdentical — cudaGraphLaunch on a cached
---     graph produces byte-identical output to the original capture
---     given the same inputs.
---   - Contract EvictionPreservesCorrectness — FIFO eviction up
---     to GGML_CUDA_GRAPH_MAX, then re-capture on next miss.
---
--- CODE REFS:
---   ik_llama.cpp/ggml/src/ggml-cuda.cu:5150     graph_compute entry
---   ik_llama.cpp/ggml/src/ggml-cuda.cu:5176     ggml_cuda_get_graph
---   ik_llama.cpp/ggml/src/ggml-cuda/common.cuh:888  cuda_graphs map
---   ik_llama.cpp/ggml/src/ggml-cuda.cu:5212     "too many updates" guard
---
--- TBD: write the cache state machine + binding invariants when C5
--- lands.
+-- Bound by composition with single_threaded_dispatch.allium (C1's
+-- HostThreadIsExactlyOne — the cache is accessed from one thread)
+-- and cross_device_event_chain.allium (C4 — every cached exec was
+-- captured with the join + fan-in edges baked in).
 
 allium 3
 
--- TBD: GraphCache, GraphKey, GraphValue entities
--- TBD: CacheKeyUniqueness contract
--- TBD: ReplayBitIdentical contract (cross-ref calibrated_op_equivalence.allium)
--- TBD: EvictionPreservesCorrectness contract
+-- ============================================================
+-- Entities
+-- ============================================================
+
+entity TopologyKey {
+    -- 64-bit FNV-1a hash over the dispatch shape:
+    --   (n_splits,
+    --    n_backends,
+    --    for each split: (backend_id, n_inputs, n_nodes, first_op))
+    -- Same-topology graphs with varying tensor shapes share an entry;
+    -- CUDA's cudaGraphExecUpdate flow handles shape variation within
+    -- the same topology at the captured graph level.
+    bits: u64,
+}
+
+entity CachedExec {
+    key:        TopologyKey,
+    exec:       u64,           -- cudaGraphExec_t opaque
+    insert_age: u64,           -- ordinal at insertion time (FIFO)
+}
+
+entity OuterGraphCache {
+    entries: map<TopologyKey, CachedExec>,
+    age_fifo: list<TopologyKey>,
+    capacity: u32,             -- = MAX_OUTER_GRAPHS = 16
+}
+
+-- ============================================================
+-- Contracts
+-- ============================================================
+
+contract CacheKeyDeterministic {
+    -- For a fixed sched dispatch shape, the topology key is identical
+    -- across calls (a pure function of the sched's split sequence).
+    -- Without this, cache hits never fire.
+    forall sched1, sched2: ScheduleObject
+        where same_dispatch_shape(sched1, sched2):
+        outer_topology_key(sched1) == outer_topology_key(sched2)
+}
+
+contract CacheReplayIsByteIdentical {
+    -- Replaying a cached cudaGraphExec_t produces output bit-identical
+    -- to the captured-then-launched original (modulo input data, which
+    -- the captured graph re-reads from the same source pointers on
+    -- every replay).
+    --
+    -- Bound by test-multi-device-graph-cache.cpp: capture once, replay
+    -- 50 times, assert all 50 output hashes equal.
+    forall exec: CachedExec, n_replays: u32:
+        forall i: u32 where i < n_replays:
+            output_hash_after_replay(exec, i) ==
+            output_hash_after_replay(exec, 0)
+}
+
+contract CacheHitSkipsCapture {
+    -- On cache hit, ggml_backend_sched_compute_splits MUST NOT call
+    -- ggml_cuda_outer_capture_begin / _end_capture. Only _launch_exec
+    -- runs. The dispatch loop (per-split eval) is also skipped — the
+    -- captured graph's nodes include every operation those splits
+    -- enqueued.
+    --
+    -- Static-grep gate (spec-tla-gate CI): the cache_hit branch in
+    -- compute_splits must contain "ggml_cuda_outer_capture_launch_exec"
+    -- and must NOT contain "ggml_cuda_outer_capture_begin" or
+    -- "ggml_cuda_outer_capture_end_capture".
+    forall sched: ScheduleObject, key: TopologyKey
+        where key in sched.outer_graphs.entries
+        and ggml_backend_sched_compute_splits(sched) is_called:
+        not ggml_cuda_outer_capture_begin_called(sched) and
+        not ggml_cuda_outer_capture_end_capture_called(sched) and
+        ggml_cuda_outer_capture_launch_exec_called(sched,
+            sched.outer_graphs.entries[key].exec)
+}
+
+contract FifoEvictionWhenFull {
+    -- When inserting a new entry into a full cache, the oldest entry
+    -- (front of age_fifo) is evicted via cudaGraphExecDestroy. The
+    -- cache size never exceeds capacity.
+    forall cache: OuterGraphCache, new_key: TopologyKey
+        when insert(cache, new_key) is_called:
+        if size_before(cache) >= cache.capacity then
+            victim_evicted(cache) == cache.age_fifo[0] and
+            size_after(cache) == cache.capacity
+        else
+            size_after(cache) == size_before(cache) + 1
+}
+
+contract CacheClearedOnSchedFree {
+    -- ggml_backend_sched_free MUST destroy every cached
+    -- cudaGraphExec_t before freeing the per-backend events (which
+    -- would invalidate the streams that the cached graphs reference).
+    -- Order: outer_graphs_clear → event_free → buffer_free → free.
+    forall sched: ScheduleObject
+        when ggml_backend_sched_free(sched) is_called:
+        ggml_backend_sched_outer_graphs_clear(sched) happens_before
+        ggml_backend_event_free_loop(sched)
+}
+
+contract NoCacheBypass {
+    -- If outer_capture_disabled is FALSE and all_splits_cuda is TRUE,
+    -- compute_splits MUST consult the cache. Bypassing the cache would
+    -- mean re-capturing on every dispatch (the C4 behavior); C5 makes
+    -- this perf path mandatory whenever it's safe.
+    forall sched: ScheduleObject
+        where sched.outer_capture_disabled == false
+        and all_splits_cuda(sched)
+        and ggml_backend_sched_compute_splits(sched) is_called:
+        outer_topology_key_lookup(sched) happens_in_dispatch
+}
