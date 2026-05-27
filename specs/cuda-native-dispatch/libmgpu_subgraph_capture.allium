@@ -1,54 +1,135 @@
 -- allium: 3
 -- specs/cuda-native-dispatch/libmgpu_subgraph_capture.allium
 --
--- Status: PLACEHOLDER. Bound by PHASE_CUDA_NATIVE_DISPATCH.md
--- commit C7 (libmgpu port to captured subgraphs).
+-- Status: LIVE as of PHASE_CUDA_NATIVE_DISPATCH commit C7.
 --
--- Scope: libmgpu's per-device subgraphs (built by the Phase 46
--- mgpu split builders, ~ik_llama.cpp/mgpu/) capture cleanly into
--- the outer multi-device cudaGraph_t established by C4. The CLIP
--- encoder's tensor-parallel matmul + cross-device REDUCE chain
--- produces byte-identical output to the pre-phase non-captured
--- libmgpu evaluation. The Phase 46 closure baseline sha
--- fb5167dbc1e7f95b is the binding reference output for all 10
--- vision-encode samples.
+-- Scope: libmgpu's per-device subgraphs become captured subgraphs in
+-- the outer cudaGraph_t produced by C4. Discovery in C7: libmgpu
+-- already targets the ggml-backend dispatch — it builds graph nodes
+-- (per-device matmul shards + cross-device ggml_reduce(GGML_OP_ADD))
+-- and lets the sched route them. The C1-C6 stack wraps that dispatch
+-- with outer capture + cache + CPU-prefix hoist. libmgpu requires
+-- ZERO source change.
 --
--- Why this spec exists: libmgpu is the PRIMARY consumer of the
--- new dispatch (PHASE_CUDA_NATIVE_DISPATCH.md §1.2). Phase 46 made
--- the openmp-parallel libmgpu path deterministic via three default-
--- on patches; C7 deletes the openmp dispatch from libmgpu and the
--- per-device subgraphs become captured subgraphs in the outer
--- multi-device graph. This spec binds equivalence between
--- pre-phase libmgpu output (Phase 46 closure baseline) and the
--- post-phase captured-graph output.
+-- Why this spec exists: to bind the behavioural invariant — libmgpu
+-- output under captured-replay equals libmgpu output under the C1
+-- eager dispatch. The captured graph's reduce nodes (memcpy-peer +
+-- add, per Phase 46 closure) are deterministic when wrapped in the
+-- C4 cross-stream event-chain.
 --
--- Includes:
---   - External entity for libmgpu split builder
---     (MgpuSplitBuilder, MgpuPerDeviceSubgraph).
---   - Contract SubgraphCapturesCleanly — each per-device subgraph,
---     when called from inside cudaStreamCaptureModeRelaxed on the
---     outer stream, emits its nodes into the outer graph without
---     introducing a nested BeginCapture/EndCapture pair (C3 in-
---     capture awareness).
---   - Contract OutputBitIdenticalToPhase46 — running the captured
---     graph on the Phase 46 production CLIP vision request produces
---     reasoning_content sha256 = fb5167dbc1e7f95b for all 10
---     LATENCY_N samples.
---   - Contract OpenmpDispatchAbsent — libmgpu's eval path no
---     longer contains #pragma omp parallel or std::barrier calls.
+-- Phase-46 closure sha (libmgpu CLIP encoder, production GGUF, NP=8):
+--   `fb5167dbc1e7f95b` (CLIP encode reasoning_content hash, 10×
+--    byte-identical across runs).
 --
--- CODE REFS:
---   ik_llama.cpp/mgpu/*.{cpp,cu}                 mgpu split builders
---   ik_llama.cpp/examples/mtmd/                  CLIP encoder integration
---   PHASE_CUDA_NATIVE_DISPATCH.md §1.2          libmgpu motivation
---   project_phase46_b5e_closed (auto-memory)    Phase 46 closure baseline
---
--- TBD: fill content when C7 lands. The CLIP equivalence test
--- (test-libmgpu-subgraph-capture.cpp) is the binding mechanism.
+-- Verification path:
+--   - C7 unit test: tests/test-libmgpu-subgraph-capture.cpp
+--     Drives a 2-CUDA + CPU sched with a ggml_reduce graph; asserts
+--     bit-identical output across 30 iters (covers both the multi-
+--     backend branch firing and the sequential fallback — whichever
+--     the sched picks for this graph shape).
+--   - C14 production binding: full CLIP encoder via verify-multigpu-
+--     clip.sh, comparing against the Phase-46 closure hash.
 
 allium 3
 
--- TBD: MgpuSplitBuilder, MgpuPerDeviceSubgraph entities
--- TBD: SubgraphCapturesCleanly contract
--- TBD: OutputBitIdenticalToPhase46 contract (sha256 binding)
--- TBD: OpenmpDispatchAbsent contract
+-- ============================================================
+-- Entities
+-- ============================================================
+
+entity LibmgpuGraph {
+    -- A ggml_cgraph produced by libmgpu (e.g., mgpu::build_attn,
+    -- build_ffn). Characterized by:
+    --   - per-device matmul shards
+    --   - exactly one cross-device ggml_reduce(GGML_OP_ADD) per fused
+    --     stage
+    --   - n_device == number of CUDA backends in the sched
+    n_device:                u32,
+    has_cross_device_reduce: bool,
+}
+
+entity LibmgpuCapturedReplay {
+    -- One captured replay of a libmgpu dispatch. Produced by C4's
+    -- end_capture + C5's cache hit on subsequent dispatches with the
+    -- same topology key.
+    graph_exec_handle:  u64,
+    output_hash:        u64,
+}
+
+-- ============================================================
+-- Contracts
+-- ============================================================
+
+contract LibmgpuNeedsNoSourceChange {
+    -- libmgpu's source (ik_llama.cpp/mgpu/src/{tp,classify}.cpp) does
+    -- NOT contain openmp pragmas, std::barrier usage, or direct CUDA
+    -- capture/launch calls. The dispatch driver is owned by ggml-
+    -- backend (compute_splits) and ggml-cuda (outer-capture API).
+    -- C7 ships no libmgpu source change; this contract guards that.
+    forall path: str
+        where path in {"ik_llama.cpp/mgpu/src/tp.cpp",
+                       "ik_llama.cpp/mgpu/src/classify.cpp"}:
+        forall source: file where source == read_file(path):
+            not contains(source, "#pragma omp") and
+            not contains(source, "std::barrier") and
+            not contains(source, "cudaStreamBeginCapture") and
+            not contains(source, "cudaStreamEndCapture") and
+            not contains(source, "cudaGraphLaunch")
+}
+
+contract LibmgpuOutputDeterministicAcrossReplays {
+    -- A libmgpu graph dispatched N times through the C1+C4+C5 pipeline
+    -- produces N bit-identical output hashes — regardless of whether
+    -- the multi-backend branch fired or the sequential fallback did.
+    --
+    -- This is the property test-libmgpu-subgraph-capture.cpp binds:
+    -- 30 iters, hashes all equal.
+    forall graph: LibmgpuGraph, n: u32
+        where n > 0:
+        forall i: u32 where i < n:
+            output_hash_after_dispatch(graph, i) ==
+            output_hash_after_dispatch(graph, 0)
+}
+
+contract LibmgpuOuterCaptureStaysHealthy {
+    -- If the multi-backend dispatch branch fires (any outer captures
+    -- occur) for a libmgpu graph, sched->outer_capture_disabled must
+    -- remain false across the dispatch run. A mid-test fallback would
+    -- indicate either:
+    --   - cudaStreamBeginCapture failed
+    --   - EndCapture / Instantiate failed
+    --   - Launch failed
+    -- All of which are bugs to investigate, not normal operation.
+    forall sched: ScheduleObject, graph: LibmgpuGraph, n: u32
+        where dispatched_n_times(sched, graph, n)
+        and outer_capture_count_delta(sched) > 0:
+        not sched.outer_capture_disabled
+}
+
+contract LibmgpuCachedReplayMatchesPhase46Closure {
+    -- The CLIP encoder's reasoning_content hash under the captured-
+    -- replay dispatch equals the Phase-46 closure sha
+    -- `fb5167dbc1e7f95b` (10× byte-identical across runs at closure).
+    --
+    -- This is a production-grade integration property; the C7 unit
+    -- test does NOT bind it (the test drives a synthetic 2-tensor
+    -- reduce graph, not the full CLIP encoder). C14's verification
+    -- battery binds this contract via verify-multigpu-clip.sh.
+    forall run: ClipEncoderRun
+        when phase46_closure_baseline == "fb5167dbc1e7f95b"
+        and run.dispatched_via == "C7 captured replay":
+        run.reasoning_content_sha256 == phase46_closure_baseline
+}
+
+-- ============================================================
+-- Composition
+-- ============================================================
+
+-- This spec sits at the top of the C-arc spec stack:
+--   single_threaded_dispatch.allium   (C1+C2+C3+C6 — dispatch core)
+--   cross_device_event_chain.allium   (C4 — capture mechanism)
+--   multi_device_graph_cache.allium   (C5 — cache)
+--   libmgpu_subgraph_capture.allium   (C7 — libmgpu consumer; THIS FILE)
+--
+-- C8-C11 register calibrated ops (MATMUL_STREAM_SPLIT, REDUCE_CROSS
+-- _DEVICE, PEER_COPY, GRAPH_CAPTURE) that compose with this spec
+-- through calibrated_op_equivalence.allium.
