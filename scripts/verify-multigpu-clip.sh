@@ -142,13 +142,29 @@ log "evict_pressure events before encode: $EVICT_BEFORE"
 
 # ---------------------------------------------------------------------------
 # Vision encode — base64-encode the fixture and send via /v1/chat/completions.
+#
+# Default: one encode (sanity smoke).
+# LATENCY_N=N opts in to N encodes for B.7 perf-gate JSON capture; the first
+# two samples are discarded as warm-up and the remaining N-2 produce
+# median + p95 latency, written to $RESULTS_DIR/latency.json against
+# BASELINE_MS (default 42000 = production CPU-vision encode, 2026-05-26
+# 3-sample mean).
 # ---------------------------------------------------------------------------
 IMG_B64=$(base64 -w 0 "$IMG")
-log "sending vision request (image=$IMG, $(wc -c <"$IMG") bytes)"
-T0=$(date +%s%N)
-RESP=$(curl -sS -m 120 -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
-    -H 'Content-Type: application/json' \
-    -d @- <<JSON
+LATENCY_N=${LATENCY_N:-0}
+BASELINE_MS=${BASELINE_MS:-42000}
+N_ENCODES=$(( LATENCY_N > 0 ? LATENCY_N : 1 ))
+log "sending $N_ENCODES vision request(s) (image=$IMG, $(wc -c <"$IMG") bytes)"
+declare -a WALL_SAMPLES=()
+RESP=""
+for (( enc_idx=1; enc_idx<=N_ENCODES; enc_idx++ )); do
+    if (( N_ENCODES > 1 )); then
+        log "  encode $enc_idx/$N_ENCODES"
+    fi
+    T0=$(date +%s%N)
+    RESP=$(curl -sS -m 120 -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
+        -H 'Content-Type: application/json' \
+        -d @- <<JSON
 {
   "model": "qwen",
   "max_tokens": 16,
@@ -160,10 +176,17 @@ RESP=$(curl -sS -m 120 -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
 }
 JSON
 )
-T1=$(date +%s%N)
-WALL_MS=$(( (T1 - T0) / 1000000 ))
-echo "$RESP" > "$RUN_DIR/response.json"
-log "round-trip wall time: ${WALL_MS} ms"
+    T1=$(date +%s%N)
+    WALL_MS=$(( (T1 - T0) / 1000000 ))
+    WALL_SAMPLES+=("$WALL_MS")
+    if (( N_ENCODES > 1 )); then
+        echo "$RESP" > "$RUN_DIR/response-${enc_idx}.json"
+        log "  encode $enc_idx wall: ${WALL_MS} ms"
+    else
+        echo "$RESP" > "$RUN_DIR/response.json"
+        log "round-trip wall time: ${WALL_MS} ms"
+    fi
+done
 
 # Extract the encode latency from server stderr (clip.cpp logs it).
 ENCODE_LINE=$(grep -E 'image encoded in|mtmd:.*encoded' "$RUN_DIR/server.stderr" | tail -1)
@@ -171,6 +194,41 @@ if [[ -n "$ENCODE_LINE" ]]; then
     log "encode timing: $ENCODE_LINE"
 else
     log "WARN: no encode timing line found in server log"
+fi
+
+# ---------------------------------------------------------------------------
+# B.7 latency.json — only when LATENCY_N is opted in.
+# ---------------------------------------------------------------------------
+if (( LATENCY_N > 0 )); then
+    if (( LATENCY_N < 3 )); then
+        log "WARN: LATENCY_N=$LATENCY_N too small to drop 2 warm-up samples; using all"
+        WARMUP_DROP=0
+    else
+        WARMUP_DROP=2
+    fi
+    # Drop first WARMUP_DROP samples, sort, compute median + p95.
+    TIMINGS=("${WALL_SAMPLES[@]:$WARMUP_DROP}")
+    N_SAMPLES=${#TIMINGS[@]}
+    SORTED_TIMINGS=$(printf '%s\n' "${TIMINGS[@]}" | sort -n)
+    MED_IDX=$(( (N_SAMPLES + 1) / 2 ))
+    P95_IDX=$(awk -v n="$N_SAMPLES" 'BEGIN{i=int(0.95*n+0.5); if(i<1)i=1; if(i>n)i=n; print i}')
+    MEDIAN_MS=$(echo "$SORTED_TIMINGS" | awk -v i="$MED_IDX" 'NR==i{print; exit}')
+    P95_MS=$(echo "$SORTED_TIMINGS" | awk -v i="$P95_IDX" 'NR==i{print; exit}')
+    JSON_PATH="$RESULTS_DIR/latency.json"
+    mkdir -p "$RESULTS_DIR"
+    cat > "$JSON_PATH" <<EOF
+{
+  "baseline_ms": $BASELINE_MS,
+  "median_ms":   $MEDIAN_MS,
+  "p95_ms":      $P95_MS,
+  "n_samples":   $N_SAMPLES
+}
+EOF
+    log "B.7 latency.json written ($JSON_PATH):"
+    log "  baseline_ms = $BASELINE_MS (CPU-vision production reference)"
+    log "  median_ms   = $MEDIAN_MS (over $N_SAMPLES samples; warm-up drop=$WARMUP_DROP)"
+    log "  p95_ms      = $P95_MS"
+    log "  raw samples = ${WALL_SAMPLES[*]}"
 fi
 
 # ---------------------------------------------------------------------------
