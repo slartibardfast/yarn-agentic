@@ -1,10 +1,10 @@
 --------------------------- MODULE CUDANativeDispatch ---------------------------
 (*****************************************************************************)
-(* Status: LIVE (partial) as of PHASE_CUDA_NATIVE_DISPATCH commit C1.        *)
-(* C1 lights up the IDLE -> ENQUEUING -> COMPLETE arc and the                *)
-(* HostThreadIsExactlyOne / EvalsAreSequential / EventRecordedAfterEval      *)
-(* invariants. C4 will additionally light up CAPTURING -> LAUNCHED and       *)
-(* AllSplitsEnqueuedBeforeCapture / SingleGraphLaunch.                       *)
+(* Status: LIVE (full) as of PHASE_CUDA_NATIVE_DISPATCH commit C4.           *)
+(* C1 lit up the IDLE -> ENQUEUING -> COMPLETE arc and HostThreadIsExactly   *)
+(* One / EvalsAreSequential / EventRecordedAfterEval. C4 adds the            *)
+(* CAPTURING -> LAUNCHED states + AllSplitsEnqueuedBeforeCapture /           *)
+(* SingleGraphLaunch.                                                         *)
 (*                                                                            *)
 (* Companion to specs/cuda-native-dispatch/single_threaded_dispatch.allium   *)
 (* and cross_device_event_chain.allium.                                       *)
@@ -59,16 +59,19 @@ ASSUME NBackends \in Nat \ {0}
 ASSUME MaxIters  \in Nat \ {0}
 
 VARIABLES
-    state,                          \* "IDLE" | "ENQUEUING" | "COMPLETE"
+    state,                          \* "IDLE" | "ENQUEUING" | "CAPTURING" | "LAUNCHED" | "COMPLETE"
     iter,                           \* current dispatch iteration index
     cur_split,                      \* index into Splits of split currently being processed
     dispatch_thread_ids,            \* set of thread ids that have entered compute_splits
     eval_enqueued,                  \* function: split_index -> bool
     event_recorded,                 \* function: (backend_id, iter) -> bool
-    needs_sync                      \* function: backend_id -> bool
+    needs_sync,                     \* function: backend_id -> bool
+    capture_active,                 \* bool: outer cudaStreamBeginCapture in progress
+    graphs_launched                 \* count of cudaGraphLaunch invocations in this iter
 
 vars == <<state, iter, cur_split, dispatch_thread_ids,
-          eval_enqueued, event_recorded, needs_sync>>
+          eval_enqueued, event_recorded, needs_sync,
+          capture_active, graphs_launched>>
 
 (*****************************************************************************)
 (* The set of available host thread ids modeled. Realistic implementations  *)
@@ -90,6 +93,8 @@ Init ==
     /\ eval_enqueued       = [s \in 0..(Len(Splits) - 1) |-> FALSE]
     /\ event_recorded      = [b \in 0..(NBackends - 1) |-> [i \in 0..MaxIters |-> FALSE]]
     /\ needs_sync          = [b \in 0..(NBackends - 1) |-> TRUE]
+    /\ capture_active      = FALSE
+    /\ graphs_launched     = 0
 
 (*****************************************************************************)
 (* Transitions                                                                *)
@@ -102,10 +107,20 @@ EnterDispatch(tid) ==
     /\ state = "IDLE"
     /\ tid \in HostThreadIds
     /\ iter <= MaxIters
-    /\ state'               = "ENQUEUING"
+    /\ state'               = "CAPTURING"
     /\ dispatch_thread_ids' = dispatch_thread_ids \cup {tid}
     /\ cur_split'           = 0
-    /\ UNCHANGED <<iter, eval_enqueued, event_recorded, needs_sync>>
+    /\ capture_active'      = TRUE
+    /\ UNCHANGED <<iter, eval_enqueued, event_recorded, needs_sync, graphs_launched>>
+
+\* After CAPTURING is established (BeginCapture + cross-stream join),
+\* we enter the ENQUEUING phase where splits are walked sequentially.
+StartEnqueuing ==
+    /\ state = "CAPTURING"
+    /\ capture_active = TRUE
+    /\ state' = "ENQUEUING"
+    /\ UNCHANGED <<iter, cur_split, dispatch_thread_ids, eval_enqueued,
+                   event_recorded, needs_sync, capture_active, graphs_launched>>
 
 \* Enqueue the eval for the current split (sets eval_enqueued[cur_split]).
 \* Followed by an event_record on the producing backend if n_inputs > 0.
@@ -127,27 +142,42 @@ EnqueueSplit ==
     /\ cur_split' = cur_split + 1
     /\ UNCHANGED <<state, iter, dispatch_thread_ids>>
 
-\* All splits have enqueued. Transition to COMPLETE.
-FinishDispatch ==
+\* All splits have enqueued. Transition to LAUNCHED via EndCapture +
+\* cudaGraphInstantiate + cudaGraphLaunch.
+EndCaptureAndLaunch ==
     /\ state = "ENQUEUING"
     /\ cur_split >= Len(Splits)
-    /\ state'     = "COMPLETE"
-    /\ iter'      = iter + 1
-    /\ UNCHANGED <<cur_split, dispatch_thread_ids, eval_enqueued,
+    /\ capture_active = TRUE
+    /\ state'           = "LAUNCHED"
+    /\ capture_active'  = FALSE
+    /\ graphs_launched' = graphs_launched + 1
+    /\ UNCHANGED <<iter, cur_split, dispatch_thread_ids, eval_enqueued,
                    event_recorded, needs_sync>>
+
+\* From LAUNCHED, complete the iter.
+FinishDispatch ==
+    /\ state = "LAUNCHED"
+    /\ state' = "COMPLETE"
+    /\ iter'  = iter + 1
+    /\ UNCHANGED <<cur_split, dispatch_thread_ids, eval_enqueued,
+                   event_recorded, needs_sync, capture_active, graphs_launched>>
 
 \* Reset for the next graph compute.
 RestartDispatch ==
     /\ state = "COMPLETE"
     /\ iter <= MaxIters
-    /\ state'         = "IDLE"
-    /\ cur_split'     = 0
-    /\ eval_enqueued' = [s \in DOMAIN eval_enqueued |-> FALSE]
-    /\ UNCHANGED <<iter, dispatch_thread_ids, event_recorded, needs_sync>>
+    /\ state'           = "IDLE"
+    /\ cur_split'       = 0
+    /\ eval_enqueued'   = [s \in DOMAIN eval_enqueued |-> FALSE]
+    /\ graphs_launched' = 0
+    /\ UNCHANGED <<iter, dispatch_thread_ids, event_recorded, needs_sync,
+                   capture_active>>
 
 Next ==
     \/ \E tid \in HostThreadIds: EnterDispatch(tid)
+    \/ StartEnqueuing
     \/ EnqueueSplit
+    \/ EndCaptureAndLaunch
     \/ FinishDispatch
     \/ RestartDispatch
 
@@ -190,11 +220,26 @@ ReduceMarksAllParticipantsSticky ==
         IN  (sp.has_reduce /\ i < Len(Splits) - 1) =>
             \A b \in DOMAIN needs_sync: needs_sync[b]
 
+\* I5: AllSplitsEnqueuedBeforeCapture — cudaStreamEndCapture (modeled
+\* by transition to LAUNCHED) happens only after every split has
+\* enqueued. Encoded in EndCaptureAndLaunch's guard `cur_split >= Len`.
+AllSplitsEnqueuedBeforeCapture ==
+    (state = "LAUNCHED") =>
+        \A i \in 0..(Len(Splits) - 1): eval_enqueued[i]
+
+\* I6: SingleGraphLaunch — at most one cudaGraphLaunch per iter. After
+\* RestartDispatch resets graphs_launched, the next round can launch
+\* exactly one more.
+SingleGraphLaunch ==
+    graphs_launched <= 1
+
 \* All invariants combined for TLC.
 TypeOK ==
-    /\ state \in {"IDLE", "ENQUEUING", "COMPLETE"}
+    /\ state \in {"IDLE", "ENQUEUING", "CAPTURING", "LAUNCHED", "COMPLETE"}
     /\ iter \in 0..(MaxIters + 1)
     /\ cur_split \in 0..Len(Splits)
     /\ dispatch_thread_ids \subseteq HostThreadIds
+    /\ capture_active \in BOOLEAN
+    /\ graphs_launched \in 0..1
 
 ============================================================================
