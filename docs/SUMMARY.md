@@ -8,6 +8,8 @@
 - [Master phase tracker (A, B, C, CX, CY, D, E, F)](PHASE_MMQ_Q4_0_AR16.md)
 - [Closed: NP-determinism — canonical writeup](PHASE_NP_DETERMINISM_CLOSED.md)
 - [Open: F.4.1' perf-recovery phase](PHASE_PERF_F4_1.md)
+- [Code-complete: PHASE_CUDA_NATIVE_DISPATCH (C0-C14)](PHASE_CUDA_NATIVE_DISPATCH.md)
+- [Open: PHASE_NP8_FLAKE — NP=8 single-slot LM determinism flake PD](PHASE_NP8_FLAKE.md)
 ## Archive (closed sub-phases + superseded plans)
 
 - [Archive: PLAN_DETERMINISM_AUDIT](archive/np-determinism/PLAN_DETERMINISM_AUDIT.md)
