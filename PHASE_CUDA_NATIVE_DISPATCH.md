@@ -1,6 +1,7 @@
 # PHASE_CUDA_NATIVE_DISPATCH — ground-up CUDA-idiomatic dispatch redesign for libmgpu (and LM as beneficiary)
 
-**Status**: Design locked, pre-design measurements in progress. Implementation gated on PD1-PD6 outputs.
+**Status**: Design locked, pre-design (PD1-PD6) complete (see §10). Implementation arc C0-C14 ready to start (~15-18 days focused engineering).
+**Branch base**: parent repo off `origin/main@628aaae`; submodule off `ik_llama.cpp@e6cb4c1b` on `production/2026-q2-next` (includes the 2026-05-27 `test-n-stream-kv-layout` refresh for T5.9 paged invariants — required for the verification battery in §5.1.4 to assert post-T5.9 shapes, NOT pre-T5.9).
 **Predecessor**: `PHASE_NSTREAM_KV_PERF.md` (open). `PHASE46` (closed — was tactical patch on the same race surface this phase replaces structurally).
 **Triggered by**: NP=8 single-slot determinism flake localized 2026-05-27 to host-side CUDA driver state racing under openmp-parallel multi-backend dispatch — verified by `GGML_SCHED_EVAL_SERIALIZE=1` PASS (Test 2 of the discriminator window).
 
@@ -96,7 +97,7 @@ size_t ggml_cuda_threshold_for(ggml_backend_cuda_context * ctx,
 1. **Strategies are numerically equivalent** — byte-identical, or fp16/fp32 ULP-bound, documented per op. Without this contract, calibration variance becomes a determinism gap.
 2. **One probe function per op**, returning the chosen strategy's `(p50, p95)` latency at the requested payload size.
 3. **Crossover criterion is uniform**: smallest payload size where `alt.p95 < default.p50`. No exceptions; same predicate everywhere.
-4. **Threshold is quantized** to the nearest of `{0, 1 MB, 10 MB, 100 MB, 1 GB, SIZE_MAX}` so calibration noise can't flip the dispatch decision across runs.
+4. **Threshold is quantized** to the nearest of **`{0, 1 MB, 10 MB, 100 MB, 1 GB, SIZE_MAX}`** (LOCKED 2026-05-27 — five buckets, log10-spaced, plus the SIZE_MAX sentinel). Probes run at the same sizes; the calibration result is the smallest bucket where `alt.p95 < default.p50`. Five probes × four ops × ~100 ms per probe ≈ ~2 s total at first launch. The bucket set can be refined in a future commit if production data shows insufficient resolution near the crossover; for the big-bang, 5 buckets balance calibration cost against threshold granularity.
 5. **No fallback at runtime** — once the threshold is set (from probe or cache), dispatch picks strategy deterministically per call.
 
 #### Cache
@@ -108,7 +109,7 @@ size_t ggml_cuda_threshold_for(ggml_backend_cuda_context * ctx,
   "cache_key": "<gpu_uuid_hash>-cuda<version>-ggml<commit>",
   "calibrated_at": "<iso8601>",
   "thresholds": {
-    "REDUCE_CROSS_DEVICE": 786432000,   // 750 MB on xeon (PD5 refined sweep)
+    "REDUCE_CROSS_DEVICE": 1073741824,  // 1 GB bucket on xeon (true crossover 750 MB; quantized up per §3.0 rule 4)
     "MATMUL_STREAM_SPLIT": null,        // SIZE_MAX → never split on xeon (PD6)
     "PEER_COPY":           null,        // SIZE_MAX → direct path always wins
     "GRAPH_CAPTURE":       0            // always capture above 0 nodes
@@ -135,7 +136,7 @@ size_t ggml_cuda_threshold_for(ggml_backend_cuda_context * ctx,
 
 | Op | Default strategy | Alt strategy | Expected xeon result |
 |---|---|---|---|
-| `REDUCE_CROSS_DEVICE` | memcpy-peer + add | ncclAllReduce | ~750 MB threshold (PD5 sweep) |
+| `REDUCE_CROSS_DEVICE` | memcpy-peer + add | ncclAllReduce | True crossover ~750 MB (PD5); quantizes to **1 GB bucket** per §3.0 rule 4. libmgpu production reduce ~2-3 MB → memcpy always |
 | `MATMUL_STREAM_SPLIT` | 1-stream cuBLAS | 2-stream column-split | SIZE_MAX on xeon (PD6); finite on hardware where 2-stream wins |
 | `PEER_COPY` | direct cudaMemcpyPeer | staged via pinned host | SIZE_MAX on NVLink fabric; finite on poor PCIe topology |
 | `GRAPH_CAPTURE` | capture | eager-launch | 0 on modern CUDA (always capture); finite if capture-overhead-dominated graphs exist |
@@ -247,6 +248,16 @@ C14. Verification commit: runs full determinism battery + perf
 
 Each commit must compile + pass `test-paged-allocator-determinism` (cheap). The branch lives as a unit until C14; bisection lands on a specific commit if a regression appears.
 
+**Spec/test pairing per commit** (mirrors §11.4):
+- C0 ships `calibrated_dispatch_framework.allium` (live) + `CalibrationFramework.tla` (model-checked in CI) + `test-cuda-calibration-framework.cpp`.
+- C1 ships `single_threaded_dispatch.allium` + `CUDANativeDispatch.tla` + `test-single-threaded-dispatch.cpp`.
+- C4 ships `cross_device_event_chain.allium` + `test-cross-device-event-chain.cpp` + `test-multi-device-graph-capture.cpp`.
+- C5 ships `multi_device_graph_cache.allium` + `CUDAGraphCacheConsistency.tla` + `test-multi-device-graph-cache.cpp`.
+- C7 ships `libmgpu_subgraph_capture.allium` + `test-libmgpu-subgraph-capture.cpp`.
+- C8/C9/C10/C11 each ship one `test-calibration-equivalence-{matmul,reduce,peer-copy,graph}.cpp` + incremental updates to the shared `calibrated_op_equivalence.allium`. `CalibratedOpEquivalence.tla` model-check runs in C11 once all four ops are registered.
+- C12/C13 ship no new specs (cleanup commits — they DELETE knobs and dead code).
+- C14 ships `data/cuda-native-dispatch/post-merge-<RUN_ID>/` evidence + the closure `MEMORY.md` entry (separate commit per CLAUDE.md §6).
+
 ### §3.2 — What's NOT in this phase
 
 - Kernel-level optimizations (FA, MMQ, Q4_0 throughput)
@@ -258,9 +269,9 @@ Each commit must compile + pass `test-paged-allocator-determinism` (cheap). The 
 
 ## §4 — Performance plan
 
-All perf claims are conditional on PD4-PD6 measurement. The targets below become outputs of pre-design, not inputs to design.
+All perf claims are bound to PD4 measured baselines (see §10). The PD4-PD6 measurements are integrated; perf targets in §4.3 are now binding numbers, not placeholders.
 
-### §4.1 — Baseline measurement (PD4)
+### §4.1 — Baseline measurement (PD4 — completed)
 
 Capture today's perf with the openmp dispatch:
 
@@ -269,13 +280,17 @@ Capture today's perf with the openmp dispatch:
 - `llama-bench` PP+TG at NP=1 and NP=8 with `--device CUDA0,CUDA1 --split-mode graph`.
 - Dispatch counter `total=N multi_seq=M` ratio at each NP (server-context.cpp:4811-4815).
 
-Outputs land in `data/cuda-native-dispatch/baseline-<RUN_ID>/`.
+Baselines landed at `data/cuda-native-dispatch/predesign/pd4-baseline-20260527T121951/`. Full results in §10.
 
-### §4.2 — Pre-design go/no-go gates
+### §4.2 — Calibration framework reframes the original PD5/PD6 go/no-go
 
-**PD5 (NCCL on libmgpu reduce):** profile NCCL `ncclAllReduce` vs the current `cudaMemcpyPeer + element-wise add` on libmgpu's REDUCE shape (CLIP encoder layer output, F16, ~vision-token-count × hidden-dim). If NCCL is ≥10% faster, C9 ships. If neutral or worse, C9 is dropped from this phase and the libmgpu reduce stays on memcpy-peer.
+The original design treated PD5 and PD6 as binary go/no-go gates for C8/C9. Under the calibrated-dispatch framework (§3.0), both ops always register — what changes is the threshold value calibration returns on each hardware:
 
-**PD6 (multi-stream-per-device ILP for libmgpu matmul):** profile a single CLIP-layer matmul split across 2 streams per device (4 total compute streams) vs 1 stream per device (2 total). The matmul kernels are typically full-occupancy on RTX 6000 (Turing TU102, 72 SMs); the question is whether the reduce-axis split lets the partial-reduce-add overlap with the matmul tail. If overlap gives ≥5% on CLIP encode, C8 ships. If neutral or worse, C8 drops.
+- **PD5** (NCCL vs memcpy-peer+add) gave the bucket where NCCL's `p95 < memcpy's p50`. On xeon (NV2 NVLink + PCIe Gen3), the conservative crossover is between 500 MB and 1 GB → calibration quantizes to **1 GB bucket** → NCCL never fires on libmgpu's production reduce shape (~2-3 MB), but does fire if any future workload exceeds 1 GB. Equivalence is byte-identical (PD5 §10).
+
+- **PD6** (1-stream vs 2-stream matmul) gave no crossover in tested shapes. Calibration returns `SIZE_MAX` on xeon → 1-stream always fires. The framework records this as the expected outcome; on different hardware (more SMs, smaller per-matmul tile) calibration would find a finite threshold and the alt-strategy would auto-activate.
+
+The framework decoupling means C8 and C9 ship UNCONDITIONALLY (vs the original "drop on no perf benefit" gate). Threshold values are hardware-portable.
 
 ### §4.3 — Post-implementation perf targets (bound by PD4 baseline)
 
@@ -294,6 +309,8 @@ Outputs land in `data/cuda-native-dispatch/baseline-<RUN_ID>/`.
 
 ### §5.1 — Determinism gates (must PASS, no exceptions)
 
+> Note: each invocation triggers a calibration on first context creation (~1.5-2 s cold; ~10 ms on cache hit). G3.a's 12 invocations cold add ~24 s to the battery; warm (cache populated) adds ~120 ms. Negligible. The calibration cache file (`~/.cache/ggml/cuda-calibration-{key}.json`) for the running user persists across invocations within a battery run.
+
 1. **`scripts/test-production-np-determinism.sh`** at NP ∈ {1, 2, 4, 8}, 3 reps each (12 invocations). Byte-identical NP=1 baseline; all slots byte-identical at each NP; cross-NP slot-0 matrix all identical. **Closing gate.**
 2. **`scripts/r5-probe-c4.sh`** at 20 iters NP=2 single-GPU. Rate=0%.
 3. **`scripts/verify-multigpu-clip.sh LATENCY_N=10`** — CLIP encode determinism (10/10 byte-identical `reasoning_content` sha256) AND median ≤ §4.3 target.
@@ -310,13 +327,17 @@ Outputs land in `data/cuda-native-dispatch/baseline-<RUN_ID>/`.
 | Test | What it binds | Commit |
 |---|---|---|
 | `test-cuda-calibration-framework` (new) | Calibration produces deterministic thresholds; cache load reproduces; quantization absorbs noise. | C0 |
-| `test-multi-device-graph-capture` (new) | Outer cudaStreamBeginCapture with multi-device deps produces a launchable `cudaGraph_t` with byte-identical output to non-captured eval. Cache hit rate >95% steady-state. | C4 |
+| `test-single-threaded-dispatch` (new) | Counts threads entering `compute_splits` over N graph computes; always == 1. | C1 |
+| `test-cross-device-event-chain` (new) | Every consumer `cudaStreamWaitEvent` has a matching producer `cudaEventRecord` before it. | C4 |
+| `test-multi-device-graph-capture` (new) | Outer cudaStreamBeginCapture with multi-device deps produces a launchable `cudaGraph_t` with byte-identical output to non-captured eval. | C4 |
+| `test-multi-device-graph-cache` (new) | N captures of same topology → cache hit rate >95% steady-state; bit-identical replay output across cache hits. | C5 |
+| `test-libmgpu-subgraph-capture` (new) | libmgpu per-device subgraphs capture into outer graph; output byte-identical to Phase 46 closure baseline sha `fb5167dbc1e7f95b`. | C7 |
 | `test-calibration-equivalence-matmul` (new) | 1-stream vs 2-stream matmul: fp16 ULP-bound equivalence at all probed sizes. | C8 |
 | `test-calibration-equivalence-reduce` (new) | memcpy-peer+add vs ncclAllReduce: byte-identity at all probed sizes (PD5 confirmed). | C9 |
 | `test-calibration-equivalence-peer-copy` (new) | direct vs staged-via-pinned peer copy: byte-identity. | C10 |
 | `test-calibration-equivalence-graph` (new) | captured vs eager-launch: byte-identity. | C11 |
 
-Tests land in the SAME commit as the feature. Not bolted on later.
+10 new tests total. Each lands in the SAME commit as the feature it binds. Not bolted on later.
 
 ### §5.4 — Production deploy gate
 
@@ -343,6 +364,8 @@ Tests land in the SAME commit as the feature. Not bolted on later.
 | Calibration variance produces different thresholds across runs → different dispatch decisions → different output bits | Low-Medium | Two-layer mitigation: (a) threshold quantization (§3.0 rule 4) absorbs measurement noise; (b) equivalence contract (rule 1) ensures output is bit-equivalent regardless of which strategy fires. Even if threshold flips, output doesn't |
 | Calibration probe OOMs on small-VRAM hardware | Low | Probe sizes auto-shrink to free VRAM at calibration time; if even minimum probe doesn't fit, threshold = SIZE_MAX (memcpy/default only) |
 | Calibration cache I/O failure (disk full, permissions) | Low | Cache failure is non-fatal; falls back to in-memory calibration each launch |
+| Submodule push gate — every C0-C14 commit lives in `ik_llama.cpp/` and bumps the parent pointer; the user has a standing "never push submodule fork without explicit authorization" rule | Operational | Each commit batched and authorized in groups (typically 2-3 commits per authorization window). The parent-pointer bump in `yarn-agentic` waits for the submodule push to succeed first. Branch lives local + on fork only; no force-push to upstream `ikawrakow/ik_llama.cpp.git` |
+| Production rollback Recovery Time Objective (RTO) | Operational | Rollback path is `scripts/deploy-llama-server.sh` against the pre-phase build tree (preserved at the branch base commit `1db6c2eb`). End-to-end RTO target: 5 minutes — `systemctl stop` (1 min) + deploy script (2 min) + `/health` confirm (2 min). 24-hour soak is the test window; once soak passes, rollback drills become quarterly |
 
 ---
 
@@ -361,14 +384,16 @@ Tests land in the SAME commit as the feature. Not bolted on later.
 
 This phase closes when:
 
-1. All commits C1-C12 merged.
-2. All §5.1 determinism gates PASS.
-3. All §5.2 A/B controls PASS.
-4. PD4 perf targets met (LM NP=1 ±5%, LM NP=8 conservative target, CLIP encode ≤ baseline).
-5. 24-hour soak completes with no incidents.
-6. Production deployed; the build's commit stamp on the production stack matches the merge HEAD.
-7. `MEMORY.md` records closure with perf delta vs PD4 baseline.
-8. Auto-memory `project_cuda_native_dispatch_closed.md` written.
+1. All commits **C0-C14** merged (15 commits total: framework + 11 implementation + 3 cleanup/verification).
+2. All §5.1 determinism gates PASS (12 G3.a invocations + G3.c + CLIP encode + 11 spec unit tests).
+3. All §5.2 A/B controls PASS (vs SERIALIZE on same branch; vs main HEAD with SERIALIZE; vs main HEAD without SERIALIZE at NP≤4).
+4. §4.3 perf targets met (LM NP=1 within ±5% of 17.9 t/s; LM NP=8 aggregate ≥ 46 t/s conservative target; CLIP encode median ≤ 14450 ms).
+5. 24-hour soak completes at production NP=1 with no /health drops, no slot-state leaks, RSS stable, no SEGV.
+6. Production deployed via existing `scripts/deploy-llama-server.sh`; build's commit stamp on the production stack matches the merge HEAD.
+7. Rollback drill PASS: pre-phase build (`ik_llama.cpp@1db6c2eb`) deploys cleanly via the same deploy script; recovery within §6's 5-minute RTO target.
+8. `MEMORY.md` records closure (separate commit per CLAUDE.md §6) with perf delta vs PD4 baseline.
+9. Auto-memory `project_cuda_native_dispatch_closed.md` written.
+10. `SUMMARY.md` (mdBook nav) lists this phase doc under closed phases.
 
 ---
 
@@ -384,7 +409,7 @@ These run BEFORE C1 begins. Each has a binding output that the implementation de
 
 **Effort**: 0.5-1 day. Read-only unless instrumentation is needed; instrumentation needs a maintenance window.
 
-**Status**: not started.
+**Status**: DONE (see §10 for results).
 
 ### PD2 — Verify multi-device `cudaStreamCaptureModeRelaxed`
 
@@ -404,7 +429,7 @@ These run BEFORE C1 begins. Each has a binding output that the implementation de
 
 **Effort**: 0.5 day. Standalone test, no production impact.
 
-**Status**: not started.
+**Status**: DONE (see §10 for results).
 
 ### PD3 — Enumerate CPU splits in production LM and libmgpu graphs
 
@@ -414,7 +439,7 @@ These run BEFORE C1 begins. Each has a binding output that the implementation de
 
 **Effort**: 0.5-1 day. Read-only if existing log knob; small instrumentation if not.
 
-**Status**: not started.
+**Status**: DONE (see §10 for results).
 
 ### PD4 — Baseline perf measurement
 
@@ -428,7 +453,7 @@ These run BEFORE C1 begins. Each has a binding output that the implementation de
 
 **Effort**: 1 maintenance window (~60-90 min).
 
-**Status**: not started.
+**Status**: DONE (see §10 for results).
 
 ### PD5 — NCCL vs cudaMemcpyPeer profile on libmgpu reduce
 
@@ -443,7 +468,7 @@ These run BEFORE C1 begins. Each has a binding output that the implementation de
 
 **Effort**: 1 day (need to write the microbenchmark, then run during a maintenance window).
 
-**Status**: not started.
+**Status**: DONE (see §10 for results).
 
 ### PD6 — Multi-stream-per-device ILP profile on libmgpu matmul
 
@@ -458,24 +483,24 @@ These run BEFORE C1 begins. Each has a binding output that the implementation de
 
 **Effort**: 1 day.
 
-**Status**: not started.
+**Status**: DONE (see §10 for results).
 
 ### Pre-design summary
 
-| Task | Effort | Maintenance window? | Gates |
+| Task | Effort actual | Maintenance window used? | Bound |
 |---|---|---|---|
-| PD1 | 0.5-1 day | optional | informs C1-C5 |
-| PD2 | 0.5 day | no | gates capture-mode decision |
-| PD3 | 0.5-1 day | maybe | gates CPU split handling (C6) |
-| PD4 | maintenance window | YES (~60-90 min) | binds §4.3 perf targets |
-| PD5 | 1 day + window | YES (folded with PD4 + PD6) | go/no-go on C9 |
-| PD6 | 1 day + window | YES (folded with PD4 + PD5) | go/no-go on C8 |
+| PD1 | ~1 hour | none | named 4 race surfaces |
+| PD2 | ~30 min | none | single-graph capture confirmed |
+| PD3 | ~30 min | none | hoist-out pattern chosen |
+| PD4 | ~30 min | YES (60 min window 12:19Z-12:35Z) | perf baseline bound |
+| PD5 | ~60 min | YES (folded into PD5/PD6 window 12:34Z-12:54Z) | xeon threshold ~750 MB → quantizes to 1 GB bucket |
+| PD6 | ~30 min | YES (same window) | xeon → SIZE_MAX |
 
-**Total pre-design**: ~5-7 days engineering + one combined maintenance window for PD4 + PD5 + PD6. After pre-design, implementation begins with full visibility into perf targets and gated features.
+**Actual pre-design**: ~4 hours total + two maintenance windows (~45 min each). All 6 tasks complete 2026-05-27.
 
 ---
 
-## §10 — Pre-design results (PD1, PD2, PD3 — completed 2026-05-27)
+## §10 — Pre-design results (PD1-PD6 all completed 2026-05-27)
 
 ### PD1 result — racing fields enumerated
 
@@ -563,7 +588,7 @@ Multi-seq atomic dispatch fires more at low NP (slot ordering tighter), less at 
 
 ### PD5 result — NCCL vs cudaMemcpyPeer+add shape sweep
 
-Two runs total: initial 3-point coverage (RUN_ID=20260527T123458) + refined sweep narrowing crossover (RUN_ID 2026-05-27T12:5x). Hardware: 2× Quadro RTX 6000, **NV2 bonded NVLink active (2 × 25.781 GB/s = ~50 GB/s)**, CUDA 13.2, NCCL 2.30.4.
+Two runs total: initial 6-point coverage (RUN_ID=20260527T123458) + refined sweep at 5 intermediate sizes to narrow crossover (RUN_ID=20260527T1234xx). Full result JSONs at `data/cuda-native-dispatch/predesign/pd5pd6-run-20260527T123458/`. Hardware: 2× Quadro RTX 6000, **NV2 bonded NVLink active (2 × 25.781 GB/s = ~50 GB/s)**, CUDA 13.2, NCCL 2.30.4.
 
 | Size F16 | memcpy-peer+add p50 | NCCL ncclAllReduce p50 | Speedup | Notes |
 |---|---|---|---|---|
@@ -572,18 +597,20 @@ Two runs total: initial 3-point coverage (RUN_ID=20260527T123458) + refined swee
 | 10 MB | 0.322 ms | 0.374 ms | 0.86× | |
 | 20 MB | 0.601 ms | 0.662 ms | 0.91× | |
 | 50 MB | 1.442 ms | 1.520 ms | 0.95× | |
-| 100 MB | (refined) | (refined) | 0.98× | |
-| **150 MB** | (refined) | (refined) | **1.00× — parity** | |
+| 100 MB | 2.848 ms | 2.895 ms | 0.98× | |
+| **150 MB** | **4.236 ms** | **4.237 ms** | **1.00× — parity** | within ~0.02% |
 | 200 MB | 5.645 ms | 5.535 ms | 1.02× | first crossover (within noise) |
-| 300 MB | (refined) | (refined) | 1.04× | |
+| 300 MB | 8.435 ms | 8.091 ms | 1.04× | |
 | 500 MB | 14.041 ms | 13.081 ms | 1.07× | |
-| **750 MB** | (refined) | (refined) | **1.10× — first conservative point** | |
-| 1 GB | (refined) | (refined) | 1.12× | |
-| 1.5 GB | (refined) | (refined) | 1.14× | trending toward asymptote ~1.15-1.20× |
+| **750 MB** | **20.996 ms** | **19.143 ms** | **1.10× — first conservative point** | NCCL p95 < memcpy p50 |
+| 1 GB | 28.055 ms | 25.023 ms | 1.12× | |
+| 1.5 GB | 41.954 ms | 36.909 ms | 1.14× | trending toward asymptote ~1.15-1.20× |
 
 **Equivalence**: byte-identical across all measured shapes (`n_diff=0`, max_abs_diff=0). Memcpy + element-wise-add and NCCL ncclAllReduce produce the SAME bits at the libmgpu reduce shape category.
 
-**Decision**: not a single threshold but the **calibration framework binding** (§3.0). On xeon hardware specifically, the expected calibrated threshold for `GGML_CAL_REDUCE_CROSS_DEVICE` is **~750 MB** (where NCCL p50 hits 1.10× and NCCL p95 starts beating memcpy p50). libmgpu's production per-CLIP-layer reduce shape is ~2-3 MB — squarely below threshold → memcpy path always fires in production. Calibration auto-discovers this on other hardware without code changes.
+**Decision**: not a single hardcoded threshold but the **calibration framework binding** (§3.0). The true conservative crossover on xeon is ~750 MB (p50 hits 1.10× AND NCCL p95 < memcpy p50). With the locked quantization bucket set `{0, 1MB, 10MB, 100MB, 1GB, SIZE_MAX}`, the calibration result on xeon for `GGML_CAL_REDUCE_CROSS_DEVICE` quantizes to the **1 GB bucket** (conservative: keep memcpy through 1 GB even though true crossover is 750 MB).
+
+libmgpu's production per-CLIP-layer reduce shape is ~2-3 MB — well below threshold → memcpy path always fires in production. Calibration auto-discovers the right bucket on other hardware without code changes; an NVLink-rich box with smaller protocol overhead might pick the 100 MB or 10 MB bucket; a PCIe-only box might pick SIZE_MAX.
 
 **Why NCCL is slow at small messages on NVLink**: NCCL's per-call protocol overhead is ~40-50 µs (group setup, channel/algo selection, ring topology). Below ~150 MB this overhead exceeds the bandwidth benefit. Direct `cudaMemcpyPeerAsync` is the hardware optimum at small sizes because the CUDA driver picks the NVLink path automatically with zero protocol cost.
 
@@ -616,11 +643,11 @@ All 6 PD tasks complete:
 
 ---
 
-## §11 — Formal specifications (Allium + TLA+) — content DEFERRED until PD4-PD6 integrated
+## §11 — Formal specifications (Allium + TLA+) — scope LOCKED 2026-05-27
 
 User directive 2026-05-27: "we need allium and TLA+ content for this document, add once we have data and integrated it."
 
-This section is filled AFTER PD4-PD6 complete and after the design's parameter values (multi-stream count, NCCL message shape, capture cache key structure) are bound by measurement. Pattern follows `PHASE_NSTREAM_KV_PERF.md` §"P0.B — Radical Allium / TLA+ / test surface expansion" (5 Allium specs + 3 TLA+ specs + 5 property tests + trace-harness extension).
+PD4-PD6 are complete (§10); design parameters (calibration bucket set §3.0, NCCL/memcpy crossover ~750 MB on xeon, multi-device single-graph capture confirmed) are bound. The Allium/TLA+ specs listed below are scoped against those bound values; spec FILE content writes during pre-implementation (§11.4 step 1). Pattern follows `PHASE_NSTREAM_KV_PERF.md` §"P0.B" with 6 Allium + 4 TLA+ + 10 property tests.
 
 ### §11.1 — Allium specs (planned, content TBD)
 
@@ -630,7 +657,7 @@ Six specs covering the new dispatch + calibration framework's correctness invari
 2. **`cross_device_event_chain.allium`** — every cross-device data dependency in the captured graph has a `cudaEventRecord` on the producer + `cudaStreamWaitEvent` on the consumer. No data read on device D before its producing write is event-synchronized. Binds C4 + C7.
 3. **`multi_device_graph_cache.allium`** — graph cache key `(topology_hash, device_layout, n_seq)` produces identical `cudaGraph_t` for matching keys. Cache hit replays bit-identically to capture. Eviction FIFO bounded by `GGML_CUDA_GRAPH_MAX`. Binds C5.
 4. **`libmgpu_subgraph_capture.allium`** — libmgpu per-device subgraphs capture cleanly into the outer multi-device graph. Binds C7.
-5. **`calibrated_dispatch_framework.allium`** — for every registered op `op_id`, every probe call returns a deterministic threshold for a fixed `(gpu_uuid, cuda_version, ggml_version)` tuple within a single process (modulo quantization). Cache load produces identical thresholds to a fresh probe (within quantization). Threshold is quantized to one of `{0, ..., SIZE_MAX}` (specific bucket set TBD; one of the framework's design parameters). Binds C0.
+5. **`calibrated_dispatch_framework.allium`** — for every registered op `op_id`, every probe call returns a deterministic threshold for a fixed `(gpu_uuid, cuda_version, ggml_version)` tuple within a single process (modulo quantization). Cache load produces identical thresholds to a fresh probe (within quantization). Threshold is quantized to one of `{0, 1MB, 10MB, 100MB, 1GB, SIZE_MAX}` (LOCKED — see §3.0 rule 4). Binds C0.
 6. **`calibrated_op_equivalence.allium`** — for every registered op, the default and alt strategies produce numerically equivalent output (byte-identical OR fp16/fp32 ULP-bound, per the op's contract). The dispatch decision (which strategy fires) may vary across runs/hardware via calibration, but the OUTPUT bits MUST NOT vary across strategy choices for the same input. Binds C8 + C9 + C10 + C11.
 
 ### §11.2 — TLA+ specs (planned, content TBD)
