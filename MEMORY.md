@@ -10954,3 +10954,25 @@ Production runs `--parallel 1` so this is a LATENT determinism gap, not a live r
 New phase opened: `PHASE_CUDA_NATIVE_DISPATCH.md` — ground-up CUDA-idiomatic single-threaded host + multi-stream device async, with cross-backend CUDA Graph capture as the perf lever. Replaces openmp parallel multi-backend dispatch entirely.
 
 Evidence: `/tmp/np8-discriminator/run-20260527T113550/{test1,test2,test3}.log` and per-test `*-slot*.txt` / `divergence-np*-slot*.diff` under `/tmp/np8-discriminator/test{1,2,3}-*/run-*/`. Slot-7 Test 3 divergence diff byte-identical to the 2026-05-27 09:09Z rep-1 divergence (same race outcome, deterministic-given-race).
+
+## 2026-05-27 — PHASE_CUDA_NATIVE_DISPATCH opened + C0 SHIPPED
+
+Phase doc: `/home/dconnolly/yarn-agentic/PHASE_CUDA_NATIVE_DISPATCH.md`. Triggered by the NP=8 single-slot determinism flake localized to host-side CUDA driver state racing under openmp-parallel multi-backend dispatch (race surface at-or-below `ggml_backend_sched_eval`, confirmed by `GGML_SCHED_EVAL_SERIALIZE=1` PASS).
+
+Replaces openmp dispatch with single-threaded host + multi-stream device async + multi-device cudaGraph capture. **For libmgpu** (CLIP), LM as beneficiary.
+
+**User-locked design decisions** (2026-05-27 session):
+- Big-bang arc, 14 commits C0-C14, no escape-hatch build flag
+- No deferral of perf optimizations; multi-stream ILP + NCCL fold in via calibration framework
+- Size-adaptive dispatch as the default pattern (calibrated, not hardcoded)
+- Quantization bucket set LOCKED: `{0, 1MB, 10MB, 100MB, 1GB, SIZE_MAX}`
+
+**C0 SHIPPED 2026-05-27**: submodule `148d5ac5` on `production/2026-q2-next`, parent `8ce192c` on `origin/main`. Calibration framework (`ggml/src/ggml-cuda/calibration.cu`, `ggml/include/ggml-cuda-calibration.h`) + 6-test binding harness + Allium/TLA+ specs LIVE. Empty op registry until C8-C11.
+
+**PD baselines bound** (RUN_ID=20260527T121951 + 20260527T123458):
+- LM TG NP=8 aggregate: 30.8 t/s (target conservative 46 t/s; vLLM ceiling 154.77)
+- CLIP encode median: 14450 ms (Phase 46 closure was 14421)
+- PD5 NCCL crossover on xeon: true ~750 MB → quantizes to 1 GB bucket
+- PD6 multi-stream matmul on xeon: SIZE_MAX (1-stream wins at all tested shapes)
+
+**Next session resume point**: C1 (`ggml-backend.cpp:2215-2350` openmp parallel block replaced by single-threaded multi-backend iteration with cross-backend event chain). See `project_phase_cuda_native_dispatch_open.md` auto-memory for the full state.
