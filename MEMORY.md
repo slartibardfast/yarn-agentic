@@ -10994,3 +10994,17 @@ Full arc shipped in one session. Final submodule HEAD `4465a7d1` on `production/
 **Production NOT yet deployed.** `/opt/llm-server/` still runs Phase-46 closure `1db6c2eb`. The deploy is gated on a user-authorized maintenance window per the C14 report; the full G3.a/G3.c/B.7 determinism + perf battery against the live service is the next step.
 
 **Standing rule restored**: submodule push authorization for arc commits was granted for the duration of the C-arc; back to per-commit explicit authorization for future submodule pushes.
+
+## 2026-05-27 — C14 live verification: gate fix + NP=8 flake pre-existing
+
+Live verification of the C-arc against the build-tree binary (during a maintenance window with production stopped, then restarted on the existing Phase-46 binary):
+
+**G3.a NP determinism**: NP={1,2,4} byte-identical. NP=8 reproduces a stochastic single-slot flake (slot 4 / 6 / 7 across reps, same divergent text "code generation, though they remain probabilistic systems..."). Tested against the Phase-46 closure binary `/opt/llm-server/` at `1db6c2eb` — flake reproduces THERE TOO. **Pre-existing race, not C-arc regression.** The prior auto-memory claim that `GGML_SCHED_EVAL_SERIALIZE=1` closed the flake was a single-rep false-pass; under sustained testing the flake reproduces in the C1 single-threaded dispatch as well. Production runs `--parallel 1` so this is latent in live service.
+
+**G3.c single-GPU NP=2 × 20**: PASS (Rate=0%).
+
+**B.7 CLIP latency × 10**: PASS at 14440 ms median (Phase-46 baseline 14421, +0.13%) — but required a defensive gate fix. First run crashed inside `cudaStreamBeginCapture` because `ggml_backend_sched_copy_inputs` fell back to `ggml_backend_synchronize` (illegal mid-capture). Root cause: `GGML_SCHED_MAX_COPIES=1` (build flag) means `sched->events[][]` is never allocated → copy_inputs always synchronizes. Fix (submodule `a0fe39a6`): added `sched->n_copies > 1` to the outer-capture gate. On this build, outer capture is now structurally unreachable; C4/C5/C7 captured-graph perf benefit doesn't realize until the build is rebumped to `MAX_COPIES>=2`. C1 eager dispatch handles CLIP correctly without capture.
+
+**Production**: NOT deploying the C-arc. Stayed on Phase-46 closure `1db6c2eb`. Decision for the user: (a) accept the C-arc as code-only (no deploy), (b) bump `MAX_COPIES` and re-verify before deploy, or (c) open NP=8 flake investigation first.
+
+Full artifact: `data/cuda-native-dispatch/post-merge-live-20260527T190528/report.md`.
