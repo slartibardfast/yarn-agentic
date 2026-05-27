@@ -10976,3 +10976,21 @@ Replaces openmp dispatch with single-threaded host + multi-stream device async +
 - PD6 multi-stream matmul on xeon: SIZE_MAX (1-stream wins at all tested shapes)
 
 **Next session resume point**: C1 (`ggml-backend.cpp:2215-2350` openmp parallel block replaced by single-threaded multi-backend iteration with cross-backend event chain). See `project_phase_cuda_native_dispatch_open.md` auto-memory for the full state.
+
+## 2026-05-27 — PHASE_CUDA_NATIVE_DISPATCH code arc COMPLETE (C0-C14)
+
+Full arc shipped in one session. Final submodule HEAD `4465a7d1` on `production/2026-q2-next`; parent at `615f171` on `origin/main`. C13 absorbed into C1+C12 (std::barrier worker-thread variant deleted at C1; dead state cleanup at C12). C14 ships verification artifact at `data/cuda-native-dispatch/post-merge-20260527T185913/`.
+
+**What this delivers**:
+- `ggml_backend_sched_compute_splits` is single-threaded (no openmp parallel, no std::barrier workers); the four PD1 race surfaces are unreachable from the dispatch path
+- Cross-backend ordering via `cudaEventRecord`/`event_wait` only — no host-side per-split drains
+- Outer `cudaStreamBeginCapture(Relaxed)` wraps the dispatch; multi-device cudaGraph_t captured + cached by topology hash
+- CPU prefix splits hoist out cleanly (PD3-backed)
+- Four calibrated ops registered with default-wins stubs (all SIZE_MAX on xeon; framework is operational for future probe replacements)
+- All Phase-46 mitigation env knobs deleted; behaviors hardcoded where the safe default differs from the upstream default
+
+**Unit tests** all PASS on build tree at HEAD: 7/7 tests bind their respective specs (dispatch_thread_count=1; captured + cached replays bit-identical; libmgpu source contains no openmp/barrier/capture pragmas; all 4 calibrated ops registered).
+
+**Production NOT yet deployed.** `/opt/llm-server/` still runs Phase-46 closure `1db6c2eb`. The deploy is gated on a user-authorized maintenance window per the C14 report; the full G3.a/G3.c/B.7 determinism + perf battery against the live service is the next step.
+
+**Standing rule restored**: submodule push authorization for arc commits was granted for the duration of the C-arc; back to per-commit explicit authorization for future submodule pushes.
