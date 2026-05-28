@@ -6,7 +6,7 @@
 -- Scope: in the captured multi-device cudaGraph_t produced by the
 -- C4 wrap around ggml_backend_sched_compute_splits, every cross-
 -- device data dependency is expressed via a cudaEventRecord on the
--- producer stream + cudaStreamWaitEvent on the consumer stream
+-- producer stream plus a cudaStreamWaitEvent on the consumer stream
 -- BEFORE the consumer reads the produced data. No data flowing
 -- across devices is read on the destination device before its
 -- producer-side event has been recorded.
@@ -24,115 +24,145 @@
 -- that the dispatcher actually USES this capability everywhere a
 -- cross-device dependency exists.
 --
+-- Composition: leans on single_threaded_dispatch.allium (C1+C2+C3)
+-- as axiom — HostThreadIsExactlyOne and InCaptureGateGuard are
+-- preconditions for the capture round-trip described here.
+--
 -- Implementation:
---   ik_llama.cpp/ggml/src/ggml-cuda.cu  (outer capture orchestration)
+--   ik_llama.cpp/ggml/src/ggml-cuda.cu (outer capture orchestration)
 --     - ggml_cuda_outer_capture_begin
 --     - ggml_cuda_outer_capture_end_and_launch
 --   ik_llama.cpp/ggml/src/ggml-backend.cpp (sched-layer wrap)
 --   ik_llama.cpp/tests/test-multi-device-graph-capture.cpp
---
--- Companion spec: single_threaded_dispatch.allium (C1 + C2 + C3).
--- Composition: this spec assumes HostThreadIsExactlyOne and the
--- InCaptureGateGuard from that file.
-
-allium 3
 
 -- ============================================================
 -- Entities
 -- ============================================================
 
+-- Kinds of node a captured graph may carry. Two kinds are first-
+-- class for this spec (EventRecord, StreamWaitEvent); three are
+-- "work" nodes whose ordering we constrain relative to the event
+-- nodes (Kernel, MemcpyAsync, MemsetAsync); Empty is a sentinel
+-- used by the driver for join points.
+enum CapturedNodeKind {
+    kernel | memcpy_async | memset_async | event_record | stream_wait_event | empty
+}
+
+-- A CUDA stream slot in a captured graph. backend_id identifies the
+-- ggml backend the stream belongs to; device_id is the underlying
+-- CUDA device.
 entity CudaStream {
-    backend_id:        u32,
-    device_id:         u32,
-    handle:            u64,    -- cudaStream_t opaque value
+    backend_id:    Integer
+    device_id:     Integer
+    handle:        Integer    -- cudaStream_t opaque
 }
 
+-- A CUDA event slot. In ik_llama.cpp each CUDA backend context
+-- carries a single copy_event (C2 eager-allocated) plus the per-
+-- copy events stored in sched->events[backend_id][cur_copy].
 entity CudaEvent {
-    backend_id:        u32,
-    -- cudaEvent_t handle. In ik_llama.cpp each CUDA backend context
-    -- carries a single copy_event (C2 eager-allocated) plus the per-
-    -- copy events stored in sched->events[backend_id][cur_copy].
-    handle:            u64,
+    backend_id: Integer
+    handle:     Integer    -- cudaEvent_t opaque
 }
 
+-- One node inside a captured cudaGraph_t. For EventRecord and
+-- StreamWaitEvent nodes, `event` is the targeted event and
+-- `stream_role` names whether the node executes on the primary
+-- stream ("primary") or a secondary stream ("secondary"); for the
+-- three work-node kinds the same `stream_role` field carries the
+-- stream the op was enqueued on at capture time (and which the
+-- driver records as the node's stream).
 entity CapturedGraphNode {
-    -- One node inside the captured cudaGraph_t.
-    op_kind:           enum {
-        Kernel, MemcpyAsync, MemsetAsync,
-        EventRecord, StreamWaitEvent, Empty,
-    },
-    -- For EventRecord and StreamWaitEvent nodes: which event/stream
-    -- the operation targets.
-    event:             opt<CudaEvent>,
-    stream:            opt<CudaStream>,
-    -- For Kernel and Memcpy*Async nodes: which stream the op was
-    -- enqueued on at capture time (and which the driver records as
-    -- the node's stream).
-    captured_on_stream: opt<CudaStream>,
+    node_index:  Integer
+    op_kind:     CapturedNodeKind
+    event:       CudaEvent
+    stream:      CudaStream
+    stream_role: String       -- "primary" or "secondary"
 }
 
+-- A cross-backend tensor: produced on one stream, read on a
+-- different stream. The producer/consumer streams may be on
+-- different devices.
+entity CrossBackendTensor {
+    name:                   String
+    producer_stream:        CudaStream
+    consumer_stream:        CudaStream
+    producer_kernel_index:  Integer    -- node index where the producer kernel sits
+    consumer_kernel_index:  Integer    -- node index where the consumer kernel sits
+}
+
+-- A captured cudaGraph_t snapshot. primary_stream is the dispatcher's
+-- main stream (which records the join event at begin and waits on
+-- every secondary at end); secondary_streams are the other backends'
+-- streams that get pulled into the captured graph.
 entity CapturedGraph {
-    primary_stream:    CudaStream,
-    secondary_streams: list<CudaStream>,
-    nodes:             list<CapturedGraphNode>,
+    primary_stream:    CudaStream
+    secondary_streams: List<CudaStream>
+    nodes:             List<CapturedGraphNode>
+    cross_tensors:     List<CrossBackendTensor>
+    capture_succeeded: Boolean
+}
+
+-- A sequence of capture round-trips. outer_capture_count is the
+-- atomic counter at the end of the sequence; n_successes is how
+-- many of the round-trips set capture_succeeded = true.
+entity CapturedGraphSequence {
+    graphs:              List<CapturedGraph>
+    n_successes:         Integer
+    outer_capture_count: Integer
+}
+
+-- Top-level system this spec quantifies over.
+entity CrossDeviceEventChainSystem {
+    sequences: List<CapturedGraphSequence>
 }
 
 -- ============================================================
--- Contracts
+-- INVARIANTS
 -- ============================================================
 
-contract JoinBeforeFirstSecondaryKernel {
+invariant JoinBeforeFirstSecondaryKernel {
+    -- For every CapturedGraph g and every CudaStream sec in
+    -- g.secondary_streams: there exists a CapturedGraphNode in
+    -- g.nodes with op_kind = stream_wait_event and stream = sec,
+    -- such that its node_index is strictly less than the
+    -- node_index of every Kernel / MemcpyAsync / MemsetAsync node
+    -- whose captured stream is sec.
+    --
     -- C4's _begin pulls every secondary backend's stream into the
     -- captured graph by recording the primary-stream's join event
     -- and having each secondary stream wait on it. The captured
-    -- graph MUST therefore contain a wait-event node on every
-    -- secondary stream that precedes every Kernel/Memcpy node on
-    -- that stream.
-    forall g: CapturedGraph, sec: CudaStream
-        where sec in g.secondary_streams:
-        exists wait_node: CapturedGraphNode
-            where wait_node in g.nodes
-            and wait_node.op_kind == StreamWaitEvent
-            and wait_node.stream == sec:
-            forall kernel_or_memcpy_node: CapturedGraphNode
-                where kernel_or_memcpy_node in g.nodes
-                and kernel_or_memcpy_node.captured_on_stream == sec
-                and kernel_or_memcpy_node.op_kind in {Kernel, MemcpyAsync, MemsetAsync}:
-                node_index(g, wait_node) <
-                node_index(g, kernel_or_memcpy_node)
+    -- graph therefore contains a wait-event node on every
+    -- secondary that precedes every work node on that stream.
 }
 
-contract FanInBeforeEndCapture {
+invariant FanInBeforeEndCapture {
+    -- For every CapturedGraph g and every secondary stream sec:
+    -- there exist two nodes — a record_node (op_kind =
+    -- event_record, stream = sec) and a wait_node (op_kind =
+    -- stream_wait_event, stream = g.primary_stream) — such that
+    -- record_node.node_index < wait_node.node_index AND every
+    -- work node on sec sits at a node_index strictly less than
+    -- record_node.node_index.
+    --
     -- _end_and_launch issues, for every secondary backend, a
-    -- cudaEventRecord on its stream followed by a cudaStreamWaitEvent
-    -- on the primary stream. The captured graph MUST contain these
-    -- two nodes per secondary, both AFTER every Kernel/Memcpy node on
-    -- the corresponding secondary stream and BEFORE the captured
-    -- graph's terminal node on the primary stream.
-    forall g: CapturedGraph, sec: CudaStream
-        where sec in g.secondary_streams:
-        exists rec_node: CapturedGraphNode,
-                wait_node: CapturedGraphNode
-            where rec_node in g.nodes and wait_node in g.nodes
-            and rec_node.op_kind == EventRecord
-            and rec_node.stream == sec
-            and wait_node.op_kind == StreamWaitEvent
-            and wait_node.stream == g.primary_stream:
-            node_index(g, rec_node) < node_index(g, wait_node) and
-            forall sec_work: CapturedGraphNode
-                where sec_work in g.nodes
-                and sec_work.captured_on_stream == sec
-                and sec_work.op_kind in {Kernel, MemcpyAsync, MemsetAsync}:
-                node_index(g, sec_work) < node_index(g, rec_node)
+    -- cudaEventRecord on its stream followed by a cudaStreamWait
+    -- Event on the primary stream. Both nodes sit AFTER every
+    -- secondary-stream work node and BEFORE the captured graph's
+    -- terminal node on the primary stream.
 }
 
-contract ConsumerWaitsForProducer {
-    -- For every cross-backend data tensor T:
-    --   - produced on device A on stream sa
-    --   - read on device B on stream sb
-    -- there must exist an event-chain pair in the captured graph:
-    --   record(eT) on sa AT or AFTER the producer kernel
-    --   wait(eT) on sb BEFORE the consumer kernel
+invariant ConsumerWaitsForProducer {
+    -- For every CapturedGraph g and every CrossBackendTensor t in
+    -- g.cross_tensors where t.producer_stream is not equal to
+    -- t.consumer_stream: there exists a pair of nodes (record,
+    -- wait) with record.op_kind = event_record, record.stream =
+    -- t.producer_stream, wait.op_kind = stream_wait_event,
+    -- wait.stream = t.consumer_stream, record.event = wait.event,
+    -- record.node_index < wait.node_index,
+    -- t.producer_kernel_index <= record.node_index, and
+    -- wait.node_index < t.consumer_kernel_index.
+    --
     -- This is the core race-freedom property: without these edges,
     -- consumer reads can race producer writes across devices.
     --
@@ -142,60 +172,59 @@ contract ConsumerWaitsForProducer {
     --      Those calls are captured into the graph as wait nodes.
     --   2. The outer-capture-begin join + outer-capture-end fan-in
     --      provide additional edges across all backend pairs.
-    forall g: CapturedGraph, tensor: CrossBackendTensor
-        where producer_stream(tensor) != consumer_stream(tensor):
-        exists rec: CapturedGraphNode, wait: CapturedGraphNode
-            where rec in g.nodes and wait in g.nodes
-            and rec.op_kind == EventRecord
-            and rec.stream == producer_stream(tensor)
-            and wait.op_kind == StreamWaitEvent
-            and wait.stream == consumer_stream(tensor)
-            and rec.event == wait.event:
-            node_index(g, rec) < node_index(g, wait) and
-            producer_kernel_index(g, tensor) <= node_index(g, rec) and
-            node_index(g, wait) < consumer_kernel_index(g, tensor)
 }
 
-contract NoMissingEdges {
-    -- Stronger restatement of ConsumerWaitsForProducer's existence:
-    -- for every (producer_stream, consumer_stream) pair where data
-    -- flows, the captured graph contains AT LEAST one record→wait
-    -- edge connecting them. The driver may collapse parallel
-    -- read/write edges; the spec only requires one.
-    forall g: CapturedGraph, sa: CudaStream, sb: CudaStream
-        where sa != sb
-        and data_flows_from_to(g, sa, sb):
-        exists edge: (CapturedGraphNode, CapturedGraphNode)
-            where edge.0 in g.nodes and edge.1 in g.nodes
-            and edge.0.op_kind == EventRecord
-            and edge.0.stream == sa
-            and edge.1.op_kind == StreamWaitEvent
-            and edge.1.stream == sb
-            and edge.0.event == edge.1.event
-            and node_index(g, edge.0) < node_index(g, edge.1):
-            true  -- existence suffices
-}
-
-contract CapturedGraphIsNonEmpty {
-    -- Sanity: a successful _begin → _end_and_launch round-trip
-    -- produces a graph with at least the join + fan-in nodes
-    -- (which scale linearly with the number of secondaries) plus
-    -- whatever Kernel/Memcpy nodes the dispatch enqueued.
+invariant NoMissingEdges {
+    -- Stronger existence restatement of ConsumerWaitsForProducer.
+    -- For every CapturedGraph g and every pair of distinct streams
+    -- (sa, sb) where any CrossBackendTensor in g.cross_tensors has
+    -- producer_stream = sa and consumer_stream = sb: the captured
+    -- graph contains AT LEAST one (record on sa, wait on sb) edge
+    -- on the same event with record.node_index < wait.node_index.
     --
-    -- Lower bound: 2 + 2 × N_secondary (one record on primary at
-    -- begin, one wait per secondary at begin, one record per
-    -- secondary at end, one wait on primary at end).
-    forall g: CapturedGraph
-        when outer_capture_succeeded(g):
-        len(g.nodes) >= 2 + 2 * len(g.secondary_streams)
+    -- The driver may collapse parallel read/write edges across the
+    -- same stream pair; the spec only requires one.
 }
 
-contract OuterCaptureCounterAdvancesMonotonically {
-    -- Each successful _begin → _end_and_launch round-trip advances
-    -- the global counter by exactly 1. Failed captures do not
-    -- advance it. Bound by:
-    --   ggml_cuda_outer_capture_count() (atomic, fetch_add(1) at the
-    --   end of _end_and_launch's success path).
-    forall n: u32:
-        outer_capture_count_after_n_successes(n) == n
+invariant CapturedGraphIsNonEmpty {
+    -- For every CapturedGraph g where g.capture_succeeded = true:
+    -- |g.nodes| >= 2 + 2 * |g.secondary_streams|. Sanity: a
+    -- successful _begin → _end_and_launch round-trip produces a
+    -- graph with at least the join nodes (one record on primary
+    -- at begin, one wait per secondary at begin) plus the fan-in
+    -- nodes (one record per secondary at end, one wait on primary
+    -- at end), giving the 2 + 2 * N_secondary lower bound.
+}
+
+invariant OuterCaptureCounterAdvancesMonotonically {
+    -- For every CapturedGraphSequence seq:
+    -- seq.outer_capture_count = seq.n_successes. Each successful
+    -- begin → end_and_launch round-trip advances the global counter
+    -- by exactly 1; failed captures do not advance it.
+    --
+    -- Bound by ggml_cuda_outer_capture_count() — atomic,
+    -- fetch_add(1) at the end of _end_and_launch's success path.
+}
+
+-- ============================================================
+-- Contract
+-- ============================================================
+
+contract ValidateCrossDeviceEventChain {
+    invoke: (sys: CrossDeviceEventChainSystem) -> Boolean
+
+    @invariant AllCrossDeviceEventChainInvariantsHold
+        -- Returns true iff every CapturedGraphSequence in sys
+        -- satisfies JoinBeforeFirstSecondaryKernel, FanInBefore
+        -- EndCapture, ConsumerWaitsForProducer, NoMissingEdges,
+        -- CapturedGraphIsNonEmpty, and OuterCaptureCounter
+        -- AdvancesMonotonically.
+        --
+        -- Test bindings:
+        --   ik_llama.cpp/tests/test-multi-device-graph-capture.cpp
+        --     — drives a 2-CUDA + CPU sched through N capture
+        --       round-trips and asserts the node-count lower bound,
+        --       the counter advance, and the bit-identity of
+        --       output across replays (composes with multi_device_
+        --       graph_cache.allium's CacheReplayIsByteIdentical).
 }
