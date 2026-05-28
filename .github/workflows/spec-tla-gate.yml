@@ -30,13 +30,14 @@ jobs:
 
       - name: Install Allium CLI
         run: |
-          # Crate is `allium-cli`; pin to 3.0.5 to match local behavior.
-          # Newer versions exit 1 on any diagnostic (info/warning); 3.0.5
-          # exits 0 unless severity=error. Pin keeps spec/CI reproducible;
-          # bump when the spec is also field/entity-clean against latest.
+          # Crate is `allium-cli`; pinned to 3.2.3 (bumped 2026-05-28).
+          # 3.2.3 exits 1 on any diagnostic (info/warning/error). The
+          # four CI-gated specs are field/entity-clean against this
+          # pin; obligation ledgers under data/*_test_obligations.json
+          # were regenerated for v3.2.3's JSON schema in the same commit.
           curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
           source "$HOME/.cargo/env"
-          cargo install allium-cli --version 3.0.5 --quiet
+          cargo install allium-cli --version 3.2.3 --quiet
           allium --version
 
       - name: Fetch TLC tools
@@ -55,6 +56,16 @@ jobs:
         run: |
           source "$HOME/.cargo/env"
           allium check specs/deltanet/batch-invariance.allium
+
+      - name: Allium syntax check (Phase 46 mgpu-split spec #1)
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/mgpu-split/MgpuSplitConfig.allium
+
+      - name: Allium syntax check (Phase 46 mgpu-split spec #5)
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/mgpu-split/CrossCodepathConsistency.allium
 
       - name: Allium obligation ledger drift check (DFlash)
         run: |
@@ -190,3 +201,85 @@ jobs:
             exit 1
           fi
           echo "DeltaNet OutlierP0 base PASSES — no errors."
+
+      # ===========================================================================
+      # Phase 46 mgpu-split TLC checks (B.0-full)
+      # ===========================================================================
+
+      - name: TLC — BuftSetupLoop GRAPH mode (must PASS)
+        run: |
+          cd specs/mgpu-split
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config BuftSetupLoopMC_graph.cfg BuftSetupLoop.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on BuftSetupLoop GRAPH mode:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "BuftSetupLoop GRAPH PASSES."
+
+      - name: TLC — BuftSetupLoop LAYER mode (must PASS)
+        run: |
+          cd specs/mgpu-split
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config BuftSetupLoopMC_layer.cfg BuftSetupLoop.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on BuftSetupLoop LAYER mode:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "BuftSetupLoop LAYER PASSES."
+
+      - name: TLC — BuftSetupLoop ATTN mode (must PASS)
+        run: |
+          cd specs/mgpu-split
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config BuftSetupLoopMC_attn.cfg BuftSetupLoop.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on BuftSetupLoop ATTN mode:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "BuftSetupLoop ATTN PASSES."
+
+      - name: TLC — BuftSetupLoop NONE mode (must PASS)
+        run: |
+          cd specs/mgpu-split
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config BuftSetupLoopMC_none.cfg BuftSetupLoop.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on BuftSetupLoop NONE mode:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "BuftSetupLoop NONE PASSES."
+
+      - name: TLC — CreateSplitBalance (must PASS)
+        run: |
+          cd specs/mgpu-split
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config CreateSplitBalanceMC.cfg CreateSplitBalance.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on CreateSplitBalance:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "CreateSplitBalance PASSES."
+
+      - name: TLC — ClipCrossDeviceFlow (must PASS)
+        run: |
+          cd specs/mgpu-split
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config ClipCrossDeviceFlowMC.cfg ClipCrossDeviceFlow.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on ClipCrossDeviceFlow:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "ClipCrossDeviceFlow PASSES."
