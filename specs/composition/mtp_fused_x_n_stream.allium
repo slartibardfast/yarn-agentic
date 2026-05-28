@@ -449,7 +449,7 @@ contract MTPFusedAtN_StreamLessThan2Or1 {
 
     @guidance
         -- This contract is HONOURED ON HEAD. The RED test in
-        -- tests/spec/test-mtp-fused-x-n-stream.cpp (P0.B.S4)
+        -- tests/spec/test-mtp-x-n-stream.cpp (P0.B.S4)
         -- exercises a 2-slot MTP tick and asserts (a)
         -- pending_chain_residual_step is -1 at the entry to
         -- prepare_mtp_graph_inputs, (b) no
@@ -641,7 +641,7 @@ invariant Tier3UnifiedDispatchInheritsHEADOptOut {
 --   llama_set_draft_input_chain_residual unconditionally would
 --   violate MTPFusedAtN_StreamLessThan2Or1.
 --   MultiSlotPathSkipsArmStructurally. The Allium check + the
---   RED test in tests/spec/test-mtp-fused-x-n-stream.cpp would
+--   RED test in tests/spec/test-mtp-x-n-stream.cpp would
 --   catch the regression at PR time.
 
 -- ============================================================
@@ -724,7 +724,7 @@ invariant Tier3UnifiedDispatchInheritsHEADOptOut {
 --
 -- Test infrastructure to drive from this spec via allium:propagate
 -- (P0.B.S4 in PHASE_NSTREAM_KV_PERF.md):
---   - tests/spec/test-mtp-fused-x-n-stream.cpp
+--   - tests/spec/test-mtp-x-n-stream.cpp
 --     * Drives a 2-slot MTP fused tick at n_seq_max = 2; asserts
 --       (a) pending_chain_residual_step is -1 at the entry to
 --           prepare_mtp_graph_inputs for both slots'
@@ -737,15 +737,12 @@ invariant Tier3UnifiedDispatchInheritsHEADOptOut {
 --           comes from the host path).
 --     * EXPECTED TO PASS on HEAD (the opt-out is the HEAD
 --       behaviour); the test exists as a regression guard.
---   - tests/spec/test-mtp-fused-x-n-stream-1slot.cpp
---     * Drives a 1-slot MTP fused tick at n_seq_max = 2; asserts
---       (a) the single-slot path arms
---           pending_chain_residual_step when
---           LLAMA_MTP_CHAIN_RESIDUAL_SEED is set,
---       (b) prepare_mtp_graph_inputs reads persist[step] and the
---           seed matches expectation.
---     * EXPECTED TO PASS on HEAD. Together with the 2-slot test,
---       binds the structural distinction between the two paths.
+--   Both the 2-slot multi-slot-path opt-out and the 1-slot
+--   single-slot-path arming behaviour land in the same file
+--   (test-mtp-x-n-stream.cpp). The originally planned 1slot
+--   variant was rolled into the single file when the test was
+--   renamed; admit_stream / retire_stream transitions inside the
+--   single test exercise both arms.
 
 -- ============================================================
 -- Related specs
