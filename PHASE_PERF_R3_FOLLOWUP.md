@@ -281,10 +281,26 @@ If R1/R2 don't close enough, then:
 Phases 1+2 are independent of 3+4. Could run in parallel if appetite for
 two simultaneous servers exists (different ports, alternate by phase).
 
+## Status (2026-05-28)
+
+- **Phase 1 — DONE (R2 closed as misframed).** Fine-grained sweep at
+  ctx=262144 NP=1 ubatch=256 + RT chain shows smooth concave-down decay
+  from 16.53 t/s @ n_pp=2221 to 9.25 t/s @ n_pp=8851. Per-step slope
+  decreases monotonically — no cliff. Phase E's "peak then drop" was
+  sparse-sampling artifact. Calibration prediction held (published Q4_0
+  cliffs are at 32K+, not 3K-12K). See
+  `data/perf-r3-followup/phase1-r2-sweep/FINDINGS.md`.
+- **Phase 2 — SKIPPED.** No R2 cliff to diff.
+- **Phase 3** — next; load-bearing R1 investigation.
+- **Phase 4** — dependent on Phase 3 outcome.
+- **Phase 5** — gated on Phase 3/4.
+
 ## Acceptance — phase closes when
 
-- [ ] Phase 1 sweep curve plotted; R2 inflection localized or rejected
-- [ ] If R2 real: Phase 2 kernel diff identifies the cost center
+- [x] Phase 1 sweep curve plotted; R2 inflection localized or rejected
+      → **rejected, smooth decay**
+- [x] If R2 real: Phase 2 kernel diff identifies the cost center
+      → **R2 not real, Phase 2 not needed**
 - [ ] Phase 3 sweep curve plotted; R1 allocation-tax shape characterized
 - [ ] Phase 3 T5.9 sub-test recorded: paged-KV payback quantified at
       ctx=8k and ctx=262144; "is T5.9 active for sparse usage?" answered
