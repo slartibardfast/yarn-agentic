@@ -1,0 +1,37 @@
+kernel,ctx8k_ns,ctx256k_ns,delta_ns,delta_pct
+ncclDevKernel_AllReduce_Sum_f32_RING_LL(ncclDevKernelArgsStorage<(unsigned long)4096>),2799346651.0,2813145370.0,13798719.0,0.004929264117779386
+"void mul_mat_q_split_k<(ggml_type)2, (int)8, (int)8, (bool)0, (int)4>(const char *, const char *, float *, float *, int, int, int, int, int, int, int)",6432746140.0,6437778794.0,5032654.0,0.0007823492316456626
+"fused_mul_silu_f32(const float *, const float *, float *, int)",48004409.0,45764839.0,-2239570.0,-0.04665342302203945
+"void mul_mat_q_split_k<(ggml_type)159, (int)8, (int)8, (bool)0, (int)4>(const char *, const char *, float *, float *, int, int, int, int, int, int, int)",1034052020.0,1032746792.0,-1305228.0,-0.0012622459748204973
+"void fused_mul_mat_vec_q<(ggml_type)2, (int)1, (int)4, (int)1>(const void *, const void *, const void *, float *, const char *, const void *, const void *, unsigned long, int, int, int, int, unsigned long, unsigned long, unsigned long, long, ggml_unary_op, float)",2863568878.0,2864517813.0,948935.0,0.00033138193646764513
+"void fused_rms_norm_f32<(int)1024, float>(const T2 *, const float *, float *, int, float)",312527205.0,313364189.0,836984.0,0.0026781156539636974
+"void convert_unary<float, __half>(const void *, T2 *, long)",177411608.0,178009783.0,598175.0,0.003371679039175346
+"void convert_unary<__half, float>(const void *, T2 *, long)",162155038.0,162713987.0,558949.0,0.0034470036015779026
+void cutlass::Kernel2<cutlass_75_wmma_tensorop_h161616gemm_16x16_128x2_tn_align8>(T1::Params),1581055518.0,1581519780.0,464262.0,0.00029364054248226523
+"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, __half, __half, __half, __half, (bool)0, __half, __half, __half, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)",227946044.0,228307215.0,361171.0,0.0015844582939987806
+"void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)1>(const float *, void *, long, long, long)",188105597.0,188421263.0,315666.0,0.0016781318846137427
+"void mul_mat_q_split_k<(ggml_type)2, (int)96, (int)8, (bool)0, (int)4>(const char *, const char *, float *, float *, int, int, int, int, int, int, int)",449587719.0,449887618.0,299899.0,0.0006670533631725206
+"void ssm_conv_single_seq_f32_nc4<(int)32>(const float *, const float *, const float *, float *, int, int, int, int, int)",66035589.0,66334257.0,298668.0,0.004522833891888123
+"void mul_mat_q_split_k_fixup<(int)8, (int)8, (bool)0, (int)4>(float *, const float *, int, int, int)",273570208.0,273868704.0,298496.0,0.0010911129621249405
+"void cpy_flt<&cpy_1_flt<float, float>>(const char *, char *, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, char **, int)",441194430.0,440919246.0,-275184.0,-0.0006237250094023317
+"void delta_net_recurrent_f32<(int)128, (int)256>(const float *, const float *, const float *, const float *, const float *, const float *, float *, long, long, int, long, long, long, int, unsigned long, unsigned long, unsigned long)",260480816.0,260707216.0,226400.0,0.0008691618963601044
+"ssm_conv_single_seq_final_state_f32(const float *, const float *, float *, int, int, int, int, int, int)",52074249.0,52275483.0,201234.0,0.003864366819769316
+"void k_add_same<(int)256, float>(long, const T2 *, const T2 *, T2 *)",62687665.0,62499083.0,-188582.0,-0.0030082792204814135
+"void hadamard_f32<(int)256>(const char *, char *, int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)",63573410.0,63744685.0,171275.0,0.0026941295110645136
+"void l2_norm_f32<(int)256>(const float *, float *, int, float)",83120691.0,83230751.0,110060.0,0.0013240987132794313
+"void flash_attn_per_slot_kv_singlewarp_kernel<(int)256, (int)256, (ggml_type)2, (ggml_type)2>(const char *, const char *, const char *, const char *, const char *, const int *, const int *, int, float *, float2 *, float, float, float, float, float, unsigned int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int)",1255632093.0,1255740538.0,108445.0,8.63668590540545e-05
+"void fused_rms_norm_f32<(int)256, float>(const T2 *, const float *, float *, int, float)",34630892.0,34723868.0,92976.0,0.0026847705799781796
+"void mul_mat_q_split_k<(ggml_type)159, (int)96, (int)8, (bool)0, (int)4>(const char *, const char *, float *, float *, int, int, int, int, int, int, int)",55064454.0,55146741.0,82287.0,0.0014943760270464956
+"concat_f32_dim0(const float *, const float *, float *, long, long)",115203958.0,115270145.0,66187.0,0.0005745201913982534
+"silu_f32(const float *, float *, int)",36134198.0,36199097.0,64899.0,0.001796054806585179
+"k_fused_softplus(int, int, const float *, const float *, const float *, float *)",40565899.0,40619182.0,53283.0,0.0013134923991207081
+"sigmoid_f32(const float *, float *, int)",11177137.0,11219735.0,42598.0,0.0038111727538099327
+"void k_set_rows_quant<long, block_q4_0, (int)32, &quantize_f32_q4_0_block>(const float *, const T1 *, T2 *, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long)",61837503.0,61810100.0,-27403.0,-0.00044314531911160415
+"scale_f32(const float *, float *, float, float, long)",2694843.0,2714043.0,19200.0,0.0071247193250219
+"quantize_q8_1(const float *, void *, long, long)",52243731.0,52256105.0,12374.0,0.00023685138414020201
+"void k_bin_bcast<&op_mul, float, float, float>(const T2 *, const T3 *, T4 *, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int)",15909360.0,15920145.0,10785.0,0.0006779028194723313
+"void mul_mat_q_split_k_fixup<(int)96, (int)8, (bool)0, (int)4>(float *, const float *, int, int, int)",59997508.0,59989844.0,-7664.0,-0.00012773863874482316
+"void fused_rms_norm_f32<(int)128, float>(const T2 *, const float *, float *, int, float)",53536912.0,53543659.0,6747.0,0.00012602519921212085
+"void fused_mul_mat_vec_q<(ggml_type)2, (int)2, (int)4, (int)1>(const void *, const void *, const void *, float *, const char *, const void *, const void *, unsigned long, int, int, int, int, unsigned long, unsigned long, unsigned long, long, ggml_unary_op, float)",11981040.0,11974446.0,-6594.0,-0.0005503695839426115
+"void rope_multi<(bool)1, (bool)0, float>(const T3 *, T3 *, int, int, int, int, int, int, const int *, float, float, float, rope_corr_dims, float, const float *, mrope_sections, bool)",34742032.0,34746783.0,4751.0,0.0001367507807257251
+"void l2_norm_f32_nc<(int)32>(const float *, float *, int, long, long, long, float)",2025214.0,2028797.0,3583.0,0.001769195749189878
