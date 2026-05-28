@@ -1,0 +1,123 @@
+INFO [                    main] build info | tid="140324640903168" timestamp=1779966513 build=4850 commit="af41d2b0"
+INFO [                    main] system info | tid="140324640903168" timestamp=1779966513 n_threads=16 n_threads_batch=-1 total_threads=16 system_info="AVX = 1 | AVX_VNNI = 0 | AVX2 = 1 | AVX512 = 1 | AVX512_VBMI = 0 | AVX512_VNNI = 0 | AVX512_BF16 = 0 | FMA = 1 | NEON = 0 | SVE = 0 | ARM_FMA = 0 | F16C = 1 | FP16_VA = 0 | WASM_SIMD = 0 | BLAS = 1 | SSE3 = 1 | SSSE3 = 1 | VSX = 0 | MATMUL_INT8 = 0 | "
+Adjust batch size for mtmd: u_batch = 2048, batch = 2048
+=============================== NCCL main communicator initialized
+Adjust batch size for mtmd: u_batch = 2048, batch = 2048
+    Device 0:  2378.81 MiB
+    Device 1:  2378.81 MiB
+  0:  CPU
+  1:  CUDA0
+  2:  CUDA1
+INFO [              load_model] loaded multimodal model, '%s'
+ | ="/opt/models/recast-out/mmproj-Qwen3.6-27B-Q8_0.gguf"
+INFO [                    init] initializing slots | tid="140324640903168" timestamp=1779966518 n_slots=1
+INFO [                    init] new slot | tid="140324640903168" timestamp=1779966518 id_slot=0 n_ctx_slot=262144
+INFO [                    main] model loaded | tid="140324640903168" timestamp=1779966518
+INFO [                    main] HTTP server listening | tid="140324640903168" timestamp=1779966518 n_threads_http="15" port="18293" hostname="127.0.0.1"
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966518
+INFO [     process_single_task] slot data | tid="140324640903168" timestamp=1779966518 id_task=0 n_idle_slots=1 n_processing_slots=0
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966518
+INFO [      log_server_request] request | tid="140321369903104" timestamp=1779966518 remote_addr="127.0.0.1" remote_port=38864 status=200 method="GET" path="/health" params={}
+INFO [     process_single_task] slot data | tid="140324640903168" timestamp=1779966519 id_task=1 n_idle_slots=1 n_processing_slots=0
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966519
+INFO [      log_server_request] request | tid="140321230753792" timestamp=1779966519 remote_addr="127.0.0.1" remote_port=38880 status=200 method="GET" path="/health" params={}
+INFO [   launch_slot_with_task] slot is processing task | tid="140324640903168" timestamp=1779966519 id_slot=0 id_task=2
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966519 id_slot=0 id_task=2 p0=0
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966519 id_slot=0 id_task=2 p0=14
+encoding image slice...
+image slice encoded in 5668 ms
+decoding image batch 1/1, n_tokens_batch = 1036
+image decoded (batch 1/1) in 4744 ms
+INFO [      log_server_request] request | tid="140321096536064" timestamp=1779966530 remote_addr="127.0.0.1" remote_port=38894 status=200 method="POST" path="/v1/chat/completions" params={}
+INFO [           release_slots] slot released | tid="140324640903168" timestamp=1779966530 id_slot=0 id_task=2 n_ctx=262144 n_past=1073 n_system_tokens=0 n_cache_tokens=1073 truncated=false
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966530
+INFO [   launch_slot_with_task] slot is processing task | tid="140324640903168" timestamp=1779966530 id_slot=0 id_task=20
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966530 id_slot=0 id_task=20 p0=0
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966530 id_slot=0 id_task=20 p0=14
+encoding image slice...
+image slice encoded in 4653 ms
+decoding image batch 1/1, n_tokens_batch = 1036
+image decoded (batch 1/1) in 4494 ms
+INFO [      log_server_request] request | tid="140320741638144" timestamp=1779966541 remote_addr="127.0.0.1" remote_port=42764 status=200 method="POST" path="/v1/chat/completions" params={}
+INFO [           release_slots] slot released | tid="140324640903168" timestamp=1779966541 id_slot=0 id_task=20 n_ctx=262144 n_past=1073 n_system_tokens=0 n_cache_tokens=1073 truncated=false
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966541
+INFO [   launch_slot_with_task] slot is processing task | tid="140324640903168" timestamp=1779966541 id_slot=0 id_task=38
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966541 id_slot=0 id_task=38 p0=0
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966541 id_slot=0 id_task=38 p0=14
+encoding image slice...
+image slice encoded in 4652 ms
+decoding image batch 1/1, n_tokens_batch = 1036
+image decoded (batch 1/1) in 4489 ms
+INFO [      log_server_request] request | tid="140320728834048" timestamp=1779966551 remote_addr="127.0.0.1" remote_port=56468 status=200 method="POST" path="/v1/chat/completions" params={}
+INFO [           release_slots] slot released | tid="140324640903168" timestamp=1779966551 id_slot=0 id_task=38 n_ctx=262144 n_past=1073 n_system_tokens=0 n_cache_tokens=1073 truncated=false
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966551
+INFO [   launch_slot_with_task] slot is processing task | tid="140324640903168" timestamp=1779966551 id_slot=0 id_task=56
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966551 id_slot=0 id_task=56 p0=0
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966551 id_slot=0 id_task=56 p0=14
+encoding image slice...
+image slice encoded in 4653 ms
+decoding image batch 1/1, n_tokens_batch = 1036
+image decoded (batch 1/1) in 4476 ms
+INFO [      log_server_request] request | tid="140318116229120" timestamp=1779966562 remote_addr="127.0.0.1" remote_port=40486 status=200 method="POST" path="/v1/chat/completions" params={}
+INFO [           release_slots] slot released | tid="140324640903168" timestamp=1779966562 id_slot=0 id_task=56 n_ctx=262144 n_past=1073 n_system_tokens=0 n_cache_tokens=1073 truncated=false
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966562
+INFO [   launch_slot_with_task] slot is processing task | tid="140324640903168" timestamp=1779966562 id_slot=0 id_task=74
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966562 id_slot=0 id_task=74 p0=0
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966562 id_slot=0 id_task=74 p0=14
+encoding image slice...
+image slice encoded in 4653 ms
+decoding image batch 1/1, n_tokens_batch = 1036
+image decoded (batch 1/1) in 4469 ms
+INFO [      log_server_request] request | tid="140307573747712" timestamp=1779966572 remote_addr="127.0.0.1" remote_port=46204 status=200 method="POST" path="/v1/chat/completions" params={}
+INFO [           release_slots] slot released | tid="140324640903168" timestamp=1779966572 id_slot=0 id_task=74 n_ctx=262144 n_past=1073 n_system_tokens=0 n_cache_tokens=1073 truncated=false
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966572
+INFO [   launch_slot_with_task] slot is processing task | tid="140324640903168" timestamp=1779966572 id_slot=0 id_task=92
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966572 id_slot=0 id_task=92 p0=0
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966572 id_slot=0 id_task=92 p0=14
+encoding image slice...
+image slice encoded in 4653 ms
+decoding image batch 1/1, n_tokens_batch = 1036
+image decoded (batch 1/1) in 4460 ms
+INFO [      log_server_request] request | tid="140302647812096" timestamp=1779966582 remote_addr="127.0.0.1" remote_port=42276 status=200 method="POST" path="/v1/chat/completions" params={}
+INFO [           release_slots] slot released | tid="140324640903168" timestamp=1779966583 id_slot=0 id_task=92 n_ctx=262144 n_past=1073 n_system_tokens=0 n_cache_tokens=1073 truncated=false
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966583
+INFO [   launch_slot_with_task] slot is processing task | tid="140324640903168" timestamp=1779966583 id_slot=0 id_task=110
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966583 id_slot=0 id_task=110 p0=0
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966583 id_slot=0 id_task=110 p0=14
+encoding image slice...
+image slice encoded in 4653 ms
+decoding image batch 1/1, n_tokens_batch = 1036
+image decoded (batch 1/1) in 4457 ms
+INFO [      log_server_request] request | tid="140302388031488" timestamp=1779966593 remote_addr="127.0.0.1" remote_port=59986 status=200 method="POST" path="/v1/chat/completions" params={}
+INFO [           release_slots] slot released | tid="140324640903168" timestamp=1779966593 id_slot=0 id_task=110 n_ctx=262144 n_past=1073 n_system_tokens=0 n_cache_tokens=1073 truncated=false
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966593
+INFO [   launch_slot_with_task] slot is processing task | tid="140324640903168" timestamp=1779966593 id_slot=0 id_task=128
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966593 id_slot=0 id_task=128 p0=0
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966593 id_slot=0 id_task=128 p0=14
+encoding image slice...
+image slice encoded in 4653 ms
+decoding image batch 1/1, n_tokens_batch = 1036
+image decoded (batch 1/1) in 4472 ms
+INFO [      log_server_request] request | tid="140302375227392" timestamp=1779966603 remote_addr="127.0.0.1" remote_port=42716 status=200 method="POST" path="/v1/chat/completions" params={}
+INFO [           release_slots] slot released | tid="140324640903168" timestamp=1779966603 id_slot=0 id_task=128 n_ctx=262144 n_past=1073 n_system_tokens=0 n_cache_tokens=1073 truncated=false
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966603
+INFO [   launch_slot_with_task] slot is processing task | tid="140324640903168" timestamp=1779966603 id_slot=0 id_task=146
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966603 id_slot=0 id_task=146 p0=0
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966603 id_slot=0 id_task=146 p0=14
+encoding image slice...
+image slice encoded in 4654 ms
+decoding image batch 1/1, n_tokens_batch = 1036
+image decoded (batch 1/1) in 4479 ms
+INFO [      log_server_request] request | tid="140302362423296" timestamp=1779966614 remote_addr="127.0.0.1" remote_port=41342 status=200 method="POST" path="/v1/chat/completions" params={}
+INFO [           release_slots] slot released | tid="140324640903168" timestamp=1779966614 id_slot=0 id_task=146 n_ctx=262144 n_past=1073 n_system_tokens=0 n_cache_tokens=1073 truncated=false
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966614
+INFO [   launch_slot_with_task] slot is processing task | tid="140324640903168" timestamp=1779966614 id_slot=0 id_task=164
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966614 id_slot=0 id_task=164 p0=0
+INFO [    batch_pending_prompt] kv cache rm [p0, end) | tid="140324640903168" timestamp=1779966614 id_slot=0 id_task=164 p0=14
+encoding image slice...
+image slice encoded in 4655 ms
+decoding image batch 1/1, n_tokens_batch = 1036
+image decoded (batch 1/1) in 4468 ms
+INFO [      log_server_request] request | tid="140302349619200" timestamp=1779966624 remote_addr="127.0.0.1" remote_port=37462 status=200 method="POST" path="/v1/chat/completions" params={}
+INFO [           release_slots] slot released | tid="140324640903168" timestamp=1779966624 id_slot=0 id_task=164 n_ctx=262144 n_past=1073 n_system_tokens=0 n_cache_tokens=1073 truncated=false
+INFO [              slots_idle] all slots are idle | tid="140324640903168" timestamp=1779966624
