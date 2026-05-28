@@ -291,9 +291,20 @@ two simultaneous servers exists (different ports, alternate by phase).
   cliffs are at 32K+, not 3K-12K). See
   `data/perf-r3-followup/phase1-r2-sweep/FINDINGS.md`.
 - **Phase 2 — SKIPPED.** No R2 cliff to diff.
-- **Phase 3** — next; load-bearing R1 investigation.
-- **Phase 4** — dependent on Phase 3 outcome.
-- **Phase 5** — gated on Phase 3/4.
+- **Phase 3 — DONE.** R1 sweep clean measurement at 4 ctx points × 3
+  reps: TG 19.34 t/s @ ctx=8k → 14.34 t/s @ ctx=256k = **-25.9% tax**
+  (Phase E's earlier -37% was harness-config-noise; -25.9% is the load-
+  bearing number). Shape monotonic with slope growing in log(ctx) —
+  consistent with FA dequant scratch shape.
+  **T5.9 sub-test misfired: design error.** `--cache-ram` and
+  `--ctx-checkpoints` are host-side context-checkpoint cache knobs, NOT
+  the T5.9 GPU paged-KV layout toggle. T5.9 is baked into the build;
+  unflag-able. A true T5.9 A/B needs a pre-T5.9 build (out of scope).
+  Findings: `data/perf-r3-followup/phase3-r1-sweep/FINDINGS.md`.
+- **Phase 4** — nsys diff at ctx=8k vs ctx=256k. Now the load-bearing
+  next step; awaiting user authorization before running (disk-heavy
+  traces, ~30-35 min wall).
+- **Phase 5** — gated on Phase 4.
 
 ## Acceptance — phase closes when
 
@@ -301,9 +312,13 @@ two simultaneous servers exists (different ports, alternate by phase).
       → **rejected, smooth decay**
 - [x] If R2 real: Phase 2 kernel diff identifies the cost center
       → **R2 not real, Phase 2 not needed**
-- [ ] Phase 3 sweep curve plotted; R1 allocation-tax shape characterized
-- [ ] Phase 3 T5.9 sub-test recorded: paged-KV payback quantified at
+- [x] Phase 3 sweep curve plotted; R1 allocation-tax shape characterized
+      → **-25.9% tax at ctx=8k → ctx=256k, monotonic, slope growing with log(ctx)**
+- [x] Phase 3 T5.9 sub-test recorded: paged-KV payback quantified at
       ctx=8k and ctx=262144; "is T5.9 active for sparse usage?" answered
+      → **sub-test misfired (design error documented in FINDINGS.md);
+      the flags probed don't toggle T5.9. Unanswered without a pre-T5.9
+      build A/B.**
 - [ ] Phase 4 kernel diff identifies the cost center for R1
 - [ ] Decisions recorded on ship candidates per finding:
       - R1 fixable → open successor phase to ship the fix
