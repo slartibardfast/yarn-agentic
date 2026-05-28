@@ -386,7 +386,7 @@
       "id": "invariant.KernelDeterminism",
       "source_construct": "KernelDeterminism",
       "source_span": {
-        "end": 39131,
+        "end": 39138,
         "start": 37125
       }
     },
@@ -397,8 +397,8 @@
       "id": "invariant.SpeculativeCycleAtomicity",
       "source_construct": "SpeculativeCycleAtomicity",
       "source_span": {
-        "end": 39676,
-        "start": 39458
+        "end": 39683,
+        "start": 39465
       }
     },
     {
@@ -408,8 +408,8 @@
       "id": "invariant.SyncBeforeStepAdvance",
       "source_construct": "SyncBeforeStepAdvance",
       "source_span": {
-        "end": 40456,
-        "start": 40079
+        "end": 40463,
+        "start": 40086
       }
     },
     {
@@ -419,8 +419,8 @@
       "id": "invariant.NoCrossSlotRegionOverlap",
       "source_construct": "NoCrossSlotRegionOverlap",
       "source_span": {
-        "end": 41902,
-        "start": 41044
+        "end": 41909,
+        "start": 41051
       }
     },
     {
@@ -430,8 +430,8 @@
       "id": "invariant.DraftKVViaInjectionNotCrossAttention",
       "source_construct": "DraftKVViaInjectionNotCrossAttention",
       "source_span": {
-        "end": 43287,
-        "start": 42302
+        "end": 43294,
+        "start": 42309
       }
     },
     {
@@ -441,8 +441,8 @@
       "id": "invariant.PerSlotDraftKVCache",
       "source_construct": "PerSlotDraftKVCache",
       "source_span": {
-        "end": 44138,
-        "start": 43497
+        "end": 44145,
+        "start": 43504
       }
     },
     {
@@ -452,8 +452,8 @@
       "id": "invariant.HybridTargetRecurrentStateTracking",
       "source_construct": "HybridTargetRecurrentStateTracking",
       "source_span": {
-        "end": 45948,
-        "start": 44886
+        "end": 45955,
+        "start": 44893
       }
     },
     {
@@ -463,8 +463,8 @@
       "id": "invariant.DPAttentionNotSupported",
       "source_construct": "DPAttentionNotSupported",
       "source_span": {
-        "end": 46570,
-        "start": 46160
+        "end": 46577,
+        "start": 46167
       }
     },
     {
@@ -474,8 +474,8 @@
       "id": "invariant.PipelineParallelismRequiresPpSizeEq1",
       "source_construct": "PipelineParallelismRequiresPpSizeEq1",
       "source_span": {
-        "end": 46961,
-        "start": 46572
+        "end": 46968,
+        "start": 46579
       }
     },
     {
@@ -485,8 +485,8 @@
       "id": "invariant.ContextBudgetAtNp8",
       "source_construct": "ContextBudgetAtNp8",
       "source_span": {
-        "end": 47941,
-        "start": 47274
+        "end": 47948,
+        "start": 47281
       }
     },
     {
@@ -496,8 +496,8 @@
       "id": "invariant.DrafterIsDenseQwen3",
       "source_construct": "DrafterIsDenseQwen3",
       "source_span": {
-        "end": 48457,
-        "start": 48251
+        "end": 48464,
+        "start": 48258
       }
     },
     {
@@ -507,8 +507,8 @@
       "id": "invariant.DrafterTargetVocabIdentity",
       "source_construct": "DrafterTargetVocabIdentity",
       "source_span": {
-        "end": 48952,
-        "start": 48723
+        "end": 48959,
+        "start": 48730
       }
     },
     {
@@ -518,8 +518,8 @@
       "id": "invariant.MultimodalTurnsRoutedAroundDrafter",
       "source_construct": "MultimodalTurnsRoutedAroundDrafter",
       "source_span": {
-        "end": 50301,
-        "start": 49758
+        "end": 50308,
+        "start": 49765
       }
     },
     {
@@ -529,8 +529,8 @@
       "id": "invariant.SourceLayerCountMatchesDrafterTraining",
       "source_construct": "SourceLayerCountMatchesDrafterTraining",
       "source_span": {
-        "end": 50986,
-        "start": 50702
+        "end": 50993,
+        "start": 50709
       }
     },
     {
@@ -540,8 +540,8 @@
       "id": "invariant.TargetLayerIdsPlusOneAtRuntime",
       "source_construct": "TargetLayerIdsPlusOneAtRuntime",
       "source_span": {
-        "end": 51765,
-        "start": 51424
+        "end": 51772,
+        "start": 51431
       }
     },
     {
@@ -551,8 +551,8 @@
       "id": "invariant.NoTreeDraftingNoChainRollout",
       "source_construct": "NoTreeDraftingNoChainRollout",
       "source_span": {
-        "end": 52098,
-        "start": 51973
+        "end": 52105,
+        "start": 51980
       }
     }
   ],

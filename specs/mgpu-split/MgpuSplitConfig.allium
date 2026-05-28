@@ -3,7 +3,7 @@
 --
 -- Scope: the static invariants of the mgpu_split_config struct that
 -- Phase 46 Path B (PHASE46 §12.2 spec #1) extracts from llama_model
--- into a header-portable shared definition (src/ggml-mgpu-split.h).
+-- into a header-portable shared definition (ggml/include/ggml-mgpu-split.h).
 -- This spec is the data-structure spine of B.0-full — the other four
 -- B.0 specs (BuftSetupLoop.tla, CreateSplitBalance.tla,
 -- ClipCrossDeviceFlow.tla, CrossCodepathConsistency.allium) all lean

@@ -802,7 +802,7 @@ invariant KernelDeterminism {
     -- precondition on the implementation, enforced by code review and
     -- by the test-dflash-determinism-np-invariance and test-dflash-
     -- determinism-ne5 byte-identity tests. Static grep-style checks
-    -- (e.g., "no `atomicAdd<float>` in ggml-cuda/dflash-*.cu") may
+    -- (e.g., "no `atomicAdd<float>` in ggml-cuda/dflash/dflash-*.cu") may
     -- complement the test bindings.
 }
 

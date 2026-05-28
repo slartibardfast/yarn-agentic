@@ -8,8 +8,8 @@
 -- per_step_ssm checkpoint, not from the immediately-preceding token.
 --
 -- Why this spec exists: ik_llama.cpp's existing per_step_ssm
--- mechanism (src/llama.cpp:8013-8068, :8137-8146) saves the DeltaNet
--- state at every batch position and restores it at rejection. The
+-- mechanism (src/llama.cpp:1795, 2013-2402, 9112-9256) saves the
+-- DeltaNet state at every batch position and restores it at rejection. The
 -- machinery is correct for linear rejection rollback. Tree depth=2
 -- needs the same machinery to read at FORK points, not just rejection
 -- points. This spec names the contract the new branch_parent_step
