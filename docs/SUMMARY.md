@@ -11,7 +11,8 @@
 - [Code-complete: PHASE_CUDA_NATIVE_DISPATCH (C0-C14)](PHASE_CUDA_NATIVE_DISPATCH.md)
 - [Closed: PHASE_NP8_FLAKE — NP=8 single-slot LM determinism flake (governor-localized + RT mitigation deployed)](PHASE_NP8_FLAKE.md)
 - [Executed: PHASE_PERF_R3_NP1 — nsys-driven characterization post-RT-hardening](PHASE_PERF_R3_NP1.md)
-- [Open: PHASE_PERF_R3_FOLLOWUP — R1/R2 regression investigation + NP=2 production-scale validation](PHASE_PERF_R3_FOLLOWUP.md)
+- [Closed: PHASE_PERF_R3_FOLLOWUP — R1 -25.9% → -7.3% via interim narrow-it (deployed)](PHASE_PERF_R3_FOLLOWUP.md)
+- [Open: PHASE_R1_CLIP_RACE — localize + delete the R1 workaround](PHASE_R1_CLIP_RACE.md)
 ## Archive (closed sub-phases + superseded plans)
 
 - [Archive: PLAN_DETERMINISM_AUDIT](archive/np-determinism/PLAN_DETERMINISM_AUDIT.md)
@@ -132,10 +133,6 @@
 - [Phase 46: Multi-GPU CLIP via tensor-split](phases/80-multimodal/PHASE46-MULTIGPU-CLIP-TENSOR-SPLIT.md)
 
 ## Multi-GPU split formal specs (Phase 46 B.0)
-
-The five B.0-full specs that must PASS before any C++ touches Path B
-(per PHASE46 §12.2). Three TLA+ specs (run under TLC) and two
-Allium-style specs (run under Alloy Analyzer).
 
 - [Spec #1 — MgpuSplitConfig.allium (data-structure spine)](../specs/mgpu-split/MgpuSplitConfig.allium)
 - [Spec #2 — BuftSetupLoop.tla (buft-assignment loop)](../specs/mgpu-split/BuftSetupLoop.tla)
