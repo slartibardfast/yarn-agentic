@@ -40,3 +40,14 @@ data/cuda-native-dispatch/predesign/pd6_result.json
 data/perf-r3-np1/**/*.nsys-rep
 data/perf-r3-np1/**/*.sqlite
 data/perf-r3-np1/**/*.qdstrm
+
+# Profiling traces — global ignore. These are large binary outputs of
+# nvidia tools (nsys, ncu). Previously committed traces under
+# data/deltanet/ and data/ncu-singlewarp-*/ are kept as research
+# artifacts from closed phases; this pattern prevents new traces from
+# accidentally entering git. Use `git add -f` to override if a specific
+# trace must be committed.
+*.nsys-rep
+*.sqlite
+*.qdstrm
+*.ncu-rep
