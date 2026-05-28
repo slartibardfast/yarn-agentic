@@ -102,7 +102,7 @@
 -- subset. Mirrors the Stream entity in
 -- specs/kv-cache/n_stream_layer.allium; redeclared here as external
 -- so this spec's contracts are self-contained.
-external entity StreamSlot {
+entity StreamSlot {
     stream_id: Integer
     phase: StreamPhase
     has_pending_decode_token: Boolean
@@ -113,7 +113,7 @@ external entity StreamSlot {
 -- process_batch_tokens once. Mirrors the Tick entity in
 -- specs/scheduler/batch_composition.allium; redeclared external for
 -- self-containment.
-external entity Tick {
+entity Tick {
     index: Integer
 }
 
@@ -124,7 +124,7 @@ external entity Tick {
 -- packed into a single ne[3]-axis dimension; the per-stream ne[1]
 -- (token count) is uniform across active streams within this batch
 -- per UniformShapePerTick.
-external entity UnifiedBatch {
+entity UnifiedBatch {
     tick: Tick
     n_active_streams: Integer
     per_stream_token_count: Integer
@@ -137,7 +137,7 @@ external entity UnifiedBatch {
 -- batch back-reference plus the slice's stream_id together identify
 -- the ne[3] index assigned to this slice (per
 -- AdmissionOrderPreservesStreamId).
-external entity UnifiedBatchSlice {
+entity UnifiedBatchSlice {
     batch: UnifiedBatch
     stream_id: Integer
     token_count: Integer
@@ -151,7 +151,7 @@ external entity UnifiedBatchSlice {
 -- existing per-call llama_decode at
 -- ik_llama.cpp/examples/server/server-context.cpp:4723; Tier 3 fans
 -- out one call instead of looping over runs.
-external entity LlamaDecodeCall {
+entity LlamaDecodeCall {
     tick: Tick
     batch: UnifiedBatch
 }
@@ -161,7 +161,7 @@ external entity LlamaDecodeCall {
 -- ik_llama.cpp/ggml/src/ggml-cuda/fattn-per-slot-kv-singlewarp-sm75.cu:
 -- 361-363. Tier 3 binds Q->ne[3] = batch.n_active_streams; Q->ne[1] =
 -- batch.per_stream_token_count.
-external entity FAKernelInput {
+entity FAKernelInput {
     batch: UnifiedBatch
     q_ne_1: Integer
     q_ne_2: Integer
@@ -174,7 +174,7 @@ external entity FAKernelInput {
 -- input geometry. Modelled as external because the engine does not
 -- have a single concrete struct for this; it is the abstract notion
 -- of one ggml op invocation.
-external entity OpInvocation {
+entity OpInvocation {
     decode_call: LlamaDecodeCall
     op_kind: OpKind
     input_ne_1: Integer

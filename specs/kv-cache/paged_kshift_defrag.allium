@@ -56,7 +56,7 @@
 -- applied to positions within a block is uniform across the
 -- block, but may differ between blocks (e.g. blocks not
 -- spanning the rotated region get delta = 0).
-external entity KShiftPerBlock {
+entity KShiftPerBlock {
     layer: Integer
     block_id: Integer
     position_delta: Integer
@@ -68,7 +68,7 @@ external entity KShiftPerBlock {
 -- bytes from old_block_id's region to new_block_id's region.
 -- Composition with DefragMechanics::LogicalSequencePreserved
 -- (allocator side) and DefragPreservesLogicalContents (this spec).
-external entity DefragBlockMove {
+entity DefragBlockMove {
     layer: Integer
     old_block_id: Integer
     new_block_id: Integer
@@ -78,7 +78,7 @@ external entity DefragBlockMove {
 -- The inp_block_kshift tensor — per-block delta input
 -- consumed by the K-shift graph node. I32 [n_total_blocks]
 -- (one delta per block in the pool).
-external entity InpBlockKShift {
+entity InpBlockKShift {
     n_total_blocks: Integer
     deltas: List<Integer>
 }

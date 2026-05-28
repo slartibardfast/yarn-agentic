@@ -79,7 +79,7 @@
 -- REUSES rather than carrying its own. Lives in src/llama-context.h
 -- and is constructed by llama_init_from_gpt_params via
 -- examples/server/server-context.cpp:121-124.
-external entity TargetContext {
+entity TargetContext {
     vocab_size: Integer
     lm_head_dtype: TensorDtype
     n_seq_max: Integer              -- mirrors cparams.n_seq_max; production = 2
@@ -92,7 +92,7 @@ external entity TargetContext {
 -- standalone llama_model: it has no tokenizer and no embedding;
 -- token_embd / output are borrowed from the target. Lives at
 -- src/llama-dflash.cpp:225-310 (llama_dflash_drafter_load).
-external entity DflashSidecar {
+entity DflashSidecar {
     path: String
     n_layers: Integer
     block_size: Integer             -- BS; constrains draft length per cycle
@@ -114,7 +114,7 @@ external entity DflashSidecar {
 -- (llama_get_dflash_drafter returns the existing binding so the
 -- second and subsequent slots reuse it rather than reloading the
 -- GGUF).
-external entity SlotSpec {
+entity SlotSpec {
     slot_id: Integer                -- 0..n_seq_max-1
     seq_id: Integer                 -- = slot_id; passed at init
     impl_type: SpecImplType         -- = dflash for this spec
@@ -135,7 +135,7 @@ external entity SlotSpec {
 -- LOCAL [0..n_tokens). Each such view is handed to llama_decode,
 -- which resets output_ids and addresses logits in the view's local
 -- frame.
-external entity BatchView {
+entity BatchView {
     batch_offset: Integer           -- start index in the combined batch
     n_tokens: Integer
     run_seq_id: Integer             -- uniform across all rows
@@ -146,7 +146,7 @@ external entity BatchView {
 -- server-context.cpp:3305 etc.). Consumed by speculative_decoding_accept
 -- after the per-stream llama_decode of that slot's BatchView
 -- returns. Stored on server_slot.i_batch_dft.
-external entity SlotVerifyIndexList {
+entity SlotVerifyIndexList {
     slot_id: Integer
     global_indices: List<Integer>   -- recorded global-frame indices
 }

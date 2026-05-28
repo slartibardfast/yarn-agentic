@@ -55,7 +55,7 @@
 -- The block pool sizing at context construction. Derived from
 -- ctx-size, n_seq_max, optional CLI override, and a headroom
 -- count of extra blocks.
-external entity PoolSizing {
+entity PoolSizing {
     n_ctx: Integer
     n_seq_max: Integer
     block_size_tokens: Integer
@@ -66,7 +66,7 @@ external entity PoolSizing {
 
 -- One allocation attempt result, paired with the pool sizing
 -- in effect at the time.
-external entity SizedAllocResult {
+entity SizedAllocResult {
     pool: PoolSizing
     seq_id: Integer
     result_block_id: Integer
@@ -75,7 +75,7 @@ external entity SizedAllocResult {
 -- One HTTP request to the server that needed a slot/block.
 -- Captures the response status code and headers used in the
 -- exhaustion-UX invariant.
-external entity ServerAdmissionResult {
+entity ServerAdmissionResult {
     request_id: Integer
     pool_n_free_at_arrival: Integer
     n_idle_slots_at_arrival: Integer

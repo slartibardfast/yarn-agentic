@@ -59,7 +59,7 @@
 -- A single defrag operation scheduled for a given context. May
 -- span multiple ticks if `n_max_nodes` cap forces a partial
 -- pass per ggml_build_graph invocation.
-external entity DefragOp {
+entity DefragOp {
     context_id: Integer
     n_max_nodes: Integer
 }
@@ -69,7 +69,7 @@ external entity DefragOp {
 -- "to" earlier in the same stream's slice. Under T3.6.I.c2 the
 -- from/to indices are STREAM-LOCAL (in [0, kvps)) and the move
 -- is constrained to the same stream.
-external entity CellMove {
+entity CellMove {
     stream_id: Integer
     from_local_pos: Integer
     to_local_pos: Integer
@@ -78,7 +78,7 @@ external entity CellMove {
 
 -- One transformer layer's K tensor under the 4D layout, sliced
 -- to one stream. Memory range is [s * nb[3], (s+1) * nb[3]).
-external entity KSliceLayer {
+entity KSliceLayer {
     layer: Integer
     stream_id: Integer
     head_dim: Integer
@@ -91,7 +91,7 @@ external entity KSliceLayer {
 -- with 4D layout (asserts at src/llama-build-context.cpp:790
 -- and 3070); production uses --fa on which keeps v_trans = false
 -- and the defrag spec applies cleanly.
-external entity VSliceLayer {
+entity VSliceLayer {
     layer: Integer
     stream_id: Integer
     head_dim: Integer
@@ -232,7 +232,7 @@ contract DefragPreservesKVBytes {
 -- Cell metadata snapshot for the compaction property. Mirrors
 -- llama_kv_cell at src/llama-context.h:16-34. The `occupied`
 -- field is derived from seq_id_set.empty().
-external entity KCellMeta {
+entity KCellMeta {
     stream_id: Integer
     local_pos: Integer
     pos: Integer

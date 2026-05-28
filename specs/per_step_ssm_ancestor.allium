@@ -35,7 +35,7 @@
 -- length; populated during forward by saving s_l at each token
 -- position before the layer's update. Indexed by step (0 = first
 -- token in batch).
-external entity PerStepSsm {
+entity PerStepSsm {
     n_steps:    Integer
     state_dim:  Integer
 }
@@ -44,7 +44,7 @@ external entity PerStepSsm {
 -- which Phase 42 plumbs through the batch struct. -1 indicates no
 -- ancestor branching (use prev-step state); >= 0 indicates the step
 -- index whose state should be loaded as the input.
-external entity BatchToken {
+entity BatchToken {
     step_index:          Integer    -- 0..n_steps-1
     branch_parent_step:  Integer    -- -1 (root) or [0, step_index)
 }
@@ -101,7 +101,7 @@ contract DeltaNetStateRead {
 
 -- One row of DeltaNet state for one layer. Opaque to this spec; the
 -- only operations are read/write via per_step_ssm.
-external entity StateRow {
+entity StateRow {
     layer_idx: Integer
 }
 

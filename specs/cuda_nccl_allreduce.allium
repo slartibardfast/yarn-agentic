@@ -57,7 +57,7 @@
 -- One participating device's tensor in a cross-device reduce. Every
 -- device produces a Buffer of identical shape and dtype before the
 -- reduce; after the reduce, every device's Buffer holds the sum.
-external entity Buffer {
+entity Buffer {
     device:     Integer       -- 0..n_devices-1
     n_elements: Integer
     dtype:      ReduceDtype
@@ -66,7 +66,7 @@ external entity Buffer {
 -- One invocation of the cross-device reduce. Carries the participating
 -- device count and the per-device Buffers. The same shape applies
 -- before and after; the operation is in-place.
-external entity ReduceOp {
+entity ReduceOp {
     n_devices:  Integer       -- always >= 2; reduce on n=1 is a no-op
     op_kind:    ReduceKind    -- only sum is in scope
 }
@@ -74,7 +74,7 @@ external entity ReduceOp {
 -- The CUDA backend context for one participating device. Owns the
 -- per-device CUDA stream and (in the NCCL path) the NCCL
 -- communicator handle. One BackendContext per device per process.
-external entity BackendContext {
+entity BackendContext {
     device:        Integer
     has_nccl_comm: Boolean    -- true iff NCCL path is active
 }
@@ -82,7 +82,7 @@ external entity BackendContext {
 -- The NCCL communicator. Created once per process when n_devices > 1;
 -- destroyed at backend teardown. Process-wide handle; each device's
 -- BackendContext holds a reference into the same communicator group.
-external entity NcclCommunicator {
+entity NcclCommunicator {
     n_ranks:    Integer       -- equals n_devices
     initialised: Boolean
 }
@@ -90,7 +90,7 @@ external entity NcclCommunicator {
 -- The CUDA-graph capture region inside which a reduce may be invoked.
 -- ggml-cuda.cu:4487-4490 currently disables capture when GGML_OP_REDUCE
 -- is in the graph; the NCCL path is required to lift this gate.
-external entity CaptureRegion {
+entity CaptureRegion {
     contains_reduce: Boolean
     capture_succeeded: Boolean
 }

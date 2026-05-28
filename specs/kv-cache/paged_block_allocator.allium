@@ -59,7 +59,7 @@
 -- KV cells, each cell holding (K_row, V_row) bytes of size
 -- n_embd_k_gqa + n_embd_v_gqa under the current Q4_0 packing.
 -- Allocated once at context construction; never resized.
-external entity BlockPool {
+entity BlockPool {
     n_blocks: Integer
     block_size: Integer
     n_embd_k_gqa: Integer
@@ -70,14 +70,14 @@ external entity BlockPool {
 -- of physical block IDs owned by seq, in logical token order.
 -- block_table[seq][i] holds tokens in logical range
 -- [i * block_size, (i+1) * block_size).
-external entity BlockTable {
+entity BlockTable {
     seq_id: Integer
     blocks: List<Integer>
 }
 
 -- The LIFO free list. Holds block IDs not currently owned by
 -- any seq. At construction, free_list = [0, 1, ..., n_blocks-1].
-external entity FreeList {
+entity FreeList {
     n_free: Integer
     free_ids: List<Integer>
 }
@@ -85,7 +85,7 @@ external entity FreeList {
 -- One alloc_block operation. Returns either a fresh block_id
 -- popped from free_list, or OUT_OF_BLOCKS sentinel if the pool
 -- is exhausted.
-external entity AllocOp {
+entity AllocOp {
     seq_id: Integer
     requested_at_tick: Integer
     result_block_id: Integer
@@ -93,7 +93,7 @@ external entity AllocOp {
 
 -- One free_seq operation. Returns all blocks for seq to the
 -- free list. Called at slot release.
-external entity FreeOp {
+entity FreeOp {
     seq_id: Integer
     tick: Integer
     freed_block_ids: List<Integer>
@@ -102,14 +102,14 @@ external entity FreeOp {
 -- One defrag operation. Coalesces blocks across seqs to reduce
 -- fragmentation; rewrites block_table[seq] for every seq whose
 -- blocks were moved.
-external entity DefragOp {
+entity DefragOp {
     tick: Integer
     moves: List<Integer>
 }
 
 -- One block move within defrag. Tracks (old_block_id ->
 -- new_block_id) for a single physical block.
-external entity DefragMove {
+entity DefragMove {
     seq_id: Integer
     logical_pos_in_seq: Integer
     old_block_id: Integer

@@ -56,7 +56,7 @@
 -- the flat index maps to (stream s = i / kvps, local pos p =
 -- i % kvps). dtype is I32. Populator lives at
 -- ik_llama.cpp/src/llama.cpp:4356-4366.
-external entity KShiftInput {
+entity KShiftInput {
     n_kv: Integer
     deltas: List<Integer>
 }
@@ -65,7 +65,7 @@ external entity KShiftInput {
 -- layout. Logical shape [head_dim, n_head_kv, kvps, n_stream]
 -- with rope-friendly views per stream. n_stream-slice s spans
 -- byte range [s * nb[3], (s+1) * nb[3]).
-external entity KSlice {
+entity KSlice {
     layer: Integer
     stream_id: Integer
     head_dim: Integer
@@ -77,12 +77,12 @@ external entity KSlice {
 -- post-shift token position; `delta` is the rotation to apply
 -- this tick (zero if unchanged). The legacy llama_kv_cell
 -- struct lives in ik_llama.cpp/src/llama-context.h:16-34.
-external entity KCells {
+entity KCells {
     stream_id: Integer
     cells: List<KCell>
 }
 
-external entity KCell {
+entity KCell {
     cell_index: Integer
     pos: Integer
     delta: Integer

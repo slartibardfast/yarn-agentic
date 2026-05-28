@@ -56,7 +56,7 @@
 -- ============================================================
 
 -- One PSKV singlewarp kernel invocation.
-external entity FAReadOp {
+entity FAReadOp {
     tick: Integer
     layer: Integer
     n_seqs_in_batch: Integer
@@ -73,7 +73,7 @@ external entity FAReadOp {
 -- OpenQ-T5-H Path A; OpenQ-T5-H Path B mirrors
 -- inp_K_shift_per_stream's per-(device, stream) layout if
 -- graph-split needs it).
-external entity BlockTableTensor {
+entity BlockTableTensor {
     n_seqs: Integer
     max_blocks_per_seq: Integer
     data: List<Integer>
@@ -82,7 +82,7 @@ external entity BlockTableTensor {
 -- One K row fetch within the kernel's K-loop. At each k in
 -- [0, ne11_per_seq) the kernel computes K_base and loads
 -- head_dim half-floats (Q4_0 unpacked).
-external entity KRowFetch {
+entity KRowFetch {
     seq_id: Integer
     head_kv_id: Integer
     k_in_seq: Integer
@@ -93,7 +93,7 @@ external entity KRowFetch {
 -- The attention mask cell consumed by the kernel.
 -- Addressed at base + nb33 * seq + nb31 * row + k (T3.1
 -- foundation). Paging-neutral.
-external entity MaskCell {
+entity MaskCell {
     seq_id: Integer
     row_in_batch: Integer
     k_position: Integer

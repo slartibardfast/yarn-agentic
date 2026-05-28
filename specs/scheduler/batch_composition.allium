@@ -82,7 +82,7 @@
 -- command=load_prompt across Ticks until n_past_prompt reaches
 -- n_prompt_tokens, at which point ProcessingOnPrefillComplete in
 -- SlotLifecycle fires.
-external entity Slot {
+entity Slot {
     id: Integer
     state: SlotState
     command: SlotCommand
@@ -99,7 +99,7 @@ external entity Slot {
 -- by first admitting decode tokens from PROCESSING slots, then
 -- admitting prefill chunks from LOAD_PROMPT slots
 -- round-robin, both subject to a per-Tick token budget K.
-external entity Tick {
+entity Tick {
     index: Integer
 }
 
@@ -107,7 +107,7 @@ external entity Tick {
 -- prefill, pure-decode, or — under Tier 4 — a mix of decode
 -- tokens (one per active PROCESSING slot) and prefill chunks
 -- (from one or more LOAD_PROMPT slots).
-external entity Batch {
+entity Batch {
     tick: Tick
     n_tokens: Integer
 }
@@ -117,7 +117,7 @@ external entity Batch {
 -- IDLE+LOAD_PROMPT). is_decode is true when contributed by the
 -- decode phase (a slot in PROCESSING). Mutually exclusive
 -- per-token (PerTokenFlagExclusivity below).
-external entity BatchToken {
+entity BatchToken {
     batch: Batch
     slot: Slot
     is_prefill: Boolean

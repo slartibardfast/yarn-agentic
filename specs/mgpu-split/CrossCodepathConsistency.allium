@@ -232,3 +232,17 @@ invariant ClipNewObservableBehaviorIsAdditive {
     --   (c) the journal log lines from Step 1 / B.5.
     -- No third channel observable to the LM exists.
 }
+
+-- ============================================================
+-- Contracts — bind the entity formally for the spec checker
+-- ============================================================
+
+contract CheckPair {
+    invoke: (pair: CrossCodepathPair) -> Boolean
+
+    @invariant PairSatisfiesAllConsistencyInvariants
+        -- Returns true iff `pair` satisfies every invariant above.
+        -- Run conceptually at every LM / CLIP refactor checkpoint
+        -- to confirm the two consumers remain over the same
+        -- MgpuSplitConfig with the expected codepath separation.
+}

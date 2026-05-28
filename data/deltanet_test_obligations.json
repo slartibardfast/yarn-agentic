@@ -1,142 +1,135 @@
 {
-  "version": 3,
   "obligations": [
     {
-      "id": "enum-comparable.NPMode",
       "category": "enum_comparable",
       "description": "Verify fields typed with enum NPMode are comparable",
+      "id": "enum-comparable.NPMode",
       "source_construct": "NPMode",
       "source_span": {
-        "start": 2250,
-        "end": 2287
+        "end": 2287,
+        "start": 2250
       }
     },
     {
-      "id": "enum-comparable.LayerType",
       "category": "enum_comparable",
       "description": "Verify fields typed with enum LayerType are comparable",
+      "id": "enum-comparable.LayerType",
       "source_construct": "LayerType",
       "source_span": {
-        "start": 2288,
-        "end": 2346
+        "end": 2346,
+        "start": 2288
       }
     },
     {
-      "id": "enum-comparable.ResidualStoragePrecision",
       "category": "enum_comparable",
       "description": "Verify fields typed with enum ResidualStoragePrecision are comparable",
+      "id": "enum-comparable.ResidualStoragePrecision",
       "source_construct": "ResidualStoragePrecision",
       "source_span": {
-        "start": 2347,
-        "end": 2406
+        "end": 2406,
+        "start": 2347
       }
     },
     {
-      "id": "enum-comparable.KernelTemplate",
       "category": "enum_comparable",
       "description": "Verify fields typed with enum KernelTemplate are comparable",
+      "id": "enum-comparable.KernelTemplate",
       "source_construct": "KernelTemplate",
       "source_span": {
-        "start": 2407,
-        "end": 2546
+        "end": 2546,
+        "start": 2407
       }
     },
     {
-      "id": "enum-comparable.DriftLevel",
       "category": "enum_comparable",
       "description": "Verify fields typed with enum DriftLevel are comparable",
+      "id": "enum-comparable.DriftLevel",
       "source_construct": "DriftLevel",
       "source_span": {
-        "start": 2547,
-        "end": 2670
+        "end": 2670,
+        "start": 2547
       }
     },
     {
-      "id": "entity-fields.WmmaFAKernel",
       "category": "entity_fields",
       "description": "Verify all declared fields on WmmaFAKernel are present with correct types",
+      "detail": {
+        "fields": [
+          "template"
+        ]
+      },
+      "id": "entity-fields.WmmaFAKernel",
       "source_construct": "WmmaFAKernel",
       "source_span": {
-        "start": 2845,
-        "end": 3394
-      },
-      "detail": {
-        "fields": [
-          "template"
-        ]
+        "end": 3394,
+        "start": 2845
       }
     },
     {
-      "id": "entity-fields.MmqKernel",
       "category": "entity_fields",
       "description": "Verify all declared fields on MmqKernel are present with correct types",
+      "detail": {
+        "fields": [
+          "template"
+        ]
+      },
+      "id": "entity-fields.MmqKernel",
       "source_construct": "MmqKernel",
       "source_span": {
-        "start": 3396,
-        "end": 3744
-      },
-      "detail": {
-        "fields": [
-          "template"
-        ]
+        "end": 3744,
+        "start": 3396
       }
     },
     {
-      "id": "entity-fields.DeltaNetRecurrenceKernel",
       "category": "entity_fields",
       "description": "Verify all declared fields on DeltaNetRecurrenceKernel are present with correct types",
-      "source_construct": "DeltaNetRecurrenceKernel",
-      "source_span": {
-        "start": 3746,
-        "end": 4011
-      },
       "detail": {
         "fields": [
           "template"
         ]
+      },
+      "id": "entity-fields.DeltaNetRecurrenceKernel",
+      "source_construct": "DeltaNetRecurrenceKernel",
+      "source_span": {
+        "end": 4011,
+        "start": 3746
       }
     },
     {
-      "id": "entity-fields.PerLayerResidual",
       "category": "entity_fields",
       "description": "Verify all declared fields on PerLayerResidual are present with correct types",
-      "source_construct": "PerLayerResidual",
-      "source_span": {
-        "start": 4013,
-        "end": 4425
-      },
       "detail": {
         "fields": [
           "layer_type",
           "storage",
           "drift"
         ]
+      },
+      "id": "entity-fields.PerLayerResidual",
+      "source_construct": "PerLayerResidual",
+      "source_span": {
+        "end": 4425,
+        "start": 4013
       }
     },
     {
-      "id": "entity-fields.PerSlotKVCache",
       "category": "entity_fields",
       "description": "Verify all declared fields on PerSlotKVCache are present with correct types",
-      "source_construct": "PerSlotKVCache",
-      "source_span": {
-        "start": 4427,
-        "end": 4569
-      },
       "detail": {
         "fields": [
           "np"
         ]
+      },
+      "id": "entity-fields.PerSlotKVCache",
+      "source_construct": "PerSlotKVCache",
+      "source_span": {
+        "end": 4569,
+        "start": 4427
       }
     },
     {
-      "id": "entity-fields.HybridPipeline",
       "category": "entity_fields",
       "description": "Verify all declared fields on HybridPipeline are present with correct types",
-      "source_construct": "HybridPipeline",
-      "source_span": {
-        "start": 4571,
-        "end": 5218
-      },
       "detail": {
         "fields": [
           "fa_kernel",
@@ -145,292 +138,299 @@
           "residual",
           "kv_cache"
         ]
+      },
+      "id": "entity-fields.HybridPipeline",
+      "source_construct": "HybridPipeline",
+      "source_span": {
+        "end": 5218,
+        "start": 4571
       }
     },
     {
-      "id": "contract-signature.LayerForwardStep.invoke",
       "category": "contract_signature",
       "description": "Verify implementation satisfies contract LayerForwardStep.invoke",
+      "id": "contract-signature.LayerForwardStep.invoke",
       "source_construct": "LayerForwardStep.invoke",
       "source_span": {
-        "start": 5512,
-        "end": 5597
+        "end": 5597,
+        "start": 5512
       }
     },
     {
-      "id": "invariant.StorageBranchInvariant",
       "category": "invariant",
       "description": "Verify invariant StorageBranchInvariant holds after every state-changing rule that touches constrained entities",
-      "source_construct": "StorageBranchInvariant",
       "expression": "}",
+      "id": "invariant.StorageBranchInvariant",
+      "source_construct": "StorageBranchInvariant",
       "source_span": {
-        "start": 6212,
-        "end": 6683
+        "end": 6683,
+        "start": 6212
       }
     },
     {
-      "id": "invariant.RepDeterminismAtSameNP",
       "category": "invariant",
       "description": "Verify invariant RepDeterminismAtSameNP holds after every state-changing rule that touches constrained entities",
-      "source_construct": "RepDeterminismAtSameNP",
       "expression": "}",
+      "id": "invariant.RepDeterminismAtSameNP",
+      "source_construct": "RepDeterminismAtSameNP",
       "source_span": {
-        "start": 6685,
-        "end": 7037
+        "end": 7037,
+        "start": 6685
       }
     },
     {
-      "id": "invariant.DispatcherTemplateUniformity_FA",
       "category": "invariant",
       "description": "Verify invariant DispatcherTemplateUniformity_FA holds after every state-changing rule that touches constrained entities",
-      "source_construct": "DispatcherTemplateUniformity_FA",
       "expression": "}",
+      "id": "invariant.DispatcherTemplateUniformity_FA",
+      "source_construct": "DispatcherTemplateUniformity_FA",
       "source_span": {
-        "start": 7039,
-        "end": 7552
+        "end": 7552,
+        "start": 7039
       }
     },
     {
-      "id": "invariant.DispatcherTemplateUniformity_MMQ",
       "category": "invariant",
       "description": "Verify invariant DispatcherTemplateUniformity_MMQ holds after every state-changing rule that touches constrained entities",
-      "source_construct": "DispatcherTemplateUniformity_MMQ",
       "expression": "}",
+      "id": "invariant.DispatcherTemplateUniformity_MMQ",
+      "source_construct": "DispatcherTemplateUniformity_MMQ",
       "source_span": {
-        "start": 7554,
-        "end": 7970
+        "end": 7970,
+        "start": 7554
       }
     },
     {
-      "id": "invariant.DispatcherTemplateUniformity_DeltaNet",
       "category": "invariant",
       "description": "Verify invariant DispatcherTemplateUniformity_DeltaNet holds after every state-changing rule that touches constrained entities",
-      "source_construct": "DispatcherTemplateUniformity_DeltaNet",
       "expression": "}",
+      "id": "invariant.DispatcherTemplateUniformity_DeltaNet",
+      "source_construct": "DispatcherTemplateUniformity_DeltaNet",
       "source_span": {
-        "start": 7972,
-        "end": 8225
+        "end": 8225,
+        "start": 7972
       }
     },
     {
-      "id": "invariant.ProjectionGEMMSlotInvariance",
       "category": "invariant",
       "description": "Verify invariant ProjectionGEMMSlotInvariance holds after every state-changing rule that touches constrained entities",
-      "source_construct": "ProjectionGEMMSlotInvariance",
       "expression": "}",
+      "id": "invariant.ProjectionGEMMSlotInvariance",
+      "source_construct": "ProjectionGEMMSlotInvariance",
       "source_span": {
-        "start": 8227,
-        "end": 8753
+        "end": 8753,
+        "start": 8227
       }
     },
     {
-      "id": "invariant.DeltaNetSlotInvariance",
       "category": "invariant",
       "description": "Verify invariant DeltaNetSlotInvariance holds after every state-changing rule that touches constrained entities",
-      "source_construct": "DeltaNetSlotInvariance",
       "expression": "}",
+      "id": "invariant.DeltaNetSlotInvariance",
+      "source_construct": "DeltaNetSlotInvariance",
       "source_span": {
-        "start": 8755,
-        "end": 9307
+        "end": 9307,
+        "start": 8755
       }
     },
     {
-      "id": "invariant.KernelFPArithmeticBatchShapeSensitivity",
       "category": "invariant",
       "description": "Verify invariant KernelFPArithmeticBatchShapeSensitivity holds after every state-changing rule that touches constrained entities",
-      "source_construct": "KernelFPArithmeticBatchShapeSensitivity",
       "expression": "}",
+      "id": "invariant.KernelFPArithmeticBatchShapeSensitivity",
+      "source_construct": "KernelFPArithmeticBatchShapeSensitivity",
       "source_span": {
-        "start": 9309,
-        "end": 10688
+        "end": 10688,
+        "start": 9309
       }
     },
     {
-      "id": "invariant.WmmaFAShapeSensitiveAtSomeInputs",
       "category": "invariant",
       "description": "Verify invariant WmmaFAShapeSensitiveAtSomeInputs holds after every state-changing rule that touches constrained entities",
-      "source_construct": "WmmaFAShapeSensitiveAtSomeInputs",
       "expression": "}",
+      "id": "invariant.WmmaFAShapeSensitiveAtSomeInputs",
+      "source_construct": "WmmaFAShapeSensitiveAtSomeInputs",
       "source_span": {
-        "start": 10690,
-        "end": 11047
+        "end": 11047,
+        "start": 10690
       }
     },
     {
-      "id": "invariant.WmmaFAByteIdenticalAtOtherInputs",
       "category": "invariant",
       "description": "Verify invariant WmmaFAByteIdenticalAtOtherInputs holds after every state-changing rule that touches constrained entities",
-      "source_construct": "WmmaFAByteIdenticalAtOtherInputs",
       "expression": "}",
+      "id": "invariant.WmmaFAByteIdenticalAtOtherInputs",
+      "source_construct": "WmmaFAByteIdenticalAtOtherInputs",
       "source_span": {
-        "start": 11049,
-        "end": 11632
+        "end": 11632,
+        "start": 11049
       }
     },
     {
-      "id": "invariant.MmqShapeSensitiveViaAmplification",
       "category": "invariant",
       "description": "Verify invariant MmqShapeSensitiveViaAmplification holds after every state-changing rule that touches constrained entities",
-      "source_construct": "MmqShapeSensitiveViaAmplification",
       "expression": "}",
+      "id": "invariant.MmqShapeSensitiveViaAmplification",
+      "source_construct": "MmqShapeSensitiveViaAmplification",
       "source_span": {
-        "start": 11634,
-        "end": 12161
+        "end": 12161,
+        "start": 11634
       }
     },
     {
-      "id": "invariant.DriftCascadeAfterFirstDivergence",
       "category": "invariant",
       "description": "Verify invariant DriftCascadeAfterFirstDivergence holds after every state-changing rule that touches constrained entities",
-      "source_construct": "DriftCascadeAfterFirstDivergence",
       "expression": "}",
+      "id": "invariant.DriftCascadeAfterFirstDivergence",
+      "source_construct": "DriftCascadeAfterFirstDivergence",
       "source_span": {
-        "start": 12163,
-        "end": 12754
+        "end": 12754,
+        "start": 12163
       }
     },
     {
-      "id": "invariant.PerPromptDriftSiteVariability",
       "category": "invariant",
       "description": "Verify invariant PerPromptDriftSiteVariability holds after every state-changing rule that touches constrained entities",
-      "source_construct": "PerPromptDriftSiteVariability",
       "expression": "}",
+      "id": "invariant.PerPromptDriftSiteVariability",
+      "source_construct": "PerPromptDriftSiteVariability",
       "source_span": {
-        "start": 12756,
-        "end": 14108
+        "end": 14108,
+        "start": 12756
       }
     },
     {
-      "id": "invariant.TokenLevelGreedyArgmaxNP1_NP2_Identity",
       "category": "invariant",
       "description": "Verify invariant TokenLevelGreedyArgmaxNP1_NP2_Identity holds after every state-changing rule that touches constrained entities",
-      "source_construct": "TokenLevelGreedyArgmaxNP1_NP2_Identity",
       "expression": "}",
+      "id": "invariant.TokenLevelGreedyArgmaxNP1_NP2_Identity",
+      "source_construct": "TokenLevelGreedyArgmaxNP1_NP2_Identity",
       "source_span": {
-        "start": 14110,
-        "end": 14459
+        "end": 14459,
+        "start": 14110
       }
     },
     {
-      "id": "invariant.TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift",
       "category": "invariant",
       "description": "Verify invariant TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift holds after every state-changing rule that touches constrained entities",
-      "source_construct": "TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift",
       "expression": "}",
+      "id": "invariant.TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift",
+      "source_construct": "TokenLevelGreedyArgmaxNP4_NP8_DeterministicDrift",
       "source_span": {
-        "start": 14461,
-        "end": 15053
+        "end": 15053,
+        "start": 14461
       }
     },
     {
-      "id": "invariant.NotHeld_FA_BatchInvariance",
       "category": "invariant",
       "description": "Verify invariant NotHeld_FA_BatchInvariance holds after every state-changing rule that touches constrained entities",
-      "source_construct": "NotHeld_FA_BatchInvariance",
       "expression": "}",
+      "id": "invariant.NotHeld_FA_BatchInvariance",
+      "source_construct": "NotHeld_FA_BatchInvariance",
       "source_span": {
-        "start": 15279,
-        "end": 15490
+        "end": 15490,
+        "start": 15279
       }
     },
     {
-      "id": "invariant.NotHeld_MMQ_BatchInvariance",
       "category": "invariant",
       "description": "Verify invariant NotHeld_MMQ_BatchInvariance holds after every state-changing rule that touches constrained entities",
-      "source_construct": "NotHeld_MMQ_BatchInvariance",
       "expression": "}",
+      "id": "invariant.NotHeld_MMQ_BatchInvariance",
+      "source_construct": "NotHeld_MMQ_BatchInvariance",
       "source_span": {
-        "start": 15492,
-        "end": 15641
+        "end": 15641,
+        "start": 15492
       }
     },
     {
-      "id": "invariant.NotHeld_LayerLevelByteIdentity_NP2_NP4",
       "category": "invariant",
       "description": "Verify invariant NotHeld_LayerLevelByteIdentity_NP2_NP4 holds after every state-changing rule that touches constrained entities",
-      "source_construct": "NotHeld_LayerLevelByteIdentity_NP2_NP4",
       "expression": "}",
+      "id": "invariant.NotHeld_LayerLevelByteIdentity_NP2_NP4",
+      "source_construct": "NotHeld_LayerLevelByteIdentity_NP2_NP4",
       "source_span": {
-        "start": 15643,
-        "end": 15959
+        "end": 15959,
+        "start": 15643
       }
     },
     {
-      "id": "invariant.NotHeld_TokenLevelDeterminism_NP4",
       "category": "invariant",
       "description": "Verify invariant NotHeld_TokenLevelDeterminism_NP4 holds after every state-changing rule that touches constrained entities",
-      "source_construct": "NotHeld_TokenLevelDeterminism_NP4",
       "expression": "}",
+      "id": "invariant.NotHeld_TokenLevelDeterminism_NP4",
+      "source_construct": "NotHeld_TokenLevelDeterminism_NP4",
       "source_span": {
-        "start": 15961,
-        "end": 16261
+        "end": 16261,
+        "start": 15961
       }
     },
     {
-      "id": "invariant.Open_FA_SourceClass_OtherPrompts",
       "category": "invariant",
       "description": "Verify invariant Open_FA_SourceClass_OtherPrompts holds after every state-changing rule that touches constrained entities",
-      "source_construct": "Open_FA_SourceClass_OtherPrompts",
       "expression": "}",
+      "id": "invariant.Open_FA_SourceClass_OtherPrompts",
+      "source_construct": "Open_FA_SourceClass_OtherPrompts",
       "source_span": {
-        "start": 16482,
-        "end": 16980
+        "end": 16980,
+        "start": 16482
       }
     },
     {
-      "id": "invariant.Open_P0_EarlyFALayersByteIdentical",
       "category": "invariant",
       "description": "Verify invariant Open_P0_EarlyFALayersByteIdentical holds after every state-changing rule that touches constrained entities",
-      "source_construct": "Open_P0_EarlyFALayersByteIdentical",
       "expression": "}",
+      "id": "invariant.Open_P0_EarlyFALayersByteIdentical",
+      "source_construct": "Open_P0_EarlyFALayersByteIdentical",
       "source_span": {
-        "start": 16982,
-        "end": 17531
+        "end": 17531,
+        "start": 16982
       }
     },
     {
-      "id": "invariant.FA_NkvIsDominantBatchShapeEntryPoint",
       "category": "invariant",
       "description": "Verify invariant FA_NkvIsDominantBatchShapeEntryPoint holds after every state-changing rule that touches constrained entities",
-      "source_construct": "FA_NkvIsDominantBatchShapeEntryPoint",
       "expression": "}",
+      "id": "invariant.FA_NkvIsDominantBatchShapeEntryPoint",
+      "source_construct": "FA_NkvIsDominantBatchShapeEntryPoint",
       "source_span": {
-        "start": 17533,
-        "end": 19068
+        "end": 19068,
+        "start": 17533
       }
     },
     {
-      "id": "invariant.MMQ_FaithfulPropagation",
       "category": "invariant",
       "description": "Verify invariant MMQ_FaithfulPropagation holds after every state-changing rule that touches constrained entities",
-      "source_construct": "MMQ_FaithfulPropagation",
       "expression": "}",
+      "id": "invariant.MMQ_FaithfulPropagation",
+      "source_construct": "MMQ_FaithfulPropagation",
       "source_span": {
-        "start": 19070,
-        "end": 20054
+        "end": 20054,
+        "start": 19070
       }
     },
     {
-      "id": "invariant.Open_FA_InternalMechanism",
       "category": "invariant",
       "description": "Verify invariant Open_FA_InternalMechanism holds after every state-changing rule that touches constrained entities",
-      "source_construct": "Open_FA_InternalMechanism",
       "expression": "}",
+      "id": "invariant.Open_FA_InternalMechanism",
+      "source_construct": "Open_FA_InternalMechanism",
       "source_span": {
-        "start": 20056,
-        "end": 22828
+        "end": 22828,
+        "start": 20056
       }
     },
     {
-      "id": "invariant.Open_MMQ_InternalMechanism",
       "category": "invariant",
       "description": "Verify invariant Open_MMQ_InternalMechanism holds after every state-changing rule that touches constrained entities",
-      "source_construct": "Open_MMQ_InternalMechanism",
       "expression": "}",
+      "id": "invariant.Open_MMQ_InternalMechanism",
+      "source_construct": "Open_MMQ_InternalMechanism",
       "source_span": {
-        "start": 22830,
-        "end": 24467
+        "end": 24467,
+        "start": 22830
       }
     }
-  ]
+  ],
+  "version": 3
 }

@@ -49,7 +49,7 @@
 
 -- A participating compute device. For Phase 46 production, the set
 -- is {CUDA0, CUDA1} on the TU102 NV2-NVLink pair.
-external entity CudaDevice {
+entity CudaDevice {
     id: Integer
 }
 
@@ -61,28 +61,28 @@ external entity CudaDevice {
 --               llama_default_buffer_type_offload(model, device)
 --   "cpu"     — the CPU buffer type returned by
 --               llama_default_buffer_type_cpu(true)
-external entity BufferType {
+entity BufferType {
     kind: String     -- ∈ {"split", "offload", "cpu"}
     device_id: Integer    -- -1 if kind != "offload"
 }
 
 -- The per-layer buft assignment pair. Both slots may be set (under
 -- GRAPH/ATTN modes), or only the offload slot (under LAYER/NONE).
-external entity BuftPair {
+entity BuftPair {
     split: BufferType        -- may be the SENTINEL "nil" buft
     offload: BufferType
 }
 
 -- A weight tensor at the model-loader level. Identified by name;
 -- carries row count for the row-chunk allocation.
-external entity WeightTensor {
+entity WeightTensor {
     name: String
     n_rows: Integer
     layer_index: Integer    -- which transformer layer this belongs to
 }
 
 -- A per-row residency: which device owns row r of tensor t.
-external entity RowResidency {
+entity RowResidency {
     tensor_name: String
     row_index: Integer
     device_id: Integer
@@ -246,4 +246,18 @@ invariant ConsumerAgnostic {
     -- safe: both consumers (LM and CLIP) see identical structural
     -- guarantees. Cross-codepath consistency is asserted separately
     -- in CrossCodepathConsistency.allium.
+}
+
+-- ============================================================
+-- Contracts — bind the entity formally for the spec checker
+-- ============================================================
+
+contract ValidateConfig {
+    invoke: (cfg: MgpuSplitConfig) -> Boolean
+
+    @invariant AllStaticInvariantsHold
+        -- Returns true iff every invariant above holds against cfg.
+        -- A pure-predicate witness operation; the model loader runs
+        -- this implicitly after BuftSetupLoop.tla's loop exits and
+        -- before CreateSplitBalance.tla begins its walk.
 }

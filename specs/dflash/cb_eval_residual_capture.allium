@@ -82,7 +82,7 @@
 -- callback at fixed points if one is installed. Lives at
 -- ggml-backend.cpp:1173-1174 (callback_eval field) and is wired
 -- via ggml_backend_sched_set_eval_callback at line 2669.
-external entity SchedulerInstance {
+entity SchedulerInstance {
     has_eval_callback: Boolean
 }
 
@@ -93,7 +93,7 @@ external entity SchedulerInstance {
 -- ggml_backend_graph_compute_async call. The slow path (callback
 -- installed) iterates node-by-node and breaks into sub-graphs at
 -- every node where callback_eval returns true on ask=true.
-external entity GraphSplit {
+entity GraphSplit {
     n_nodes: Integer
     n_subgraph_invocations: Integer
 }
@@ -103,7 +103,7 @@ external entity GraphSplit {
 -- llama_cparams.dflash_extract_count + dflash_extract_layers[80]
 -- (src/llama-cparams.h, set via llama_set_dflash_extract_layers
 -- at src/llama.cpp:10051-10082).
-external entity ExtractConfig {
+entity ExtractConfig {
     layer_count: Integer            -- 0 disables; >0 selects layers
     layer_ids: List<Integer>        -- which il indices to capture
     enabled: Boolean                -- derived: layer_count > 0
@@ -119,7 +119,7 @@ external entity ExtractConfig {
 -- buffer pool. Compare build_qwen35.cpp:96-99
 -- (`embd_copy = ggml_dup(...); cb(..., "h_pre_norm", -1);
 -- ggml_set_output(embd_copy)`).
-external entity TapNode {
+entity TapNode {
     layer_index: Integer
     name: String                    -- e.g. "l_out_tap-<il>"
     is_output: Boolean              -- ggml_set_output was called
@@ -133,7 +133,7 @@ external entity TapNode {
 -- cb_eval callback during graph execution). Owned by
 -- llama_decoder.dflash_extract_buf[layer_slot][seq_id] (see
 -- include/llama-decoder.h:164-174).
-external entity ResidualBuffer {
+entity ResidualBuffer {
     layer_slot: Integer
     seq_id: Integer
     n_rows: Integer
@@ -145,7 +145,7 @@ external entity ResidualBuffer {
 -- observational-equivalence property is asserted: target forward
 -- output must be the same with or without extract armed,
 -- pointwise on every produced logit row.
-external entity DecodeCall {
+entity DecodeCall {
     n_tokens: Integer
     extract_armed: Boolean
     out_logits_hash: String         -- abstract digest of post-llama_decode logits

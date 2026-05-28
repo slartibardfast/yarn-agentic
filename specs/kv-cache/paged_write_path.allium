@@ -51,7 +51,7 @@
 -- One KV WRITE operation in the paged path: a single
 -- ggml_set_rows call writing n_tokens * n_head_kv K/V rows into
 -- the flat block pool, with target rows indexed by inp_kv_idxs.
-external entity KVWriteOp {
+entity KVWriteOp {
     tick: Integer
     n_tokens: Integer
     n_head_kv: Integer
@@ -64,7 +64,7 @@ external entity KVWriteOp {
 -- n_stream = 1: a single ggml_cpy call into a 2D K-cache view
 -- offset by the current head position. Marked SUPERSEDED — kept
 -- in spec only to anchor the byte-equivalence contract.
-external entity KVWriteOpLegacy {
+entity KVWriteOpLegacy {
     tick: Integer
     n_tokens: Integer
     n_head_kv: Integer
@@ -74,7 +74,7 @@ external entity KVWriteOpLegacy {
 -- The inp_kv_idxs tensor. I32 row indices into the flat K/V
 -- pool, length n_tokens * n_head_kv. inp_kv_idxs[t * n_head_kv + h]
 -- = the destination row for token t's head h.
-external entity InpKvIdxs {
+entity InpKvIdxs {
     n_tokens: Integer
     n_head_kv: Integer
     indices: List<Integer>
@@ -83,7 +83,7 @@ external entity InpKvIdxs {
 -- One token's batch metadata as consumed by the WRITE indexer.
 -- seq(t), block_idx(t) = pos_in_seq(t) / block_size_tokens,
 -- token_in_block(t) = pos_in_seq(t) % block_size_tokens.
-external entity BatchTokenMeta {
+entity BatchTokenMeta {
     token_idx_in_batch: Integer
     seq_id: Integer
     pos_in_seq: Integer

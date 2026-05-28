@@ -65,7 +65,7 @@
 -- ik_llama.cpp/ggml/src/ggml-cuda.cu around the graph-cache
 -- region. The cache is per-`ggml_backend_cuda_context`; each
 -- device has its own.
-external entity CudaGraphCache {
+entity CudaGraphCache {
     device_id: Integer
     capacity: Integer
     n_entries: Integer
@@ -73,7 +73,7 @@ external entity CudaGraphCache {
 
 -- One cached cuda graph. Bound to a captured ggml_cgraph and
 -- the topology hash that produced it.
-external entity CudaGraphEntry {
+entity CudaGraphEntry {
     device_id: Integer
     topology_hash: Integer
     captured_at_step: Integer
@@ -85,7 +85,7 @@ external entity CudaGraphEntry {
 -- n_seq_in_batch, n_tok_per_seq (= n_tokens / n_seq_in_batch),
 -- and the n_kv bucket (rounded for hash stability across
 -- adjacent cell counts).
-external entity MultiSeqBatchShape {
+entity MultiSeqBatchShape {
     n_tokens: Integer
     n_seq_in_batch: Integer
     n_tok_per_seq: Integer
@@ -99,7 +99,7 @@ external entity MultiSeqBatchShape {
 -- in the FA path. Each call re-uploads the index buffer; the
 -- shape (n_tokens * n_head_kv) is in the topology hash, the
 -- VALUES are not.
-external entity KvIdxsInput {
+entity KvIdxsInput {
     n_tokens: Integer
     n_head_kv: Integer
     is_set_input_marked: Boolean
@@ -259,7 +259,7 @@ contract BugCAbsenceUnderReuse {
 
 -- The lookup result from CudaGraphCache. Carries the miss
 -- reason on MISS and the captured graph reference on HIT.
-external entity CacheLookupResult {
+entity CacheLookupResult {
     is_hit: Boolean
     miss_reason: ReuseMissReason
 }

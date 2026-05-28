@@ -74,7 +74,7 @@
 -- become 4D with the per-stream axis as ne[3]; before N1 they
 -- remain 3D. The invariants below describe the post-N1 target
 -- shape; `allium weed` against pre-N1 source surfaces the gap.
-external entity KVTensor {
+entity KVTensor {
     layer: Integer
     head_dim: Integer
     kv_size_per_stream: Integer
@@ -89,7 +89,7 @@ external entity KVTensor {
 -- stream_id and then by cell-local position within that
 -- stream's slice. Fields mirror llama_kv_cell in
 -- ik_llama.cpp/src/llama-context.h:16-34.
-external entity KVCell {
+entity KVCell {
     stream_id: Integer
     cell_index: Integer
     pos: Integer
@@ -102,7 +102,7 @@ external entity KVCell {
 -- pointer; both land in struct llama_kv_cache in
 -- ik_llama.cpp/src/llama-context.h:53-63 (foundation already
 -- present from submodule commit 969d156e).
-external entity Stream {
+entity Stream {
     stream_id: Integer
     stream_size: Integer
     v_head: Integer
@@ -111,7 +111,7 @@ external entity Stream {
 -- The find_slot return value. The upstream llama.cpp pattern
 -- is a struct named slot_info; ik_llama.cpp keeps the existing
 -- free-function shape but the contract returned here matches.
-external entity SlotInfo {
+entity SlotInfo {
     stream_id: Integer
     cell_indices: List<Integer>
 }
@@ -119,7 +119,7 @@ external entity SlotInfo {
 -- The whole KV cache for one llama_context. Owns n_layer pairs
 -- of KVTensor (K_l, V_l), the per-stream v_cells, and
 -- v_heads.
-external entity KVCache {
+entity KVCache {
     n_layer: Integer
     n_stream: Integer
     kv_size: Integer
@@ -130,7 +130,7 @@ external entity KVCache {
 -- ik_llama.cpp/src/llama.cpp around lines 4290-4470. Per-token
 -- per-cell visibility is computed from cells[i].has_seq_id(seq)
 -- AND cells[i].pos <= pos.
-external entity KQMask {
+entity KQMask {
     n_kv: Integer
     n_tokens: Integer
 }
@@ -329,7 +329,7 @@ contract BugCAbsenceByConstruction {
 -- One unit the server dispatches via a single llama_decode (or
 -- equivalent sub-graph under Option B). Carries the tokens of
 -- one stream for one tick.
-external entity DispatchUnit {
+entity DispatchUnit {
     stream_id: Integer
     n_tokens: Integer
 }
@@ -338,7 +338,7 @@ external entity DispatchUnit {
 -- specs/scheduler/batch_composition.allium. Listed here so the
 -- PerStreamDispatch contract signature is self-contained; the
 -- entity's full definition lives in that spec.
-external entity BatchToken {
+entity BatchToken {
     seq_id: Integer
     is_prefill: Boolean
     is_decode: Boolean

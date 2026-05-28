@@ -95,7 +95,7 @@
 -- ik_llama.cpp/src/llama-context.h around the default_decoder struct
 -- (the persist buffer + pending_chain_residual_step both live as
 -- direct fields of that struct).
-external entity FusedDecoderState {
+entity FusedDecoderState {
     -- The maximum number of chain steps the persist buffer can hold.
     -- Hard-coded to 8 at the allocation site
     -- (ik_llama.cpp/src/llama.cpp:6089 — "for (int _k = 0; _k < 8;
@@ -126,7 +126,7 @@ external entity FusedDecoderState {
 -- At HEAD the buffer dimensionality is one-tensor-per-step with NO
 -- stream axis. The post-fix contract MTPChainResidualPerStream below
 -- describes the target shape with the additional n_stream axis.
-external entity ChainResidualPersistBuffer {
+entity ChainResidualPersistBuffer {
     -- Equal to FusedDecoderState.persist_capacity_steps. Modelled as
     -- a separate entity field so the per-stream extension target can
     -- reference the buffer's dimensionality independently of the
@@ -151,7 +151,7 @@ external entity ChainResidualPersistBuffer {
 -- branch). The per-slot field exists at HEAD; what is MISSING at
 -- HEAD is its propagation to the persist buffer at multi-slot
 -- batched dispatch (the multi-slot branch SKIPS it).
-external entity SlotChainResidualState {
+entity SlotChainResidualState {
     slot_id: Integer
     seq_id: Integer
 
@@ -176,7 +176,7 @@ external entity SlotChainResidualState {
 -- specs/scheduler/batch_composition.allium and
 -- specs/dispatch/unified_stream_dispatch.allium; redeclared external
 -- for self-containment.
-external entity Tick {
+entity Tick {
     index: Integer
     n_active_mtp_slots: Integer
 }
@@ -184,7 +184,7 @@ external entity Tick {
 -- One stream as observed by the n_stream-aware KV layout. Mirrors
 -- Stream in specs/kv-cache/n_stream_layer.allium; redeclared
 -- external so this spec's contracts are self-contained.
-external entity Stream {
+entity Stream {
     stream_id: Integer
 }
 

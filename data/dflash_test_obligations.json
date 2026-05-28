@@ -1,30 +1,23 @@
 {
-  "version": 3,
   "obligations": [
     {
-      "id": "entity-fields.Tensor",
       "category": "entity_fields",
       "description": "Verify all declared fields on Tensor are present with correct types",
-      "source_construct": "Tensor",
-      "source_span": {
-        "start": 3968,
-        "end": 4002
-      },
       "detail": {
         "fields": [
           "name"
         ]
+      },
+      "id": "entity-fields.Tensor",
+      "source_construct": "Tensor",
+      "source_span": {
+        "end": 4002,
+        "start": 3968
       }
     },
     {
-      "id": "entity-fields.TargetModel",
       "category": "entity_fields",
       "description": "Verify all declared fields on TargetModel are present with correct types",
-      "source_construct": "TargetModel",
-      "source_span": {
-        "start": 4330,
-        "end": 4714
-      },
       "detail": {
         "fields": [
           "n_layers",
@@ -35,17 +28,17 @@
           "embedding",
           "lm_head"
         ]
+      },
+      "id": "entity-fields.TargetModel",
+      "source_construct": "TargetModel",
+      "source_span": {
+        "end": 4714,
+        "start": 4330
       }
     },
     {
-      "id": "entity-fields.DraftModel",
       "category": "entity_fields",
       "description": "Verify all declared fields on DraftModel are present with correct types",
-      "source_construct": "DraftModel",
-      "source_span": {
-        "start": 5307,
-        "end": 5802
-      },
       "detail": {
         "fields": [
           "n_layers",
@@ -55,34 +48,34 @@
           "n_param",
           "layer_types"
         ]
+      },
+      "id": "entity-fields.DraftModel",
+      "source_construct": "DraftModel",
+      "source_span": {
+        "end": 5802,
+        "start": 5307
       }
     },
     {
-      "id": "entity-fields.DraftBlock",
       "category": "entity_fields",
       "description": "Verify all declared fields on DraftBlock are present with correct types",
-      "source_construct": "DraftBlock",
-      "source_span": {
-        "start": 6023,
-        "end": 6243
-      },
       "detail": {
         "fields": [
           "block_size",
           "tokens",
           "anchor_pos"
         ]
+      },
+      "id": "entity-fields.DraftBlock",
+      "source_construct": "DraftBlock",
+      "source_span": {
+        "end": 6243,
+        "start": 6023
       }
     },
     {
-      "id": "entity-fields.HiddenFeatures",
       "category": "entity_fields",
       "description": "Verify all declared fields on HiddenFeatures are present with correct types",
-      "source_construct": "HiddenFeatures",
-      "source_span": {
-        "start": 6550,
-        "end": 6882
-      },
       "detail": {
         "fields": [
           "n_source_layers",
@@ -90,33 +83,33 @@
           "hidden_size",
           "n_positions"
         ]
+      },
+      "id": "entity-fields.HiddenFeatures",
+      "source_construct": "HiddenFeatures",
+      "source_span": {
+        "end": 6882,
+        "start": 6550
       }
     },
     {
-      "id": "entity-fields.InjectedKV",
       "category": "entity_fields",
       "description": "Verify all declared fields on InjectedKV are present with correct types",
-      "source_construct": "InjectedKV",
-      "source_span": {
-        "start": 7186,
-        "end": 7361
-      },
       "detail": {
         "fields": [
           "per_draft_layer",
           "anchor_pos"
         ]
+      },
+      "id": "entity-fields.InjectedKV",
+      "source_construct": "InjectedKV",
+      "source_span": {
+        "end": 7361,
+        "start": 7186
       }
     },
     {
-      "id": "entity-fields.KVPair",
       "category": "entity_fields",
       "description": "Verify all declared fields on KVPair are present with correct types",
-      "source_construct": "KVPair",
-      "source_span": {
-        "start": 7596,
-        "end": 7761
-      },
       "detail": {
         "fields": [
           "k_dim_per_head",
@@ -124,66 +117,66 @@
           "n_kv_heads",
           "n_positions"
         ]
+      },
+      "id": "entity-fields.KVPair",
+      "source_construct": "KVPair",
+      "source_span": {
+        "end": 7761,
+        "start": 7596
       }
     },
     {
-      "id": "entity-fields.AnchorToken",
       "category": "entity_fields",
       "description": "Verify all declared fields on AnchorToken are present with correct types",
-      "source_construct": "AnchorToken",
-      "source_span": {
-        "start": 7885,
-        "end": 8011
-      },
       "detail": {
         "fields": [
           "token_id",
           "pos"
         ]
+      },
+      "id": "entity-fields.AnchorToken",
+      "source_construct": "AnchorToken",
+      "source_span": {
+        "end": 8011,
+        "start": 7885
       }
     },
     {
-      "id": "entity-fields.TargetKVCache",
       "category": "entity_fields",
       "description": "Verify all declared fields on TargetKVCache are present with correct types",
-      "source_construct": "TargetKVCache",
-      "source_span": {
-        "start": 8164,
-        "end": 8311
-      },
       "detail": {
         "fields": [
           "seq_id",
           "n_cells"
         ]
+      },
+      "id": "entity-fields.TargetKVCache",
+      "source_construct": "TargetKVCache",
+      "source_span": {
+        "end": 8311,
+        "start": 8164
       }
     },
     {
-      "id": "entity-fields.DraftKVCache",
       "category": "entity_fields",
       "description": "Verify all declared fields on DraftKVCache are present with correct types",
-      "source_construct": "DraftKVCache",
-      "source_span": {
-        "start": 8557,
-        "end": 8759
-      },
       "detail": {
         "fields": [
           "seq_id",
           "n_cells_self",
           "n_cells_injected"
         ]
+      },
+      "id": "entity-fields.DraftKVCache",
+      "source_construct": "DraftKVCache",
+      "source_span": {
+        "end": 8759,
+        "start": 8557
       }
     },
     {
-      "id": "entity-fields.VerifyBatch",
       "category": "entity_fields",
       "description": "Verify all declared fields on VerifyBatch are present with correct types",
-      "source_construct": "VerifyBatch",
-      "source_span": {
-        "start": 9037,
-        "end": 9241
-      },
       "detail": {
         "fields": [
           "seq_id",
@@ -191,370 +184,377 @@
           "block_size",
           "tokens"
         ]
+      },
+      "id": "entity-fields.VerifyBatch",
+      "source_construct": "VerifyBatch",
+      "source_span": {
+        "end": 9241,
+        "start": 9037
       }
     },
     {
-      "id": "entity-fields.VerifyLogits",
       "category": "entity_fields",
       "description": "Verify all declared fields on VerifyLogits are present with correct types",
-      "source_construct": "VerifyLogits",
-      "source_span": {
-        "start": 9310,
-        "end": 9427
-      },
       "detail": {
         "fields": [
           "n_positions",
           "n_vocab"
         ]
+      },
+      "id": "entity-fields.VerifyLogits",
+      "source_construct": "VerifyLogits",
+      "source_span": {
+        "end": 9427,
+        "start": 9310
       }
     },
     {
-      "id": "entity-fields.AcceptDecision",
       "category": "entity_fields",
       "description": "Verify all declared fields on AcceptDecision are present with correct types",
-      "source_construct": "AcceptDecision",
-      "source_span": {
-        "start": 9763,
-        "end": 9934
-      },
       "detail": {
         "fields": [
           "n_accepted",
           "bonus_token",
           "bonus_pos"
         ]
+      },
+      "id": "entity-fields.AcceptDecision",
+      "source_construct": "AcceptDecision",
+      "source_span": {
+        "end": 9934,
+        "start": 9763
       }
     },
     {
-      "id": "enum-comparable.SamplerMode",
       "category": "enum_comparable",
       "description": "Verify fields typed with enum SamplerMode are comparable",
+      "id": "enum-comparable.SamplerMode",
       "source_construct": "SamplerMode",
       "source_span": {
-        "start": 10307,
-        "end": 10350
+        "end": 10350,
+        "start": 10307
       }
     },
     {
-      "id": "enum-comparable.AcceptMode",
       "category": "enum_comparable",
       "description": "Verify fields typed with enum AcceptMode are comparable",
+      "id": "enum-comparable.AcceptMode",
       "source_construct": "AcceptMode",
       "source_span": {
-        "start": 10609,
-        "end": 10657
+        "end": 10657,
+        "start": 10609
       }
     },
     {
-      "id": "enum-comparable.DenoiseSchedule",
       "category": "enum_comparable",
       "description": "Verify fields typed with enum DenoiseSchedule are comparable",
+      "id": "enum-comparable.DenoiseSchedule",
       "source_construct": "DenoiseSchedule",
       "source_span": {
-        "start": 10929,
-        "end": 10978
+        "end": 10978,
+        "start": 10929
       }
     },
     {
-      "id": "enum-comparable.FeatureSource",
       "category": "enum_comparable",
       "description": "Verify fields typed with enum FeatureSource are comparable",
+      "id": "enum-comparable.FeatureSource",
       "source_construct": "FeatureSource",
       "source_span": {
-        "start": 11348,
-        "end": 11412
+        "end": 11412,
+        "start": 11348
       }
     },
     {
-      "id": "enum-comparable.DrafterLayerType",
       "category": "enum_comparable",
       "description": "Verify fields typed with enum DrafterLayerType are comparable",
+      "id": "enum-comparable.DrafterLayerType",
       "source_construct": "DrafterLayerType",
       "source_span": {
-        "start": 11594,
-        "end": 11654
+        "end": 11654,
+        "start": 11594
       }
     },
     {
-      "id": "contract-signature.ExtractFeatures.invoke",
       "category": "contract_signature",
       "description": "Verify implementation satisfies contract ExtractFeatures.invoke",
+      "id": "contract-signature.ExtractFeatures.invoke",
       "source_construct": "ExtractFeatures.invoke",
       "source_span": {
-        "start": 12074,
-        "end": 12165
+        "end": 12165,
+        "start": 12074
       }
     },
     {
-      "id": "contract-signature.ProjectAndFuse.invoke",
       "category": "contract_signature",
       "description": "Verify implementation satisfies contract ProjectAndFuse.invoke",
+      "id": "contract-signature.ProjectAndFuse.invoke",
       "source_construct": "ProjectAndFuse.invoke",
       "source_span": {
-        "start": 13407,
-        "end": 13474
+        "end": 13474,
+        "start": 13407
       }
     },
     {
-      "id": "contract-signature.DraftBlockEmit.invoke",
       "category": "contract_signature",
       "description": "Verify implementation satisfies contract DraftBlockEmit.invoke",
+      "id": "contract-signature.DraftBlockEmit.invoke",
       "source_construct": "DraftBlockEmit.invoke",
       "source_span": {
-        "start": 18790,
-        "end": 19001
+        "end": 19001,
+        "start": 18790
       }
     },
     {
-      "id": "contract-signature.TargetVerifyBlock.invoke",
       "category": "contract_signature",
       "description": "Verify implementation satisfies contract TargetVerifyBlock.invoke",
+      "id": "contract-signature.TargetVerifyBlock.invoke",
       "source_construct": "TargetVerifyBlock.invoke",
       "source_span": {
-        "start": 24726,
-        "end": 24848
+        "end": 24848,
+        "start": 24726
       }
     },
     {
-      "id": "contract-signature.AcceptPrefixDecision.invoke",
       "category": "contract_signature",
       "description": "Verify implementation satisfies contract AcceptPrefixDecision.invoke",
+      "id": "contract-signature.AcceptPrefixDecision.invoke",
       "source_construct": "AcceptPrefixDecision.invoke",
       "source_span": {
-        "start": 28784,
-        "end": 28930
+        "end": 28930,
+        "start": 28784
       }
     },
     {
-      "id": "contract-signature.AdvanceState.invoke",
       "category": "contract_signature",
       "description": "Verify implementation satisfies contract AdvanceState.invoke",
+      "id": "contract-signature.AdvanceState.invoke",
       "source_construct": "AdvanceState.invoke",
       "source_span": {
-        "start": 31939,
-        "end": 32096
+        "end": 32096,
+        "start": 31939
       }
     },
     {
-      "id": "invariant.SharedEmbedAndLMHead",
       "category": "invariant",
       "description": "Verify invariant SharedEmbedAndLMHead holds after every state-changing rule that touches constrained entities",
-      "source_construct": "SharedEmbedAndLMHead",
       "expression": "}",
+      "id": "invariant.SharedEmbedAndLMHead",
+      "source_construct": "SharedEmbedAndLMHead",
       "source_span": {
-        "start": 34393,
-        "end": 34684
+        "end": 34684,
+        "start": 34393
       }
     },
     {
-      "id": "invariant.FeatureSourceFixedPerDeployment",
       "category": "invariant",
       "description": "Verify invariant FeatureSourceFixedPerDeployment holds after every state-changing rule that touches constrained entities",
-      "source_construct": "FeatureSourceFixedPerDeployment",
       "expression": "}",
+      "id": "invariant.FeatureSourceFixedPerDeployment",
+      "source_construct": "FeatureSourceFixedPerDeployment",
       "source_span": {
-        "start": 34872,
-        "end": 35027
+        "end": 35027,
+        "start": 34872
       }
     },
     {
-      "id": "invariant.BlockSizeFixedAtContextStart",
       "category": "invariant",
       "description": "Verify invariant BlockSizeFixedAtContextStart holds after every state-changing rule that touches constrained entities",
-      "source_construct": "BlockSizeFixedAtContextStart",
       "expression": "}",
+      "id": "invariant.BlockSizeFixedAtContextStart",
+      "source_construct": "BlockSizeFixedAtContextStart",
       "source_span": {
-        "start": 35378,
-        "end": 35943
+        "end": 35943,
+        "start": 35378
       }
     },
     {
-      "id": "invariant.PerDeploymentDeterminism",
       "category": "invariant",
       "description": "Verify invariant PerDeploymentDeterminism holds after every state-changing rule that touches constrained entities",
-      "source_construct": "PerDeploymentDeterminism",
       "expression": "}",
+      "id": "invariant.PerDeploymentDeterminism",
+      "source_construct": "PerDeploymentDeterminism",
       "source_span": {
-        "start": 36373,
-        "end": 36709
+        "end": 36709,
+        "start": 36373
       }
     },
     {
-      "id": "invariant.KernelDeterminism",
       "category": "invariant",
       "description": "Verify invariant KernelDeterminism holds after every state-changing rule that touches constrained entities",
-      "source_construct": "KernelDeterminism",
       "expression": "}",
+      "id": "invariant.KernelDeterminism",
+      "source_construct": "KernelDeterminism",
       "source_span": {
-        "start": 37125,
-        "end": 39131
+        "end": 39131,
+        "start": 37125
       }
     },
     {
-      "id": "invariant.SpeculativeCycleAtomicity",
       "category": "invariant",
       "description": "Verify invariant SpeculativeCycleAtomicity holds after every state-changing rule that touches constrained entities",
-      "source_construct": "SpeculativeCycleAtomicity",
       "expression": "}",
+      "id": "invariant.SpeculativeCycleAtomicity",
+      "source_construct": "SpeculativeCycleAtomicity",
       "source_span": {
-        "start": 39458,
-        "end": 39676
+        "end": 39676,
+        "start": 39458
       }
     },
     {
-      "id": "invariant.SyncBeforeStepAdvance",
       "category": "invariant",
       "description": "Verify invariant SyncBeforeStepAdvance holds after every state-changing rule that touches constrained entities",
-      "source_construct": "SyncBeforeStepAdvance",
       "expression": "}",
+      "id": "invariant.SyncBeforeStepAdvance",
+      "source_construct": "SyncBeforeStepAdvance",
       "source_span": {
-        "start": 40079,
-        "end": 40456
+        "end": 40456,
+        "start": 40079
       }
     },
     {
-      "id": "invariant.NoCrossSlotRegionOverlap",
       "category": "invariant",
       "description": "Verify invariant NoCrossSlotRegionOverlap holds after every state-changing rule that touches constrained entities",
-      "source_construct": "NoCrossSlotRegionOverlap",
       "expression": "}",
+      "id": "invariant.NoCrossSlotRegionOverlap",
+      "source_construct": "NoCrossSlotRegionOverlap",
       "source_span": {
-        "start": 41044,
-        "end": 41902
+        "end": 41902,
+        "start": 41044
       }
     },
     {
-      "id": "invariant.DraftKVViaInjectionNotCrossAttention",
       "category": "invariant",
       "description": "Verify invariant DraftKVViaInjectionNotCrossAttention holds after every state-changing rule that touches constrained entities",
-      "source_construct": "DraftKVViaInjectionNotCrossAttention",
       "expression": "}",
+      "id": "invariant.DraftKVViaInjectionNotCrossAttention",
+      "source_construct": "DraftKVViaInjectionNotCrossAttention",
       "source_span": {
-        "start": 42302,
-        "end": 43287
+        "end": 43287,
+        "start": 42302
       }
     },
     {
-      "id": "invariant.PerSlotDraftKVCache",
       "category": "invariant",
       "description": "Verify invariant PerSlotDraftKVCache holds after every state-changing rule that touches constrained entities",
-      "source_construct": "PerSlotDraftKVCache",
       "expression": "}",
+      "id": "invariant.PerSlotDraftKVCache",
+      "source_construct": "PerSlotDraftKVCache",
       "source_span": {
-        "start": 43497,
-        "end": 44138
+        "end": 44138,
+        "start": 43497
       }
     },
     {
-      "id": "invariant.HybridTargetRecurrentStateTracking",
       "category": "invariant",
       "description": "Verify invariant HybridTargetRecurrentStateTracking holds after every state-changing rule that touches constrained entities",
-      "source_construct": "HybridTargetRecurrentStateTracking",
       "expression": "}",
+      "id": "invariant.HybridTargetRecurrentStateTracking",
+      "source_construct": "HybridTargetRecurrentStateTracking",
       "source_span": {
-        "start": 44886,
-        "end": 45948
+        "end": 45948,
+        "start": 44886
       }
     },
     {
-      "id": "invariant.DPAttentionNotSupported",
       "category": "invariant",
       "description": "Verify invariant DPAttentionNotSupported holds after every state-changing rule that touches constrained entities",
-      "source_construct": "DPAttentionNotSupported",
       "expression": "}",
+      "id": "invariant.DPAttentionNotSupported",
+      "source_construct": "DPAttentionNotSupported",
       "source_span": {
-        "start": 46160,
-        "end": 46570
+        "end": 46570,
+        "start": 46160
       }
     },
     {
-      "id": "invariant.PipelineParallelismRequiresPpSizeEq1",
       "category": "invariant",
       "description": "Verify invariant PipelineParallelismRequiresPpSizeEq1 holds after every state-changing rule that touches constrained entities",
-      "source_construct": "PipelineParallelismRequiresPpSizeEq1",
       "expression": "}",
+      "id": "invariant.PipelineParallelismRequiresPpSizeEq1",
+      "source_construct": "PipelineParallelismRequiresPpSizeEq1",
       "source_span": {
-        "start": 46572,
-        "end": 46961
+        "end": 46961,
+        "start": 46572
       }
     },
     {
-      "id": "invariant.ContextBudgetAtNp8",
       "category": "invariant",
       "description": "Verify invariant ContextBudgetAtNp8 holds after every state-changing rule that touches constrained entities",
-      "source_construct": "ContextBudgetAtNp8",
       "expression": "}",
+      "id": "invariant.ContextBudgetAtNp8",
+      "source_construct": "ContextBudgetAtNp8",
       "source_span": {
-        "start": 47274,
-        "end": 47941
+        "end": 47941,
+        "start": 47274
       }
     },
     {
-      "id": "invariant.DrafterIsDenseQwen3",
       "category": "invariant",
       "description": "Verify invariant DrafterIsDenseQwen3 holds after every state-changing rule that touches constrained entities",
-      "source_construct": "DrafterIsDenseQwen3",
       "expression": "}",
+      "id": "invariant.DrafterIsDenseQwen3",
+      "source_construct": "DrafterIsDenseQwen3",
       "source_span": {
-        "start": 48251,
-        "end": 48457
+        "end": 48457,
+        "start": 48251
       }
     },
     {
-      "id": "invariant.DrafterTargetVocabIdentity",
       "category": "invariant",
       "description": "Verify invariant DrafterTargetVocabIdentity holds after every state-changing rule that touches constrained entities",
-      "source_construct": "DrafterTargetVocabIdentity",
       "expression": "}",
+      "id": "invariant.DrafterTargetVocabIdentity",
+      "source_construct": "DrafterTargetVocabIdentity",
       "source_span": {
-        "start": 48723,
-        "end": 48952
+        "end": 48952,
+        "start": 48723
       }
     },
     {
-      "id": "invariant.MultimodalTurnsRoutedAroundDrafter",
       "category": "invariant",
       "description": "Verify invariant MultimodalTurnsRoutedAroundDrafter holds after every state-changing rule that touches constrained entities",
-      "source_construct": "MultimodalTurnsRoutedAroundDrafter",
       "expression": "}",
+      "id": "invariant.MultimodalTurnsRoutedAroundDrafter",
+      "source_construct": "MultimodalTurnsRoutedAroundDrafter",
       "source_span": {
-        "start": 49758,
-        "end": 50301
+        "end": 50301,
+        "start": 49758
       }
     },
     {
-      "id": "invariant.SourceLayerCountMatchesDrafterTraining",
       "category": "invariant",
       "description": "Verify invariant SourceLayerCountMatchesDrafterTraining holds after every state-changing rule that touches constrained entities",
-      "source_construct": "SourceLayerCountMatchesDrafterTraining",
       "expression": "}",
+      "id": "invariant.SourceLayerCountMatchesDrafterTraining",
+      "source_construct": "SourceLayerCountMatchesDrafterTraining",
       "source_span": {
-        "start": 50702,
-        "end": 50986
+        "end": 50986,
+        "start": 50702
       }
     },
     {
-      "id": "invariant.TargetLayerIdsPlusOneAtRuntime",
       "category": "invariant",
       "description": "Verify invariant TargetLayerIdsPlusOneAtRuntime holds after every state-changing rule that touches constrained entities",
-      "source_construct": "TargetLayerIdsPlusOneAtRuntime",
       "expression": "}",
+      "id": "invariant.TargetLayerIdsPlusOneAtRuntime",
+      "source_construct": "TargetLayerIdsPlusOneAtRuntime",
       "source_span": {
-        "start": 51424,
-        "end": 51765
+        "end": 51765,
+        "start": 51424
       }
     },
     {
-      "id": "invariant.NoTreeDraftingNoChainRollout",
       "category": "invariant",
       "description": "Verify invariant NoTreeDraftingNoChainRollout holds after every state-changing rule that touches constrained entities",
-      "source_construct": "NoTreeDraftingNoChainRollout",
       "expression": "}",
+      "id": "invariant.NoTreeDraftingNoChainRollout",
+      "source_construct": "NoTreeDraftingNoChainRollout",
       "source_span": {
-        "start": 51973,
-        "end": 52098
+        "end": 52098,
+        "start": 51973
       }
     }
-  ]
+  ],
+  "version": 3
 }

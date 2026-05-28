@@ -84,7 +84,7 @@
 -- topology hash (std::unordered_map<uint64_t,
 -- std::unique_ptr<ggml_cuda_graph>>). Field declared in
 -- ik_llama.cpp/ggml/src/ggml-cuda/common.cuh:888.
-external entity CudaContext {
+entity CudaContext {
     device: Integer
     use_cuda_graph: Boolean
     cache_size: Integer                    -- mirrors ctx.cuda_graphs.size()
@@ -93,7 +93,7 @@ external entity CudaContext {
 -- One ggml_cgraph submitted to ggml_backend_cuda_graph_compute. The
 -- per-call shape and node sequence the backend must either
 -- capture-fresh, patch, or reuse-as-is.
-external entity CgraphInput {
+entity CgraphInput {
     n_nodes: Integer
     topology_hash: Integer                 -- ggml_cuda_graph_get_topology_key(cgraph)
     shape_hash: Integer                    -- ggml_cuda_graph_get_shape_key(cgraph)
@@ -103,7 +103,7 @@ external entity CgraphInput {
 -- cudaGraphExec_t and the per-node properties used to decide
 -- whether the next call requires update. Mirrors struct
 -- ggml_cuda_graph in ik_llama.cpp/ggml/src/ggml-cuda/graph.cuh:20-49.
-external entity GraphCacheEntry {
+entity GraphCacheEntry {
     topology_key: Integer                  -- cache map key
     shape_key: Integer                     -- last instantiated shape
     has_captured_graph: Boolean            -- ggml_cuda_graph.graph != nullptr
@@ -118,7 +118,7 @@ external entity GraphCacheEntry {
 -- whole executable to be patched (cudaGraphExecUpdate) or fully
 -- reinstantiated. Mirrors struct ggml_graph_node_properties in
 -- ik_llama.cpp/ggml/src/ggml-cuda/graph.cuh:9-18.
-external entity NodeProperties {
+entity NodeProperties {
     entry: GraphCacheEntry
     node_index: Integer
     node_op: GgmlOp
@@ -132,7 +132,7 @@ external entity NodeProperties {
 -- the backend compares against NodeProperties on the matching
 -- GraphCacheEntry. Modelled as an external entity so the
 -- invariants can quantify over both sides of the comparison.
-external entity CgraphNode {
+entity CgraphNode {
     cgraph: CgraphInput
     node_index: Integer
     op: GgmlOp

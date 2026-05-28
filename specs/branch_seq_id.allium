@@ -33,20 +33,20 @@
 -- The qnext-state slot buffer. Sized to qnext_state_slots after the
 -- Phase 41 n_seq_max bump. seq_ids in [0, qnext_state_slots) are
 -- legal; seq_ids outside this range trip GGML_ASSERT.
-external entity SlotBuffer {
+entity SlotBuffer {
     qnext_state_slots: Integer
     n_parallel:        Integer    -- the original max-concurrent slots
 }
 
 -- The runtime configuration influencing branch allocation.
-external entity TreeConfig {
+entity TreeConfig {
     tree_k:        Integer    -- 1 (linear) or 2 (tree)
     n_parallel:    Integer
 }
 
 -- A branch-allocation request: which slot is fanning out, which
 -- branch index within that slot's K candidates.
-external entity BranchRequest {
+entity BranchRequest {
     slot_id:    Integer    -- in [0, n_parallel)
     branch_idx: Integer    -- 0..tree_k - 1; idx 0 reuses slot.seq_id_main
 }

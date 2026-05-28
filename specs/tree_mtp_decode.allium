@@ -31,7 +31,7 @@
 
 -- The slot whose decoding cycle is being tracked. One slot per
 -- concurrent client; tree fan-out happens within one slot.
-external entity Slot {
+entity Slot {
     id:              Integer
     pos_next:        Integer    -- next position to write
     seq_id_main:     Integer    -- the slot's primary seq_id
@@ -42,7 +42,7 @@ external entity Slot {
 -- One candidate path through the tree. At depth=1, K candidates are
 -- siblings of the root. At depth=2, K^2 candidates are grandchildren
 -- of the root, ordered breadth-first.
-external entity TreeCandidate {
+entity TreeCandidate {
     branch_idx:        Integer    -- 0..K^depth-1, BFS order
     parent_branch_idx: Integer    -- -1 for root, else ancestor index
     depth:             Integer    -- 0..tree_depth
@@ -52,7 +52,7 @@ external entity TreeCandidate {
 -- The accept output for one cycle. winning_branch_idx selects which
 -- candidate path was committed; -1 means no draft accepted (only the
 -- root verify token committed).
-external entity AcceptResult {
+entity AcceptResult {
     winning_branch_idx:  Integer    -- -1 if no draft accepted
     accepted_path_len:   Integer    -- 0..tree_depth+1
     next_sampled_token:  Integer    -- always committed (the bonus)
