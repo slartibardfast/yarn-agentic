@@ -90,15 +90,21 @@ start_server() {
     env \
         LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH=${LLAMA_FATTN_SHAPE_INVARIANT_DISPATCH-0} \
         CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+    # EXTRA_ARGS env hook (added 2026-05-27 for PHASE_PERF_R3 testing).
+    # Allows tests to pass through arbitrary llama-server flags (e.g.
+    # --mlockall --rt-prio 50 --cpu-mask 0xF0) without modifying this
+    # harness for each variant. THREAD_COUNT env var lets tests override
+    # --threads (default 16 matches PD4 baseline harness).
     "$BIN" -m "$GGUF" \
         --device "$_DEVICE" $_SPLIT_FLAGS \
         -ngl 999 -fa on \
         --ctx-size "$total_ctx" --parallel "$np" \
-        --threads 16 --batch-size "${BATCH_SIZE:-2048}" --ubatch-size "${UBATCH_SIZE:-512}" \
+        --threads ${THREAD_COUNT:-16} --batch-size "${BATCH_SIZE:-2048}" --ubatch-size "${UBATCH_SIZE:-512}" \
         --cache-type-k "$_CACHE_K_TYPE" --cache-type-v "$_CACHE_V_TYPE" \
         $_HADAMARD_FLAG \
         --no-context-shift \
         --ctx-checkpoints ${CTX_CHECKPOINTS:-3} \
+        ${EXTRA_ARGS:-} \
         --port "$PORT" --host 127.0.0.1 \
         > "$RUN_DIR/server-np$np.log" 2>&1 &
     SRV=$!

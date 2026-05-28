@@ -11,8 +11,25 @@ deadlock-reproducer test against the 2026-05-05/06 hang signature.
 **Window:** 8 hours, production stopped. Tests run against build-tree
 binary on alternate ports; production restored at window close.
 
-**State:** PD pack — expanded for 8h window, no runs yet. Awaits
-maintenance-window go.
+**State:** **EXECUTED + CLOSED** 2026-05-28 00:45Z. Report: `data/perf-r3-np1/REPORT.md`.
+
+## Headline findings (full detail in REPORT.md)
+
+1. **No regression vs PD4 baseline** — A1 18.21 t/s vs PD4 17.9 (+1.7%).
+   The live 8.2 t/s during agentic deep-context is workload-shape.
+2. **Workload-shape decay is steep** — TG peaks at ~3k prompt depth (15.1 t/s),
+   then collapses to 7.5 (12k) and 2.5 (49k).
+3. **RT chain is worth +24% under realistic load** — F1 with RT vs F2 with
+   `--threads 16` no-RT: 15.78 vs 12.74 t/s at 4k prompt.
+4. **`--ubatch-size 256` ships free +4.7% TG** — G2a vs G0 baseline.
+5. **🎯 NP=2 deadlock no longer reachable** — three Phase I reproducer reps
+   including the highest-pressure variant (both slots concurrent 16k prefill)
+   completed cleanly. NVIDIA driver moved 580.x → 595.71.05 since
+   2026-05-05/06; CUDA bumped to 13.2. The combination unlocks NP=2 as a
+   viable deployment subject to soak validation.
+6. **NCCL is genuinely active at 14.8% GPU time** — old MEMORY note about
+   "disabled by typo" is stale; libnccl.so.2 is linked, `GGML_NCCL:BOOL=ON`,
+   trace shows 98k AllReduce calls. Tuning target, not a bug.
 
 **Relation to prior phases:**
 
