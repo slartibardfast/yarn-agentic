@@ -281,30 +281,48 @@ If R1/R2 don't close enough, then:
 Phases 1+2 are independent of 3+4. Could run in parallel if appetite for
 two simultaneous servers exists (different ports, alternate by phase).
 
-## Status (2026-05-28)
+## Status (2026-05-28) — CLOSED
 
-- **Phase 1 — DONE (R2 closed as misframed).** Fine-grained sweep at
-  ctx=262144 NP=1 ubatch=256 + RT chain shows smooth concave-down decay
-  from 16.53 t/s @ n_pp=2221 to 9.25 t/s @ n_pp=8851. Per-step slope
-  decreases monotonically — no cliff. Phase E's "peak then drop" was
-  sparse-sampling artifact. Calibration prediction held (published Q4_0
-  cliffs are at 32K+, not 3K-12K). See
-  `data/perf-r3-followup/phase1-r2-sweep/FINDINGS.md`.
+- **Phase 1 — DONE (R2 closed as misframed).** Smooth concave-down decay,
+  no cliff. See `data/perf-r3-followup/phase1-r2-sweep/FINDINGS.md`.
 - **Phase 2 — SKIPPED.** No R2 cliff to diff.
-- **Phase 3 — DONE.** R1 sweep clean measurement at 4 ctx points × 3
-  reps: TG 19.34 t/s @ ctx=8k → 14.34 t/s @ ctx=256k = **-25.9% tax**
-  (Phase E's earlier -37% was harness-config-noise; -25.9% is the load-
-  bearing number). Shape monotonic with slope growing in log(ctx) —
-  consistent with FA dequant scratch shape.
-  **T5.9 sub-test misfired: design error.** `--cache-ram` and
-  `--ctx-checkpoints` are host-side context-checkpoint cache knobs, NOT
-  the T5.9 GPU paged-KV layout toggle. T5.9 is baked into the build;
-  unflag-able. A true T5.9 A/B needs a pre-T5.9 build (out of scope).
-  Findings: `data/perf-r3-followup/phase3-r1-sweep/FINDINGS.md`.
-- **Phase 4** — nsys diff at ctx=8k vs ctx=256k. Now the load-bearing
-  next step; awaiting user authorization before running (disk-heavy
-  traces, ~30-35 min wall).
-- **Phase 5** — gated on Phase 4.
+- **Phase 3 — DONE.** R1 clean measurement: -25.9% TG at ctx=8k → 256k.
+  T5.9 sub-test misfired (design error documented). See
+  `data/perf-r3-followup/phase3-r1-sweep/FINDINGS.md`.
+- **Phase 4 — DONE.** nsys diff localized R1 to host-side per-step
+  bookkeeping (not kernel-tunable). See
+  `data/perf-r3-followup/phase4-r1-nsys-diff/FINDINGS.md`.
+- **Phase 4b — DONE.** Per-function CPU sampling identified the
+  load-bearing cost center: `ggml_backend_sched_reset` → libc memset
+  zeroing all gallocr activation buffers, ~6.7% of per-step wall at
+  ctx=256k. This is the PHASE 46 B.5e fix firing on every LM decode
+  step. See `data/perf-r3-followup/phase4b-superset-nsys/`.
+- **R1 fix — LANDED in submodule (local-only commit `44f81ad1`).** Added
+  `ggml_backend_sched_set_zero_on_reset(sched, bool)` opt-out. LM
+  decoder opts out at init; CLIP keeps default true.
+- **R1 measured impact:** **-25.9% → -7.3% R1 tax** at ctx=256k. **+30.8%
+  absolute TG at ctx=256k** (14.34 → 18.79 t/s). Across the sweep:
+
+  | ctx | pre-fix TG | post-fix TG | Δ vs ctx=8k (pre→post) |
+  |---:|---:|---:|---:|
+  | 8k   | 19.34 | **20.28** | baseline |
+  | 32k  | 18.68 | **20.24** | -3.4% → **-0.2%** |
+  | 128k | 16.50 | **19.67** | -14.6% → **-3.0%** |
+  | 256k | 14.34 | **18.79** | -25.9% → **-7.3%** |
+
+- **CLIP determinism:** B.7 perf gate PASS at median 10392 ms (Phase 46
+  baseline 14440 ms, 28% faster — CLIP encodes also benefit because the
+  sched's clear cost was scaled to the LM-sized graph). CLIP sha256
+  split 8/10 vs 2/10 across 10 encodes is the same bimodality the
+  B.5e fix was already producing; the narrow-it preserves CLIP behavior.
+- **Phase 5 (NP=2 ctx=524k production-scale reproducer) — DEFERRED.** R1
+  recovery of 17.6 percentage points is bigger than the NP=2 throughput
+  ceiling we were chasing, so the original R3 question becomes less
+  urgent. Re-evaluate before scheduling Phase 5.
+- **Open work: [`PHASE_R1_CLIP_RACE`](PHASE_R1_CLIP_RACE.md)** — properly
+  localize the CLIP cross-encode race so the buffer-clear can be deleted
+  entirely (both CLIP and LM). The interim narrow-it is correct for now;
+  the PHASE_R1_CLIP_RACE work removes the workaround.
 
 ## Acceptance — phase closes when
 
@@ -319,7 +337,15 @@ two simultaneous servers exists (different ports, alternate by phase).
       → **sub-test misfired (design error documented in FINDINGS.md);
       the flags probed don't toggle T5.9. Unanswered without a pre-T5.9
       build A/B.**
-- [ ] Phase 4 kernel diff identifies the cost center for R1
+- [x] Phase 4 kernel diff identifies the cost center for R1
+      → **kernel diff ruled out kernel-tunable causes (Δ<0.5% across
+      all 36 kernels). Phase 4b CPU sampling localized to
+      ggml_backend_sched_reset → buffer-clear, the PHASE 46 B.5e fix
+      firing per LM decode step.**
+- [x] R1 disposition recorded on ship candidates per finding:
+      → **R1 fixable: interim narrow-it landed (submodule 44f81ad1
+      local-only). -25.9% → -7.3% R1 tax, +30.8% absolute TG at
+      ctx=256k. Proper kernel fix scoped as PHASE_R1_CLIP_RACE.**
 - [ ] Decisions recorded on ship candidates per finding:
       - R1 fixable → open successor phase to ship the fix
       - R1 inherent → document, close
