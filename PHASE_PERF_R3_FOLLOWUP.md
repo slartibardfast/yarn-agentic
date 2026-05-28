@@ -54,6 +54,71 @@ R2 over NP=2 validation, because:
 A user restart of the service via `sudo systemctl start llama-server.service`
 boots the known-good production-baseline config. **No NP=2 risk.**
 
+## Published-curve calibration (2026-05-28 web review)
+
+Anchoring R1/R2 expectations against the public literature before running
+experiments — so that "surprising" and "expected" are pre-declared:
+
+### R1 (ctx-allocation tax) — architecturally expected; the question is T5.9's payback
+
+- The unified KV pre-allocates `n_ctx × n_seq_max` per layer regardless of
+  usage (ggml-org Discussion #21961). Pre-paged dispatch is known to pay
+  this tax in full.
+- FA kernels in llama.cpp lazily reserve a dequantized f16 scratch buffer
+  at full ctx size (TurboQuant Discussion #20969). Q4_0 + ctx=256k → an
+  FA dequant scratch ~16× larger than at ctx=8k, hit on every step even
+  with a 200t prompt.
+- **Magnitude band:** 37% from 16× more allocated KV is within the
+  expected range for the pre-paged dispatch shape. The R1 finding is
+  not anomalous in size.
+- **What is testable:** ik_llama's T5.9 paged-KV is *supposed* to
+  eliminate the allocation tax for sparse usage. Phase 3 must measure
+  whether T5.9 is actually paying back. If our gap is identical with
+  vs. without `--cache-ram` + `--ctx-checkpoints`, T5.9 is a no-op for
+  short-prompt workloads — that's the load-bearing finding.
+
+### R2 (3k→12k cliff) — position is anomalous; magnitude is in range
+
+Reference benchmark (Nemotron-3-Nano-30B-A3B, 128K ctx, Q4_0 vs F16, from
+TurboQuant Discussion #20969):
+
+| Depth | F16 t/s | Q4_0 t/s | Delta |
+|---|---|---|---|
+| ~6K  | 44.7 | 45.0 | +0.7% |
+| ~24K | 44.6 | 39.3 | -11.9% |
+| ~110K| 38.0 | 24.0 | -36.8% |
+
+- Published Q4_0 dequant-overhead curve is **smooth and monotonic**, not
+  cliff-shaped. Material degradation starts above 24K.
+- Our cliff is at **3K→12K** — well below the published threshold. That
+  position is not explained by standard Q4_0 dequant overhead.
+- Our config has **RHT/Hadamard pre-quant**
+  (`--k-cache-hadamard --v-cache-hadamard`), a custom transform layer the
+  upstream Q4_0 benches do not have. Leading hypothesis: a Hadamard-path
+  kernel selection or block-count threshold fires somewhere in the 3K-8K
+  range.
+- Flash-Decoding (PyTorch / Stanford CRFM, 2023) shows that long-context
+  cliffs are usually artifacts of not having split-K decoding at that
+  depth. ik_llama's GRAPH-mode FA may inherit the same limitation, but
+  the published cliff position is at 32K+, not 3K-8K.
+- **Verdict:** R2 cliff position is genuinely worth a kernel-level diff.
+  Phase 2 should specifically scan for Hadamard transform kernels in
+  addition to FA / cuBLAS.
+
+### What the calibration changes
+
+- **Don't be surprised by R1 magnitude.** -37% from 16× wider KV is in
+  the expected band. The phase deliverable is "did T5.9 close it for
+  sparse usage", not "why so big."
+- **Be surprised by R2 cliff position.** Below 24K is not the published
+  shape — there is a real engine-specific cost center to find.
+- **Phase 1's "smooth decay" decision branch is now legitimate.** If the
+  3K→12K sweep curve is smooth, it matches the published Q4_0 shape and
+  R2 closes as misframed. That outcome is now an expected case, not a
+  failure of the phase.
+
+Sources captured in MEMORY.md / `data/perf-r3-followup/REPORT.md`.
+
 ## Investigation plan
 
 ### Phase 1 — R2: localize the 3k→12k TG inflection (cheap, no risk)
@@ -85,9 +150,17 @@ If Phase 1 finds the inflection at depth N:
 2. nsys trace at prompt depth N+500 (below the cliff) — slow TG side.
 3. Diff `cuda_gpu_kern_sum` — identify which kernel(s) regressed.
 
-**Decision tree:**
+**Decision tree (in priority order — Hadamard first per calibration):**
+- **Hadamard transform kernel cost growing disproportionately** → our
+  config has `--k-cache-hadamard --v-cache-hadamard`; upstream Q4_0
+  benches do not. A kernel selection or block-count threshold in the
+  RHT path firing between 3K-8K would land here and is the calibration's
+  leading hypothesis. Localize in `ggml-cuda/hadamard*.cu` or wherever
+  the RHT path lives in the fork.
 - FA kernel change → kernel-level fix (likely a tile-size or warp-count
-  choice that's wrong for large KV). Lever in successor phase.
+  choice that's wrong for large KV). Lever in successor phase. Note:
+  published FA-decode cliffs are at 32K+, not 3K-8K, so this is a
+  secondary hypothesis.
 - cuBLAS algo change → cuBLAS algo pin or workspace tuning.
 - New kernel appearing → indicates ggml dispatched to a different code
   path. Localize via source review.
@@ -97,22 +170,54 @@ If Phase 1 finds the inflection at depth N:
 ### Phase 3 — R1: ctx-size allocation tax decomposition (medium cost)
 
 Hypothesis: allocating ctx=256k vs ctx=8k pays a per-step cost that scales
-with the pool size, NOT with actual KV usage.
+with the pool size, NOT with actual KV usage. The pre-paged dispatch
+shape's allocation tax is architecturally expected (Discussion #21961,
+TurboQuant FA dequant-scratch finding). The actionable question is
+whether T5.9 paged-KV is paying it back for sparse usage.
 
-**Method:**
+**Method — primary sweep (shape of the tax):**
 
 1. Start identical servers at `--ctx-size ∈ {8192, 32768, 131072, 262144}`,
    `--parallel 1`, `--ubatch-size 256`, full RT chain.
 2. Run identical 200t prompt + N_PREDICT=128 bench on each, 3 reps.
 3. Plot TG vs allocated ctx-size at the same workload.
 
-**Expected outcomes:**
+**Expected outcomes (shape):**
 - Linear decline → tax is proportional to pool size; suggests something
   scans the whole pool per step.
 - Step-function → there are kernel thresholds at specific ctx values
   (e.g. 64k = block-count crossing).
 - Flat with small ctx, drop only at large ctx → cache-spill (allocated
   pool no longer fits in L2/HBM working set).
+
+**Method — T5.9 paged-KV effectiveness sub-test (~12 min):**
+
+The above sweep measures the *current* shape; this sub-test measures
+*how much T5.9 is buying us*. At the two endpoints of the sweep
+(ctx=8192 and ctx=262144), run a second config with the paged-allocator
+backing disabled or minimal:
+
+1. ctx=8192 + `--cache-ram 0 --ctx-checkpoints 0` vs production
+   `--cache-ram 40960 --ctx-checkpoints 64` → expected near-equal
+   (small pool, T5.9 has nothing to page).
+2. ctx=262144 + `--cache-ram 0 --ctx-checkpoints 0` vs production
+   settings → the discriminator. If TG is the same in both, T5.9 is
+   not active in our profile for sparse usage. If TG with checkpoints
+   is materially higher than without, T5.9 is paying back the
+   allocation tax and the size of the win quantifies the recovery.
+
+3 reps each at both ctx points = 12 requests, ~6 min server-up time
+plus warmup overhead. Adds ~12 min to Phase 3.
+
+**Decision branch on T5.9 sub-test:**
+- T5.9 is recovering meaningful TG (>10% delta at ctx=262144) → keep
+  the allocator settings; the remaining R1 gap is structural and
+  Phase 4 must find it in the kernel diff.
+- T5.9 is a near no-op at sparse usage (<5% delta) → load-bearing
+  finding. Open a successor phase to investigate why
+  `paged.seed_identity_per_stream()` and the block-table indirection
+  aren't activating for short prompts. This may be the biggest single
+  lever in the followup.
 
 ### Phase 4 — R1: nsys diff ctx=8k vs ctx=256k at same workload (high info)
 
@@ -167,11 +272,11 @@ If R1/R2 don't close enough, then:
 |---|---|---|---|
 | Phase 1 (R2 sweep) | 15 min | 6k | bench-only |
 | Phase 2 (R2 nsys diff) | 30 min | 10k | depends on Phase 1 result |
-| Phase 3 (R1 ctx sweep) | 25 min | 8k | bench-only |
+| Phase 3 (R1 ctx sweep + T5.9 sub-test) | 37 min | 10k | bench-only; sub-test discriminates paged-KV payback |
 | Phase 4 (R1 nsys diff) | 35 min | 10k | extends Phase 3 |
 | Phase 5 (NP=2 524k reproducer) | 45 min | 15k | high risk, last |
 | Report aggregation | 15 min | 6k | |
-| **Total** | **~165 min** | **~55k** | Fits comfortably in any reasonable window |
+| **Total** | **~177 min** | **~57k** | Fits comfortably in any reasonable window |
 
 Phases 1+2 are independent of 3+4. Could run in parallel if appetite for
 two simultaneous servers exists (different ports, alternate by phase).
@@ -181,6 +286,8 @@ two simultaneous servers exists (different ports, alternate by phase).
 - [ ] Phase 1 sweep curve plotted; R2 inflection localized or rejected
 - [ ] If R2 real: Phase 2 kernel diff identifies the cost center
 - [ ] Phase 3 sweep curve plotted; R1 allocation-tax shape characterized
+- [ ] Phase 3 T5.9 sub-test recorded: paged-KV payback quantified at
+      ctx=8k and ctx=262144; "is T5.9 active for sparse usage?" answered
 - [ ] Phase 4 kernel diff identifies the cost center for R1
 - [ ] Decisions recorded on ship candidates per finding:
       - R1 fixable → open successor phase to ship the fix
