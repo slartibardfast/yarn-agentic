@@ -1,13 +1,7 @@
 # yarn-agentic
 
-Experiments in local hosting of large language models.
+A solo developer plus agentic AI assistants building a byte-deterministic, multi-GPU LLM inference server on a pair of Quadro RTX 6000s (sm_75 / TU102), with the full work record published as the [project ledger](https://blog.david.connol.ly/).
 
-Workstreams:
+Start at [`docs/home.md`](docs/home.md). Active phases are under [`docs/active/`](docs/active/); closed phases live under [`docs/archive/phases/<topic>/`](docs/archive/phases/). The chronological journal is `MEMORY.md` (append-only, 11 028+ lines).
 
-- **Vulkan multi-GPU split-mode-graph support** for `llama.cpp` and `ik_llama.cpp` — running a single model across two non-NVLink GPUs without dropping ops to CPU fallback. See [docs/phases/00-vulkan-multigpu/](docs/phases/00-vulkan-multigpu/).
-- **Qwen3.5 MTP tool calling on Vega 64** — using native MTP weights for speculative decode on an 8 GiB Vega 64, with the mission of measuring tool-calling accuracy across candidate models. Start with the [peer host quickstart](docs/phases/qwen35-mtp-tooling/PHASE1.md).
-- **DFlash speculative decoding for Qwen 3.6 27B on sm_75** — porting vLLM PR #40898's diffusion-style sidecar drafter to ik_llama.cpp's CUDA backend on dual Quadro RTX 6000. Kernel layer argmax-equivalent to vLLM across 8 prompts × 4 mask positions; bench infrastructure for apples-to-apples spec comparison (none / mtp / dflash) with PPL-of-output landed; end-to-end measurement of record captured with TU102 + NVLINK optimization envelope named. See [docs/phases/70-dflash/PHASE_DFLASH.md](docs/phases/70-dflash/PHASE_DFLASH.md).
-
-Active workstream: **`PHASE_NSTREAM_KV_PERF`** — recover the -6.2 % TG-NP=8 regression carried over from `PHASE_NSTREAM_KV` (closed 2026-05-20) and unlock the dispatch ceiling toward vLLM's measured 154.77 t/s at NP=8 on the same hardware. Four-layer scope: Phase 0 prereqs (DFlash server CLI fix + radical Allium/TLA+/test surface expansion) → Tier 2 (per-stream attention-read-view patching via existing `cudaGraphExecUpdate` infra) → Tier 3 (unified-stream dispatch via existing PSKV per-slot FA kernel). See top-level [PLAN.md](PLAN.md).
-
-Documentation site is rendered from `docs/` via [mdBook](https://rust-lang.github.io/mdBook/). Per-workstream phase docs live under `docs/phases/<NN-name>/`; cross-cutting reference docs under `docs/reference/`. The single currently-active workstream lives at top-level `PLAN.md` and moves to `docs/phases/<NN-name>/` on closure.
+Documentation is rendered from `docs/` via [mdBook](https://rust-lang.github.io/mdBook/) and auto-published to GitHub Pages on push to `main`. Formal-spec gates (`45 .allium` + `39 .tla` files under `specs/`) run via `.github/workflows/spec-tla-gate.yml`.

@@ -1,5 +1,7 @@
 # PHASE T6 — Characterisation
 
+**Status**: Closed 2026-05-23 at T6.0.a (endpoint re-verification). Subsequent perf work shifted to the R-series (`PHASE_PERF_R2_NP1`, `PHASE_PERF_R3_NP1`, `PHASE_PERF_R3_FOLLOWUP`); the matrix below was not completed because the R-series characterized the production shape directly.
+
 Tier 6 is **measurement-only**: no new features. The goal is to know what each shipped feature (T3 unified-stream dispatch, T4 chunked-prefill admission, T5 paged KV, T5.9 defrag, per-slot-kv FA, Hadamard K/V, DFlash speculative decoding) actually contributes — to throughput, latency, VRAM, and behavioural envelope — so future T7+ work attacks measured bottlenecks instead of theoretical ones.
 
 This phase is **prerequisite** to any further perf work. T5.0-probe falsified the T5 numeric uplift premise after Bundle A had started; that cost was real. T6 retires the analogous risk for everything currently shipped.

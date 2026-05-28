@@ -117,6 +117,26 @@ Rules:
 - After completing a plan step in code, update the relevant plan file to reflect what was actually implemented, then commit and push that update as a separate commit.
 - PLAN.md and PHASEx.md files live in the top-level repository only. Never place plan files inside nested project repos. Nested repos contain the working codebase; planning documents are kept outside of them.
 
+### Active / archive layout (effective 2026-05-28)
+
+Phase docs live in one of two locations within `docs/`:
+
+- **`docs/active/PHASE_<NAME>.md`** — the phase is in flight. The directory listing is the answer to "what's open right now". Top-level `PLAN.md` is a one-line pointer at this directory.
+- **`docs/archive/phases/<NN-topic>/PHASE_<NAME>.md`** — the phase is closed. Buckets are numbered to keep the archive tree stable as new topics land. The 14 existing buckets:
+  - `00-vulkan-multigpu/`, `10-np-determinism/`, `11-perf-r-series/`, `12-kernels/`, `13-scheduler/`, `20-turbo-kv-4b/`, `30-mtp-production/`, `40-graph-cache/`, `50-mtp-multigpu/`, `60-llama-context-decompose/`, `70-dflash/`, `80-multimodal/`, `qwen35-mtp-tooling/`.
+
+### Closure ritual
+
+When a phase closes:
+
+1. Update its header line to `**Closed**: YYYY-MM-DD — <one line summary>`.
+2. `git mv docs/active/PHASE_<NAME>.md docs/archive/phases/<topic>/PHASE_<NAME>.md`.
+3. Add a one-line entry to `docs/home.md` Work list (reverse chronological, with a link to the archive path).
+4. Append a one-line closure entry to `MEMORY.md`.
+5. Commit and push.
+
+The move is the closure signal. A phase doc that has not moved out of `docs/active/` is not closed, regardless of what its header says.
+
 ### Checkbox semantics
 
 PLAN.md and PHASEx.md use three marks with explicit meanings:

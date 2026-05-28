@@ -1,8 +1,8 @@
 # PHASE_CUDA_NATIVE_DISPATCH — ground-up CUDA-idiomatic dispatch redesign for libmgpu (and LM as beneficiary)
 
-**Status**: Design locked, pre-design (PD1-PD6) complete (see §10). Implementation arc C0-C14 ready to start (~15-18 days focused engineering).
+**Status**: Code arc C0–C14 complete (`b86931c`, 2026-05-27). Live-verification follow-on open: NP=8 single-slot flake is pre-existing (governor-causation localized 2026-05-27), gate fix landed. Phase remains open for the verification + perf characterization tail.
 **Branch base**: parent repo off `origin/main@628aaae`; submodule off `ik_llama.cpp@e6cb4c1b` on `production/2026-q2-next` (includes the 2026-05-27 `test-n-stream-kv-layout` refresh for T5.9 paged invariants — required for the verification battery in §5.1.4 to assert post-T5.9 shapes, NOT pre-T5.9).
-**Predecessor**: `PHASE_NSTREAM_KV_PERF.md` (open). `PHASE46` (closed — was tactical patch on the same race surface this phase replaces structurally).
+**Predecessor**: `PHASE_NSTREAM_KV_PERF.md` (superseded). `PHASE46` (closed — was tactical patch on the same race surface this phase replaces structurally).
 **Triggered by**: NP=8 single-slot determinism flake localized 2026-05-27 to host-side CUDA driver state racing under openmp-parallel multi-backend dispatch — verified by `GGML_SCHED_EVAL_SERIALIZE=1` PASS (Test 2 of the discriminator window).
 
 **Reframing 2026-05-27**: this work is FOR libmgpu, with LM as a beneficiary. libmgpu's tensor-parallel CLIP encoder is the primary consumer of multi-backend dispatch; Phase 46 was a tactical patch on libmgpu's openmp-parallel path, this is the structural replacement. The LM NP=8 flake was the symptom-carrier that surfaced the underlying race.
