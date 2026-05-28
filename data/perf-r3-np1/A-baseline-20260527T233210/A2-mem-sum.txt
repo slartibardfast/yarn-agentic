@@ -1,0 +1,4 @@
+Generating SQLite file /home/dconnolly/yarn-agentic/data/perf-r3-np1/A-baseline-20260527T233210/A2.sqlite from /home/dconnolly/yarn-agentic/data/perf-r3-np1/A-baseline-20260527T233210/A2.nsys-rep
+Processing [/home/dconnolly/yarn-agentic/data/perf-r3-np1/A-baseline-20260527T233210/A2.sqlite] with [/usr/lib/nsight-systems/host-linux-x64/reports/cuda_gpu_mem_size_sum.py]... 
+SKIPPED: /home/dconnolly/yarn-agentic/data/perf-r3-np1/A-baseline-20260527T233210/A2.sqlite does not contain GPU memory data.
+

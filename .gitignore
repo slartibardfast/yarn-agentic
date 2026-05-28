@@ -34,3 +34,9 @@ data/cuda-native-dispatch/predesign/pd5_nccl
 data/cuda-native-dispatch/predesign/pd6_mstream
 data/cuda-native-dispatch/predesign/pd5_result.json
 data/cuda-native-dispatch/predesign/pd6_result.json
+
+# Phase R3 nsys traces — too large for git (192 MB to 6.9 GB each).
+# Local-only; raw .nsys-rep can be opened in nsys-ui if needed.
+data/perf-r3-np1/**/*.nsys-rep
+data/perf-r3-np1/**/*.sqlite
+data/perf-r3-np1/**/*.qdstrm

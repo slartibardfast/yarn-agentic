@@ -1,0 +1,1 @@
+slot0 rep2 done rc=0 wall=85.26

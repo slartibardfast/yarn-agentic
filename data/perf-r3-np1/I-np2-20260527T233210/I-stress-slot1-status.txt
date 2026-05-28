@@ -1,0 +1,1 @@
+slot1 stress rc=0 wall=155.78

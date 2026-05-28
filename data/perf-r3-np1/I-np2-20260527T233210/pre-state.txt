@@ -1,0 +1,16 @@
+Thu 28 May 2026 00:34:59 UTC
+--- uptime ---
+ 00:34:59 up 2 days, 13:30,  2 users,  load average: 0.46, 0.87, 1.20
+--- kernel ---
+7.0.10-arch1-1
+--- nvidia ---
+NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  595.71.05  Release Build  (root@)  
+GCC version:  gcc version 16.1.1 20260430 (GCC) 
+--- mem free ---
+               total        used        free      shared  buff/cache   available
+Mem:           125Gi        20Gi        31Gi        16Gi        91Gi       104Gi
+Swap:           19Gi       132Ki        19Gi
+--- gpu ---
+index, memory.used [MiB], memory.free [MiB]
+0, 1 MiB, 24022 MiB
+1, 9 MiB, 24006 MiB

@@ -1,0 +1,6 @@
+Generating SQLite file /home/dconnolly/yarn-agentic/data/perf-r3-np1/H-clip-20260527T233210/H1.sqlite from /home/dconnolly/yarn-agentic/data/perf-r3-np1/H-clip-20260527T233210/H1.nsys-rep
+Exportation error: Section Table Reference magic number mismatch.
+Processing [/home/dconnolly/yarn-agentic/data/perf-r3-np1/H-clip-20260527T233210/H1.sqlite] with [/usr/lib/nsight-systems/host-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+
+ERROR: Database file /home/dconnolly/yarn-agentic/data/perf-r3-np1/H-clip-20260527T233210/H1.sqlite does not exist.
+
