@@ -1,13 +1,56 @@
-# PHASE_TU102_SPECIALIZATION — Qwen 3.6 27B production kernel ranking
+# PHASE_TU102_SPECIALIZATION — Qwen 3.6 27B production whole-system specialization
 
-**Opened:** 2026-05-19.
+**Opened:** 2026-05-19. **Whole-system reframe:** 2026-05-29.
 **Branch:** `production/2026-q2-next`.
-**Scope:** Rank kernel-level TU102 (sm_75, dual Quadro RTX 6000) specialization
-targets for Qwen 3.6 27B production inference, both phases (prefill + decode),
-excluding DFlash speculative decoding (closed separately in
-`PHASE_DFLASH_BATCHED_PINNED.md`).
-**State:** Ranking landed. No kernel work started — each ranked target is a
-separate downstream workstream with its own ncu pass + kernel-design lock.
+**Scope:** Rank specialization targets for Qwen 3.6 27B production inference across
+the **whole system** — GPU kernels (TU102 sm_75, dual Quadro RTX 6000) *and* the
+host-side (CPU) dispatch + serving path — both phases (prefill + decode), excluding
+DFlash speculative decoding (closed separately in `PHASE_DFLASH_BATCHED_PINNED.md`).
+**State:** GPU-kernel ranking landed (top #1/#3 closed). 2026-05-29: host-side profile
+landed — decode is **single-thread host-CPU-bound** (62% CUDA-driver launch overhead).
+No new kernel work started — each ranked target is a separate downstream workstream
+with its own ncu/perf pass + design lock.
+
+---
+
+## Whole-system host-side profile (2026-05-29)
+
+The GPU-kernel ranking below was built from `nsys cuda_gpu_kern_sum` on
+`llama-batched-bench` — it sees only time **on** the GPU and never ran the serving
+path. The 2026-05-29 reframe adds the host side: a `perf` profile attached to the
+**live production** `llama-server` (5bf17cfa, build 4856) during a 256-token decode,
+zero downtime. Evidence:
+`data/whole-system-profile/perf-live-20260529T204225/report.md`.
+
+**Headline — production decode is single-thread host-CPU-bound.** 99.2% of CPU
+samples land on the one CUDA-native dispatcher thread; one core is pegged ~100% for
+the whole decode. `--threads 4` + `--cpu-mask 0xF0` buy nothing at decode — the
+CUDA-native design (`PHASE_CUDA_NATIVE_DISPATCH`) has exactly one dispatcher thread,
+which serially submits the per-token graph (graph splits = 387, nodes = 6310).
+
+**Ranked host-side de-opts** (self-time on that one core):
+
+| H# | Host cost | % host CPU | Fix |
+|---|---|--:|---|
+| H1 | **CUDA-driver kernel launch/submit** (`libcuda`). Synchronize/poll ≈ 0% ⇒ launch-bound, **not** GPU-wait. | **~62%** | cudaGraph **outer-capture (MAX_COPIES=2)** — one graph replay replaces thousands of per-token driver launches. **Same lever as the shelved `PHASE_CLIP_CAPTURE_SYNC`**; blocked only on CLIP capture-legality. LM decode benefits immediately and independently. |
+| H2 | **Per-token graph re-split + re-alloc** (`ggml_backend_sched_split_graph` 3.2%, `ggml_gallocr_reserve_n` 2.4%, `allocate_node`/`alloc_graph`/`free_node`/`backend_id_from_cur`) | **~8%** | Cache the split + allocation plan across decode steps — the decode graph is structurally invariant per token yet re-planned each step despite `graph_reuse=1`. Independent of capture. |
+| H3 | **KV-cache host bookkeeping** (`llama_kv_cache_update` 5.4%, `llama_kv_cache_seq_pos_max` 1.8%) | **~7%** | Likely O(cells) scans per token at 256k capacity. Investigate. |
+| H4 | `__vdso_clock_gettime` 3.1%, `pthread_mutex_lock` 1.6% | ~5% | Per-node timing / lock overhead. |
+
+**Falsified hypothesis:** the large-vocab CPU sampler is **not** a decode de-opt —
+`top-k=20` truncates before the O(V≈248k) softmax, so the sampler is absent from the
+profile. (Recorded so it isn't re-investigated.)
+
+**Caveat:** no GPU-active-vs-wall timeline — the nsys serving-path capture hung on
+finalize and its trace was lost (see the nsys-capture-method note). The launch-bound
+conclusion rests on synchronize ≈ 0% + one-core-pegged, not a GPU timeline. A
+hang-proof nsys pass (`llama-cli`, clean exit) would quantify the GPU-idle fraction
+and confirm H1's recoverable headroom — see Open items.
+
+**Relation to the GPU ranking:** H1–H4 are host-side and largely orthogonal to the
+GPU kernel targets below. At decode the host launch path is the binding constraint;
+the GPU-kernel wins (#1 MMQ, etc.) raise the ceiling the host must feed. Capture (H1)
+is the highest-leverage single change for decode latency and is already scoped.
 
 ---
 
@@ -537,3 +580,6 @@ For each target before kernel-design lock:
 | Hadamard-on profile | Re-run the same shape with Hadamard enabled (via `llama-server`, not `llama-batched-bench`) to confirm sub-1% claim |
 | Long-prompt prefill | npp=2048 capture for the prefill big-tile (#6) ceiling — current data is npp=200 only |
 | MoE dispatch split for #4 | Identify dispatch sites where `fused_mmvq[Q4_0,nc=1]` is called for expert routing vs decode rows |
+| **H1 — GPU-idle quantification** | Hang-proof nsys pass (`llama-cli`, clean exit, real-disk output) to measure GPU-active-vs-wall and bound the launch-overhead headroom that capture (MAX_COPIES=2) recovers. The serving-path nsys attempt hung on finalize; this is the redo. |
+| **H2 — split/alloc reuse** | Read the decode path: why does `graph_reuse=1` still leave `sched_split_graph` + `gallocr_reserve_n` running per token (~8% host CPU)? Cache the split + allocation plan across structurally-identical decode steps. |
+| **H3 — KV bookkeeping scans** | Profile `llama_kv_cache_update` (5.4%) + `seq_pos_max` (1.8%); confirm/eliminate O(cells) per-token scans at 256k capacity. |

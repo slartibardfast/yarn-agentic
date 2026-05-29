@@ -51,3 +51,8 @@ data/perf-r3-np1/**/*.qdstrm
 *.sqlite
 *.qdstrm
 *.ncu-rep
+
+# Whole-system perf/nsys traces — large, local-only
+data/whole-system-profile/**/*.data
+data/whole-system-profile/**/*.nsys-rep
+data/whole-system-profile/**/*.sqlite
