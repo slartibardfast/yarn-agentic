@@ -1,0 +1,11 @@
+CAPTURE_COUNT=0
+CLIP_CRASH=NO
+CLIP_RESPONSES=10 shas=['fb5167dbc1e7f95b', 'fb5167dbc1e7f95b', 'fb5167dbc1e7f95b', 'fb5167dbc1e7f95b', 'fb5167dbc1e7f95b', 'fb5167dbc1e7f95b', 'fb5167dbc1e7f95b', 'fb5167dbc1e7f95b', 'fb5167dbc1e7f95b', 'fb5167dbc1e7f95b']
+CLIP_DETERMINISM=PASS (10/10 real + byte-identical, sha=fb5167dbc1e7f95b)
+[15:43:11]   median_ms   = 10423 (over 8 samples; warm-up drop=2)
+[15:43:11]   p95_ms      = 10436
+REP1 exit=0 :: RESULT: PASS — all slots at NP in {1 2 4 8} byte-identical to NP=1, and all cross-NP slot-0 byte-identical
+REP2 exit=0 :: RESULT: PASS — all slots at NP in {1 2 4 8} byte-identical to NP=1, and all cross-NP slot-0 byte-identical
+REP3 exit=0 :: RESULT: PASS — all slots at NP in {1 2 4 8} byte-identical to NP=1, and all cross-NP slot-0 byte-identical
+SERIALIZE exit=0 :: RESULT: PASS — all slots at NP in {1 8} byte-identical to NP=1, and all cross-NP slot-0 byte-identical
+RESTARTED_OK

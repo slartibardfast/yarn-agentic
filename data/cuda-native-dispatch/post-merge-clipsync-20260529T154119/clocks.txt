@@ -1,0 +1,12 @@
+Enabling persistence mode on all GPUs ...
+Persistence mode is already Enabled for GPU 00000000:17:00.0.
+Persistence mode is already Enabled for GPU 00000000:65:00.0.
+All done.
+Locking SM clocks at 1455 MHz on all GPUs ...
+GPU clocks set to "(gpuClkMin 1455, gpuClkMax 1455)" for GPU 00000000:17:00.0
+GPU clocks set to "(gpuClkMin 1455, gpuClkMax 1455)" for GPU 00000000:65:00.0
+All done.
+
+State after lock:
+0, Quadro RTX 6000, 1455 MHz, 2100 MHz, Enabled
+1, Quadro RTX 6000, 1455 MHz, 2100 MHz, Enabled

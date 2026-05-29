@@ -1,0 +1,7 @@
+RUN_ID=clipsync-20260529T154119
+--- health (pre) ---
+{"status":"ok","slots_idle":1,"slots_processing":0}
+--- test binary ---
+-rwxr-xr-x 1 dconnolly dconnolly 9173336 May 29 15:40 /home/dconnolly/yarn-agentic/ik_llama.cpp/build/bin/llama-server
+--- governor ---
+     16 performance
