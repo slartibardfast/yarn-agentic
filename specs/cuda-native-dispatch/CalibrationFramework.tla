@@ -44,14 +44,30 @@ VARIABLES
     thresholds,              \* function: Ops -> Buckets
     cache_key,               \* derived from HardwareKey
     loaded_from_cache,       \* TRUE if calibrated by reading the cache file
-    on_disk_cache,           \* the cache file's recorded thresholds (or NotExists)
+    cache_present,           \* TRUE iff a matching cache file exists on disk
+    on_disk_cache,           \* the cache file's recorded thresholds (valid only when cache_present)
+    probed,                  \* set of ops already probed in this PROBING sweep
     probe_counter            \* count of probe() calls during this process
 
 vars == <<state, thresholds, cache_key, loaded_from_cache,
-          on_disk_cache, probe_counter>>
+          cache_present, on_disk_cache, probed, probe_counter>>
 
-NotExists == "no_cache_file"
-SIZE_MAX == 18446744073709551615  \* sentinel for "never use alt"
+\* Whether the on-disk cache file exists is a separate boolean, NOT a
+\* string sentinel folded into on_disk_cache's range. A "no_cache_file"
+\* string in the {NotExists} \cup [Ops -> Buckets] union made TLC throw on
+\* every function-vs-string equality (CacheMiss's `on_disk_cache = NotExists`).
+\* on_disk_cache is now always a function; its contents are meaningful only
+\* when cache_present is TRUE.
+
+\* Model-scale stand-in for the real SIZE_MAX (2^64-1), which overflows
+\* TLC's integer. The framework uses thresholds only for ordering
+\* (UseAltStrategy: payload >= thresholds[op]) and set membership, never
+\* the byte magnitude — so any value strictly above every real bucket
+\* preserves the semantics. The MC bucket set maps the five real sizes
+\* {0, 1MB, 10MB, 100MB, 1GB} to ordinals {0,1,2,3,4} and this sentinel
+\* to 5; a threshold of 5 means no modelled payload (0..4) ever reaches
+\* it — i.e. "never use alt", exactly the real SIZE_MAX semantics.
+SIZE_MAX == 5
 
 (*****************************************************************************)
 (* Initial state                                                              *)
@@ -62,7 +78,9 @@ Init ==
     /\ thresholds        = [op \in Ops |-> SIZE_MAX]
     /\ cache_key         = HardwareKey
     /\ loaded_from_cache = FALSE
-    /\ on_disk_cache     \in {NotExists} \cup [Ops -> Buckets]
+    /\ cache_present     \in BOOLEAN
+    /\ on_disk_cache     \in [Ops -> Buckets]
+    /\ probed            = {}
     /\ probe_counter     = 0
 
 (*****************************************************************************)
@@ -73,32 +91,39 @@ Init ==
 CacheHit ==
     /\ state = "INIT"
     /\ ~DisableCache
-    /\ on_disk_cache /= NotExists
+    /\ cache_present
     /\ state'             = "READY"
     /\ thresholds'        = on_disk_cache
     /\ loaded_from_cache' = TRUE
-    /\ UNCHANGED <<cache_key, on_disk_cache, probe_counter>>
+    /\ UNCHANGED <<cache_key, cache_present, on_disk_cache, probed, probe_counter>>
 
 \* Cache miss: enter PROBING, probe each op, then write cache.
 CacheMiss ==
     /\ state = "INIT"
     /\ \/ DisableCache
-       \/ on_disk_cache = NotExists
+       \/ ~cache_present
     /\ state' = "PROBING"
     /\ UNCHANGED <<thresholds, cache_key, loaded_from_cache,
-                   on_disk_cache, probe_counter>>
+                   cache_present, on_disk_cache, probed, probe_counter>>
 
 \* Probe one op. The conservative crossover criterion is applied;
 \* env overrides take precedence. We abstract probe() as picking some
 \* bucket (the model checker explores all possibilities).
 ProbeOne(op) ==
     /\ state = "PROBING"
+    \* Each op is probed exactly once per sweep: probe only ops not yet
+    \* in `probed`. This matches the implementation (one probe sweep per
+    \* op) and bounds probe_counter at Cardinality(Ops), keeping the model
+    \* space finite regardless of which bucket the probe assigns (including
+    \* SIZE_MAX, the legitimate "no crossover" outcome).
+    /\ op \notin probed
     /\ \E b \in Buckets:
         /\ \/ <<op, b>> \in EnvOverrides                  \* env override wins
            \/ ~(\E other_b \in Buckets: <<op, other_b>> \in EnvOverrides)
         /\ thresholds' = [thresholds EXCEPT ![op] = b]
+    /\ probed'        = probed \cup {op}
     /\ probe_counter' = probe_counter + 1
-    /\ UNCHANGED <<state, cache_key, loaded_from_cache, on_disk_cache>>
+    /\ UNCHANGED <<state, cache_key, loaded_from_cache, cache_present, on_disk_cache>>
 
 \* Finish probing all ops; transition to CACHED (writes cache file) and
 \* then READY (visible to dispatch).
@@ -106,9 +131,13 @@ FinishProbing ==
     /\ state = "PROBING"
     /\ probe_counter >= Cardinality(Ops)  \* at least one probe per op
     /\ state'           = "READY"
-    /\ on_disk_cache'   = IF DisableCache THEN NotExists ELSE thresholds
+    \* Writing the cache file iff caching is enabled. When DisableCache,
+    \* no file is written (cache_present stays FALSE) and on_disk_cache
+    \* keeps its prior contents (irrelevant while cache_present is FALSE).
+    /\ cache_present'   = ~DisableCache
+    /\ on_disk_cache'   = IF DisableCache THEN on_disk_cache ELSE thresholds
     /\ loaded_from_cache' = FALSE
-    /\ UNCHANGED <<thresholds, cache_key, probe_counter>>
+    /\ UNCHANGED <<thresholds, cache_key, probed, probe_counter>>
 
 \* Once READY, dispatch queries are pure functions of (op, payload, threshold).
 \* No state transition; the query just observes thresholds.

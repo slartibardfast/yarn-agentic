@@ -31,7 +31,7 @@
 (*     ggml_cuda_outer_capture_end_capture / _launch_exec / _destroy_exec  *)
 (*****************************************************************************)
 
-EXTENDS Naturals, Sequences, FiniteSets
+EXTENDS Integers, Sequences, FiniteSets
 
 CONSTANTS
     Capacity,          \* MAX_OUTER_GRAPHS = 16
@@ -42,7 +42,7 @@ ASSUME Capacity \in Nat \ {0}
 ASSUME MaxOps   \in Nat \ {0}
 
 VARIABLES
-    entries,           \* function: Keys -> opt<ExecHandle>; "no_entry" means absent
+    entries,           \* function: Keys -> ExecHandle; NoEntry (= -1) means absent
     age_fifo,          \* sequence of Keys (FIFO insertion order)
     next_exec_id,      \* monotonic counter for synthetic exec handles
     destroyed,         \* set of exec ids that have been destroyed
@@ -50,7 +50,12 @@ VARIABLES
 
 vars == <<entries, age_fifo, next_exec_id, destroyed, ops_done>>
 
-NoEntry == "no_entry"
+\* Sentinel for "no cached exec". An integer (-1), NOT a string: exec ids
+\* are Nat and start at 0, so -1 never collides. A string sentinel here
+\* put a string/Nat union in `entries`' range, which TLC cannot fingerprint
+\* and cannot compare against Nat exec ids (the `entries[k] /= id` check in
+\* DestroyOnEvict). Keeping the whole range in Int fixes both.
+NoEntry == -1
 
 (*****************************************************************************)
 (* Helpers                                                                    *)
@@ -154,7 +159,7 @@ DestroyOnEvict ==
 
 \* I5: type / state invariants.
 TypeOK ==
-    /\ entries \in [Keys -> {NoEntry} \cup Nat]
+    /\ entries \in [Keys -> ({NoEntry} \cup Nat)]
     /\ age_fifo \in Seq(Keys)
     /\ next_exec_id \in Nat
     /\ destroyed \subseteq Nat

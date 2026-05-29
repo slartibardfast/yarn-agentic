@@ -356,3 +356,42 @@ jobs:
             exit 1
           fi
           echo "CUDANativeDispatch base PASSES."
+
+      - name: TLC — CUDAGraphCacheConsistency base (must PASS)
+        run: |
+          cd specs/cuda-native-dispatch
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config CUDAGraphCacheConsistencyMC.cfg CUDAGraphCacheConsistencyMC.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on CUDAGraphCacheConsistency base:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "CUDAGraphCacheConsistency base PASSES."
+
+      - name: TLC — CalibrationFramework base (must PASS)
+        run: |
+          cd specs/cuda-native-dispatch
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config CalibrationFrameworkMC.cfg CalibrationFrameworkMC.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on CalibrationFramework base:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "CalibrationFramework base PASSES."
+
+      - name: TLC — CalibratedOpEquivalence base (must PASS)
+        run: |
+          cd specs/cuda-native-dispatch
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config CalibratedOpEquivalenceMC.cfg CalibratedOpEquivalenceMC.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on CalibratedOpEquivalence base:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "CalibratedOpEquivalence base PASSES."

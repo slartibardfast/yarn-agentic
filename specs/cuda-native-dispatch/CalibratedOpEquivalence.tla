@@ -40,10 +40,13 @@ EXTENDS Naturals, Sequences, FiniteSets
 CONSTANTS
     Ops,               \* set of calibrated op identifiers
     Buckets,           \* quantization bucket set
-    PayloadSamples     \* finite set of payload sizes the model explores
+    PayloadSamples,    \* finite set of payload sizes the model explores
+    Hashes             \* finite set of output-hash values the model explores
 
 ASSUME 0 \in Buckets
 ASSUME Buckets \subseteq Nat
+ASSUME 0 \in Hashes
+ASSUME Hashes \subseteq Nat
 
 VARIABLES
     registered_ops,    \* set of op ids that have had register_op called
@@ -52,7 +55,13 @@ VARIABLES
 
 vars == <<registered_ops, threshold, runs>>
 
-SIZE_MAX == 18446744073709551615
+\* Model-scale stand-in for the real SIZE_MAX (2^64-1), which overflows
+\* TLC's integer. Only ordering and membership matter (UseAltStrategy:
+\* payload >= threshold), so a sentinel strictly above every modelled
+\* bucket and payload preserves the "never use alt" semantics. The MC
+\* bucket / payload sets map the five real sizes to ordinals 0..4 and
+\* this sentinel to 5.
+SIZE_MAX == 5
 
 (*****************************************************************************)
 (* Initial state                                                              *)
@@ -82,19 +91,26 @@ Calibrate(op, t) ==
     /\ threshold' = [threshold EXCEPT ![op] = t]
     /\ UNCHANGED <<registered_ops, runs>>
 
-\* Run an op at a payload using the strategy chosen by the threshold.
+\* Run an op at a payload. The equivalence contract the calibrated-op
+\* framework guarantees is that the OUTPUT BITS do not depend on which
+\* strategy (default or alt) the threshold selects — only on (op, payload).
+\* The model encodes that by writing the chosen output hash to BOTH
+\* strategy slots for (op, p). h ranges over the bounded Hashes set, not
+\* Nat, so the state space stays finite. A future edit that wrote the two
+\* slots with different values (i.e. broke the equivalence contract) would
+\* be caught by OutputEquivalent.
 RunOp(op, p, h) ==
     /\ op \in registered_ops
     /\ p \in PayloadSamples
-    /\ h \in Nat
-    /\ LET use_alt == (p >= threshold[op])
-       IN  runs' = [runs EXCEPT ![<<op, p, use_alt>>] = h]
+    /\ h \in Hashes
+    /\ runs' = [runs EXCEPT ![<<op, p, FALSE>>] = h,
+                            ![<<op, p, TRUE>>]  = h]
     /\ UNCHANGED <<registered_ops, threshold>>
 
 Next ==
     \/ \E op \in Ops: RegisterOp(op)
     \/ \E op \in Ops, t \in Buckets: Calibrate(op, t)
-    \/ \E op \in Ops, p \in PayloadSamples, h \in Nat: RunOp(op, p, h)
+    \/ \E op \in Ops, p \in PayloadSamples, h \in Hashes: RunOp(op, p, h)
 
 Spec == Init /\ [][Next]_vars
 
