@@ -59,7 +59,7 @@
 -- The verify ubatch as submitted to the main forward. The shape is
 -- exactly one seed token plus n_drafts draft tokens, all in one
 -- sequence at consecutive positions.
-external entity VerifyUbatch {
+entity VerifyUbatch {
     seq_id:        Integer
     pos_seed:      Integer    -- position of the seed token
     n_drafts:      Integer    -- number of drafts; total ubatch len = n_drafts + 1
@@ -71,7 +71,7 @@ external entity VerifyUbatch {
 -- verify ubatch. logit[k] is the distribution over the next-token
 -- after the k-th input position. The accept test compares
 -- argmax(logit[k]) against draft_tokens[k] for k in [0, n_drafts).
-external entity VerifyLogits {
+entity VerifyLogits {
     n_positions: Integer       -- equals VerifyUbatch.n_drafts + 1
     n_vocab:     Integer
 }
@@ -80,7 +80,7 @@ external entity VerifyLogits {
 -- accepted by longest-prefix match. bonus_token is the argmax of
 -- the logit at position pos_seed + n_accepted (the next "real"
 -- token regardless of whether any drafts were accepted).
-external entity AcceptDecision {
+entity AcceptDecision {
     n_accepted:   Integer
     bonus_token:  Integer
     bonus_pos:    Integer
@@ -340,3 +340,23 @@ invariant VerifyAlwaysMakesProgress {
 --     AcceptDecision produced.
 --   - Lives at the host-side speculative.cpp level (no GPU
 --     required for the algorithm itself; logits are inputs).
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- as a List field so `allium check` sees the references bound.
+-- Not a runtime object — purely structural.
+
+entity MtpVerifyAcceptSystem {
+    accept_decisions: List<AcceptDecision>
+}
+
+contract ValidateMtpVerifyAcceptSystem {
+    invoke: (sys: MtpVerifyAcceptSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllEntities
+        -- Structural composition: each List field above anchors an
+        -- entity otherwise referenced only in invariant prose, so the
+        -- spec's reference graph is closed under `allium check`.
+}

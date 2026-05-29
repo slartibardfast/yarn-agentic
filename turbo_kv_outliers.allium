@@ -66,7 +66,7 @@
 -- External entities
 -- ============================================================
 
-external entity Tensor {
+entity Tensor {
     data: Set<Decimal>
     count: Integer
 }
@@ -110,6 +110,18 @@ config {
     -- rotated-vector magnitude on attention activations at
     -- head_dim ≥ 128.
     min_outlier_magnitude_fraction: Decimal = 0.1
+
+    -- Seed for the deterministic Hadamard rotation used by RHT_
+    -- forward / RHT_inverse. Inherited from the core TurboQuant
+    -- contract; fixed at allocation time so quantise / dequantise
+    -- agree on the rotation matrix.
+    seed: Integer = 0
+
+    -- Codebook centroid magnitude bound. Used in the scale
+    -- normalisation: inv_std = cent_max / max_abs(rotated). Set
+    -- to 1.0 because the 4-bit codebook is parameterised on the
+    -- unit interval [-1, 1].
+    cent_max: Decimal = 1.0
 }
 
 -- ============================================================

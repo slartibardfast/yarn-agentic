@@ -207,3 +207,23 @@ invariant ZeroExtraStateBuffer {
 --   - Acyclicity property: random batches with random
 --     branch_parent_step assignments; reject any with
 --     branch_parent_step >= step_index at construction.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- as a List field so `allium check` sees the references bound.
+-- Not a runtime object — purely structural.
+
+entity PerStepSsmAncestorSystem {
+    state_rows: List<StateRow>
+}
+
+contract ValidatePerStepSsmAncestorSystem {
+    invoke: (sys: PerStepSsmAncestorSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllEntities
+        -- Structural composition: each List field above anchors an
+        -- entity otherwise referenced only in invariant prose, so the
+        -- spec's reference graph is closed under `allium check`.
+}

@@ -913,3 +913,24 @@ invariant StableTopologyAcrossDecodeTicks {
 --   invariants (NoCrossSlotRegionOverlap,
 --   PerSlotDraftKVCache) hold under both per-stream and unified
 --   verify-side dispatch.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- as a List field so `allium check` sees the references bound.
+-- Not a runtime object — purely structural.
+
+entity UnifiedStreamDispatchSystem {
+    unified_batch_slices: List<UnifiedBatchSlice>
+    op_invocations: List<OpInvocation>
+}
+
+contract ValidateUnifiedStreamDispatchSystem {
+    invoke: (sys: UnifiedStreamDispatchSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllEntities
+        -- Structural composition: each List field above anchors an
+        -- entity otherwise referenced only in invariant prose, so the
+        -- spec's reference graph is closed under `allium check`.
+}

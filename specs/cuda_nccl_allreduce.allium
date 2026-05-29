@@ -404,3 +404,26 @@ invariant CommReadyBeforeFirstReduce {
 --     cudaStreamBeginCapture region containing a reduce; assert
 --     capture_succeeded = true on the NCCL path, retained false
 --     on the legacy path.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- and enum as a typed field, so `allium check` sees the references
+-- bound. Not a runtime object — purely structural.
+
+entity CudaNcclAllreduceSystem {
+    backend_contexts: List<BackendContext>
+    nccl_communicators: List<NcclCommunicator>
+    reduce_path: ReducePath
+}
+
+contract ValidateCudaNcclAllreduceSystem {
+    invoke: (sys: CudaNcclAllreduceSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllDeclarations
+        -- Closes the entity- and enum-reference graph; each
+        -- otherwise-unreferenced declaration appears once as a field
+        -- above so the spec's structural reference graph is closed
+        -- under `allium check`.
+}

@@ -46,7 +46,9 @@
 -- semantics for vec_dot live in mul_mat_cpu.allium. The VecDot
 -- contract here inherits those semantics and adds Q4_0_AR16-specific
 -- tolerance bounds.
-deferred MulMatCpu.VecDot    -- see: mul_mat_cpu.allium
+-- Cross-spec reference (was: `deferred MulMatCpu.VecDot` — Allium 3.2.3
+-- has no documented syntax for the location hint; see mul_mat_cpu.allium
+-- for the inherited VecDot semantics).
 
 -- ============================================================
 -- External entities — managed by ggml, not by this spec
@@ -54,14 +56,14 @@ deferred MulMatCpu.VecDot    -- see: mul_mat_cpu.allium
 
 -- A row of fp32 values awaiting quantize, or the dequantize result.
 -- Layout owned by ggml's tensor system.
-external entity FloatRow {
+entity FloatRow {
     data: Set<Decimal>
     n_elements: Integer
 }
 
 -- The Q8_0 query row vec_dot expects on the b side. Layout owned by
 -- ggml's q8_0 spec; treated as opaque here.
-external entity Q8_0_Row {
+entity Q8_0_Row {
     n_elements: Integer
 }
 

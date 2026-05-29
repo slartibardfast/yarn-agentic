@@ -724,3 +724,25 @@ invariant ReuseImpliesPropertyMatch {
 --   measurable as cache thrash in the probe, not as a wrong
 --   output. The spec catches the perf signal before it becomes a
 --   correctness signal.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- and enum as a typed field, so `allium check` sees the references
+-- bound. Not a runtime object — purely structural.
+
+entity CudaGraphReuseSystem {
+    node_properties: List<NodeProperties>
+    cache_action: CacheAction
+}
+
+contract ValidateCudaGraphReuseSystem {
+    invoke: (sys: CudaGraphReuseSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllDeclarations
+        -- Closes the entity- and enum-reference graph; each
+        -- otherwise-unreferenced declaration appears once as a field
+        -- above so the spec's structural reference graph is closed
+        -- under `allium check`.
+}

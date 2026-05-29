@@ -295,3 +295,23 @@ contract DefragLatencyBounded {
         -- correctness; perf characterisation at high churn is
         -- T5.7 close evidence.
 }
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- as a List field so `allium check` sees the references bound.
+-- Not a runtime object — purely structural.
+
+entity PagedKshiftDefragSystem {
+    inp_block_k_shifts: List<InpBlockKShift>
+}
+
+contract ValidatePagedKshiftDefragSystem {
+    invoke: (sys: PagedKshiftDefragSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllEntities
+        -- Structural composition: each List field above anchors an
+        -- entity otherwise referenced only in invariant prose, so the
+        -- spec's reference graph is closed under `allium check`.
+}

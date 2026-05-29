@@ -183,3 +183,23 @@ invariant BranchAndMainSeqIdsDisjoint {
 --     (slot, branch) under tree_k=2.
 --   - BranchSeqIdsClearedPerCycle: 1000-cycle stress; final cell
 --     count and state-row content at branch slots match initial.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- as a List field so `allium check` sees the references bound.
+-- Not a runtime object — purely structural.
+
+entity BranchSeqIdSystem {
+    slot_buffers: List<SlotBuffer>
+}
+
+contract ValidateBranchSeqIdSystem {
+    invoke: (sys: BranchSeqIdSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllEntities
+        -- Structural composition: each List field above anchors an
+        -- entity otherwise referenced only in invariant prose, so the
+        -- spec's reference graph is closed under `allium check`.
+}

@@ -66,7 +66,7 @@
 -- One K vector produced for a single (layer, stream, position)
 -- by the forward pass. The overlay mirrors this value at the
 -- ring-buffer slot for the position.
-external entity KVector {
+entity KVector {
     data: Set<Decimal>
     count: Integer
     layer: Integer
@@ -76,7 +76,7 @@ external entity KVector {
 
 -- The context in which the cache lives. Used to bound the
 -- residual window against sequence length.
-external entity Context {
+entity Context {
     n_ctx: Integer
     n_layer: Integer
     n_stream: Integer
@@ -576,3 +576,18 @@ open question "Reconciliation strategy selection — partially resolved per-oper
 open question "Persistence across session save/load: should the overlay participate in state_write / state_read on llama_memory_i? The in-memory ring buffer is lost across session-resume and server checkpoints today. Implications for long-running server deployments and multi-turn evaluation harnesses."
 
 open question "Cross-backend equivalence: does the overlay require its own rule in turbo_kv_4b_backend.allium, or is it covered by that spec's general 'all backends produce the same output given the same inputs' invariant? Does the two-pass FA read path need its own cross-backend validation once it exists?"
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+
+entity TurboKvResidualWindowSystem {
+    k_vectors: List<KVector>
+}
+
+contract ValidateTurboKvResidualWindowSystem {
+    invoke: (sys: TurboKvResidualWindowSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllEntities
+        -- Closes the entity-reference graph.
+}

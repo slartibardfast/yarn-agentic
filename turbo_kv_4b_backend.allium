@@ -61,12 +61,12 @@
 -- field semantics (norm = L2_norm(pre-normalisation row),
 -- indices ∈ [0, codebook_size)); this file only references the
 -- fields to express the equivalence contract.
-external entity QuantizedHead {
+entity QuantizedHead {
     norm: Decimal
     indices: Set<Integer>
 }
 
-external entity FloatTensor {
+entity FloatTensor {
     data: Set<Decimal>
     count: Integer
 }
@@ -74,7 +74,7 @@ external entity FloatTensor {
 -- A row-index tensor used by GET_ROWS and SET_ROWS. In ggml this is
 -- a 1-D int tensor; elements index into the row dimension of a
 -- higher-rank tensor.
-external entity IndexTensor {
+entity IndexTensor {
     indices: Set<Integer>
     count: Integer
 }

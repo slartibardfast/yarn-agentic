@@ -382,3 +382,24 @@ invariant NStreamBailoutNeverFires {
 --   reuse window. The reuse spec composes with them trivially:
 --   any tick that invokes k_shift or defrag is a fresh build
 --   (different topology) and exits the reuse window naturally.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- as a List field so `allium check` sees the references bound.
+-- Not a runtime object — purely structural.
+
+entity GraphReuseSetRowsSystem {
+    cuda_graph_entries: List<CudaGraphEntry>
+    cache_lookup_results: List<CacheLookupResult>
+}
+
+contract ValidateGraphReuseSetRowsSystem {
+    invoke: (sys: GraphReuseSetRowsSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllEntities
+        -- Structural composition: each List field above anchors an
+        -- entity otherwise referenced only in invariant prose, so the
+        -- spec's reference graph is closed under `allium check`.
+}

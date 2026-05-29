@@ -75,7 +75,7 @@
 -- External entities (managed by the model's tensor system)
 -- ============================================================
 
-external entity Tensor {
+entity Tensor {
     data: Set<Decimal>
     count: Integer
 }

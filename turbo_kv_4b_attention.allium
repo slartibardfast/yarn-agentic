@@ -57,12 +57,12 @@
 -- turbo_kv_4b_backend.allium
 -- ============================================================
 
-external entity QuantizedHead {
+entity QuantizedHead {
     norm: Decimal
     indices: Set<Integer>
 }
 
-external entity FloatTensor {
+entity FloatTensor {
     data: Set<Decimal>
     count: Integer
 }

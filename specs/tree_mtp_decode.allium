@@ -219,3 +219,26 @@ invariant AcceptRateAtKTwoMeetsProbeCeiling {
 --     1000-sample window at long context X02 with K=2.
 --   - SiblingBranchIsolation property: sibling branches at depth=1
 --     produce the same per-branch logits as if dispatched alone.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- and enum as a typed field, so `allium check` sees the references
+-- bound. Not a runtime object — purely structural.
+
+entity TreeMtpDecodeSystem {
+    tree_candidates: List<TreeCandidate>
+    accept_results: List<AcceptResult>
+    cycle_state: CycleState
+}
+
+contract ValidateTreeMtpDecodeSystem {
+    invoke: (sys: TreeMtpDecodeSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllDeclarations
+        -- Closes the entity- and enum-reference graph; each
+        -- otherwise-unreferenced declaration appears once as a field
+        -- above so the spec's structural reference graph is closed
+        -- under `allium check`.
+}

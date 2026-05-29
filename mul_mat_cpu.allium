@@ -26,14 +26,14 @@
 -- External entities — managed by ggml, not by this spec
 -- ============================================================
 
-external entity FloatTensor {
+entity FloatTensor {
     data: Set<Decimal>
     count: Integer
 }
 
 -- Backend-level view of one weight row of a MUL_MAT. Internal layout
 -- is opaque to this spec — per-type specs define dequantization.
-external entity QuantizedRow {
+entity QuantizedRow {
     row_type: String
     element_count: Integer
 }

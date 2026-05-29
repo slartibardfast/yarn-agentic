@@ -57,7 +57,7 @@
 -- reference only its dtype tag and its dim-1 length (which is
 -- "tokens in this block"); the rest of the tensor's metadata is
 -- managed by ggml.
-external entity Tensor {
+entity Tensor {
     name: String
     dtype: GgmlType
     dim1_len: Integer
@@ -66,7 +66,7 @@ external entity Tensor {
 -- One contiguous-by-seq sub-batch the engine will dispatch as a
 -- single call into build_layer_attn_linear_core. The Phase 32
 -- analyser produces these from the engine's seq_id array.
-external entity Block {
+entity Block {
     seq_id: Integer
     start: Integer
     len: Integer
@@ -75,7 +75,7 @@ external entity Block {
 -- The full batch arriving at the linear-attention layer. Carries
 -- the full per-token seq_id array and the (possibly null)
 -- inp_out_ids the engine wants applied for output gathering.
-external entity Batch {
+entity Batch {
     n_tokens: Integer
     seq_ids: Set<Integer>
     inp_out_ids_present: Boolean

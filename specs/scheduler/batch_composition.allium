@@ -529,3 +529,23 @@ invariant DecodeAdmittedWhenPrefillAdmitted {
 --   The 4D per-stream KV layout that made the
 --   pre-Tier-4 DecodeHoldGate redundant by closing Bug C
 --   structurally. T4 builds on that closure.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- as a List field so `allium check` sees the references bound.
+-- Not a runtime object — purely structural.
+
+entity BatchCompositionSystem {
+    batch_tokens: List<BatchToken>
+}
+
+contract ValidateBatchCompositionSystem {
+    invoke: (sys: BatchCompositionSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllEntities
+        -- Structural composition: each List field above anchors an
+        -- entity otherwise referenced only in invariant prose, so the
+        -- spec's reference graph is closed under `allium check`.
+}

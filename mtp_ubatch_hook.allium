@@ -65,7 +65,7 @@
 
 -- A ggml tensor flowing into or out of the per-ubatch hook. We
 -- reference only the shape descriptors the contract binds.
-external entity Tensor {
+entity Tensor {
     name: String
     n_rows: Integer
     n_embd: Integer
@@ -74,7 +74,7 @@ external entity Tensor {
 -- The llama_context whose state the hook updates. Same
 -- single-context model used in mtp_fused_draft.allium: MTP
 -- layers tagged is_mtp_layer in the same context, no auxiliary.
-external entity ModelContext {
+entity ModelContext {
     n_mtp_layers: Integer
     n_main_layers: Integer
 }
@@ -82,7 +82,7 @@ external entity ModelContext {
 -- One ubatch processed by the main model forward. Carries the
 -- per-row token ids, the per-row positions, and the per-row
 -- seq_ids the hook needs to construct the MTP input batch.
-external entity Ubatch {
+entity Ubatch {
     n_tokens: Integer
     pos_first: Integer
     pos_last: Integer
@@ -93,7 +93,7 @@ external entity Ubatch {
 -- One range of MTP-layer KV slots affected by an operation.
 -- Used for both writes (by the hook) and chops (by the
 -- post-accept seq_rm path).
-external entity KvRange {
+entity KvRange {
     seq_id: Integer
     pos_start: Integer
     pos_end: Integer
@@ -101,7 +101,7 @@ external entity KvRange {
 
 -- One row of the residual stream the hook consumes from the
 -- main forward graph's tagged tensor t_h_pre_norm.
-external entity HiddenStateRow {
+entity HiddenStateRow {
     pos: Integer
     seq_id: Integer
     n_embd: Integer
@@ -401,3 +401,24 @@ invariant CrossUbatchResetOnDiscontinuation {
 --   - Lives at the cgraph level (test-backend-ops style) where
 --     possible; the lockstep test may need a server-level
 --     harness because it spans full decode flows.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- as a List field so `allium check` sees the references bound.
+-- Not a runtime object — purely structural.
+
+entity MtpUbatchHookSystem {
+    kv_ranges: List<KvRange>
+    hidden_state_rows: List<HiddenStateRow>
+}
+
+contract ValidateMtpUbatchHookSystem {
+    invoke: (sys: MtpUbatchHookSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllEntities
+        -- Structural composition: each List field above anchors an
+        -- entity otherwise referenced only in invariant prose, so the
+        -- spec's reference graph is closed under `allium check`.
+}

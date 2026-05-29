@@ -465,3 +465,24 @@ invariant CaptureMechanismIsTapNode {
 --     defaults to redundant rather than wrong. The
 --     justification for the narrowness is empirical — see
 --     PHASE_NSTREAM_KV_PERF.md P0.A.3 falsification matrix.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- and enum as a typed field, so `allium check` sees the references
+-- bound. Not a runtime object — purely structural.
+
+entity CbEvalResidualCaptureSystem {
+    capture_mechanism: CaptureMechanism
+}
+
+contract ValidateCbEvalResidualCaptureSystem {
+    invoke: (sys: CbEvalResidualCaptureSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllDeclarations
+        -- Closes the entity- and enum-reference graph; each
+        -- otherwise-unreferenced declaration appears once as a field
+        -- above so the spec's structural reference graph is closed
+        -- under `allium check`.
+}

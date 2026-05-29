@@ -56,7 +56,7 @@
 
 -- A ggml tensor flowing into or out of the fused draft graph.
 -- We reference only the shape descriptors the contract binds.
-external entity Tensor {
+entity Tensor {
     name: String
     n_rows: Integer
     n_embd: Integer
@@ -66,14 +66,14 @@ external entity Tensor {
 -- draft. For our fork this is the same context that holds the
 -- main model (MTP layers tagged is_mtp_layer); we do NOT model a
 -- separate auxiliary context.
-external entity ModelContext {
+entity ModelContext {
     n_mtp_layers: Integer
     n_main_layers: Integer
 }
 
 -- One slot in the MTP-layer KV cache. Position p, sequence
 -- seq_id. The fused graph's KV writes name this entity.
-external entity KvSlot {
+entity KvSlot {
     seq_id: Integer
     pos: Integer
     written: Boolean
@@ -81,7 +81,7 @@ external entity KvSlot {
 
 -- One draft token produced by the fused graph. The N tokens of
 -- one fused round form a Sequence ordered by step index.
-external entity DraftToken {
+entity DraftToken {
     step_index: Integer
     token_id: Integer
     prob: Decimal
@@ -449,3 +449,25 @@ invariant FusedDraftRespectsStreamPartition {
 --   - Lives at the cgraph level (test-backend-ops style) so it
 --     reproduces deterministically without needing a 27B model
 --     loaded.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- and enum as a typed field, so `allium check` sees the references
+-- bound. Not a runtime object — purely structural.
+
+entity MtpFusedDraftSystem {
+    kv_slots: List<KvSlot>
+    op_type: MtpOpType
+}
+
+contract ValidateMtpFusedDraftSystem {
+    invoke: (sys: MtpFusedDraftSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllDeclarations
+        -- Closes the entity- and enum-reference graph; each
+        -- otherwise-unreferenced declaration appears once as a field
+        -- above so the spec's structural reference graph is closed
+        -- under `allium check`.
+}

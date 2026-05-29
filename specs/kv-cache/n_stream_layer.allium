@@ -537,3 +537,27 @@ invariant MixedBatchProhibitionByConstruction {
 --   a single-seq batch (DispatchUnitTokensShareSeqId) and the
 --   SINGLE-pattern fast path applies; the CONTIGUOUS_BLOCKS
 --   path is no longer exercised in production.
+
+-- ============================================================
+-- Structural composition (closes entity-reference graph)
+-- ============================================================
+-- Top-level entity that holds every otherwise-unreferenced entity
+-- as a List field so `allium check` sees the references bound.
+-- Not a runtime object — purely structural.
+
+entity NStreamLayerSystem {
+    kv_tensors: List<KVTensor>
+    kv_cells: List<KVCell>
+    streams: List<Stream>
+    slot_infos: List<SlotInfo>
+    kq_masks: List<KQMask>
+}
+
+contract ValidateNStreamLayerSystem {
+    invoke: (sys: NStreamLayerSystem) -> Boolean
+
+    @invariant SystemReferencesBindAllEntities
+        -- Structural composition: each List field above anchors an
+        -- entity otherwise referenced only in invariant prose, so the
+        -- spec's reference graph is closed under `allium check`.
+}
