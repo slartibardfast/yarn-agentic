@@ -181,9 +181,12 @@ invariant LmRefactorPreservesAllLmInvariants {
     -- through an mgpu_split_config&. Field VALUES are unchanged;
     -- only the access expression changes.
     --
-    -- This is what permits B.6's LM gate re-cert (G3.a, G3.c,
-    -- test-n-stream-kv-layout, Phase 45 D10.a) to succeed without
-    -- any test-level changes. The invariant is load-bearing on B.6.
+    -- This is what permitted B.6's LM gate re-cert (G3.a determinism +
+    -- the layout/smoke gates of the day) to succeed without any
+    -- test-level changes. The invariant is load-bearing on B.6.
+    -- (Historical note: the G3.c r5-probe-c4 diagnostic and the
+    -- test-n-stream-kv-layout C++ check were retired 2026-05-29; this
+    -- invariant remains the gated source of truth for the layout.)
 }
 
 invariant ClipIntroductionPreservesAllLmInvariants {
