@@ -1,6 +1,6 @@
 # PHASE Hybrid Checkpoint — stabilise → diagnose → Phase-45-aligned decomposition
 
-**Status**: **REOPENED 2026-05-29** — the 2026-05-25 "closed" (§5.9–5.11) was premature. The Option A `skip_next_defrag` fence is a one-batch symptom patch validated on a too-small (~1200-token) prompt; the SEGV **reproduces on a large-context restore** (`build_defrag → ggml_view_3d`, identical stack) on the deployed `ceb534ae`. See §5.12. Production is exposed on multi-turn text restore. Phase 3 must address the real root (build_defrag over post-restore split-tensor descriptors), not the one-batch delay.
+**Status**: **ROOT FIX LANDED 2026-05-29, deploy pending** — the 2026-05-25 "closed" (§5.9–5.11) was premature (Option A was a one-batch symptom patch validated on a too-small prompt; the SEGV reproduced on a large-context restore, §5.12). Real root found (§5.13): `build_defrag`'s per-position emission was unbounded because the `max_moves` cap counted runs, not cells → defrag graph arena overflow → `ggml_new_object` NULL → SIGSEGV (not a stale descriptor). Fixed at `ik_llama.cpp@5bf17cfa` (cap by cells); binding test + G3.a determinism PASS. **Production still runs the exposed `ceb534ae`** — deploy `5bf17cfa` + the fuller §6 verification remain before re-closure.
 
 **Status (historical)**: opened 2026-05-25. Phase 1 (mitigation) → Phase 2 (diagnosis) → Phase 3a (Option A fence) shipped 2026-05-25, marked closed — see §5.9–5.11. Reopened 2026-05-29 (§5.12).
 
@@ -320,6 +320,22 @@ created context checkpoint 25 ...
 **Phase 3 must address the real root** — `build_defrag`'s graph construction over post-restore recurrent/split descriptors (the §5.8 "Option B/C" the closure skipped) — not extend the one-batch delay. Candidate directions:
 - **Stopgap (protect production):** either re-apply Phase 1 (disable recurrent restore → safe full-reprefill) OR suppress defrag entirely for recurrent/hybrid models (`defrag_thold` < 0 when `has_recurrent`) so restore keeps working without the crashing compaction. The latter preserves the restore perf win.
 - **Real fix:** make `build_defrag` robust to (or skip) the recurrent/split layers whose split-tensor descriptors it cannot view post-restore; or fix the restore/`kv_cache_rm` path that leaves those descriptors un-viewable. Needs Probe #4 (§5.8): log each `ggml_view_3d` in `build_defrag` with source-tensor identity + `->extra` validity to find the exact bad descriptor.
+
+### 5.13 ROOT CAUSE + FIX (2026-05-29) — defrag was unbounded, not descriptor-stale
+
+Probe #4 was unnecessary: the coredump (PID 386855) showed the fault is `mov (%rax),%rbx` with **`%rax = 0x0`**, immediately after a `call ggml_new_object` — i.e. `ggml_new_object` returned **NULL** and `ggml_new_tensor_impl` dereferenced it. The defrag graph's metadata arena (`ctx0`/`buf_compute_meta`) was **exactly full**: `objects_end − objects_begin = 66,854,832` vs `mem_size = 66,855,200` (368 bytes free), **163,008 tensor objects** created. **The earlier "stale/freed split-tensor descriptor" hypothesis (§5.6/§5.7) was wrong** — there is no bad descriptor; the arena is exhausted.
+
+**Root cause.** The T5.9 `build_defrag` rewrite emits view/cpy tensors **per moved cell** (per-position; run-batching was dropped for the paged `block_table` layout, `llama-build-context.cpp:528`). But `llama_kv_cache_defrag_internal`'s `max_moves` cap counted **contiguous runs** (`n_moves++` once per run). At 0.50 post-restore fragmentation over ~12 k cells, ~849 cells moved across ~417 runs → ~849 × (6 × ~16 attn-layers × 2 devices ≈ 192) ≈ 163 k tensors → arena overflow → NULL → SIGSEGV. The cap no longer bounded the tensor count after the per-position rewrite.
+
+For qwen35, `max_nodes(n)=max(n·40, 32·n_tensors)` and `32·n_tensors` dominates, so `max_nodes(0)==max_nodes(1)==max_nodes(n_ubatch)≈163,008` — the cap's budget already equals the arena; the bug is purely runs-vs-cells (+ the missing device factor).
+
+**Fix** (`ik_llama.cpp@5bf17cfa`, `src/llama.cpp`): `n_moves` now counts **cells** moved with an immediate cap, and `max_moves = (max_nodes(1) − 2·n_layer) / (6·n_layer·n_dev)`. Worst-case emission then fits the arena (≈4× headroom for the hybrid's ~16 attention layers vs the conservative `n_layer` divisor; `n_dev` bounds multi-GPU split). A heavily-fragmented cache compacts over several decode passes — defrag is rare, restore is preserved.
+
+**Verified** (`scripts/verify-hybrid-checkpoint.sh`, build-tree binary):
+- 2-turn ~12 k restore + 4-turn soak: **restore fired 5×, post-restore defrag clean, server alive, all turns 200, zero crash markers** (was: SIGSEGV on turn 2). Evidence `data/hybrid-checkpoint/hybridckpt-20260529T173622/`.
+- **G3.a NP determinism {1,2,4,8} byte-identical: PASS** (no regression; defrag bounding does not change final compaction). Evidence `data/hybrid-checkpoint/hybridckpt-determ-*/`.
+
+**Remaining before phase re-closure:** deploy `5bf17cfa` to production (production still runs the exposed `ceb534ae`); then the fuller §6 items not yet run — §6.4 turn-2 latency < 50 % of turn-1 + 20-token identity, §6.5 35 k-token long-context regression, §6.7 30-turn × 60-min soak, §6.6 G3.c + `test-n-stream-kv-layout`.
 
 ## 6. Verification — end-to-end binding test script
 
