@@ -1,10 +1,44 @@
 # PHASE_CLIP_CAPTURE_SYNC — make the CLIP encoder capture-legal so MAX_COPIES=2 deploys
 
 **Opened**: 2026-05-29
-**Status**: OPEN — root cause localized; design pass needed before implementation
+**Status**: OPEN — **new faster baseline landed** (`ik_llama.cpp@7a43ef87`); captured-graph replay deferred.
 **Triggered by**: `data/cuda-native-dispatch/post-merge-maxcopies2-20260529T104724/report.md` — the MAX_COPIES=2 verification window crashed the CLIP encoder on encode 1.
-**Predecessor**: `PHASE_CUDA_NATIVE_DISPATCH` (determinism arc complete + verified; this phase unblocks its captured-graph perf path for the CLIP/libmgpu consumer).
-**Production impact**: none. Production stays on Phase-46 closure `1db6c2eb`; this phase is what would let a MAX_COPIES=2 build deploy.
+**Predecessor**: `PHASE_CUDA_NATIVE_DISPATCH` (determinism arc complete + verified).
+**Production impact**: none yet (not deployed). Production stays on Phase-46 closure `1db6c2eb`. The new baseline is committed and verified, ready to deploy when chosen.
+
+## Outcome so far (2026-05-29)
+
+The chase to make CLIP capture-legal under `MAX_COPIES=2` peeled four
+capture-illegal layers (device sync, reduce post-fence, user-input host
+staging, mid-capture allocation) and one calloc/`std::unordered_set` SIGFPE.
+The decisive reframe: `MAX_COPIES=2` was only ever wanted to allocate the
+cross-sync **events** the C4 outer capture needs — but its `n_copies=2`
+**buffer doubling** pushed CLIP's CUDA0 (12.5 GB compute meta) over its 24 GB
+ceiling (recoverable-OOM → IMA). **Decoupling the events from `n_copies`**
+(allocate `events[b][0]` at `n_copies=1`) gives the event-based ordering
+without the doubling.
+
+That decouple is a **win on its own, without capture**: `copy_inputs` now uses
+fine-grained `cudaStreamWaitEvent`/`event_synchronize` at `n_copies=1` instead
+of the coarse full-device `ggml_backend_synchronize` the old `events==NULL`
+path took. Verified (RUN_ID `clipsync-20260529T154119`):
+
+- CLIP encode **10/10 byte-identical** to the Phase-46 closure (sha `fb5167dbc1e7f95b`).
+- Median **10423 ms vs 14421 ms baseline — ~28% faster**.
+- LM NP-determinism unregressed (NP={1,2,4,8}×3 + SERIALIZE PASS).
+
+Committed `ik_llama.cpp@7a43ef87`, default-safe (non-capture path unchanged).
+
+## Still open — captured-graph replay (behind `GGML_SCHED_OUTER_CAPTURE`)
+
+Outer capture is OFF by default. With it on, the warm-first scheme (eager
+encode 1 to grow allocators, capture from encode 2) reaches the capture pass
+but hits `CUDA error: dependency created on uncaptured work in another stream`
+at `ggml-cuda.cu:5686` (`copy_inputs`' `cudaStreamWaitEvent` depends on a
+cross-backend event recorded outside the capture region). Next step: make the
+C4 join cover the cross-backend events `copy_inputs` waits on (or re-record
+them inside the capture). The eager baseline already banks most of the
+available win; capture replay is incremental.
 
 ---
 
