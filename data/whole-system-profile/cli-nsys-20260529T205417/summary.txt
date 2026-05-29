@@ -1,0 +1,15 @@
+RUN_ID=cli-nsys-20260529T205417
+[20:54:17] stopping production
+[20:54:17] GPU0 mem: 1 MiB; clocks locked
+[20:54:17] nsys profile llama-cli (decode 256 tokens, clean exit)
+[20:55:07] nsys/llama-cli exit rc=0
+llama_print_timings:      sample time =      61.18 ms /   256 runs   (    0.24 ms per token,  4184.72 tokens per second)
+llama_print_timings: prompt eval time =     244.50 ms /    30 tokens (    8.15 ms per token,   122.70 tokens per second)
+llama_print_timings:        eval time =   16504.09 ms /   255 runs   (   64.72 ms per token,    15.45 tokens per second)
+llama_print_timings:       total time =   16907.18 ms /   285 tokens
+[20:55:07] report finalized? listing
+-rw-rw-r-- 1 dconnolly dconnolly 105218830 May 29 20:55 data/whole-system-profile/cli-nsys-20260529T205417/cli-decode.nsys-rep
+[20:55:07] exporting sqlite
+[20:55:20] sqlite OK
+[20:55:20] trap: restart production
+[20:55:28] trap: prod ok
