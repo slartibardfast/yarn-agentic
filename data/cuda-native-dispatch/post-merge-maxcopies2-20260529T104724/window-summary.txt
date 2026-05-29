@@ -1,0 +1,11 @@
+index, memory.used [MiB], memory.free [MiB]
+0, 1 MiB, 24022 MiB
+1, 9 MiB, 24006 MiB
+REP1 exit=0 :: RESULT: PASS — all slots at NP in {1 2 4 8} byte-identical to NP=1, and all cross-NP slot-0 byte-identical
+REP2 exit=0 :: RESULT: PASS — all slots at NP in {1 2 4 8} byte-identical to NP=1, and all cross-NP slot-0 byte-identical
+REP3 exit=0 :: RESULT: PASS — all slots at NP in {1 2 4 8} byte-identical to NP=1, and all cross-NP slot-0 byte-identical
+SERIALIZE exit=0 :: RESULT: PASS — all slots at NP in {1 8} byte-identical to NP=1, and all cross-NP slot-0 byte-identical
+CLIP exit=1 :: curl: (7) Failed to connect to 127.0.0.1 port 18293 after 0 ms: Could not connect to server|curl: (7) Failed to connect to 127.0.0.1 port 18293 after 0 ms: Could not connect to server|[10:52:59]   median_ms   = 8 (over 8 samples; warm-up drop=2)|[10:52:59]   p95_ms      = 9|
+CAPTURE_EVIDENCE:
+<none found in logs — capture may be silent>
+RESTARTED_OK

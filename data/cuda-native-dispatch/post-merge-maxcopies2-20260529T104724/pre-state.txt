@@ -1,0 +1,13 @@
+RUN_ID=maxcopies2-20260529T104724
+--- health (pre) ---
+{"status":"ok","slots_idle":1,"slots_processing":0}
+--- nvidia-smi (pre) ---
+index, memory.used [MiB], memory.free [MiB], clocks.current.sm [MHz]
+0, 11220 MiB, 12803 MiB, 1455 MHz
+1, 15152 MiB, 8863 MiB, 1455 MHz
+--- governor ---
+     16 performance
+--- installed binary (untouched baseline) ---
+-rwxr-xr-x 1 root llm 9173336 May 28 12:45 /opt/llm-server/bin/llama-server
+--- test binary (MAX_COPIES=2) ---
+-rwxr-xr-x 1 dconnolly dconnolly 9173336 May 29 10:15 /home/dconnolly/yarn-agentic/ik_llama.cpp/build/bin/llama-server

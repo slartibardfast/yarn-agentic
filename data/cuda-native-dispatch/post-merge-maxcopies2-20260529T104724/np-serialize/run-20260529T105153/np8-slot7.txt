@@ -1,0 +1,2 @@
+ code generation, though they remain probabilistic systems that can produce inaccurate or misleading outputs.
+The development of AI has been accompanied by ongoing ethical and societal concerns. Early debates focused on the potential for machines to achieve human-level intelligence and the implications of such a scenario. More recently, concerns have centered on algorithmic bias,
