@@ -1,6 +1,6 @@
 # PHASE Hybrid Checkpoint — stabilise → diagnose → Phase-45-aligned decomposition
 
-**Status**: **ROOT FIX DEPLOYED 2026-05-29** — the 2026-05-25 "closed" (§5.9–5.11) was premature (Option A was a one-batch symptom patch validated on a too-small prompt; the SEGV reproduced on a large-context restore, §5.12). Real root found (§5.13): `build_defrag`'s per-position emission was unbounded because the `max_moves` cap counted runs, not cells → defrag graph arena overflow → `ggml_new_object` NULL → SIGSEGV (not a stale descriptor). Fixed at `ik_llama.cpp@5bf17cfa` (cap by cells); binding test + G3.a determinism + §6.4/§6.5/§6.7 stress all clean (no SEGV at 45k tokens / fragmentation 1.00 / 30-turn soak). **Deployed to production 2026-05-29 18:40Z (`build=4856 commit="5bf17cfa"`, `/health=200`)** — production no longer exposed. Remaining before formal re-closure: §6.6 Phase 45 D10.a 3-slot smoke and a short production soak before archiving (this phase was closed prematurely once). (`test-n-stream-kv-layout` was **retired** 2026-05-29 — a non-hermetic, never-in-CI model-driven test whose CPU-only setup can no longer reach the GPU/paged-4D layout it asserted; the invariant is gated in `specs/kv-cache/n_stream_layer.allium` + `CrossCodepathConsistency.allium`.)
+**Status**: **ROOT FIX DEPLOYED 2026-05-29** — the 2026-05-25 "closed" (§5.9–5.11) was premature (Option A was a one-batch symptom patch validated on a too-small prompt; the SEGV reproduced on a large-context restore, §5.12). Real root found (§5.13): `build_defrag`'s per-position emission was unbounded because the `max_moves` cap counted runs, not cells → defrag graph arena overflow → `ggml_new_object` NULL → SIGSEGV (not a stale descriptor). Fixed at `ik_llama.cpp@5bf17cfa` (cap by cells); binding test + G3.a determinism + §6.4/§6.5/§6.7 stress all clean (no SEGV at 45k tokens / fragmentation 1.00 / 30-turn soak). **Deployed to production 2026-05-29 18:40Z (`build=4856 commit="5bf17cfa"`, `/health=200`)** — production no longer exposed. **All runnable re-closure gates green (§5.14): §6.4/§6.5/§6.7 stress (77 restores, frag 1.00, no crash), G3.a determinism, D10.a 3-slot smoke.** Only the archive move remains, gated on a short time-based production soak (this phase was closed prematurely once). (`test-n-stream-kv-layout` was **retired** 2026-05-29 — a non-hermetic, never-in-CI model-driven test whose CPU-only setup can no longer reach the GPU/paged-4D layout it asserted; the invariant is gated in `specs/kv-cache/n_stream_layer.allium` + `CrossCodepathConsistency.allium`.)
 
 **Status (historical)**: opened 2026-05-25. Phase 1 (mitigation) → Phase 2 (diagnosis) → Phase 3a (Option A fence) shipped 2026-05-25, marked closed — see §5.9–5.11. Reopened 2026-05-29 (§5.12).
 
@@ -335,7 +335,21 @@ For qwen35, `max_nodes(n)=max(n·40, 32·n_tensors)` and `32·n_tensors` dominat
 - 2-turn ~12 k restore + 4-turn soak: **restore fired 5×, post-restore defrag clean, server alive, all turns 200, zero crash markers** (was: SIGSEGV on turn 2). Evidence `data/hybrid-checkpoint/hybridckpt-20260529T173622/`.
 - **G3.a NP determinism {1,2,4,8} byte-identical: PASS** (no regression; defrag bounding does not change final compaction). Evidence `data/hybrid-checkpoint/hybridckpt-determ-*/`.
 
-**Remaining before phase re-closure:** deploy `5bf17cfa` to production (production still runs the exposed `ceb534ae`); then the fuller §6 items not yet run — §6.4 turn-2 latency < 50 % of turn-1 + 20-token identity, §6.5 35 k-token long-context regression, §6.7 30-turn × 60-min soak, §6.6 Phase 45 D10.a 3-slot smoke. (G3.c and `test-n-stream-kv-layout` both retired 2026-05-29 — diagnostic / non-hermetic; G3.a + the gated Allium layout specs are the binding gates.)
+### 5.14 Re-closure verification COMPLETE (2026-05-29) — all runnable gates green
+
+Deployed `5bf17cfa` to production (`build=4856`, 18:40Z) and ran the §6 battery on it:
+
+| Gate | Result | Evidence |
+|---|---|---|
+| §6.4 restore latency + repro | ✅ PASS | t2 8.9 s ≪ t1 67 s, restore fired, reproducible |
+| §6.5 large-context regression | ✅ no crash | 45 k-token prefill + restore + defrag at **fragmentation 1.00**, turn-2 200 (turn-1 was a curl timeout on the oversized prefill, not a fault) |
+| §6.7 + re-closure soak | ✅ no crash | **77 restore turns** total (30 + 47), fragmentation 1.00, server alive, zero crash markers. Trailing HTTP 413s are graceful "prompt too big vs KV size" rejections (KV-capacity, not the SEGV) |
+| G3.a NP determinism {1,2,4,8} | ✅ PASS | byte-identical; defrag bounding doesn't change final compaction |
+| §6.6 D10.a 3-slot smoke | ✅ PASS | np=3, all 3 slots non-empty 200 — with `n_ctx` aligned to `n_parallel` (`196608=3×65536`; the assert `kv_self.size==n_ctx` requires `n_ctx % n_seq_max == 0`). Evidence `data/hybrid-checkpoint/d10a-rerun-*/` |
+
+Retired (not regressions, not re-run): `G3.c` r5-probe-c4 (stale diagnostic) and `test-n-stream-kv-layout` (non-hermetic; the KV-layout invariant is gated in `n_stream_layer.allium` + `CrossCodepathConsistency.allium`).
+
+**Remaining before the archive move:** a short **time-based production soak** on the deployed `5bf17cfa` (this phase was closed prematurely once — the first closure missed large-context restore; that gap is now explicitly covered, but a real-traffic soak before archiving is the disciplined final step). The synthetic soaks above already exercise 77 restores at fragmentation 1.00 without a crash.
 
 ## 6. Verification — end-to-end binding test script
 
