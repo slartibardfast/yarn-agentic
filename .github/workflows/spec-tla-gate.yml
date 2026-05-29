@@ -325,3 +325,34 @@ jobs:
             exit 1
           fi
           echo "ClipCrossDeviceFlow PASSES."
+
+      # ===========================================================================
+      # PHASE_CUDA_NATIVE_DISPATCH + async-reduce TLC checks
+      # (companions to the Allium specs added 2026-05-29)
+      # ===========================================================================
+
+      - name: TLC — AsyncReduce base (must PASS)
+        run: |
+          cd specs/async-reduce
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config AsyncReduceMC.cfg AsyncReduce.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on AsyncReduce base:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "AsyncReduce base PASSES."
+
+      - name: TLC — CUDANativeDispatch base (must PASS)
+        run: |
+          cd specs/cuda-native-dispatch
+          java -XX:+UseParallelGC -cp ../../.tla-tools/tla2tools.jar tlc2.TLC \
+            -workers 4 -config CUDANativeDispatchMC.cfg CUDANativeDispatchMC.tla \
+            > /tmp/tlc.log 2>&1
+          if grep -qE "Error:" /tmp/tlc.log; then
+            echo "TLC found an error on CUDANativeDispatch base:"
+            grep -A2 "Error:" /tmp/tlc.log
+            exit 1
+          fi
+          echo "CUDANativeDispatch base PASSES."

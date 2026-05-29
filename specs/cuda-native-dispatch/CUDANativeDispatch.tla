@@ -107,6 +107,12 @@ EnterDispatch(tid) ==
     /\ state = "IDLE"
     /\ tid \in HostThreadIds
     /\ iter <= MaxIters
+    \* Match the implementation: the SAME thread enters dispatch every
+    \* round. The first EnterDispatch picks a tid; subsequent rounds
+    \* must use the same tid. A negative-control variant removes this
+    \* guard and the HostThreadIsExactlyOne invariant fires — proof
+    \* that the invariant is load-bearing.
+    /\ (dispatch_thread_ids = {} \/ tid \in dispatch_thread_ids)
     /\ state'               = "CAPTURING"
     /\ dispatch_thread_ids' = dispatch_thread_ids \cup {tid}
     /\ cur_split'           = 0
@@ -140,7 +146,7 @@ EnqueueSplit ==
                     [b \in DOMAIN needs_sync |-> TRUE]
                 ELSE needs_sync
     /\ cur_split' = cur_split + 1
-    /\ UNCHANGED <<state, iter, dispatch_thread_ids>>
+    /\ UNCHANGED <<state, iter, dispatch_thread_ids, capture_active, graphs_launched>>
 
 \* All splits have enqueued. Transition to LAUNCHED via EndCapture +
 \* cudaGraphInstantiate + cudaGraphLaunch.
@@ -203,14 +209,17 @@ EvalsAreSequential ==
             (i < Len(Splits)) => eval_enqueued[i]
 
 \* I3: EventRecordedAfterEval. For every split with n_inputs > 0 that has
-\* been enqueued, event_recorded is set for that backend in the current
-\* iteration. Modeled inline in EnqueueSplit; this invariant just checks
-\* the invariant after the fact.
+\* been enqueued within the current dispatch round, event_recorded is set
+\* for that backend at the current iter. Bound to dispatch-active states
+\* ({ENQUEUING, LAUNCHED}): between rounds (state = COMPLETE / IDLE), iter
+\* has already advanced and the previously-recorded event slot bears no
+\* relation to the new iter.
 EventRecordedAfterEval ==
-    \A i \in 0..(Len(Splits) - 1):
-        LET sp == Splits[i + 1]
-        IN  (i < cur_split /\ sp.n_inputs > 0 /\ iter \in DOMAIN event_recorded[sp.backend_id]) =>
-            event_recorded[sp.backend_id][iter]
+    (state \in {"ENQUEUING", "LAUNCHED"}) =>
+        \A i \in 0..(Len(Splits) - 1):
+            LET sp == Splits[i + 1]
+            IN  (i < cur_split /\ sp.n_inputs > 0 /\ iter \in DOMAIN event_recorded[sp.backend_id]) =>
+                event_recorded[sp.backend_id][iter]
 
 \* I4: ReduceMarksAllParticipantsSticky. After a non-terminal reduce
 \* split is enqueued, every backend's needs_sync is TRUE.

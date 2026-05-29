@@ -66,7 +66,8 @@ Init ==
 StartFFN(d, l) ==
     /\ compute_state[d, l] = "IDLE"
     /\ \/ l = 0
-       \/ compute_state[d, l-1] = "DONE"
+       \/ /\ l > 0
+          /\ compute_state[d, l-1] = "DONE"
     /\ compute_state' = [compute_state EXCEPT ![d, l] = "COMPUTING_FFN"]
     /\ UNCHANGED << comm_state, evt_input_ready, evt_reduce_done, reduced >>
 
@@ -180,7 +181,8 @@ OverlapPossible ==
          /\ compute_state[d, l]   = "WAITING_REDUCE"
          /\ compute_state[d, l+1] = "IDLE"
          /\ \/ l = 0
-            \/ compute_state[d, l-1] = "DONE")
+            \/ /\ l > 0
+               /\ compute_state[d, l-1] = "DONE")
         => ENABLED StartFFN(d, l+1)
 
 ===============================================================================
