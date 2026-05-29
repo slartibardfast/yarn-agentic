@@ -1,6 +1,8 @@
 # PHASE Hybrid Checkpoint — stabilise → diagnose → Phase-45-aligned decomposition
 
-**Status**: opened 2026-05-25. Phase 1 in-flight. Phase 2 (diagnosis) and Phase 3 (decision-gated fix) pending.
+**Status**: **REOPENED 2026-05-29** — the 2026-05-25 "closed" (§5.9–5.11) was premature. The Option A `skip_next_defrag` fence is a one-batch symptom patch validated on a too-small (~1200-token) prompt; the SEGV **reproduces on a large-context restore** (`build_defrag → ggml_view_3d`, identical stack) on the deployed `ceb534ae`. See §5.12. Production is exposed on multi-turn text restore. Phase 3 must address the real root (build_defrag over post-restore split-tensor descriptors), not the one-batch delay.
+
+**Status (historical)**: opened 2026-05-25. Phase 1 (mitigation) → Phase 2 (diagnosis) → Phase 3a (Option A fence) shipped 2026-05-25, marked closed — see §5.9–5.11. Reopened 2026-05-29 (§5.12).
 
 **Branch**: `production/2026-q2-next` (top-level), `production/2026-q2-next` in the `ik_llama.cpp` submodule.
 
@@ -285,6 +287,39 @@ The user's original §4 plan listed three Phase 3 sub-paths (3a targeted in-plac
 Phase 3a is shipped at `d67da398`. **Phase 3b and 3c are not required**; the orphan audit findings stand as a record of why the smaller fix was the right one. If future architectural cleanup wants to revisit the `s_l` ownership boundary (e.g., as part of Phase 45 D9.8 — migrating remaining `llama_context` fields to `llama_session`), the defrag fence can be revisited at that time.
 
 **Status**: PHASE_HYBRID_CHECKPOINT closed 2026-05-25. Production stable on `build=4801 commit="d67da398"` with hybrid checkpoint restoration enabled.
+
+> **SUPERSEDED 2026-05-29 — see §5.12. This closure was premature.**
+
+### 5.12 REOPENED 2026-05-29 — Option A is insufficient for large-context restores
+
+Verifying the fix on the current deployed binary (`ceb534ae`, which includes `d67da398`) with a **~12 k-token** prompt — instead of the ~1200-token prompt the 2026-05-25 binding test used — **reproduces the original SEGV**. Evidence: `data/hybrid-checkpoint/hybridckpt-20260529T171234/` (script `scripts/verify-hybrid-checkpoint.sh`).
+
+**Identical SEGV stack** (coredumpctl PID 386855):
+
+```
+#0 ggml_new_tensor_impl  #1 ggml_view_3d  #2 llm_build_context::build_defrag
+#3 llama_build_graph_defrag  #4 llama_kv_cache_update  #5 llama_decode_internal
+#6 llama_decode  #7 process_batch_tokens  #8 update_slots
+```
+
+**The exact mechanism** (server log, turn 2):
+
+```
+restored context checkpoint took 42.61 ms (pos_min=12287, pos_max=12287)
+erased invalidated context checkpoint (pos_min=12595, pos_max=12595)
+defrag suspended for one decode batch (post-restore)   ← fence fired correctly
+fragmentation: 0.50                                     ← NEXT batch re-queues a defrag
+created context checkpoint 25 ...
+   → next llama_kv_cache_update runs the queued defrag → SIGSEGV in build_defrag
+```
+
+**Root cause (refines §5.7/§5.8).** The `skip_next_defrag` fence (`d67da398`) suppresses exactly **one** post-restore defrag-trigger check (`src/llama.cpp:6789`) and cancels any *pre*-queued `do_defrag` at the restore site (`:10560`). But the post-restore KV cache is still **0.50 fragmented**, so the *second* post-restore decode's trigger check re-queues a defrag, which runs on the *third* and crashes — because `build_defrag` **still cannot construct a `ggml_view_3d` over the post-restore split-tensor descriptors**. The one-batch "descriptors settle" assumption (§5.8) is false; suppressing one batch only delays the crash.
+
+**Why 2026-05-25 passed:** that binding test used a ~1200-token prompt, whose post-restore fragmentation stayed below `defrag_thold` → no defrag re-queued → no crash. The bug was **latent for large-context restores all along** — Option A was validated on a prompt too small to re-trigger defrag. Not a C-arc regression; an under-tested symptom patch.
+
+**Phase 3 must address the real root** — `build_defrag`'s graph construction over post-restore recurrent/split descriptors (the §5.8 "Option B/C" the closure skipped) — not extend the one-batch delay. Candidate directions:
+- **Stopgap (protect production):** either re-apply Phase 1 (disable recurrent restore → safe full-reprefill) OR suppress defrag entirely for recurrent/hybrid models (`defrag_thold` < 0 when `has_recurrent`) so restore keeps working without the crashing compaction. The latter preserves the restore perf win.
+- **Real fix:** make `build_defrag` robust to (or skip) the recurrent/split layers whose split-tensor descriptors it cannot view post-restore; or fix the restore/`kv_cache_rm` path that leaves those descriptors un-viewable. Needs Probe #4 (§5.8): log each `ggml_view_3d` in `build_defrag` with source-tensor identity + `->extra` validity to find the exact bad descriptor.
 
 ## 6. Verification — end-to-end binding test script
 
