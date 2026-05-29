@@ -4,7 +4,6 @@
 
 # Active
 
-- [PHASE_HYBRID_CHECKPOINT](active/PHASE_HYBRID_CHECKPOINT.md)
 - [PHASE_TU102_SPECIALIZATION](active/PHASE_TU102_SPECIALIZATION.md)
 
 # Archive
@@ -97,6 +96,7 @@
 
 ## Kernels and scheduling
 
+- [PHASE_HYBRID_CHECKPOINT — post-restore KV-defrag SEGV (defrag cap counted runs not cells); closed + deployed 2026-05-29](archive/phases/kernels-and-scheduling/PHASE_HYBRID_CHECKPOINT.md)
 - [PHASE_CUDA_NATIVE_DISPATCH — single-threaded CUDA-native dispatch (C0–C14), 6 Allium + 4 TLA+ gated; closed + deployed 2026-05-29](archive/phases/kernels-and-scheduling/PHASE_CUDA_NATIVE_DISPATCH.md)
 - [PHASE_MMQ_Q4_0_AR16 — full shape-invariant dispatch](archive/phases/kernels-and-scheduling/PHASE_MMQ_Q4_0_AR16.md)
 - [PHASE_ASYNC_REDUCE — Option B (planning)](archive/phases/kernels-and-scheduling/PHASE_ASYNC_REDUCE.md)
