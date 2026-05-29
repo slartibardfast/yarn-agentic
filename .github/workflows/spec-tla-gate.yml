@@ -67,6 +67,48 @@ jobs:
           source "$HOME/.cargo/env"
           allium check specs/mgpu-split/CrossCodepathConsistency.allium
 
+      # PHASE_CUDA_NATIVE_DISPATCH + async-reduce — 7 specs rewritten
+      # in valid Allium 3.2.3 during the 2026-05-28/29 tightening round.
+      # Each registers a CudaContext/Schedule/CapturedGraph-style entity
+      # tree and an invariant set; the gate catches any future edit that
+      # regresses the syntax or drops the structural references that
+      # currently keep allium check at exit 0.
+
+      - name: Allium syntax check (async-reduce)
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/async-reduce/async-reduce.allium
+
+      - name: Allium syntax check (single-threaded dispatch — C1+C2+C3+C6)
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/cuda-native-dispatch/single_threaded_dispatch.allium
+
+      - name: Allium syntax check (cross-device event chain — C4)
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/cuda-native-dispatch/cross_device_event_chain.allium
+
+      - name: Allium syntax check (multi-device graph cache — C5)
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/cuda-native-dispatch/multi_device_graph_cache.allium
+
+      - name: Allium syntax check (libmgpu subgraph capture — C7)
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/cuda-native-dispatch/libmgpu_subgraph_capture.allium
+
+      - name: Allium syntax check (calibrated dispatch framework — C0)
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/cuda-native-dispatch/calibrated_dispatch_framework.allium
+
+      - name: Allium syntax check (calibrated op equivalence — C8-C11)
+        run: |
+          source "$HOME/.cargo/env"
+          allium check specs/cuda-native-dispatch/calibrated_op_equivalence.allium
+
       - name: Allium obligation ledger drift check (DFlash)
         run: |
           source "$HOME/.cargo/env"
