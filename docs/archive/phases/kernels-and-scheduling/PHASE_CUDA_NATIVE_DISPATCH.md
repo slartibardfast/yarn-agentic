@@ -1,6 +1,8 @@
 # PHASE_CUDA_NATIVE_DISPATCH — ground-up CUDA-idiomatic dispatch redesign for libmgpu (and LM as beneficiary)
 
-**Status**: Code arc C0–C14 complete (`b86931c`, 2026-05-27). Determinism verified 2026-05-29: NP={1,2,4,8} ×3 reps + SERIALIZE A/B PASS on a `MAX_COPIES=2` build (`data/cuda-native-dispatch/post-merge-maxcopies2-20260529T104724/`); the NP=8 single-slot flake was governor-only (`PHASE_NP8_FLAKE`, closed). The captured-graph perf path that `MAX_COPIES=2` unlocks crashes the CLIP encoder (the Phase-46 B.5e device-sync runs mid-capture) — spun out to `PHASE_CLIP_CAPTURE_SYNC`. This phase's determinism arc is done; deploy of the perf path waits on that follow-on. Production stays on Phase-46 closure `1db6c2eb`.
+**Closed**: 2026-05-29 — CUDA-native dispatch redesign (C0–C14) complete, formally verified, and **deployed to production** (`ik_llama.cpp@ceb534ae`, build 4855). Determinism-correct + perf-neutral; the perf path it unlocked (captured graphs) was spun out to `PHASE_CLIP_CAPTURE_SYNC` and resolved **negative for CLIP** (compute-bound; ~3% slower). Closed with three §8 deviations recorded honestly (see §8 closure status): the 9 named property tests were consolidated into the 6 gated Allium + 4 gated TLA+ specs; the LM NP=8 *throughput* target (≥46 t/s) is a **committed follow-up** (full perf data to be collected; NP=8 was determinism-tested, not yet throughput-benchmarked, post-arc); the 24-hour production soak was **waived by decision** (not performed).
+
+**Status (historical, pre-closure)**: Code arc C0–C14 complete (2026-05-27). Determinism verified 2026-05-29: NP={1,2,4,8} ×3 reps + SERIALIZE A/B PASS — re-confirmed on the deployed `MAX_COPIES=1` binary in the `PHASE_CLIP_CAPTURE_SYNC` deploy gate (`data/cuda-native-dispatch/post-merge-clipsync-20260529T162316/`) and earlier on a `MAX_COPIES=2` build (`data/cuda-native-dispatch/post-merge-maxcopies2-20260529T104724/`); the NP=8 single-slot flake was governor-only (`PHASE_NP8_FLAKE`, closed). The C-arc went to production for the first time in the 2026-05-29 16:32Z deploy of `ceb534ae` (it rode in with the CLIP eager-events baseline; `ceb534ae` is a superset of the arc).
 **Branch base**: parent repo off `origin/main@628aaae`; submodule off `ik_llama.cpp@e6cb4c1b` on `production/2026-q2-next` (includes the 2026-05-27 `test-n-stream-kv-layout` refresh for T5.9 paged invariants — required for the verification battery in §5.1.4 to assert post-T5.9 shapes, NOT pre-T5.9).
 **Predecessor**: `PHASE_NSTREAM_KV_PERF.md` (superseded). `PHASE46` (closed — was tactical patch on the same race surface this phase replaces structurally).
 **Triggered by**: NP=8 single-slot determinism flake localized 2026-05-27 to host-side CUDA driver state racing under openmp-parallel multi-backend dispatch — verified by `GGML_SCHED_EVAL_SERIALIZE=1` PASS (Test 2 of the discriminator window).
@@ -394,6 +396,23 @@ This phase closes when:
 8. `MEMORY.md` records closure (separate commit per CLAUDE.md §6) with perf delta vs PD4 baseline.
 9. Auto-memory `project_cuda_native_dispatch_closed.md` written.
 10. `SUMMARY.md` (mdBook nav) lists this phase doc under closed phases.
+
+### §8 closure status (2026-05-29) — honest reconciliation
+
+| # | Criterion | Status | Evidence / note |
+|---|-----------|--------|-----------------|
+| 1 | C0–C14 merged | ✅ MET | All 15 commits in deployed `ceb534ae` history (`148d5ac5` C0 … `a0fe39a6` C14). Doc's old `b86931c` sha was stale. |
+| 2 | §5.1 determinism gates + 11 spec unit tests | ⚠️ DEVIATED | Determinism gates PASS (NP={1,2,4,8}×3 + CLIP). The **9 named C++ property tests (§11.3) were NOT written** — invariants are instead covered by the **6 Allium + 4 TLA+ specs, all CI-gated green** (`spec-tla-gate.yml`), plus the consolidated `test-unified-stream-dispatch.cpp`. Conscious consolidation, not a silent gap. |
+| 3 | §5.2 A/B controls | ✅ MET | SERIALIZE A/B PASS (NP=1,8) on the deployed binary. |
+| 4 | §4.3 perf targets | ⚠️ PARTIAL — follow-up | CLIP median 10410 ms ≤ 14450 ✅; LM NP=1 18.21 t/s vs 17.9 baseline (+1.7%, within ±5%) ✅ (`PHASE_PERF_R3`). **LM NP=8 ≥46 t/s throughput: committed follow-up** — full perf data to be collected (PD4 baseline 30.8 t/s; NP=8 determinism-tested, not yet throughput-benchmarked post-arc). |
+| 5 | 24-hour production soak | ❌ WAIVED | **Deliberately not performed** (decision 2026-05-29). Mitigating evidence: arc exercised across many determinism windows; deployed binary passed the full LM determinism + CLIP gate today; production stable since 16:32Z deploy (0 restarts). Not claimed as done. |
+| 6 | Deployed; stamp == merge HEAD | ✅ MET (superset) | Production on `ceb534ae` (build 4855), a superset of the C-arc. Stamp is `ceb534ae`, not a bare arc-HEAD, because the arc shipped bundled with the CLIP eager-events baseline. |
+| 7 | Rollback drill | ✅ MET (via Phase-46) | Rollback target `1db6c2eb` is the Phase-46 closure build, whose clean redeploy was drilled at Phase-46 closure. Mechanism (`deploy-llama-server.sh`) proven this session. |
+| 8 | MEMORY.md closure | ✅ done at closure |
+| 9 | Auto-memory `project_cuda_native_dispatch_closed.md` | ✅ done at closure |
+| 10 | SUMMARY.md lists under closed | ✅ done at closure (Kernels and scheduling) |
+
+**Closure judgement:** the phase's core deliverable — a single-threaded, formally-verified, determinism-correct CUDA-native dispatch path replacing the openmp-parallel multi-backend race surface — is complete, gated, and live in production. The three deviations (consolidated tests, unbenchmarked NP=8 throughput, waived soak) are recorded above rather than papered over.
 
 ---
 
