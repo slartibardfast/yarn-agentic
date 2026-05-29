@@ -1,7 +1,7 @@
 # PHASE_CLIP_CAPTURE_SYNC — make the CLIP encoder capture-legal so MAX_COPIES=2 deploys
 
 **Opened**: 2026-05-29
-**Status**: OPEN — **new faster baseline landed** (`ik_llama.cpp@7a43ef87`); captured-graph replay deferred.
+**Status**: RESOLVED, awaiting closure move — capture question answered (negative). Captured-graph replay now **functional + byte-identical** (`ik_llama.cpp@ceb534ae`) but **NOT a perf win for CLIP** (~3% slower; encode is compute-bound), so it stays default-OFF behind `GGML_SCHED_OUTER_CAPTURE`. The eager decoupled-events baseline (`ik_llama.cpp@7a43ef87`, ~28% faster, byte-identical) is the deploy candidate; that deploy is a **separate user decision** (production still on Phase-46 closure `1db6c2eb`). Archive on deploy-decision.
 **Triggered by**: `data/cuda-native-dispatch/post-merge-maxcopies2-20260529T104724/report.md` — the MAX_COPIES=2 verification window crashed the CLIP encoder on encode 1.
 **Predecessor**: `PHASE_CUDA_NATIVE_DISPATCH` (determinism arc complete + verified).
 **Production impact**: none yet (not deployed). Production stays on Phase-46 closure `1db6c2eb`. The new baseline is committed and verified, ready to deploy when chosen.
@@ -29,16 +29,50 @@ path took. Verified (RUN_ID `clipsync-20260529T154119`):
 
 Committed `ik_llama.cpp@7a43ef87`, default-safe (non-capture path unchanged).
 
-## Still open — captured-graph replay (behind `GGML_SCHED_OUTER_CAPTURE`)
+## Captured-graph replay — now functional, but not a CLIP perf win (2026-05-29)
 
-Outer capture is OFF by default. With it on, the warm-first scheme (eager
-encode 1 to grow allocators, capture from encode 2) reaches the capture pass
-but hits `CUDA error: dependency created on uncaptured work in another stream`
-at `ggml-cuda.cu:5686` (`copy_inputs`' `cudaStreamWaitEvent` depends on a
-cross-backend event recorded outside the capture region). Next step: make the
-C4 join cover the cross-backend events `copy_inputs` waits on (or re-record
-them inside the capture). The eager baseline already banks most of the
-available win; capture replay is incremental.
+Outer capture is OFF by default. The warm-first scheme (eager encode 1 to grow
+allocators, capture from encode 2, cache-hit replays thereafter) now runs
+end-to-end under `GGML_SCHED_OUTER_CAPTURE=1`: **10/10 byte-identical** to the
+eager baseline (sha `fb5167dbc1e7f95b`), capture fires (count=9 over a 10-encode
+run = 1 capture + 8 replays), no crash. Verified RUN_ID `clipcap-20260529T161531`.
+
+Four blockers were peeled in order (each hidden behind the prior), committed
+`ik_llama.cpp@ceb534ae`:
+
+1. **WAR-guard cross-stream wait** (`copy_inputs`, ggml-backend.cpp). The
+   consumer `event_wait` targets the consumer's OWN sched event, last recorded
+   in the prior (uncaptured) encode → illegal dependency on uncaptured work
+   inside capture (`ggml-cuda.cu:5686`). Skipped on the in-capture intermediate
+   pass; the real producer→consumer RAW edge is carried by
+   `cpy_tensor_async`'s `copy_event`, and the warm encode fully drains before
+   `BeginCapture`.
+2. **`cudaMemcpyPeerAsync` is capture-prohibited** (`ggml-cuda.cu:4464`). With
+   peer access enabled (UVA), a 1D linear DtoD `cudaMemcpyAsync` on the src
+   stream is the identical, capturable transfer. Used only while capturing.
+3. **calloc'd `std::unordered_map` SIGFPE** (`sched->outer_graphs`). The
+   calloc'd map lands with `bucket_count==0`; `find()` survives empty
+   (libstdc++ small-size linear scan), but the first insert computes
+   `hash % 0` → SIGFPE in `compute_splits` on the capture pass. Replaced with
+   calloc-safe parallel `std::vector` keys+execs (same fix already applied to
+   `outer_topo_seen`). A latent landmine for anyone enabling the flag.
+4. **Poisoned-event host sync** (`copy_inputs` USER_ONLY pre-stage). A host
+   `cudaEventSynchronize` on a sched event recorded INSIDE the prior capture →
+   "invalid argument" (`ggml-cuda.cu:5713`) on the next cache-hit dispatch. The
+   pre-stage now drains the consumer device directly (legal outside capture;
+   primary stream + C4 fan-in cover every secondary).
+
+**Perf finding — the reason this stays default-OFF.** Captured-graph median
+**10734 ms** vs eager decoupled baseline **10423 ms** — **~3% slower, not
+faster.** A CLIP encode is **compute-bound** (10+ s of matmul/attention), not
+dispatch-bound, so collapsing 271 split dispatches into one `cudaGraphLaunch`
+saves negligible overhead while adding a per-replay device-sync. The phase's
+original premise — "CLIP is the consumer that benefits from captured graphs" —
+was wrong for the latency that matters. The eager decoupled-events path already
+banked the real win (coarse-sync removal). **Capture is correct, now a closed
+question, and not a deploy candidate for CLIP.** (Whether the LM token-gen path
+— many tiny latency-bound ops — benefits from capture is a separate, genuinely
+open question under `PHASE_CUDA_NATIVE_DISPATCH`, not pursued here.)
 
 ---
 
