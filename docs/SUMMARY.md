@@ -5,7 +5,6 @@
 # Active
 
 - [PHASE_CUDA_NATIVE_DISPATCH](active/PHASE_CUDA_NATIVE_DISPATCH.md)
-- [PHASE_CLIP_CAPTURE_SYNC](active/PHASE_CLIP_CAPTURE_SYNC.md)
 - [PHASE_HYBRID_CHECKPOINT](active/PHASE_HYBRID_CHECKPOINT.md)
 - [PHASE_TU102_SPECIALIZATION](active/PHASE_TU102_SPECIALIZATION.md)
 
@@ -36,6 +35,7 @@
 
 ## Multi-GPU
 
+- [PHASE_CLIP_CAPTURE_SYNC — CLIP encode 28% faster (decoupled events); capture functional but not a CLIP win (closed + deployed 2026-05-29)](archive/phases/multi-gpu/PHASE_CLIP_CAPTURE_SYNC.md)
 - [Vulkan multi-GPU workstream plan](archive/phases/multi-gpu/PHASE_VULKAN_MULTIGPU_PLAN.md)
 - [Phase 0 — Backend-ops test failure fixes](archive/phases/multi-gpu/PHASE0.md)
 - [Phase 1 — Async interface and events](archive/phases/multi-gpu/PHASE1.md)

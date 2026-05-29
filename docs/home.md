@@ -20,6 +20,7 @@ Production model: `qwen3.6-27b-V-F1.T1.lm_head-f16.gguf` — BF16 weights, F16 l
 
 Reverse-chronological. One link per line.
 
+- 2026-05-29 — `PHASE_CLIP_CAPTURE_SYNC` closed + deployed (`ceb534ae`). Multi-GPU CLIP encode 28% faster via decoupled cross-sync events (fine-grained `cudaStreamWaitEvent` replacing coarse device syncs), byte-identical + LM-unregressed. Captured-graph replay made functional (4 blockers: WAR-guard cross-stream wait, `cudaMemcpyPeerAsync` capture-illegality, calloc'd `unordered_map` SIGFPE, captured-event host-sync poison) but proven ~3% *slower* for compute-bound CLIP — kept default-OFF behind `GGML_SCHED_OUTER_CAPTURE` for future (LM) scenarios. [archive](archive/phases/multi-gpu/PHASE_CLIP_CAPTURE_SYNC.md)
 - 2026-05-28 — `PHASE_R1_CLIP_RACE` Phase A closed and deployed. CLIP cross-encode non-determinism localized to two disjoint failure modes; per-node sync fence (`CLIP_DISABLE_SYNC_FENCE=1` to revert) and B.5e activation-buffer-clear both required for 10/10 byte-identical encodes. [archive](archive/phases/determinism/PHASE_R1_CLIP_RACE.md)
 - 2026-05-28 — `PHASE_PERF_R3_FOLLOWUP` closed. R1 ctx-allocation tax narrow-fixed via `ggml_backend_sched_set_zero_on_reset` opt-out: `-25.9%` → `-7.3%` at ctx=256k. [archive](archive/phases/determinism/PHASE_PERF_R3_FOLLOWUP.md)
 - 2026-05-27 — `PHASE_CUDA_NATIVE_DISPATCH` C0–C14 code arc complete; C14 live-verification artifact landed. [active](active/PHASE_CUDA_NATIVE_DISPATCH.md)

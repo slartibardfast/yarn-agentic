@@ -1,10 +1,10 @@
 # PHASE_CLIP_CAPTURE_SYNC — make the CLIP encoder capture-legal so MAX_COPIES=2 deploys
 
 **Opened**: 2026-05-29
-**Status**: RESOLVED, awaiting closure move — capture question answered (negative). Captured-graph replay now **functional + byte-identical** (`ik_llama.cpp@ceb534ae`) but **NOT a perf win for CLIP** (~3% slower; encode is compute-bound), so it stays default-OFF behind `GGML_SCHED_OUTER_CAPTURE`. The eager decoupled-events baseline (`ik_llama.cpp@7a43ef87`, ~28% faster, byte-identical) is the deploy candidate; that deploy is a **separate user decision** (production still on Phase-46 closure `1db6c2eb`). Archive on deploy-decision.
+**Closed**: 2026-05-29 — eager decoupled-events baseline (`ik_llama.cpp@ceb534ae`) deployed to production (28% faster CLIP, byte-identical, LM-unregressed); capture path made functional but proven not a CLIP perf win, kept default-OFF for future (e.g. LM) scenarios.
 **Triggered by**: `data/cuda-native-dispatch/post-merge-maxcopies2-20260529T104724/report.md` — the MAX_COPIES=2 verification window crashed the CLIP encoder on encode 1.
 **Predecessor**: `PHASE_CUDA_NATIVE_DISPATCH` (determinism arc complete + verified).
-**Production impact**: none yet (not deployed). Production stays on Phase-46 closure `1db6c2eb`. The new baseline is committed and verified, ready to deploy when chosen.
+**Production impact**: DEPLOYED 2026-05-29 16:32Z — production now on `ceb534ae` (`build=4855`), pre-deploy gate green (CLIP 10/10 byte-identical sha `fb5167dbc1e7f95b` median 10410 ms; LM NP={1,2,4,8}×3 + SERIALIZE A/B all PASS). Capture stays default-OFF behind `GGML_SCHED_OUTER_CAPTURE`.
 
 ## Outcome so far (2026-05-29)
 
