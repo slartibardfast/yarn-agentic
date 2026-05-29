@@ -36,9 +36,9 @@ The user's first instinct was wholesale adoption of upstream `llama_memory_hybri
 
 ### Gate-binding tests that would need re-certification
 
-- **G3.a** — single-GPU NP-determinism byte-identity at NP∈{1,2,4,8} (`scripts/test-production-np-determinism.sh`).
-- **G3.c** — Bug C absence (`scripts/r5-probe-c4.sh`). 0/20 divergences on Qwen 3.6 27B.
-- **`tests/spec/test-n-stream-kv-layout.cpp`** — `KVTensorIsFourD` binding test.
+- **G3.a** — NP-determinism byte-identity at NP∈{1,2,4,8} (`scripts/test-production-np-determinism.sh`). **Authoritative determinism gate.**
+- ~~**G3.c** — Bug C absence (`scripts/r5-probe-c4.sh`)~~. **Removed 2026-05-29.** `r5-probe-c4.sh` was a single-GPU NP=2-vs-NP=1 *diagnostic-only* probe from the R5/NP-flake investigation (self-marked "delete after R5 closure"); that flake was root-caused to the CPU governor (`PHASE_NP8_FLAKE`, closed) and the authoritative determinism contract is G3.a. The probe was deleted with the rest of the R5 diagnostic family.
+- **`tests/spec/test-n-stream-kv-layout.cpp`** — `KVTensorIsPaged4D` binding test (live; bound by `specs/mgpu-split/CrossCodepathConsistency.allium`). Run as `test-n-stream-kv-layout MODEL [np]` with the paged/`-fa` context it expects.
 - **Phase 45 D10.a** — 3-slot smoke.
 - **Phase 45 D10.e** — multi-slot output determinism (OPEN).
 
@@ -335,7 +335,7 @@ For qwen35, `max_nodes(n)=max(n·40, 32·n_tensors)` and `32·n_tensors` dominat
 - 2-turn ~12 k restore + 4-turn soak: **restore fired 5×, post-restore defrag clean, server alive, all turns 200, zero crash markers** (was: SIGSEGV on turn 2). Evidence `data/hybrid-checkpoint/hybridckpt-20260529T173622/`.
 - **G3.a NP determinism {1,2,4,8} byte-identical: PASS** (no regression; defrag bounding does not change final compaction). Evidence `data/hybrid-checkpoint/hybridckpt-determ-*/`.
 
-**Remaining before phase re-closure:** deploy `5bf17cfa` to production (production still runs the exposed `ceb534ae`); then the fuller §6 items not yet run — §6.4 turn-2 latency < 50 % of turn-1 + 20-token identity, §6.5 35 k-token long-context regression, §6.7 30-turn × 60-min soak, §6.6 G3.c + `test-n-stream-kv-layout`.
+**Remaining before phase re-closure:** deploy `5bf17cfa` to production (production still runs the exposed `ceb534ae`); then the fuller §6 items not yet run — §6.4 turn-2 latency < 50 % of turn-1 + 20-token identity, §6.5 35 k-token long-context regression, §6.7 30-turn × 60-min soak, §6.6 `test-n-stream-kv-layout` + Phase 45 D10.a 3-slot smoke. (G3.c dropped — the `r5-probe-c4` diagnostic was removed; G3.a is the determinism gate.)
 
 ## 6. Verification — end-to-end binding test script
 
@@ -346,7 +346,7 @@ For qwen35, `max_nodes(n)=max(n·40, 32·n_tensors)` and `32·n_tensors` dominat
 3. **Phase 2 diagnosis evidence.** CRC mismatch or sizing log line that pinpoints the root cause. Recorded in §5.
 4. **Phase 3 with-restore correctness** (if 3a or 3b). Two-turn same-prompt + delta. Turn 2 journal shows `restored context checkpoint took N ms`; **both turns complete without SEGV**; turn 2 wall time **< 50 %** of turn 1; turn 2 first-20 tokens semantically identical to a single-shot reference (at `--temp 0`).
 5. **Regression — long-context fragmentation.** 35 k-token prompt; `fragmentation: 0.9+`; no GGML_ASSERT, no SEGV. Validates that the Layer 1 fix still holds.
-6. **Regression — gate binding.** Re-run G3.a, G3.c, `test-n-stream-kv-layout`, Phase 45 D10.a 3-slot smoke. All must remain PASS.
+6. **Regression — gate binding.** Re-run G3.a, `test-n-stream-kv-layout`, Phase 45 D10.a 3-slot smoke. All must remain PASS. (G3.c retired — `r5-probe-c4` was a diagnostic-only probe, removed 2026-05-29; G3.a is the authoritative determinism gate.)
 7. **Multi-turn soak.** 30 turns × 60 minutes against a 5 k-token shared prefix. Service stays `active (running)`; no `Restart=on-failure` events; per-turn wall-clock variance < 20 % after turn 2.
 
 Stretch criterion (Phase 3a or 3b only): second-turn latency drops **≥ 5×** vs Phase 1's full-reprefill baseline on a 30 k-token shared prefix.
