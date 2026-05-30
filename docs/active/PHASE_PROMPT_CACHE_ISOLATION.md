@@ -396,22 +396,33 @@ which already restore the correct binding (`checkpoint_restore` copies `cells_sn
 disabled — current prod (`--cache-ram 0 --ctx-checkpoints 0`) reprocesses **everything** and has **no**
 fast-restore, so the fix is a net perf *gain*, not a tax.
 
-**Step 1 — Minimal-field micro-probe (decides the leanest reset; perf-neutral, but right-sizes the
-fix).** Env-gated arms isolating which field carries the leak, all seq-scoped to seq 0:
-  - E1: reset only `cells[].src=i` for the freed seq cells.  E2: only `head=0`.  E3: only
-    `paged.free_seq(seq)`.  Expect E1 (src) → 0/5 (the SSM copy-source is the binding). Confirms the
-    smallest correct reset and whether a seq-scoped reset matches the global `kv_cache_clear` 0/5.
+**Step 1 — Minimal-field micro-probe — DONE (2026-05-30 #4, `qnextmp-20260530T182...`).** Three
+env-gated arms applied one `kv_cache_clear` action each, after `seq_rm`, on the full-clear switch:
+  - **SRC** (`cells[].src=i` all cells): **3/5 leak** — the SSM copy-source is NOT the binding.
+  - **HEAD** (`head=0` + `v_heads=0`): **0/5 — load-bearing.** Almost certainly `v_heads`, which
+    indexes the qwen3next **recurrent V-cache tail** (`llama.cpp:845` "qwen3next recurrent state is
+    stored in a dedicated V-cache tail (per sequence)"). This reconciles every prior negative: the
+    leaking state lives in the V-cache tail, so zeroing `s_l` (Arm B) and `src` (Arm SRC) missed it.
+  - **PAGED** (`paged.free_seq` standalone): **CRASH** — `GGML_ASSERT(blk_idx < btbl.size())`
+    `llama.cpp:5419` (breaks the T5.2/T5.3 block-table invariant `seq_rm` maintains via its paired
+    re-alloc). `paged` reset is unsafe in isolation → **ruled out**.
+  ⇒ Minimal validated reset = **`head=0` + `v_heads=0`** (O(n_stream), no cell loop, no crash).
+  Open sub-question (optional, not blocking): split head-only vs v_heads-only — `v_heads` is the
+  expected load-bearing one. Resetting both is cheap and validated, so the fix uses both.
 
-**Step 2 — Seq-scoped binding reset at `do_reset` (the fix).** In `apply_checkpoint` do_reset (or the
-consume-path full-clear, `server-context.cpp:3925`), after the `seq_rm(0,-1)`, reset **only the
-switching seq's** binding (the field(s) Step 1 proved load-bearing — minimally `cells[].src=i` for
-that seq's cells + `paged.free_seq(seq)`; `head` reset is an allocation hint, set if E2 shows it
-matters). Seq-scoped (not the global `kv_cache_clear`) so it is correct under `--parallel > 1` — a
-global clear would wipe *other* live conversations' state. Gate strictly to the recurrent/hybrid
-+ do_reset path so the reuse path is untouched.
-  - Fallback if Step 1 shows the fields are entangled: gate the **full** `kv_cache_clear` to the
-    do_reset path only. Validated 0/5, perf-neutral for `--parallel 1` (current prod), but wrong for
-    multi-slot — acceptable only while prod stays `--parallel 1`; not the preferred shape.
+**Step 2 — Minimal binding reset at `do_reset` (the fix).** Step 1 settled the field: reset
+**`head` and `v_heads`** on the recurrent/hybrid full-clear switch. In `apply_checkpoint` do_reset
+(or the consume-path full-clear, `server-context.cpp:3925`), after `seq_rm(0,-1)`:
+  - `--parallel 1` (current prod): `transformer_kv.head = 0; v_heads[0] = 0;` — exact validated 0/5.
+  - `--parallel > 1` (future-safe): scope the `v_heads` reset to the **switching seq's stream**, not
+    all streams (a global `v_heads=0` could disturb other live seqs' recurrent V-tail index). `head`
+    is a global allocation search-hint (find_slot checks occupancy), so resetting it is safe either
+    way. The seq→stream map is available at the call site.
+  - **Do NOT** touch `paged` (Step 1: standalone `free_seq` crashes the block-table invariant) or
+    use the full `kv_cache_clear` (heavier, and wrong for multi-slot). Gate strictly to the
+    recurrent/hybrid + do_reset path so the reuse path is untouched.
+  Cost: O(n_stream) integer writes — strictly cheaper than the full clear, negligible vs the prefill
+  that the do_reset path is already doing.
 
 **Step 3 — Restore reuse (the actual performance recovery).** Revert the interim profile to
 `--cache-ram 40960 --ctx-checkpoints 64` (restore `.bak-preleak-20260530`). With Step 2 making the
