@@ -273,15 +273,62 @@ cheap checksum of `s_l[slot]` before/after the France prefill. This tells us (i)
 reprocess. Confirms the mechanism before committing the fix, and reveals whether the existing
 reset path is a separate latent bug worth its own fix.
 
-**Open design questions for review:**
-- Zero-on-release vs zero-on-recycled-alloc — release is simpler (have the seq→slot map) and off
-  the hot decode path; chosen. (Release only fires on full-clear = seq done; no path re-allocs a
-  released slot expecting its old state.)
-- Fix the existing `reset_state` path *as well* (make the kernel consume the zeroed state), or
-  rely solely on zero-at-release? The probe decides — if the scale-reset is structurally
-  cosmetic, zero-at-release is the clean single fix; if it's a near-miss, repairing it may be
-  cheaper and keeps the reset on the decode path where the engine intended it.
-- Should `llama_kv_cache_clear` also zero (defensive)? Leaning yes, cheap.
+### Best-practice grounding (located 2026-05-30 #2)
+
+The open design questions were resolved against how production hybrid/SSM servers handle this
+**exact** bug class, not by local judgement.
+
+- **This is a known, named bug class.** AI21's "one token to corrupt them all" post-mortem
+  describes the identical failure: *"stale recurrent state leaking between requests sharing a
+  cache slot … the cache slot contained garbage from a previous, completed request."* Their fix
+  was **not** to memset storage on free — it was to **correctly classify the new sequence** so it
+  runs the **prefill kernel, which always initializes state to zero** (`num_computed_tokens==0`
+  ⇒ prefill ⇒ zero-init). Lesson quoted: *"the SSM state is loaded as a complete vector before
+  updates, making isolation critical for Mamba-based models sharing cache slots."*
+- **The SOTA mechanism is a kernel-honored per-sequence flag, not storage scrubbing.** vLLM's
+  selective-scan takes `has_initial_state` (bool per batch row): *"if false (new sequence),
+  initialize to zero; if true, load from cache,"* with the initial state addressed by
+  `cache_indices` / `initial_state_idx` (storage **by index**). So (a) the kernel reads initial
+  state from the slot's storage by index — confirming why our `ggml_scale(0)` on a discarded view
+  is cosmetic — and (b) the idiomatic reset is a flag the **kernel** branches on, applied at the
+  fresh-sequence decode, never a free-time memset.
+- **SGLang** enforces isolation at the **state-storage boundary** (snapshot-copy of the matched
+  state per request: *"the matched state must be fully copied as a snapshot … ensuring
+  isolation"*) — again, a value operation on the state storage at sequence start, not a flag on a
+  graph intermediate.
+
+**Resolved decisions (grounded):**
+
+1. **Repair the existing `reset_state` path — don't add a parallel free-time memset.** The ik fork
+   *already has* the SOTA mechanism: `reset_state = (batch.pos[0]==0)` is precisely vLLM's
+   `has_initial_state==false` / AI21's `num_computed_tokens==0`, and our position analysis shows
+   it is correctly *computed* on every context-switch. It is only **mis-wired**: the zero is
+   applied to a cast/view (`state_f32`) the SSM kernel never consumes, while the kernel loads the
+   initial state from `s_l[slot]` storage by index (vLLM-style). The fix is to make `reset_state`
+   actually zero the **storage the kernel reads** — i.e., honor the flag where vLLM/AI21 honor it
+   (fresh-sequence prefill), keeping the reset on the decode path the engine already intended.
+2. **Trigger at fresh-sequence use, not at slot release.** vLLM zero-inits in the prefill kernel
+   at first use; AI21's fix routes new sequences through prefill. Zeroing on *free* is off-pattern
+   (wasted when a slot is never reused; leaves the correctness dependent on free-time bookkeeping
+   rather than the prefill classification that every fresh sequence already performs).
+3. **Zero-at-release is demoted to a defensive fallback,** not the primary fix. It is still robust
+   (guarantees storage is zero regardless of the flag), so it remains the contingency if the probe
+   shows the `reset_state` repair is more invasive than expected — but it is not the SOTA shape.
+4. **Probe first (unchanged, reinforced).** The AI21 case shows how subtle the trigger is (a
+   scheduler edge-case mis-set the equivalent flag). The one-probe step (log `batch.pos[0]` /
+   `reset_state`, checksum `s_l[slot]` pre/post prefill) confirms the flag's runtime value and
+   that the kernel's consumed initial state is the stale storage — before any code change.
+5. **`llama_kv_cache_clear` defensive zero:** optional, low-priority. Isolation is load-bearing on
+   the per-sequence reset flag (1), as in vLLM/SGLang; a full-clear memset is belt-and-suspenders.
+
+**Revised primary fix:** make `reset_state==true` zero the recurrent-state storage the SSM kernel
+actually reads for the fresh sequence (`s_l[slot]` column — conv+ssm, one column), at the
+fresh-sequence prefill — repairing the existing in-graph reset rather than adding a free-time
+memset. Verification gates unchanged (repro → 0/5 + determinism + reuse intact).
+
+Sources: AI21 "one token to corrupt them all" (vLLM Mamba state-bleed post-mortem);
+PyTorch/vLLM "Hybrid Models as First-Class Citizens"; vLLM `mamba_ssm` selective-scan API
+(`has_initial_state`, `cache_indices`); PyTorch/SGLang "Hybrid Models Meet SGLang" + MambaRadixCache.
 
 ---
 
