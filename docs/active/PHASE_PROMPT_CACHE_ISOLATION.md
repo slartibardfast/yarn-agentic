@@ -157,8 +157,14 @@ another salt.
 
 ## Tasks
 
-- [ ] A — `MIN_CACHE_REUSE_LCP = 2048` guard in `server_prompt_cache::load()`.
-- [ ] B — `X-Prompt-Cache-Salt` plumbing (4 files) + nginx `proxy_set_header`.
+- [~] A — `MIN_CACHE_REUSE_LCP = 2048` guard in `server_prompt_cache::load()`.
+      **Implemented + verified** on the build-tree binary (submodule `eb98047f`);
+      pending deploy. Verified: short "hi" `reuse_delta=0` + topic-free; long
+      re-visit `reuse_delta=1` (prefill 3035→475 tok).
+- [~] B — `X-Prompt-Cache-Salt` plumbing (4 files) + nginx `proxy_set_header`.
+      **Implemented + verified** (submodule `eb98047f`); pending deploy. Verified:
+      `Y@beta reuse_delta=0` (isolation) vs `Y@alpha reuse_delta=1` (same-salt
+      reuse). nginx `proxy_set_header` line still to be added at deploy.
 - [ ] C — audit + fix the hybrid recurrent-state rewind on prompt-cache restore.
 - [ ] D — fair-share (max-min) eviction across salts so a busy tenant can't starve
       others; replaces the global-FIFO `update()` evict.
