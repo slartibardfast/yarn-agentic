@@ -326,6 +326,37 @@ actually reads for the fresh sequence (`s_l[slot]` column — conv+ssm, one colu
 fresh-sequence prefill — repairing the existing in-graph reset rather than adding a free-time
 memset. Verification gates unchanged (repro → 0/5 + determinism + reuse intact).
 
+### PROBE RESULT 2026-05-30 (#2) — recurrent state RULED OUT; fix hypothesis NEGATIVE
+
+`data/whole-system-profile/qnextprobe-20260530T174109`, two env-gated arms on the prod-equiv
+config (binary built with `[QNEXT_PROBE]`/`[QNEXT_PROBE_ZERO]`, both default-off):
+
+- **Arm A (`QNEXT_PROBE=1`):** `reset_state=1` on **every** context-switch (`pos0=0`, confirmed
+  by the log) — the existing in-graph reset IS firing — yet leak persists **3/5**. And the scaled
+  state is consumed: `state_f32 = ggml_scale(state_dst, 0)` feeds `ggml_ssm_conv` (delta-net.cpp:368)
+  and `build_fused_delta_net` (:410). So the DeltaNet layers process the new prompt from a **zero
+  recurrent input** and aqueduct still leaks.
+- **Arm B (`+QNEXT_PROBE_ZERO=1`):** zeroing `transformer_kv.s_l[slot]` at release executed
+  (`zeroed s_l slot 0 across 48 layers`) — leak **unchanged: 3/5, byte-identical pattern**
+  (t0/t2/t3 leak, t1/t4 clean, in both arms).
+
+**Conclusion: the qnext recurrent state is NOT the leak vector** (ruled out by two independent
+zeroing mechanisms — in-graph input scale + storage memset). The earlier root-cause framing
+(qnext slot reuse) was **wrong**; reopen the diagnosis. The fix design above is **withdrawn**.
+
+**Residual ambiguity (one untested path):** the probe did not checksum that Arm B's split-tensor
+`tensor_set` actually landed, and did not confirm whether `ggml_ssm_conv` re-gathers conv state
+from storage via `inp_s_seq_qnext` ignoring the zeroed arg. So a narrow recurrent-via-conv-storage
+path isn't 100% excluded — but Arm A (consumed input zeroed in-graph, definitely lands) makes the
+recurrent vector unlikely.
+
+**Leading hypothesis now: the hybrid's full-attention-layer KV cache** is not evicted (or is
+re-attended) on the context-switch, so the new prompt attends to the prior conversation's tokens.
+`cached_tokens=0` rules out prompt-cache reuse, not stale KV cells. Next probe must (a) checksum
+that a recurrent-storage zero lands, and (b) instrument whether `seq_rm` actually clears the
+attention KV cells for seq 0 on the switch (cell count + surviving positions), and/or clear the
+attention KV explicitly and re-test. Until then **Task C has no validated fix.**
+
 Sources: AI21 "one token to corrupt them all" (vLLM Mamba state-bleed post-mortem);
 PyTorch/vLLM "Hybrid Models as First-Class Citizens"; vLLM `mamba_ssm` selective-scan API
 (`has_initial_state`, `cache_indices`); PyTorch/SGLang "Hybrid Models Meet SGLang" + MambaRadixCache.
@@ -378,11 +409,11 @@ another salt.
       **Implemented + verified + DEPLOYED** (build 4859). Verified:
       `Y@beta reuse_delta=0` (isolation) vs `Y@alpha reuse_delta=1` (same-salt
       reuse). nginx `proxy_set_header` line still to be added at deploy.
-- [ ] **C — CRITICAL (the only real fix)** — qnext slot zero-on-release (see "Task C design").
-      Root cause localized 2026-05-30 (#2): `release()` returns the slot index without zeroing
-      its `s_l` recurrent state; re-alloc reuses the stale state. Fix = `qnext_zero_slot(slot)`
-      called before `release()` in the `seq_rm` wrapper (`llama.cpp:9296`). **Design-review
-      stage** (user-requested), not yet implemented. Verify: repro → 0/5 + determinism intact.
+- [ ] **C — CRITICAL, RE-OPENED (vector not yet found)** — the qnext recurrent-state hypothesis
+      was **disproven** by the 2026-05-30 (#2) probe (see "PROBE RESULT"): zeroing the recurrent
+      state both in-graph (Arm A) and in storage (Arm B) left the leak at 3/5 byte-identical.
+      Recurrent state ruled out. Leading hypothesis now: hybrid full-attention KV not evicted on
+      context-switch. Next: probe attention-KV cell clearing (+ checksum the storage-zero landed).
 - [ ] D — fair-share (max-min) eviction across salts so a busy tenant can't starve
       others; replaces the global-FIFO `update()` evict.
 - [ ] Verify C (build-tree): `qnext-slot-leak-repro.sh` 0/5 + NP determinism + reuse intact;
