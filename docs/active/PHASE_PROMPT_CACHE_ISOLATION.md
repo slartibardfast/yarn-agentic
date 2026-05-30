@@ -244,14 +244,44 @@ New method `llama_kv_cache::qnext_zero_slot(int32_t slot)`:
 Deploy via `deploy-llama-server.sh` only after 1–4 pass; then **revert the useless interim**
 (`--cache-ram 0 --ctx-checkpoints 0` → restore `.bak-preleak-20260530`) to regain prefix-reuse.
 
+**Resolved sub-questions (code-read 2026-05-30 #2):**
+- *Conv-state tail?* No separate buffer. `llama-delta-net.cpp:30-33,329-360`: the qwen3next
+  state row is `state_dim = conv_state_dim + ssm_state_dim`, both packed contiguously in the
+  single `s_l[il]` column (`n_embd_v_s() == state_dim`). Zeroing the `s_l` column covers both.
+- *Position after reset?* `keep_first(0)` empties `cache_tokens`; `pos_next()` then returns 0
+  (`server-common.cpp:1610`), so the France reprocess gets `batch.pos[0] = 0`
+  (`server-context.cpp:4014`).
+
+**Crucial finding — an existing reset path is already firing and FAILING.** `llama-delta-net.cpp:719`
+computes `reset_state = (batch.pos[0] == 0)` on the `all_same_seq` fast path (always taken at
+`--parallel 1`), and when true the graph does `ggml_scale(state_f32, 0.0f)` ("state_reset",
+line 354). By the position analysis above this **should** fire on every context-switch reprocess
+— yet the leak persists. So the bug is **not** "no reset exists"; it is that the existing reset is
+ineffective. Most likely (unconfirmed): the SSM kernel reads the slot's initial state from the
+`s_l[slot]` storage directly (via the `inp_s_seq_qnext` slot map / `cells[].src` copy), so the
+`ggml_scale(0)` on a cast/view of `state_dst` never reaches what the kernel actually consumes.
+
+**Why zero-at-release is the robust fix regardless.** It guarantees `s_l[slot]` storage is zero at
+re-allocation, so whether the kernel reads storage (hypothesis above), or the scale-reset never
+fires, or the write-back re-persists — the next decode reads zero. It addresses the root
+(stale storage) rather than the symptom.
+
+**One-probe disambiguation (recommended before build, build-tree only, ~1 short run).** Add a
+temporary `LOG_INF` at `llama-delta-net.cpp:719` printing `il, batch.pos[0], reset_state`, plus a
+cheap checksum of `s_l[slot]` before/after the France prefill. This tells us (i) whether
+`reset_state` is actually true at runtime, and (ii) whether storage is non-zero going into the
+reprocess. Confirms the mechanism before committing the fix, and reveals whether the existing
+reset path is a separate latent bug worth its own fix.
+
 **Open design questions for review:**
-- Zero-on-release vs zero-on-recycled-alloc — release is simpler (have the seq→slot map) and
-  off the hot decode path; chosen. Confirm no path re-allocs a released slot expecting its old
-  state (none found: release only fires on full-clear = seq done).
+- Zero-on-release vs zero-on-recycled-alloc — release is simpler (have the seq→slot map) and off
+  the hot decode path; chosen. (Release only fires on full-clear = seq done; no path re-allocs a
+  released slot expecting its old state.)
+- Fix the existing `reset_state` path *as well* (make the kernel consume the zeroed state), or
+  rely solely on zero-at-release? The probe decides — if the scale-reset is structurally
+  cosmetic, zero-at-release is the clean single fix; if it's a near-miss, repairing it may be
+  cheaper and keeps the reset on the decode path where the engine intended it.
 - Should `llama_kv_cache_clear` also zero (defensive)? Leaning yes, cheap.
-- The conv-state / short-conv tail (if qwen3next keeps a separate conv buffer beyond `s_l`) —
-  audit whether it too needs zeroing, or whether it's already part of `s_l`. **To verify before
-  build.**
 
 ---
 
