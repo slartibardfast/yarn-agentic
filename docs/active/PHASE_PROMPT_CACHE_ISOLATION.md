@@ -357,6 +357,33 @@ that a recurrent-storage zero lands, and (b) instrument whether `seq_rm` actuall
 attention KV cells for seq 0 on the switch (cell count + surviving positions), and/or clear the
 attention KV explicitly and re-test. Until then **Task C has no validated fix.**
 
+### PROBE #2 RESULT 2026-05-30 (#3) — VECTOR DETERMINED: full `kv_cache_clear` fixes it (0/5)
+
+`data/whole-system-profile/qnextkv-20260530T180051`, env-gated arms (`[QNEXT_PROBE_KV]` cell-survival
+log + `[QNEXT_PROBE_KVCLEAR]` hard `llama_kv_cache_clear` on the full-clear switch, both default-off):
+
+- **Arm C (log only):** **3/5 leak** (baseline). The log shows `surviving seq cells=0 used=0` after
+  **every** `seq_rm(seq=0,p0=0,p1=-1) ok=1` → the attention KV cells **are** evicted. **Surviving
+  stale cells are NOT the mechanism.**
+- **Arm D (`+ kv_cache_clear` on switch):** **0/5 leak.** All five switches answer cleanly ("the user
+  asks 'capital of France'…"), zero aqueduct bleed.
+
+**Conclusion — vector determined.** `llama_kv_cache_clear()` on the context-switch eliminates the
+leak; the per-request `seq_rm(0,-1)` the server calls does not, *despite both leaving `cells=0`*. The
+vector is what `kv_cache_clear` resets **beyond** `seq_rm` (`llama.cpp:2427` vs `:2454`): `cells[i].src
+= i` for **all** cells, `head = 0`, and `paged.free_seq()`. The leak rides the **recurrent-state
+copy-source / allocator binding** (`cells[].src` + `head`) that `seq_rm` leaves dangling — the new
+sequence inherits a stale state-row linkage and the SSM kernel pulls prior state through it. This
+reconciles Arms A/B: zeroing the state *value* (in-graph input; `s_l` storage) didn't help because the
+kernel re-establishes state via the stale *binding*, not the zeroed value.
+
+**Validated fix direction (Task C):** on the recurrent/hybrid context-switch where the server forces
+full reprocess (`apply_checkpoint` do_reset → `seq_rm(0,-1)`), invoke the full `kv_cache_clear` (or
+replicate its `cells[].src=i` + `head=0` + `paged.free_seq()` reset) instead of/in addition to the
+plain `seq_rm`. Empirically 0/5. Open precision question (optional micro-probe): which single field
+(`src` vs `head` vs allocator) is load-bearing — for a minimal fix rather than the full clear.
+Verification gates unchanged (repro → 0/5 + NP determinism + reuse intact).
+
 Sources: AI21 "one token to corrupt them all" (vLLM Mamba state-bleed post-mortem);
 PyTorch/vLLM "Hybrid Models as First-Class Citizens"; vLLM `mamba_ssm` selective-scan API
 (`has_initial_state`, `cache_indices`); PyTorch/SGLang "Hybrid Models Meet SGLang" + MambaRadixCache.
@@ -409,11 +436,13 @@ another salt.
       **Implemented + verified + DEPLOYED** (build 4859). Verified:
       `Y@beta reuse_delta=0` (isolation) vs `Y@alpha reuse_delta=1` (same-salt
       reuse). nginx `proxy_set_header` line still to be added at deploy.
-- [ ] **C — CRITICAL, RE-OPENED (vector not yet found)** — the qnext recurrent-state hypothesis
-      was **disproven** by the 2026-05-30 (#2) probe (see "PROBE RESULT"): zeroing the recurrent
-      state both in-graph (Arm A) and in storage (Arm B) left the leak at 3/5 byte-identical.
-      Recurrent state ruled out. Leading hypothesis now: hybrid full-attention KV not evicted on
-      context-switch. Next: probe attention-KV cell clearing (+ checksum the storage-zero landed).
+- [ ] **C — CRITICAL — VECTOR DETERMINED (2026-05-30 #3), fix not yet implemented.** Probe #2
+      (`qnextkv-20260530T180051`) proved `llama_kv_cache_clear` on the context-switch → **0/5 leak**
+      vs `seq_rm` alone → 3/5, with attention cells already `=0` either way. Vector = the
+      recurrent-state copy-source / allocator binding (`cells[].src` + `head` + paged free) that
+      `seq_rm` leaves stale. Fix: do a full `kv_cache_clear` (or replicate src/head/allocator reset)
+      on the recurrent context-switch. Recurrent-state-value and attention-cell-survival hypotheses
+      both disproven (Arms A/B/C). Implement + verify (repro 0/5 + determinism + reuse) next.
 - [ ] D — fair-share (max-min) eviction across salts so a busy tenant can't starve
       others; replaces the global-FIFO `update()` evict.
 - [ ] Verify C (build-tree): `qnext-slot-leak-repro.sh` 0/5 + NP determinism + reuse intact;
