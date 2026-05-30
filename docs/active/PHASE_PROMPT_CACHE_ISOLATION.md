@@ -384,6 +384,58 @@ plain `seq_rm`. Empirically 0/5. Open precision question (optional micro-probe):
 (`src` vs `head` vs allocator) is load-bearing — for a minimal fix rather than the full clear.
 Verification gates unchanged (repro → 0/5 + NP determinism + reuse intact).
 
+### C — PERFORMANCE-PRESERVING FIX PLAN (2026-05-30 #4)
+
+**Performance principle.** The binding reset is only required on the **no-reuse path** — the
+`do_reset` context-switch, where the server is *already* doing a full prefill (the expensive part).
+The reset itself is an O(cells-of-this-seq) host loop (~µs) dwarfed by that prefill, so it adds ≈0%.
+Crucially it must **never** fire on the reuse paths (valid checkpoint restore; prompt-cache hit),
+which already restore the correct binding (`checkpoint_restore` copies `cells_snapshot` incl. `src`,
+`llama.cpp:1976`; `prompt_load`→`llama_state_seq_set_data` restores serialized cells). So a correctly
+*scoped* fix costs nothing on the fast path. The big win is then re-enabling the reuse the interim
+disabled — current prod (`--cache-ram 0 --ctx-checkpoints 0`) reprocesses **everything** and has **no**
+fast-restore, so the fix is a net perf *gain*, not a tax.
+
+**Step 1 — Minimal-field micro-probe (decides the leanest reset; perf-neutral, but right-sizes the
+fix).** Env-gated arms isolating which field carries the leak, all seq-scoped to seq 0:
+  - E1: reset only `cells[].src=i` for the freed seq cells.  E2: only `head=0`.  E3: only
+    `paged.free_seq(seq)`.  Expect E1 (src) → 0/5 (the SSM copy-source is the binding). Confirms the
+    smallest correct reset and whether a seq-scoped reset matches the global `kv_cache_clear` 0/5.
+
+**Step 2 — Seq-scoped binding reset at `do_reset` (the fix).** In `apply_checkpoint` do_reset (or the
+consume-path full-clear, `server-context.cpp:3925`), after the `seq_rm(0,-1)`, reset **only the
+switching seq's** binding (the field(s) Step 1 proved load-bearing — minimally `cells[].src=i` for
+that seq's cells + `paged.free_seq(seq)`; `head` reset is an allocation hint, set if E2 shows it
+matters). Seq-scoped (not the global `kv_cache_clear`) so it is correct under `--parallel > 1` — a
+global clear would wipe *other* live conversations' state. Gate strictly to the recurrent/hybrid
++ do_reset path so the reuse path is untouched.
+  - Fallback if Step 1 shows the fields are entangled: gate the **full** `kv_cache_clear` to the
+    do_reset path only. Validated 0/5, perf-neutral for `--parallel 1` (current prod), but wrong for
+    multi-slot — acceptable only while prod stays `--parallel 1`; not the preferred shape.
+
+**Step 3 — Restore reuse (the actual performance recovery).** Revert the interim profile to
+`--cache-ram 40960 --ctx-checkpoints 64` (restore `.bak-preleak-20260530`). With Step 2 making the
+context-switch leak-free, the reuse mechanisms are safe and provide:
+  - `--ctx-checkpoints` → hybrid fast-restore for same-conversation continuation (avoid reprocessing
+    the whole conversation each turn — the dominant agentic-loop saving).
+  - `--cache-ram` (prompt cache, gated by A min-LCP=2048 + B salt) → cross-request prefix reuse.
+  Both restore states *including* the correct binding, so they don't reintroduce the leak (verify).
+
+**Step 4 — Verification gates (binding on each claim).**
+  1. Leak: `qnext-slot-leak-repro.sh` → **0/5** on the fixed binary (binding gate).
+  2. Reuse leak-free: repro with `--ctx-checkpoints 64` AND `--cache-ram 40960` re-enabled → still
+     0/5 (re-enabling reuse must not reopen the leak via the restore paths).
+  3. Reuse *works*: same-conversation continuation shows checkpoint fast-restore (prefill ≪ full);
+     a genuine ≥2048 shared-prefix re-visit shows prompt-cache reuse (`cached_tokens>0`, faster).
+  4. Determinism: LM NP={1,2,4,8} ×3 + SERIALIZE A/B PASS (governor=performance, clocks locked).
+  5. Perf: NP=1 t/s ≥ pre-leak baseline; context-switch latency ≈ unchanged (reset is µs).
+  Deploy via `deploy-llama-server.sh` only after 1–5; the deploy *is* the perf restoration (interim
+  off). Net effect vs today: leak-free **and** faster (reuse restored).
+
+**Why this is max-perf, not just correct:** the only added work (the reset) lands solely on
+context-switches that were already full reprocesses; every reuse path is preserved; and the fix
+unblocks reverting the interim, which is where the real speed (checkpoints + prefix reuse) comes back.
+
 Sources: AI21 "one token to corrupt them all" (vLLM Mamba state-bleed post-mortem);
 PyTorch/vLLM "Hybrid Models as First-Class Citizens"; vLLM `mamba_ssm` selective-scan API
 (`has_initial_state`, `cache_indices`); PyTorch/SGLang "Hybrid Models Meet SGLang" + MambaRadixCache.
