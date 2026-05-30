@@ -499,12 +499,16 @@ another salt.
       **Implemented + verified + DEPLOYED** (build 4859). Verified:
       `Y@beta reuse_delta=0` (isolation) vs `Y@alpha reuse_delta=1` (same-salt
       reuse). nginx `proxy_set_header` line still to be added at deploy.
-- [~] **C — IMPLEMENTED + gates 1–3 PASS (2026-05-30 #5).** Fix in `seq_rm` wrapper
-      (`llama.cpp:9296`): on the hybrid full-clear context-switch, after `seq_rm`+slot-release, reset
-      `head=0` + the seq's stream `v_heads[stream]=0` (the recurrent V-cache-tail binding). Verify
-      `qnextverify-...`: FIX0 (prod-equiv) **0/5**, REUSE (cache-ram 40960 + ctx-ckpt 64) **0/5**,
-      reuse-works (same prompt 2×: pass2 `cached=3072 prompt_n=208` vs pass1 3280 — fast path intact).
-      Remaining to close `[x]`: gate 4 NP determinism + gate 5 perf, then deploy + revert interim.
+- [~] **C — IMPLEMENTED + ALL 5 GATES PASS (2026-05-30 #5); awaiting deploy.** Fix in `seq_rm`
+      wrapper (`llama.cpp:9306`, submodule `44b88133`): on the hybrid full-clear context-switch,
+      after `seq_rm`+slot-release, reset `head=0` + the seq's stream `v_heads[stream]=0` (the
+      recurrent V-cache-tail binding). Gates: (1) FIX0 prod-equiv **0/5**; (2) REUSE (cache-ram
+      40960 + ctx-ckpt 64) **0/5** — reuse re-enabled, leak not reopened; (3) reuse-works (`prompt_n`
+      3280→208, `cached=3072`); (4) NP={1,2,4,8} **byte-identical to NP=1** (determinism intact);
+      (5) perf — fix is off the decode hot path (2 int writes in `seq_rm` only), decode ~23.5 t/s
+      tight variance, no regression mechanism. **Stays `[~]` until deployed** (prod still leaks on
+      the interim); closing to `[x]` requires deploy via `deploy-llama-server.sh` + revert the
+      interim (`--cache-ram 40960 --ctx-checkpoints 64`) to restore reuse.
 - [ ] (superseded) VECTOR DETERMINED (2026-05-30 #3). Probe #2
       (`qnextkv-20260530T180051`) proved `llama_kv_cache_clear` on the context-switch → **0/5 leak**
       vs `seq_rm` alone → 3/5, with attention cells already `=0` either way. Vector = the
