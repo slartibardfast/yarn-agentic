@@ -118,6 +118,31 @@ the cached session's **end** state.
 
 ---
 
+### D. Fair-share eviction across salts
+
+A/B give *isolation* but not *fairness*: the cache is one shared pool with a global
+byte limit, and `server_prompt_cache::update()` (`server-task.cpp:1208`) evicts the
+**global oldest** (`states.pop_front()`) when over `limit_size`. New entries
+`emplace_back()` to the tail, so a busy salt continually pushes other tenants'
+entries to the front where they're evicted first → **starvation** of less-active
+salts.
+
+Fix — max-min fair eviction: when over limit, evict the oldest entry of the salt
+with the **largest current footprint**, not the global oldest:
+
+```cpp
+while (states.size() > 1 && size() > limit_size) {
+    // tally bytes per cache_salt; pick the salt with the most bytes;
+    // evict that salt's oldest entry (front-most with that salt).
+}
+```
+
+This converges each contending salt toward an equal share without hard quotas
+(which would need a dynamic active-salt count), and protects small/idle tenants.
+O(states) per eviction; `states` is small. Emergent fair-share, not a strict quota;
+optional refinement: a per-salt floor. The no-salt ("") pool competes as just
+another salt.
+
 ## Verification
 
 1. **Isolation:** req A (salt=a, long prompt) then req B (salt=b, same prefix,
@@ -135,6 +160,8 @@ the cached session's **end** state.
 - [ ] A — `MIN_CACHE_REUSE_LCP = 2048` guard in `server_prompt_cache::load()`.
 - [ ] B — `X-Prompt-Cache-Salt` plumbing (4 files) + nginx `proxy_set_header`.
 - [ ] C — audit + fix the hybrid recurrent-state rewind on prompt-cache restore.
+- [ ] D — fair-share (max-min) eviction across salts so a busy tenant can't starve
+      others; replaces the global-FIFO `update()` evict.
 - [ ] Verify (1–5 above) on the build-tree binary; deploy via
       `deploy-llama-server.sh`.
 - [ ] Live-leak interim until A/B land: restart to clear, or `--cache-ram 0` /
