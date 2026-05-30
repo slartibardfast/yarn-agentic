@@ -7,8 +7,40 @@ cross-conversation / cross-tenant leakage on the qwen35 hybrid (Mamba2), without
 losing the prefix-reuse speedup that agentic workloads depend on. Two landing
 changes — a **minimum-LCP guard** and **per-request `X-Prompt-Cache-Salt`
 scoping** — plus an audit of the hybrid recurrent-state rewind.
-**State:** Designed + evidence-gathered. **Not implemented.** Live leak
-mitigation (restart / `--cache-ram 0`) recommended, not yet authorized.
+**State:** A+B implemented, verified, **deployed** (submodule `eb98047f`, build 4859).
+**But the live leak is NOT fixed by A+B** — see the 2026-05-30 update: the dominant
+vector is slot-level recurrent/checkpoint contamination (task C), invisible to A+B
+and to NPC. **Interim mitigation deployed:** `--cache-ram 0 --ctx-checkpoints 0` in
+the prod profile (confirmed live: no leak). **C is now the critical open task.**
+
+---
+
+## Update 2026-05-30 — A+B insufficient; leak vector is slot-level (C), NPC-blind
+
+Post-deploy live smoke (this time checking **`reasoning_content`**, not just
+`content`) showed the leak persists: a "capital of France" request returned
+reasoning verbatim about the primed aqueduct document, with **`cached_tokens=0`** —
+so the **prompt cache (A+B) did NOT reuse**; A+B work. The contamination came via the
+slot's own context-switch: `apply_checkp n_past=3 ... pos_min=3041` kept only the
+template prefix but the **Mamba recurrent state stayed at the end of the prior
+prompt** (and a stale `--ctx-checkpoints` checkpoint restored it). This is **task C**,
+the primary vector for consecutive unrelated requests on the single `--parallel 1`
+slot — which I under-weighted as optional.
+
+**Why NPC never caught it:** NPC verifies determinism (reproducibility), not
+isolation. A reproducible leak passes NPC, and the harness sends independent prompts
+to a fresh slot — it never exercises the cross-conversation context-switch. NPC is
+structurally blind to this class of bug.
+
+**Verification lesson:** the cache-isolation suite checked `content` (empty for this
+reasoning model) and missed the leak in `reasoning_content`. Any isolation test MUST
+assert on `reasoning_content` across an unrelated context-switch.
+
+**Mitigation smoke (2026-05-30):** `--cache-ram 0` (ctx-ckpt 64) → **LEAK**;
+`--ctx-checkpoints 0` (cache-ram 40960) → **CLEAN**. So `--ctx-checkpoints 0` is the
+lever (forces the "full re-processing" path); `--cache-ram 0` alone does not fix it.
+Deployed both off in the prod profile (`.bak-preleak-20260530` backup); confirmed
+live no-leak. Cost: loses prefix-reuse + hybrid-checkpoint fast-restore until C lands.
 
 ---
 
@@ -158,20 +190,23 @@ another salt.
 ## Tasks
 
 - [~] A — `MIN_CACHE_REUSE_LCP = 2048` guard in `server_prompt_cache::load()`.
-      **Implemented + verified** on the build-tree binary (submodule `eb98047f`);
-      pending deploy. Verified: short "hi" `reuse_delta=0` + topic-free; long
+      **Implemented + verified + DEPLOYED** 2026-05-29 (submodule `eb98047f`, build 4859). Verified: short "hi" `reuse_delta=0` + topic-free; long
       re-visit `reuse_delta=1` (prefill 3035→475 tok).
 - [~] B — `X-Prompt-Cache-Salt` plumbing (4 files) + nginx `proxy_set_header`.
-      **Implemented + verified** (submodule `eb98047f`); pending deploy. Verified:
+      **Implemented + verified + DEPLOYED** (build 4859). Verified:
       `Y@beta reuse_delta=0` (isolation) vs `Y@alpha reuse_delta=1` (same-salt
       reuse). nginx `proxy_set_header` line still to be added at deploy.
-- [ ] C — audit + fix the hybrid recurrent-state rewind on prompt-cache restore.
+- [ ] **C — CRITICAL (primary leak vector)** — fix the slot recurrent-state rewind on
+      context-switch: `apply_checkpoint` must only restore a true-prefix checkpoint and
+      rewind the recurrent state to it, else force full reprocess. This is what the live
+      leak needs; A+B do not cover it.
 - [ ] D — fair-share (max-min) eviction across salts so a busy tenant can't starve
       others; replaces the global-FIFO `update()` evict.
 - [ ] Verify (1–5 above) on the build-tree binary; deploy via
       `deploy-llama-server.sh`.
-- [ ] Live-leak interim until A/B land: restart to clear, or `--cache-ram 0` /
-      raised `cache_ram_similarity`.
+- [x] **Interim mitigation DEPLOYED 2026-05-30:** `--cache-ram 0 --ctx-checkpoints 0`
+      in the prod profile (`.bak-preleak-20260530` backup). Smoke: ctx-checkpoints 0 is
+      the lever (cache-ram 0 alone still leaks); confirmed live no-leak. Revert when C lands.
 
 ## Out of scope
 
