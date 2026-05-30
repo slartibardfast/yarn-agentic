@@ -499,7 +499,13 @@ another salt.
       **Implemented + verified + DEPLOYED** (build 4859). Verified:
       `Y@beta reuse_delta=0` (isolation) vs `Y@alpha reuse_delta=1` (same-salt
       reuse). nginx `proxy_set_header` line still to be added at deploy.
-- [ ] **C — CRITICAL — VECTOR DETERMINED (2026-05-30 #3), fix not yet implemented.** Probe #2
+- [~] **C — IMPLEMENTED + gates 1–3 PASS (2026-05-30 #5).** Fix in `seq_rm` wrapper
+      (`llama.cpp:9296`): on the hybrid full-clear context-switch, after `seq_rm`+slot-release, reset
+      `head=0` + the seq's stream `v_heads[stream]=0` (the recurrent V-cache-tail binding). Verify
+      `qnextverify-...`: FIX0 (prod-equiv) **0/5**, REUSE (cache-ram 40960 + ctx-ckpt 64) **0/5**,
+      reuse-works (same prompt 2×: pass2 `cached=3072 prompt_n=208` vs pass1 3280 — fast path intact).
+      Remaining to close `[x]`: gate 4 NP determinism + gate 5 perf, then deploy + revert interim.
+- [ ] (superseded) VECTOR DETERMINED (2026-05-30 #3). Probe #2
       (`qnextkv-20260530T180051`) proved `llama_kv_cache_clear` on the context-switch → **0/5 leak**
       vs `seq_rm` alone → 3/5, with attention cells already `=0` either way. Vector = the
       recurrent-state copy-source / allocator binding (`cells[].src` + `head` + paged free) that
